@@ -19,13 +19,14 @@
 // save cycles leave the embedded original byte-identical and the size flat.
 
 import { bindPdfNativeEmphasis, makePdfEmphasisPlan } from './pdfNativeEmphasis';
-import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
-import { createPdfDocumentSession } from './pdfDocumentSession';
 import { completedClassicDisplayList } from './pdfClassicDisplayList';
 import { classicEmphasisPageKey, classicEmphasisPlanKey } from './pdfEmphasisProfile';
 import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from './pdfEmphasisPlanCache';
 import { watchPdfEmphasis } from './pdfEmphasisWatch';
-import { hashBytes } from './diskVersion';
+import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
+import type { PdfDocumentSession } from './pdfDocumentSession';
+import type { PdfDisplayGeometry } from './pdfOverlay';
+import { createClassicPdfHealth, recordClassicRenderFailure, type ClassicPdfHealth } from './pdfClassicHealth';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // Role extraction uses the build worker's read-only inventory operation; this
@@ -79,13 +80,11 @@ export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<P
 
 export const readAnnotatedPdf = readPdfRole;
 
-export interface PdfPageSize {
-    /** Page size in PDF points — the coordinate space annotations live in. */
-    width: number;
-    height: number;
-}
+export type PdfPageSize = PdfDisplayGeometry;
 
 export interface PdfPageSource {
+    /** Owned by this acquisition, never shared with a cancelled predecessor. */
+    readonly health: ClassicPdfHealth;
     /** Every page's geometry, known without rasterizing anything. */
     sizes: PdfPageSize[];
     /**
@@ -95,10 +94,9 @@ export interface PdfPageSource {
      * page is re-rendered sharp.
      */
     renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
-    /** Observe and, if needed, prove the current pristine page independently
-     * of a backdrop raster or its cancellation signal. */
+    /** The shown pristine page's proof outlives any single raster request. */
     watchEmphasis(index: number, publish: (result: PdfNativeEmphasisResult | undefined) => void): () => void;
-    /** Tear down the pdf.js worker. */
+    /** Release this source's document lease, not the pane-owned session. */
     close(): Promise<void>;
 }
 
@@ -116,42 +114,69 @@ export interface PdfPageSource {
  * show strokes baked into the backdrop while the editable copies of those same
  * strokes load on top, i.e. everything doubled.
  */
-export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
-    // The source's identity is that of the pristine bytes, not the stamped
-    // file. Hashing runs alongside startup and never delays backdrop pixels.
-    const identity = { token: crypto.randomUUID(), hash: hashBytes(original) };
-    void identity.hash.catch(() => {});
-    const session = createPdfDocumentSession(original, 0);
+export async function openPdfPages(session: PdfDocumentSession, onRenderHealth?: (health: ClassicPdfHealth) => void): Promise<PdfPageSource> {
+    // Each mount owns its subscriber: a cancelled StrictMode predecessor must
+    // not close the replacement's status, even though both share a session.
+    const diagnostics = createClassicPdfHealth();
+    onRenderHealth?.(diagnostics);
+    const forward = () => { for (const issue of session.health.getSnapshot()) diagnostics.record(issue); };
+    const unsubscribe = session.health.subscribe(forward);
+    forward();
+    let docLease: Awaited<ReturnType<PdfDocumentSession['acquire']>> | undefined;
     let sizes: PdfPageSize[];
-    try { sizes = await session.geometry(); }
-    catch (error) { await session.dispose(); throw error; }
+    try {
+        docLease = await session.acquire();
+        sizes = await session.geometry();
+    } catch (error) {
+        recordClassicRenderFailure(diagnostics, error);
+        docLease?.release(); unsubscribe(); diagnostics.close();
+        throw error;
+    }
+    let closed = false;
+    const watches = new Set<() => void>();
+    const scales = new Map<number, number>();
 
     return {
+        health: diagnostics,
         sizes,
-        watchEmphasis: (index, publish) => watchPdfEmphasis(session, identity, index, publish),
+        watchEmphasis(index, publish) {
+            if (closed) return () => {};
+            const stop = watchPdfEmphasis(session, session.emphasisIdentity, index, publish);
+            const release = () => { watches.delete(release); stop(); };
+            watches.add(release);
+            return release;
+        },
         async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, _onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
+            if (closed) throw new DOMException('PDF source closed', 'AbortError');
+            const previousScale = scales.get(index);
+            scales.set(index, scale);
+            if (previousScale !== undefined && previousScale !== scale) session.emphasisVerdicts.yieldProbes();
             const lease = await session.acquireRender(index, signal);
             const page = lease.page;
-            const viewport = page.getViewport({ scale });
-            const canvas = document.createElement('canvas');
-            canvas.width = Math.ceil(viewport.width);
-            canvas.height = Math.ceil(viewport.height);
-            const context = canvas.getContext('2d');
-            let rendering: import('pdfjs-dist').RenderTask | undefined;
             let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
+            const canvas = document.createElement('canvas');
+            let rendering: import('pdfjs-dist').RenderTask | undefined;
             const cancel = () => rendering?.cancel();
+            const current = () => !closed && !signal?.aborted;
             signal?.addEventListener('abort', cancel);
             try {
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
+                session.markRendered(index);
+                const viewport = page.getViewport({ scale });
+                canvas.width = Math.ceil(viewport.width);
+                canvas.height = Math.ceil(viewport.height);
+                const context = canvas.getContext('2d');
                 if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
-                signal?.throwIfAborted();
-                const key = classicEmphasisPageKey(identity.token, index, page);
+                const key = classicEmphasisPageKey(session.emphasisIdentity.token, index, page);
                 const verdict = session.emphasisVerdicts.getVerdict(key);
                 const useOn = emphasisEnabled && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
                 let plan = useOn ? getPdfEmphasisPlan(page, classicEmphasisPlanKey(key)) : undefined;
                 if (plan) emphasis = bindPdfNativeEmphasis(page, context, plan);
-                rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
-                await rendering.promise;
                 signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
+                rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
+                await diagnostics.guard(rendering.promise, signal);
+                diagnostics.assertComplete(index);
                 if (useOn && !plan) {
                     const list = completedClassicDisplayList(rendering);
                     if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
@@ -163,23 +188,32 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                         else {
                             emphasis = bindPdfNativeEmphasis(page, context, plan);
                             rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis.operationsFilter });
-                            await rendering.promise;
-                            signal?.throwIfAborted();
+                            await diagnostics.guard(rendering.promise, signal);
+                            diagnostics.assertComplete(index);
                         }
                     }
                 }
-                const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
                 signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
+                const blob = await new Promise<Blob | null>(res =>
+                    canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
+                signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
                 if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
+                diagnostics.assertComplete(index);
                 return URL.createObjectURL(blob);
+            } catch (error) {
+                recordClassicRenderFailure(diagnostics, error, index);
+                throw error;
             } finally {
                 signal?.removeEventListener('abort', cancel);
+                if (rendering) { rendering.cancel(); await rendering.promise.catch(() => {}); }
                 emphasis?.dispose();
                 canvas.width = canvas.height = 0;
                 lease.release();
             }
         },
-        close: () => session.dispose(),
+        async close() { if (!closed) { closed = true; for (const release of watches) release(); unsubscribe(); diagnostics.close(); docLease?.release(); } },
     };
 }
 

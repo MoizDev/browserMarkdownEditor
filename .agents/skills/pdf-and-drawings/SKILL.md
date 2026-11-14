@@ -17,14 +17,16 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 as live tldraw shapes.
 
 - **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
-  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a union inventory of every attachment
-  name tree), never from one attachment's presence: `utils/pdfRole.ts` returns one of six tags.
-  `plain` (no attachments of ours: the file's own bytes are the pristine original) and `annotated`
-  (the supported legacy pair, `original.pdf` + a valid `tldraw-snapshot.json`) are the only EDITABLE
-  roles; `notebookExport`, `unreadable`, `ambiguous` and `newer` open Annotate read-only with
-  `pdfRoleNotice`'s text in the outer view. An `original.pdf` alone does NOT make a file ours. The
-  first save of a `plain` PDF is what adds the attachments. Only `plain` may be rotated
-  (`canRotatePdfRole`).
+  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a read-only union inventory of every
+  attachment name tree; never the classic renderer), never from one attachment's presence:
+  `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
+  are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
+  `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
+  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. An
+  `original.pdf` alone does NOT make a file ours. A failed or partial read never falls back to
+  `plain`; the outer pages stay readable. The first save of a `plain` PDF is what adds the
+  attachments, and files from the old spawn-a-sibling behaviour still work. Only `plain` may be
+  rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
   `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
   again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.
@@ -61,11 +63,14 @@ as live tldraw shapes.
   NAMES through the live theme and its dark theme maps `black` → `#f2f2f2`; a PDF page is white in
   either theme, so following the app theme drew near-white ink on white paper, on screen and in the
   saved file. Snapshots store the name, so old files heal themselves.
-- `stampRaster`/`stampVector` share `displaySpace()`, which handles the `/Rotate` trap: pdf.js
-  *applies* `/Rotate` (canvas is landscape) but pdf-lib *ignores* it (`getSize()` returns the
-  portrait MediaBox). The raster half anchors + rotates the image per angle; the vector half
-  concatenates the same mapping as a CTM and draws inside it.
-- `withPdf` always slices the buffer (pdf.js detaches it) and always destroys the worker.
+- PDF annotations carry each page's inverse pdf.js viewport with the overlay. Raster and vector
+  ink are drawn on a clipped page-sized Form and placed with that same transform, including crop,
+  origin, rotation and UserUnit. The source page's resource dictionaries are forked before adding
+  the Form; pdf-lib otherwise mutates inherited/shared dictionaries. Notebook pages use their own
+  generated zero-origin geometry.
+- `withPdf` is gone: role inventory uses the build worker, while `openPdfPages` keeps a guarded
+  classic task alive until its caller closes it. Only the classic adapter copies renderer bytes
+  (pdf.js detaches its input); a display/Retry never mutates the original.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
@@ -121,15 +126,39 @@ as live tldraw shapes.
 
 ## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
 
-pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears
-down a worker it created itself (`task._worker` is set only when the caller passed none) — so passing
-a shared one is safe, and is the whole fix. Opening a single PDF used to start two workers: `PdfPane`
-probes the file's role via `readPdfRole` before it knows which view to show, then `PdfViewer` opens
-the same bytes again; each boot loads and compiles ~1MB of worker script before a byte is read.
-**Pass `worker: pdfWorker()` to every `getDocument`.** That module is also the one place that sets
-`GlobalWorkerOptions.workerSrc` — importing it is how the PDF modules get the assignment. Verified by
-counting `new Worker(...)`: one for the session, zero more per PDF opened. `prefetchPanes` starts it
-at idle (dynamically, or pdf.js lands in the main bundle), so the boot is off the first click.
+**Only `openClassicPdf` calls pdf.js `getDocument`.** It copies renderer input and obtains the
+shared native module worker through a transferable ready/test handshake and pinned bootstrap.
+No fake/main-thread worker is permitted. `loadClassicPdf` and `closeClassicPdf` own guarded
+acquisition and bounded dead-port teardown of the REAL loading task; never replace task/proxy
+methods. `pdfWorker()` is compatibility for an already-ready port, not a startup entry point.
+`prefetchPanes` calls `prefetchClassicPdf` dynamically only under `kinds.pdf`, retaining lazy
+font/decoder warming. Idle failure stays silent until a document is demanded; no retry loop.
+
+Every asynchronous render/stream consumer uses `session.health.guard` (or
+`classicPdfHealth(doc).guard`) so a dead native port cannot retain a document/page/reader permit.
+Cancel streams without awaiting dead-port RPCs during cleanup, then release reader locks/leases.
+Publish render failures with `recordClassicRenderFailure(health, error, zeroBasedPage)`;
+cancellation is not a render failure. Assert page completeness before returning a raster capture,
+including after asynchronous encoding/composition. Available partial pages can still DISPLAY,
+with persistent app notices and **Thumbnail unavailable**; they are not clean tool captures.
+
+Worker message shapes, runtime assets, bootstrap and native-emphasis internals stay pinned to
+pdf.js 6.1.200 together. Fetch/XHR/WASM observation preserves exact results/throws. A JS fallback
+that fully renders is complete: a dependency failure taints the worker for the next explicit
+open/Retry, but must not falsely mark its successful page incomplete. No PDF text/URLs enter
+health diagnostics. Native worker errors are fatal; silent closure only becomes a soft demanded-
+work no-progress notice (about ten seconds), never a timeout kill or image-size refusal.
+Progress/completion clears that notice. Healthy Retry reopens only its document; explicit Retry
+of an unresponsive/tainted/failed worker creates one replacement. Other affected PDFs retry
+separately. Chrome worker crashes can take the renderer down too; do not promise crash isolation.
+
+Each `openPdfPages` acquisition owns independent `source.health` and publishes it through
+`onRenderHealth` BEFORE awaiting startup. Pane subscribes to that actual source and never closes
+its health; only the source's close does. A byte-keyed memo/shared health races StrictMode's late
+cancelled acquisition. Captures and thumbnails use the same actual-source health. Refused Annotate
+uses the outer viewer's session health; renderer Retry cannot clear a tagged role refusal.
+Never remount an annotation canvas or replace its snapshot to retry: preserve unflushed ink and
+direct the reader to View until an in-place source/image replacement transaction exists.
 
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 
@@ -162,7 +191,8 @@ requires reading it.
 - **While a pinch is in flight the zoom is only a CSS transform** pinned at the cursor; the real
   relayout/re-rasterization commits once, ~180ms after the burst quiets, because doing it per wheel
   tick restyled every text-layer span and restarted every visible rasterization — it stuttered.
-- Selection/copy/⌘F come from pdf.js **`TextLayer`** spans. The `.textLayer` CSS in `index.css` is the
+- Ordinary selection/copy come from pdf.js **`TextLayer`** spans; app-owned find searches every
+  canonical page through the session reader, independently of those spans. The `.textLayer` CSS in `index.css` is the
   library's contract — percent positions + `--scale-factor`/`--total-scale-factor` sizing, **plus the
   three `[data-main-rotation]` rules**: pdf.js sizes a text layer from the page's *unrotated* box and
   leaves the turn to the host's CSS, so without them a `/Rotate 90` page's selection lands nowhere
@@ -171,16 +201,19 @@ requires reading it.
   `pdfTextLayerSelection.ts` anchors blank-margin drags to the nearest line/span and extends only
   within this viewer; drags beginning on text remain native. Its capture ⌘/Ctrl+A handler selects
   this viewer's built layers, not the app chrome, and stands down in inputs/editable content.
-  Until whole-document copy lands with D7, this covers eager pages (≤300) and visited pages only
-  above that limit. The classic reader's native right-click menu remains a documented exception.
-- **Text layers are built eagerly for every page of a document up to `TEXT_EAGER_LIMIT` (300 pages),
-  and are never released.** That eagerness is what makes ⌘F find text on pages you have never scrolled
-  to, and it is the largest single memory item in the app (measured ~4.3KB of renderer memory per
-  positioned span, so a dense 300-page book runs to hundreds of MB). Above 300 the *eager* pass is
-  skipped, but layers are still built on demand for every page that scrolls into view and still never
-  freed. **Do not "fix" this by lowering the limit or windowing the layers without an explicit
-  decision — both trade away ⌘F completeness.** The eager pass is keyed on a `hasLayout` boolean rather
-  than the `layout` object identity, so a zoom or resize does not restart 300 iterations.
+  It also marks that selection as **whole document**: ⌘C uses `pdfDocumentCopy.ts` to gather the
+  reader's canonical pages in physical order joined LF, normalize them and write via `copyText`.
+  Progress/blocked writes show in the viewer; text beyond the 16 MiB UTF-8 cap is refused rather
+  than silently truncated. Selection changes revoke the mark and cancel an outstanding copy;
+  hide/session teardown does too. Ordinary selections retain native synchronous normalized copy.
+  Extend this binding, never install a second capture ⌘A handler. The classic reader's native
+  right-click menu remains a documented exception until its app-owned text overlay/menu lands.
+- **Text layers follow `CLEANUP_BEYOND` (12), with no eager pass.** Far-page cleanup cancels the
+  TextLayer, empties its container, clears offsets/divs/promises and find ranges, then releases the
+  session lease after outstanding work settles. A layer intersecting live selection or holding
+  the current find hit is pinned. A per-build token prevents late completion from republishing
+  released text, and `ensureText` rebuilds on approach or find reveal. Memory follows the window
+  plus these deliberate pins, not document length (~4.3KB per positioned span was the old cost).
 - **`content-visibility: auto` on `.pdf-viewer-page` buys TIME, not MEMORY** — know which problem you
   are measuring before judging it. Memory: it does nothing (measured 533.8MB → 542.1MB, slightly
   *worse*, because Blink does not tear down layout structures already built), so it is no answer to the
@@ -211,11 +244,12 @@ requires reading it.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) release the viewer's page lease after text/link work
-  settles. `PdfDocumentSession` calls `page.cleanup()` only when the last consumer releases it, so a
-  thumbnail, Text view or agent read cannot lose a page it is still using — the canvas is only half
-  of what a page costs. That window
-  is deliberately much wider than the eviction one: re-rendering from a retained operator list is
-  cheap, re-parsing the page is a worker round-trip.
+  settles. Zero users makes a parsed page eligible for the shared bounded PDF cache, not immediate
+  cleanup; eviction never cleans under a thumbnail, Text, annotation or agent lease. The cache uses
+  conservative reservations, not claimed worker-heap measurements. A visible surface handoff keeps
+  the current page leased for at most five seconds; matching plain annotations reuse the reader's
+  session, while stamped/pristine bytes always use distinct sessions. Re-rendering from a retained
+  operator list avoids an expensive worker re-parse.
 - **The PDF's own links work** (`pdfLinks.ts` + the `.pdf-link-layer` per page). Hand-rolled over four
   stable public pdf.js calls (`getAnnotations`, `getDestination`, `getPageIndex`,
   `convertToViewportPoint`) rather than pdf.js's `AnnotationLayer`, which needs a `linkService` shim
@@ -358,16 +392,17 @@ there.** `PdfViewer` takes `isVisible` (not `isActive`, which is keyboard focus)
   The older blanket-eviction fix reduced 62MB to 3MB, but is not today's policy: freeing the visible
   scan forced a JPEG decode and repaint on every return. Do not cite that old number as the memory
   retained by the current resume-pixel policy.
-- **stops the eager text pass.** Up to `TEXT_EAGER_LIMIT` (300) `TextLayer.render` calls, each with
-  a worker round trip, were still running after the reader had switched to a whiteboard — which is
-  exactly when tldraw is mounting and wants the main thread. It resumes where it left off.
+- **stops canonical find and pending whole-document copy.** There is no eager TextLayer pass;
+  nearby built layers remain for quick return, and far layers were released by the window pass.
 - **stops committing resizes.** The slot is a percentage of its column, so every sidebar toggle and
   window resize re-fit and re-rastered the hidden panes too. The last width is applied on the way in.
 
-What is KEPT: the last visible page bitmaps, the held pdf.js page leases, the text layers (⌘F still
-works) and the scroll position. Coming back runs the normal window pass: compatible resume pixels
-stay, missing/incompatible bands render and the surrounding prefetch margin refills. A far-page
-release is a session lease release, never a direct cleanup by the viewer.
+What is KEPT: the last visible page bitmaps, nearby text layers and the scroll position. Find
+completeness comes from the canonical index, not retained DOM. Coming back runs the normal window
+pass: compatible resume pixels stay, missing/incompatible bands render and prefetch refills.
+P06 retains only on-screen DOM resume pixels under D1's policy: hide cancels visual work and
+releases hidden viewer leases, frees other canvases/URLs/refined JPEGs, evicts heavy parsed pages
+immediately and small idle parsed state within five seconds, but never cancels save/export work.
 
 ## Tldraw's assets are OURS
 
@@ -663,7 +698,8 @@ through `cameraFor`). A first open with no record behaves as before. Like the ot
 records it does not follow renames and is never pruned.
 
 
-Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis paints original glyph ink in Viewer/pristine annotation backdrops; no Text transition. The display-list adapter and native glyph/font/paint hooks are pinned to pdf.js 6.1.200; re-audit on upgrade. A single independent, canonical white-background whole-page OFF/ON proof (≤2^20 pixels) checks final composition; it is not per-zoom verification. Off paints first without hooks, and cached verdicts survive page cleanup; immutable plans are bounded and invalidated at cleanup. Only current-page results publish capability; unknown stays inactive. Annotation refresh chooses one visible/near stale backdrop at a time and cancels stale raster work without cancelling another consumer's proof. Text is manual and emphasis-inactive; readerViewState migrates unmarked legacy Text records to Original and stamps new explicit Text writes with textChoice:manual. No source/annotation/history changes from preference painting.
+Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis paints original glyph ink in Viewer/pristine annotation backdrops; no Text transition. The display-list adapter and native glyph/font/paint hooks are pinned to pdf.js 6.1.200; re-audit on upgrade. A single independent, canonical white-background whole-page OFF/ON proof (≤2^20 pixels) checks final composition; it is not per-zoom verification. Off paints first without hooks, and cached verdicts survive page cleanup; immutable plans are bounded and invalidated at cleanup. Only current-page results publish capability; unknown stays inactive. Annotation refresh chooses one visible/near stale backdrop at a time and cancels stale raster work without cancelling another consumer's proof. Text is manual and emphasis-inactive; readerViewState presents unmarked legacy Text records as Original without rewriting storage and stamps new explicit Text writes with textChoice:manual. No source/annotation/history changes from preference painting.
+The PDF read wrapper retains stored schema/version; pdfTextRecords accepts schemas 1/2 and returns only camera/surface for future records. pdfTextAnchors shares find's projection and matcher, using context to resolve repeated quotes. PdfPane protects cross/future records until the Text or Original navigation counter advances; layout/hide/unmount cannot convert them.
 
 PDF Text native Copy, custom Copy and selected-text reporting share page-model selection extraction.
 Only page bodies contribute text; page controls/quality notices never enter that canonical slice.

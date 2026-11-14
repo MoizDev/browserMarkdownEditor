@@ -401,7 +401,13 @@ It leaves the source, save state, undo history and copied text intact. PDF and E
 ### PDFs
 The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
 
-The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
+The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits.
+
+**Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
+
+When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
+
+**Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
 If the PDF reader's code cannot load, its column offers **Retry**. This retries
 the reader, not your files. If the browser retains the loading failure, reload
@@ -419,6 +425,33 @@ beside the page box opens a **strip of page thumbnails** down the left; click on
 to go to that page. The button next to it **inverts the pages** so they are easy on the
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
+
+The turn buttons (or \`[\` and \`]\`) rotate the PDF itself and save the new orientation;
+Option-click a button to turn just the current page. PDFs annotated in this app cannot be
+rotated because their ink was placed against the original pages. After a successful turn,
+a low-resolution picture may appear labelled **Loading rotated PDF…** while the new pages
+are read; it is only a temporary preview, not the finished page.
+
+**Copying PDF text.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\` to copy it.
+With a PDF page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks
+**the whole document** for copying. Follow with \`Cmd + C\` / \`Ctrl + C\` to gather every
+physical page, including pages you have never opened, separated by a newline. A notice
+shows progress or a blocked clipboard write. Changing the selection returns to ordinary
+passage copying. Whole-document text above **16 MiB** is refused rather than silently
+cut off; select a smaller passage instead. The text-order/extraction warning can mean
+columns or unusual reading order, not necessarily missing text; compare the original.
+
+If a page cannot be rendered completely, a notice stays on that page; an error
+whose page is unknown appears above the document. Its thumbnail says
+**Thumbnail unavailable**, rather than pretending to be a blank page.
+**Try again** reopens the PDF; it does not repair or change the original file.
+In Annotate, switch to View to retry without disturbing your ink.
+
+If rendering makes no progress for a while, **This PDF is taking longer than usual**
+lets you keep waiting or choose **Try again** to restart the renderer. Slow scans
+are not cancelled just because the notice appears, and the notice clears when
+work progresses. A renderer restart can affect other open PDFs; each says so
+and can be retried separately. No file is changed by this.
 
 **Turning a sideways scan the right way up.** The two curved arrows beside the
 invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
@@ -455,6 +488,10 @@ which is what lets you come back days later and move, recolour or erase a mark
 rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
+
+Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or Escape while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder’s **Trash**, then enables editing. If the mark is malformed or belongs to an unsupported version, the notice says it cannot be verified and offers the same safe choice. A changed or deleted file must be resolved before this choice can continue; a failed copy enables nothing and offers Retry.
+
+Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults.
 
 **A PDF that cannot be written on safely stays read-only.** Before the pen opens,
 the app checks what the file actually carries, not its name. A PDF holding an

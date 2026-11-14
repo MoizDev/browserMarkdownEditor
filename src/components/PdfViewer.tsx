@@ -20,10 +20,13 @@ import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
-import { mapPool } from '../utils/pool';
+import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
+import { copyPdfDocumentText } from '../utils/pdfDocumentCopy';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
+import { isClassicPdfCancellation, recordClassicRenderFailure } from '../utils/pdfClassicHealth';
+import PdfRenderNotice from './PdfRenderNotice';
 import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
 import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
@@ -58,7 +61,8 @@ function awaitFind<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * What keeps parity with the native viewer:
  * - Text is selectable/copyable via pdf.js's raw TextLayer (transparent spans
  *   over the canvas). The app's find searches every canonical page independently
- *   of these layers, then builds the hit's layer directly for reveal.
+ *   of these layers, then builds the hit's layer directly for reveal. ⌘A marks
+ *   the whole document; ⌘C copies canonical text, not only the built layers.
  * - Scrolling is a real DOM scroller (wheel, trackpad, PgUp/PgDn, arrows).
  * - Fit-width by default, plus simple zoom controls.
  *
@@ -69,12 +73,10 @@ function awaitFind<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * Memory discipline: canvas BITMAPS are windowed (a page at Retina fit-width is
  * ~25-31MB), so only pages near the viewport hold one — scrolled-away canvases
  * are freed (width=0) and re-rendered on approach, and pages past CLEANUP_BEYOND
- * also get page.cleanup() so pdf.js drops the parsed operator list. Link layers
- * are cheap DOM. TEXT layers are NOT: at ~4.3KB of renderer memory per
- * positioned span they are the largest single memory item in the app (hundreds
- * of MB for a dense book). They remain retained/eager during the find transition;
- * removing that pass is a separate package after complete find/reveal passes.
- * See the verify-in-browser and pdf-and-drawings skills before changing it.
+ * release their session page lease so pdf.js can drop the parsed operator list.
+ * Text layers follow that wider window too: ~4.3KB per positioned span made
+ * retaining them the largest memory cost of a dense book. Only live selection
+ * and the current find hit pin a far layer; canonical find/copy need no DOM.
  *
  * The current position is tracked as {page, offset-within-page}, which survives
  * zoom, container resizes and reloads of the underlying bytes (an annotated
@@ -83,6 +85,8 @@ function awaitFind<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  */
 
 interface PdfViewerProps {
+    onRetry?: () => void;
+    retryDisabled?: boolean;
     reader?: PdfTextReader;
     findMemory: PdfFindMemory;
     onNotify?(message: string): void;
@@ -111,7 +115,8 @@ interface PdfViewerProps {
      * `/Rotate` goes into the file, the pane remounts on the new bytes, and
      * pdf.js reports the turned geometry like any other document's.
      */
-    onRotate?: (delta: number, pageIndex?: number) => void;
+    onRotate?: (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => void;
+    onPageRendered?: (pageIndex: number) => void;
 }
 
 interface DocState {
@@ -126,6 +131,7 @@ interface PageState {
     pagePromise?: Promise<PDFPageProxy>;
     pageLease?: Promise<PdfPageLease>;
     renderTask?: RenderTask;
+    renderAbort?: AbortController;
     /** What the bitmap in this page's canvas actually shows. */
     rendered?: RenderTarget;
     /** What the in-flight render will produce, so the window pass can tell
@@ -146,6 +152,8 @@ interface PageState {
      *  cleared when it re-enters the render window. */
     cleaned?: boolean;
     textStarted?: boolean;
+    textToken?: object;
+    textTask?: InstanceType<typeof pdfjs.TextLayer>;
     textPromise?: Promise<void>;
     textDivs?: readonly HTMLElement[];
     textSpans?: readonly PdfFindTextSpan[];
@@ -158,14 +166,11 @@ interface PageState {
 function cancelPageRender(st: PageState): RenderTask | undefined {
     const task = st.renderTask;
     // Revoke ownership before cancel: eviction/hide can hit the same task.
+    st.renderAbort?.abort();
+    st.renderAbort = undefined;
     st.renderTask = undefined;
     task?.cancel();
     return task;
-}
-
-/** D2 supplies the visible session-health channel; keep one reporting seam. */
-function reportClassicPageRenderFailure(error: unknown, index: number): void {
-    console.error(`Could not render PDF page ${index + 1}:`, error);
 }
 
 /** Vertical padding above the first / below the last page, px. */
@@ -193,10 +198,6 @@ const EVICT_BEYOND = 3;
  * it only touches pages the reader has genuinely left behind.
  */
 const CLEANUP_BEYOND = 12;
-/** Build text layers for the whole document up to this page count, so ⌘F can
- *  find text anywhere. Beyond it (rare, book-sized), text follows the canvas
- *  window instead of bloating the DOM with hundreds of thousands of spans. */
-const TEXT_EAGER_LIMIT = 300;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 4;
 
@@ -222,7 +223,7 @@ const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
 async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
     const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        const content = await session.health.guard(lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true }));
         return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
     } finally { lease.release(); }
 }
@@ -287,8 +288,10 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps,
+function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onPageRendered, onLocation, emphasisEnabled = false, onNativeEmphasisResult, onRetry, retryDisabled = false }: PdfViewerProps,
     forwarded: React.ForwardedRef<PdfViewerHandle>) {
+    const renderDiagnostics = useSyncExternalStore(session.health.subscribe, session.health.getSnapshot);
+    const pageRenderIssues = useMemo(() => new Map(renderDiagnostics.filter(issue => issue.incomplete && issue.pageIndex !== undefined).map(issue => [issue.pageIndex!, issue])), [renderDiagnostics]);
     const [nativeNotice, setNativeNotice] = useState('');
     const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
     const showNativeNotice = useCallback((index: number) => {
@@ -308,7 +311,17 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const [saved] = useState(() => readPdfViewPos(filePath));
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
+    const failedThumbnailPages = useMemo(() => {
+        const failed = new Set<number>();
+        for (const issue of renderDiagnostics) {
+            if (!issue.incomplete) continue;
+            if (issue.pageIndex !== undefined) failed.add(issue.pageIndex);
+            else for (let i = 0; i < (docState?.dims.length ?? 0); i++) failed.add(i);
+        }
+        return failed;
+    }, [renderDiagnostics, docState]);
     const [error, setError] = useState<string | null>(null);
+    const [copyNotice, setCopyNotice] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
     /** Read by the ResizeObserver, which is created once and must not close over
      *  a stale width when deciding "is this the first measurement". */
@@ -437,23 +450,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 documentLease = await session.acquire();
                 if (cancelled) { documentLease.release(); return; }
                 const doc = documentLease.document;
-                // Every page's size, because the scroll height depends on all
-                // of them — but not ONE AT A TIME. Each is a round trip to the
-                // pdf.js worker and nothing is drawn until the last one lands,
-                // so a 200-page document showed "Loading PDF…" for 200 of them
-                // in a row (measured: 565ms, and it grows with the page count).
-                // Bounded rather than unleashed, for the reason utils/pool.ts
-                // gives; `mapPool` keeps the results in page order.
-                const dims = await mapPool(
-                    Array.from({ length: doc.numPages }, (_, i) => i),
-                    async (i) => {
-                        const lease = await session.acquirePage(i, 'render');
-                        try {
-                            const vp = lease.page.getViewport({ scale: 1 });
-                            return { w: vp.width, h: vp.height };
-                        } finally { lease.release(); }
-                    },
-                );
+                // Geometry is retained with the document across surface mounts;
+                // its first acquisition is bounded-concurrent in the session.
+                const dims = (await session.geometry()).map(({ width, height }) => ({ w: width, h: height }));
                 if (cancelled) return;
                 const ds: DocState = { doc, dims, gen };
                 // Set the ref synchronously: the re-anchor layout effect (which
@@ -560,6 +559,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
 
     const getPage = useCallback((i: number): Promise<PDFPageProxy> => {
         const st = getState(i);
+        // Find can rebuild a layer directly, without ensurePage. Revoke a
+        // pending far-page release before either route takes this lease again.
+        st.cleaned = false;
         st.pageLease ??= session.acquirePage(i, 'render');
         st.pagePromise ??= st.pageLease.then(lease => lease.page);
         return st.pagePromise;
@@ -598,8 +600,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         findHighlights.setCurrent(hit ? findRanges.current.get(hit.page)?.ranges.get(findKey(hit)) : undefined);
     }, [findHighlights]);
     const publishFind = useCallback((hits: readonly PdfFindHit[], current?: PdfFindHit) => {
-        const changed = findHits.current !== hits;
+        const changed = findHits.current !== hits, previousPage = findCurrent.current?.page;
         findHits.current = hits; findCurrent.current = current;
+        if (previousPage !== current?.page) updateWindowRef.current?.();
         if (!visibleRef.current || !hits.length) { findHighlights.clear(); findRanges.current.clear(); findByPage.current.clear(); return; }
         if (changed || !findByPage.current.size) {
             findByPage.current.clear();
@@ -655,18 +658,6 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (!isVisible) { findHighlights.clear(); findRanges.current.clear(); findByPage.current.clear(); }
         else publishFind(findHits.current, findCurrent.current);
     }, [isVisible, findHighlights, publishFind]);
-    useEffect(() => {
-        const root = scrollRef.current;
-        if (!root) return;
-        const copy = (event: ClipboardEvent) => {
-            const selection = document.getSelection();
-            if (event.defaultPrevented || !selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode) || !event.clipboardData) return;
-            event.preventDefault(); event.clipboardData.setData('text/plain', normalizedCopy(selection.toString()));
-        };
-        root.addEventListener('copy', copy);
-        return () => root.removeEventListener('copy', copy);
-    }, []);
-
     /** Build the selectable-text overlay for one page. Geometry is stored in
      *  page-percentages and font sizes ride the --scale-factor CSS variable, so
      *  a text layer is built ONCE per page and zoom rescales it for free. */
@@ -676,11 +667,12 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const container = textElsRef.current[i];
         if (!container || !docStateRef.current || !visibleRef.current) return Promise.resolve();
         st.textStarted = true;
+        const token = {}; st.textToken = token;
         const gen = docGenRef.current;
         st.textPromise = (async () => {
             try {
                 const page = await getPage(i);
-                if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
+                if (docGenRef.current !== gen || st.textToken !== token || textElsRef.current[i] !== container) return;
                 if (!visibleRef.current) { st.textStarted = false; st.textPromise = undefined; return; }
                 const viewport = page.getViewport({ scale: 1 }), matrix = viewport.transform;
                 const spans: PdfFindTextSpan[] = []; st.textSpans = spans; st.textReady = false;
@@ -698,31 +690,33 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                             offset += item.str.length;
                             if (item.hasEOL) spans.push({ from: offset, to: ++offset, br: br++, x, y });
                         }
-                        rawFindProgress.current(i); output.enqueue(chunk);
+                        if (st.textToken === token) rawFindProgress.current(i);
+                        output.enqueue(chunk);
                     },
                 }));
                 const layer = new pdfjs.TextLayer({ textContentSource: source, container, viewport });
-                st.textDivs = layer.textDivs;
+                st.textTask = layer; st.textDivs = layer.textDivs;
                 textLayersRef.current.add(layer);
                 try {
-                    await layer.render();
-                    if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
+                    await session.health.guard(layer.render());
+                    if (docGenRef.current !== gen || st.textToken !== token || textElsRef.current[i] !== container) return;
                     remeasurePdfTextLayer(layer, viewport);
                     st.textBreaks = pdfFindBreaks(container); st.textReady = true;
                     if (visibleRef.current) { paintFindPage(i); paintFindCurrent(); }
                 } finally {
                     textLayersRef.current.delete(layer);
+                    if (st.textTask === layer) st.textTask = undefined;
                 }
             } catch (err) {
                 // Teardown mid-build (tab closed, document reloaded) cancels
                 // the stream — that's shutdown, not a failure.
-                if ((err as Error)?.name !== 'AbortException') {
+                if (st.textToken === token && !isClassicPdfCancellation(err)) {
                     console.error(`Could not build the text layer for PDF page ${i + 1}:`, err);
                 }
             }
         })();
         return st.textPromise;
-    }, [getState, getPage, paintFindPage, paintFindCurrent]);
+    }, [getState, getPage, paintFindPage, paintFindCurrent, session]);
 
     const waitFindLayout = useCallback((signal: AbortSignal, gen: number) => new Promise<void>((resolve, reject) => {
         const cleanup = () => { layoutWaiters.current.delete(wake); signal.removeEventListener('abort', wake); };
@@ -759,7 +753,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             if (rect.top < box.top || rect.bottom > box.bottom) el.scrollTop = Math.ceil(Math.max(L.tops[hit.page], el.scrollTop + rect.top - box.top - el.clientHeight / 3));
             if (rect.left < box.left || rect.right > box.right) el.scrollLeft += rect.left - box.left - el.clientWidth / 3;
             updateWindowRef.current?.(); paintFindPage(hit.page); paintFindCurrent();
-        } finally { if (pendingFind.current === request) pendingFind.current = undefined; }
+        } finally {
+            if (pendingFind.current === request) { pendingFind.current = undefined; updateWindowRef.current?.(); }
+        }
     }, [waitFindLayout, ensureText, approximateFind, filePath, findLayer, paintFindPage, paintFindCurrent]);
 
     /**
@@ -800,22 +796,30 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const renderThumbnail = useCallback(async (index: number, scale: number) => {
         const doc = docStateRef.current?.doc;
         if (!doc) throw new Error('The document is not open');
-        const lease = await session.acquirePage(index, 'thumbnail');
+        const lease = await session.acquireRender(index);
+        const canvas = document.createElement('canvas');
+        let task: RenderTask | undefined;
         try {
             const page = lease.page;
             const viewport = page.getViewport({ scale });
-            const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.ceil(viewport.width));
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const ctx = canvas.getContext('2d');
             if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
-            await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+            session.markRendered(index);
+            task = page.render({ canvas, canvasContext: ctx, viewport });
+            await session.health.guard(task.promise);
+            session.health.assertComplete(index);
             const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
             canvas.width = 0;
             canvas.height = 0;
             if (!blob) throw new Error('Could not encode a thumbnail');
             return URL.createObjectURL(blob);
-        } finally { lease.release(); }
+        } finally {
+            if (task) { task.cancel(); await task.promise.catch(() => {}); }
+            canvas.width = canvas.height = 0;
+            lease.release();
+        }
     }, [session]);
 
     /** 0-based pages at least partly inside the scroll box, from the layout —
@@ -874,13 +878,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         async capture(maxSide) {
             const el = scrollRef.current, L = layoutRef.current;
             if (!el || !L) return null;
+            const visible = visiblePageIndices();
+            if (!visible.length) return null;
             const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
             const top = el.scrollTop, left = el.scrollLeft;
             // Resume/zoom stand-ins may stay on screen, but are not current
             // pixels for a tool. A later request can capture the finished view.
-            for (const i of visiblePageIndices()) {
+            for (const i of visible) {
+                session.health.assertComplete(i);
                 const next: RenderTarget = { emphasis: preference, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
-                if (!satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
+                if (!canvasElsRef.current[i]?.width || !satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
             }
             const view = el.getBoundingClientRect();
             if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
@@ -926,6 +933,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
+            for (const i of visible) session.health.assertComplete(i);
             return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
                 && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
@@ -947,8 +955,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
             const gen = docGenRef.current;
-            const lease = await session.acquirePage(pageNumber - 1, 'agent');
+            const lease = await session.acquireRender(pageNumber - 1);
             let canvas: HTMLCanvasElement | undefined;
+            let task: RenderTask | undefined;
             try {
                 const page = lease.page;
                 const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
@@ -957,13 +966,18 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
-                await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+                session.markRendered(pageNumber - 1);
+                task = page.render({ canvas, canvasContext: ctx, viewport });
+                await session.health.guard(task.promise);
+                session.health.assertComplete(pageNumber - 1);
                 const output = canvas;
                 const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
+                session.health.assertComplete(pageNumber - 1);
                 return docGenRef.current === gen && docStateRef.current === ds ? png : null;
             } finally {
+                if (task) { task.cancel(); await task.promise.catch(() => {}); }
                 if (canvas) { canvas.width = 0; canvas.height = 0; }
                 lease.release();
             }
@@ -1004,7 +1018,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             }
             const lease = await session.acquire();
             try {
-                const dest = await resolveDestination(lease.document, target.dest, getPage);
+                const dest = await session.health.guard(resolveDestination(lease.document, target.dest, getPage));
                 if (dest) scrollToPage(dest.pageIndex, dest.offset);
             } finally { lease.release(); }
         } catch (err) {
@@ -1061,15 +1075,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const gen = docGenRef.current;
         st.linksPromise = (async () => {
             try {
-                const links = await readPageLinks(await getPage(i));
+                const links = await session.health.guard(readPageLinks(await getPage(i)));
                 if (docGenRef.current !== gen || linkElsRef.current[i] !== container) return;
                 for (const link of links) container.append(createLinkElement(link));
             } catch (err) {
-                console.error(`Could not read the links on PDF page ${i + 1}:`, err);
+                if (!isClassicPdfCancellation(err)) console.error(`Could not read the links on PDF page ${i + 1}:`, err);
             }
         })();
         return st.linksPromise;
-    }, [getState, getPage, createLinkElement]);
+    }, [getState, getPage, createLinkElement, session]);
 
     const emphasisWatch = useRef<{ index: number; release: () => void } | undefined>(undefined);
     useEffect(() => () => { emphasisWatch.current?.release(); emphasisWatch.current = undefined; }, [session]);
@@ -1104,16 +1118,19 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         try {
             while (visibleRef.current && !st.failed && st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
                 const target = st.want;
-                const current = () => docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
+                let retiring = false;
+                const current = () => !retiring && docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
                 let work: HTMLCanvasElement | undefined;
                 let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
                 let ownedTask: RenderTask | undefined;
                 let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
+                const controller = new AbortController();
+                st.renderAbort = controller;
                 st.rendering = target;
                 try {
                     await getPage(i);
                     if (st.rendered && (st.rendered.scale !== target.scale || st.rendered.dpr !== target.dpr)) session.emphasisVerdicts.yieldProbes();
-                    renderLease = await session.acquireRender(i);
+                    renderLease = await session.acquireRender(i, controller.signal);
                     const page = renderLease.page;
                     if (!current()) continue;
                     session.markRendered(i);
@@ -1154,6 +1171,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     display.drawImage(work, 0, 0);
                     placeCanvas(canvas, rect);
                     st.rendered = target;
+                    onPageRendered?.(i);
                     canvas.dataset.nativeEmphasis = String(!!emphasis);
                     canvas.dataset.emphasizedGlyphs = String(emphasis?.result.painted ?? 0);
                     if (shownPageRef.current === i) watchShown(i);
@@ -1172,15 +1190,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                         }
                     }
                 } catch (err) {
-                    const cancelled = err instanceof pdfjs.RenderingCancelledException || (err instanceof DOMException && err.name === 'AbortError');
-                    if (!cancelled && current()) {
+                    if (!isClassicPdfCancellation(err) && current()) {
                         st.failed = true;
-                        reportClassicPageRenderFailure(err, i);
+                        recordClassicRenderFailure(session.health, err, i);
                     }
                 } finally {
+                    retiring = true;
                     if (ownedTask) { ownedTask.cancel(); await ownedTask.promise.catch(() => {}); }
                     emphasis?.dispose();
                     renderLease?.release();
+                    if (st.renderAbort === controller) st.renderAbort = undefined;
                     if (st.renderTask === ownedTask) st.renderTask = undefined;
                     if (st.rendering === target) st.rendering = undefined;
                     if (work) { work.width = 0; work.height = 0; }
@@ -1197,9 +1216,10 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, session, watchShown]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, session, watchShown, onPageRendered]);
 
     const ensurePage = useCallback((i: number) => {
+        if (session.health.getSnapshot().some(issue => issue.incomplete && issue.pageIndex === i)) return;
         const L = layoutRef.current;
         const el = scrollRef.current;
         if (!L || !el || !visibleRef.current) return;
@@ -1226,7 +1246,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             return;
         }
         st.loopPromise = renderLoop(i, st);
-    }, [getState, renderLoop, ensureText, ensureLinks]);
+    }, [getState, renderLoop, ensureText, ensureLinks, session]);
 
     const evictPage = useCallback((i: number) => {
         const st = pageStatesRef.current.get(i);
@@ -1250,23 +1270,33 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      * the life of the document. This is exactly what pdf.js's own viewer does in
      * PDFPageView.destroy().
      *
-     * cleanup() self-guards — it no-ops while a render task is live or the
-     * operator list is still streaming — so it can't interrupt a paint, and it
-     * touches nothing the already-built text or link layers depend on.
+     * Text DOM follows the same wider window. A live selection/current find
+     * hit pins its layer: removing those spans would move the user's range.
      */
     const cleanupPage = useCallback((i: number) => {
-        const st = pageStatesRef.current.get(i);
-        if (!st || !st.pagePromise || st.cleaned || st.busy || st.wantRender) return;
+        const st = pageStatesRef.current.get(i), container = textElsRef.current[i];
+        if (!st || st.wantRender || findCurrent.current?.page === i || pendingFind.current?.hit.page === i ||
+            (container && document.getSelection()?.containsNode(container, true))) return;
+        const textPromise = st.textPromise;
+        st.textToken = undefined;
+        st.textTask?.cancel();
+        if (st.textTask) textLayersRef.current.delete(st.textTask);
+        st.textTask = undefined;
+        container?.replaceChildren();
+        st.textStarted = false; st.textPromise = undefined; st.textDivs = undefined;
+        st.textSpans = undefined; st.textBreaks = undefined; st.textReady = false;
+        findHighlights.clearPage(i); findRanges.current.delete(i);
+        if (!st.pagePromise || st.cleaned) return;
         const gen = docGenRef.current;
         st.cleaned = true;
         const held = st.pageLease;
-        void Promise.allSettled([st.textPromise, st.linksPromise]).then(async () => {
-            if (docGenRef.current !== gen || st.busy || st.wantRender || !st.cleaned) return;
+        void Promise.allSettled([st.loopPromise, textPromise, st.linksPromise]).then(async () => {
+            if (docGenRef.current !== gen || st.busy || st.wantRender || !st.cleaned || st.pageLease !== held) return;
             st.pageLease = undefined;
             st.pagePromise = undefined;
             (await held)?.release();
         }).catch(() => { /* teardown races — nothing to release */ });
-    }, []);
+    }, [findHighlights]);
 
     /**
      * Hand back everything this pane is holding while it is off screen, and
@@ -1294,8 +1324,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      * anything left from wherever the reader scrolled through. That is most of
      * what a hidden pane was holding.
      *
-     * The pdf.js page objects and the text layers stay either way, so ⌘F still
-     * works, and `updateWindow` refills the margin on the way in.
+     * The nearby page leases/text layers stay for quick return. Find uses the
+     * session's canonical index, not retained DOM; its scan stops while hidden.
+     * `updateWindow` refills the margin on the way in.
      */
     useEffect(() => {
         if (isVisible) {
@@ -1319,6 +1350,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     cancelPageRender(st);
                 }
             } else evictPage(i);
+            const st = pageStatesRef.current.get(i);
+            const held = st?.pageLease;
+            if (st && held) void Promise.allSettled([st.loopPromise, st.textPromise, st.linksPromise]).then(async () => {
+                if (visibleRef.current || st.pageLease !== held) return;
+                st.pageLease = undefined;
+                st.pagePromise = undefined;
+                (await held).release();
+            }).catch(() => {});
         }
     }, [isVisible, evictPage]);
 
@@ -1340,6 +1379,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
 
         // What is literally under the viewport, for the hide path below.
         onScreenRef.current = { first, last };
+        session.setVisible(true, first);
 
         const renderFrom = Math.max(0, first - RENDER_AHEAD);
         const renderTo = Math.min(n - 1, last + RENDER_AHEAD);
@@ -1379,14 +1419,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
-    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, watchShown]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, session, watchShown]);
     /** So the hide/show effect above can call the latest `updateWindow` without
      *  being re-created (and re-evicting) every time one of its deps moves. */
     const updateWindowRef = useRef(updateWindow);
     useEffect(() => { updateWindowRef.current = updateWindow; }, [updateWindow]);
 
     // This changes paint only. Do not re-anchor, rebuild TextLayer, or remount
-    // the retained viewer: selection, native find and the page camera stay put.
+    // the retained viewer: selection, app find and the page camera stay put.
     useLayoutEffect(() => { updateWindow(); }, [emphasisEnabled, updateWindow]);
 
     const scrollRafRef = useRef(0);
@@ -1644,7 +1684,37 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      * page box shows, so "this page" means the one under the top edge.
      */
     const rotate = useCallback((delta: number, onePage: boolean) => {
-        onRotate?.(delta, onePage ? shownPageRef.current : undefined);
+        const index = shownPageRef.current;
+        const canvas = canvasElsRef.current[index];
+        const page = layoutRef.current?.pages[index];
+        const rendered = pageStatesRef.current.get(index)?.rendered;
+        let picture: PdfRotationPicture | undefined;
+        if (canvas?.width && page && rendered) {
+            // A band is copied into its real place on a small page, not stretched
+            // to impersonate the whole page. No full-size raster is allocated.
+            const scale = Math.min(1, 768 / Math.max(page.w, page.h));
+            const base = document.createElement('canvas');
+            base.width = Math.max(1, Math.round(page.w * scale));
+            base.height = Math.max(1, Math.round(page.h * scale));
+            const ctx = base.getContext('2d');
+            const output = document.createElement('canvas');
+            output.width = base.height; output.height = base.width;
+            const rotated = output.getContext('2d');
+            if (ctx && rotated) {
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, base.width, base.height);
+                const rect = rendered.rect;
+                ctx.drawImage(canvas, (rect?.x ?? 0) * scale, (rect?.y ?? 0) * scale,
+                    (rect?.w ?? page.w) * scale, (rect?.h ?? page.h) * scale);
+                if (delta > 0) { rotated.translate(output.width, 0); rotated.rotate(Math.PI / 2); }
+                else { rotated.translate(0, output.height); rotated.rotate(-Math.PI / 2); }
+                rotated.drawImage(base, 0, 0);
+                try {
+                    picture = { page: index, dataUrl: output.toDataURL('image/jpeg', 0.78), width: output.width, height: output.height };
+                } catch { /* A preview must never prevent the actual file edit. */ }
+            }
+            base.width = base.height = output.width = output.height = 0;
+        }
+        onRotate?.(delta, onePage ? index : undefined, picture);
     }, [onRotate]);
     /** A turn of THIS file is being written. Shown on the buttons, never used
      *  to block them: a second click while one is pending queues a second
@@ -1683,9 +1753,23 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     }, [isActive, nudgeZoom, rotate]);
 
     useEffect(() => {
-        const root = rootRef.current;
-        return root ? bindPdfTextLayerSelection(root) : undefined;
-    }, []);
+        const root = scrollRef.current;
+        setCopyNotice(null);
+        if (!root || !isVisible) return;
+        return bindPdfTextLayerSelection(root, {
+            normalize: normalizedCopy,
+            selectionChanged: () => {
+                setCopyNotice(old => old?.startsWith('Copying ') ? old : null);
+                updateWindowRef.current?.();
+            },
+            copyAll: reader ? async signal => {
+                const cancelled = () => setCopyNotice(null);
+                signal.addEventListener('abort', cancelled, { once: true });
+                try { await copyPdfDocumentText(reader, signal, normalizedCopy, setCopyNotice); }
+                finally { signal.removeEventListener('abort', cancelled); }
+            } : undefined,
+        });
+    }, [reader, isVisible]);
 
     // A drag that starts on the page is a text selection, and must be able to
     // sweep straight across a link instead of stopping dead at its edge. Links
@@ -1710,33 +1794,6 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             window.removeEventListener('pointercancel', onPointerUp);
         };
     }, []);
-
-    // Build text layers for the whole document (bounded), so ⌘F finds matches
-    // on pages that were never scrolled into view. Sequential, with a yield
-    // between pages, so it never competes with the visible-page renders.
-    // Keyed on WHETHER a layout exists, never on the layout itself: `layout` is a
-    // fresh object on every zoom step and every container resize, which cancelled
-    // and restarted this 300-iteration pass (and its 300 setTimeout yields) each
-    // time. ensureText is idempotent so nothing was rebuilt, but a single pinch
-    // commit scheduled hundreds of pointless macrotasks. This boolean flips false
-    // → true once per document and then stays put.
-    const hasLayout = layout !== null;
-    // ...and not while the pane is hidden. Up to 300 TextLayer.render calls,
-    // each with a worker round trip, were still running after the reader had
-    // switched to a whiteboard — which is exactly when tldraw is mounting and
-    // wants the main thread. It resumes where it left off when the pane comes
-    // back, and `ensureText` is idempotent, so nothing is redone.
-    useEffect(() => {
-        if (!docState || !hasLayout || !isVisible || docState.dims.length > TEXT_EAGER_LIMIT) return;
-        let cancelled = false;
-        (async () => {
-            for (let i = 0; i < docState.dims.length && !cancelled; i++) {
-                await ensureText(i);
-                await new Promise(r => setTimeout(r, 0));
-            }
-        })();
-        return () => { cancelled = true; };
-    }, [docState, hasLayout, isVisible, ensureText]);
 
     /**
      * The page boxes — one per page, built ONCE per layout.
@@ -1779,13 +1836,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             {/* Above the text layer, or its links could never be clicked; see
                 .pdf-selecting. */}
             <div className="pdf-link-layer" ref={pageRef('link', i)} />
+            {pageRenderIssues.has(i) && <PdfRenderNotice
+                issue={pageRenderIssues.get(i)!} page
+                onRetry={onRetry} retryDisabled={retryDisabled} />}
         </div>
-    )) : null), [layout, docState, pageRef]);
+    )) : null), [layout, docState, pageRef, pageRenderIssues, onRetry, retryDisabled]);
 
     if (error) {
         return (
             <div className="pdf-viewer" ref={rootRef}>
-                <div className="pdf-pane-message">Could not display this PDF: {error}</div>
+                <div className="pdf-pane-message">PDF rendering is unavailable.</div>
             </div>
         );
     }
@@ -1814,6 +1874,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     ref={thumbsRef}
                     sizes={thumbSizes}
                     renderThumbnail={renderThumbnail}
+                    failedPages={failedThumbnailPages}
                     onSelect={scrollToPage}
                     initialPage={thumbsStart}
                 />
@@ -1843,6 +1904,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             </div>
             {layout && (
                 <div className="pdf-viewer-controls">
+                    {copyNotice && <span className="pdf-native-emphasis-notice pdf-copy-notice" role="status">{copyNotice}</span>}
                     {emphasisEnabled && nativeNotice && <span className="pdf-native-emphasis-notice" role="status">{nativeNotice}</span>}
                     <div className="pdf-viewer-pill">
                         <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />

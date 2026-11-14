@@ -309,6 +309,13 @@ export function prepareMutationForApply(board: BoardDoc, op: ModelOp, extAfter?:
         case 'board': return boardPlan(doc, op, extAfter);
         case 'media':
             if (op.op === 'add') { const entry = op.entry; return { write() { doc.media.set(entry.id, entry); } }; }
+            if (op.op === 'set-file') {
+                const entry = required(doc.media.get(op.id), 'Media file target vanished');
+                const ext = extAfter === undefined ? entry.ext : extAfter;
+                if (entry.file === op.file && entry.ext === ext) return undefined;
+                const next = { ...entry, file: op.file, ext };
+                return { write() { doc.media.set(op.id, next); } };
+            }
             required(doc.media.get(op.id), 'Media drop target vanished');
             return { write() { doc.media.delete(op.id); } };
         case 'sheet':

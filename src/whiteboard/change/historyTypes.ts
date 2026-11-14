@@ -34,8 +34,10 @@ export interface HistoryPorts {
     restoreSelection(snapshot: HistorySnapshot): void;
     /** The pane's existing CameraController owns the pan; history stores no camera. */
     revealTouched(ids: ReadonlySet<NodeId>): void;
-    /** Undo/redo apply projects media through the session's MediaLocations; rollback stays exact. */
+    /** Undo/redo apply projects media through the session's MediaLocations. */
     apply(transaction: Transaction): Applied;
+    /** ApplyController.revert: latest receipts, newest first, exact and without projection. */
+    revert(receipts: readonly Applied[]): Applied;
     retainMedia(id: MediaId): HistoryLease;
     retainSample(ref: SampleRef): HistoryLease;
     sampleBytes(ref: SampleRef): number;

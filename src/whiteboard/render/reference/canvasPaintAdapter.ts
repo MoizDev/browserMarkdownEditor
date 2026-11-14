@@ -142,7 +142,7 @@ export function createCanvasPaintAdapter(
         }
         if (item.kind === 'image') {
             requestImage(s, item.imageKey);
-        } else {
+        } else if (item.kind !== 'text') {
             const itemScale = scaleFor(item, s.scale);
             const key = `${item.kind}:${item.geometryKey}:${item.kind === 'ink' ? itemScale : ''}`;
             const cached = s.geometry.get(key) ?? (presented && sameToken(s.frame, presented.frame) ? presented.geometry.get(key) : undefined);

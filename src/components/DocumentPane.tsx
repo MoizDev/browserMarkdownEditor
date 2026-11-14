@@ -598,9 +598,9 @@ interface DocumentPaneProps {
     onRevealHandled: () => void;
 }
 
-function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined }) {
+function TexDocument({ store, documentId, path, contentOf, initial }: { store: DocumentBufferStore; documentId: string; path: string; contentOf(path: string): string | undefined; initial: string }) {
     useDocumentRevision(store, documentId);
-    return <TexView source={contentOf(path) ?? ''} />;
+    return <TexView source={contentOf(path) ?? initial} />;
 }
 
 /**
@@ -784,7 +784,7 @@ function DocumentPane({
         if (isCanvas || unreadable) return;
         const text = () => {
             const view = viewRef.current;
-            return view ? docString(view.state.doc) : contentOf(path) ?? '';
+            return view ? docString(view.state.doc) : contentOf(path) ?? tabRef.current.content;
         };
         return registerView(path, {
             kind: 'markdown',
@@ -793,7 +793,7 @@ function DocumentPane({
                 const { mode: tabMode, dirty } = tabRef.current;
                 if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
                 // Between the pane's mount and its view (a frame at most).
-                const content = contentOf(path) ?? '';
+                const content = contentOf(path) ?? tabRef.current.content;
                 const state = EditorState.create({ doc: content });
                 return {
                     kind: 'markdown', mode: tabMode, text: content, lineCount: state.doc.lines,
@@ -1092,7 +1092,7 @@ function DocumentPane({
         const keyboardBefore = document.activeElement;
         buildingViewRef.current = true;
         try {
-            const initial = contentOf(path) ?? '';
+            const initial = contentOf(path) ?? tab.content;
             const view = new EditorView({ state: cached ?? createTabState(initial), parent: node });
             viewRef.current = view;
             // KaTeX is fetched on demand (editor/mathWidget.ts). Start it the
@@ -1510,7 +1510,7 @@ function DocumentPane({
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
-                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} />
+                        <TexDocument store={documentBuffers} documentId={tab.id} path={path} contentOf={contentOf} initial={tab.content} />
                     </div>
                 )}
                 {!isCanvas && !unreadable && !texReading && (

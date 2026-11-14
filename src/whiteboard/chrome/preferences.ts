@@ -46,8 +46,14 @@ export class BoardPreferenceState {
     setView<K extends keyof BoardViewFlags>(key: K, value: BoardViewFlags[K]): void {
         if (this.snapshot.view[key] === value) return;
         const view = { ...this.snapshot.view, [key]: value };
-        this.snapshot = { ...this.snapshot, view };
         this.persistView(view);
+        this.reconcileView(view);
+    }
+
+    /** Keyboard commands and other panes can change file view flags independently. */
+    reconcileView(view: BoardViewFlags): void {
+        if ((Object.keys(view) as (keyof BoardViewFlags)[]).every(key => this.snapshot.view[key] === view[key])) return;
+        this.snapshot = { ...this.snapshot, view: { ...view } };
         this.notify();
     }
 

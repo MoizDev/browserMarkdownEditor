@@ -1732,6 +1732,58 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return job;
     }, [boardAssetGuard, findBoardAsset, withMutation]);
 
+    const keepConversionBackup = useCallback((request: BoardAssetAccess & { blob: Blob }): Promise<TrashItem> => {
+        const activation = vaultActivationRef.current;
+        const job = garbageCopyQueueRef.current.then(() => withMutation(async () => {
+            const check = () => {
+                request.signal.throwIfAborted();
+                if (activation !== vaultActivationRef.current || request.root !== rootHandleRef.current || !request.isCurrent()) {
+                    throw new DOMException('Board session ended', 'AbortError');
+                }
+            };
+            const checkSource = async () => {
+                check();
+                await boardAssetGuard(request, activation);
+                const file = await request.owner.getFile();
+                check();
+                if (await fingerprintSnapshot(file, request.signal) !== request.hash) throw new Error('The conversion source changed');
+                check();
+            };
+            await boardAssetGuard(request, activation);
+            if (await fingerprintSnapshot(request.blob, request.signal) !== request.hash) throw new Error('Conversion backup does not match the source');
+            await checkSource();
+            const parentPath = await request.root.resolve(request.parent);
+            check();
+            if (!parentPath) throw new Error('Board folder is outside the vault');
+            const garbage = await request.parent.getDirectoryHandle(TRASH_DIR, { create: true });
+            check();
+            const name = await freeEntryName(garbage, request.owner.name);
+            check();
+            const handle = await garbage.getFileHandle(name, { create: true });
+            check();
+            const output = await handle.createWritable();
+            try {
+                await output.write(request.blob);
+                check();
+                await output.close();
+            } catch (error) { await output.abort().catch(() => {}); throw error; }
+            // A completed backup is retained even if the source or activation
+            // changes before this proof finishes.
+            await checkSource();
+            const backup = await handle.getFile();
+            check();
+            if (await fingerprintSnapshot(backup, request.signal) !== request.hash) throw new Error('Conversion backup verification failed');
+            await checkSource();
+            const restorePath = parentPath.join('/');
+            const sourcePath = joinVaultPath(joinVaultPath(restorePath, TRASH_DIR), name);
+            return { id: sourcePath, name, kind: 'file' as const, origin: 'trashed' as const, sourcePath, handle,
+                parentHandle: garbage, restorePath, restoreDirHandle: request.parent,
+                deletedAt: backup.lastModified, size: backup.size };
+        }));
+        garbageCopyQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, withMutation]);
+
     const restoreConversionCopy = useCallback((request: BoardAssetAccess, item: TrashItem) => {
         const activation = vaultActivationRef.current;
         const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
@@ -2812,6 +2864,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,
     }), [
@@ -2864,6 +2917,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,
     ]);

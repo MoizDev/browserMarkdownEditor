@@ -279,7 +279,7 @@ third-party code included (normally "none") · date.
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; scale-aware boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 | `geom/polylineTypes.ts` | lane w-h | F-LINE-001/003 | geometry §§1, 9 | Model and geometry type contracts; no tldraw source | none | 2026-11-13 |
-| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
+| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/heads.ts` | lane w-h | F-CONN-001, WB-D20, E-GEO-5/25 | geometry §8.3 | Independent head recipes, shared width metric and certified arc conversion; no tldraw source | none | 2026-11-13 |
 | `geom/connectors.ts` | lane w-h | F-CONN-001, E-GEO-5/6 | geometry §8.2 | Signed-sagitta circle construction and shared certified arc conversion from design; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |

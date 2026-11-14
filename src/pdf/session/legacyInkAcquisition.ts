@@ -76,7 +76,8 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         original = openedOriginal; guard();
         if (original.source !== 'original' || original.docKey !== pdfDocKey({ ...token, source: 'original' })) throw new Error('Invalid original PDF lease');
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime }); guard();
-        if (originalInspection.kind !== 'plain' || originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
+        if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' ||
+            originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
             return await refused('The retained pristine PDF does not match the inspected source.');
         }
         const originalPolicy = policy(original); if (originalPolicy) return await refused(originalPolicy);

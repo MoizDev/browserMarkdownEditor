@@ -505,12 +505,16 @@ export default function App() {
     if (kind === 'unavailable') setIndexUnavailable(true);
     setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);
+  const [indexStartupActivation, setIndexStartupActivation] = useState<number | null>(null);
+  const indexRestoreSettled = useCallback(() => {
+    if (getVaultActivation() === searchActivation) setIndexStartupActivation(searchActivation);
+  }, [getVaultActivation, searchActivation]);
   const reportIndexTimes = useCallback((changes: [string, number, number][], complete: boolean) => {
     stampIndexedFileTimes(changes);
     if (complete) markIndexTimesReady();
   }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
-    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
+    getActivation: getVaultActivation, autoStart: indexStartupActivation === searchActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
     publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
@@ -1068,6 +1072,15 @@ export default function App() {
    * Replace update it synchronously beside their own tab fix-ups.
    */
   const restorePendingRef = useRef<PendingRestore | null>(null);
+  useEffect(() => {
+    if (!rootHandle) return;
+    // A failed vault-id write can prevent any restore claim; do not leave that
+    // vault without an index forever. A restore already reading owns its release.
+    const timer = setTimeout(() => {
+      if (sessionRootRef.current !== rootHandle && !restoringRef.current) indexRestoreSettled();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [rootHandle, indexRestoreSettled]);
   /**
    * Every rename, move, trash and bin Replace still RUNNING, from its first
    * filesystem call to the end of its tab fix-up. Each is copy → removeEntry →
@@ -3298,7 +3311,10 @@ export default function App() {
     // that has not landed). That is why the switch effect re-points the id ref
     // at the vault being LEFT rather than leaving it on the last claim; see
     // there for what went wrong when it did not.
-    if (!fileTree || fileTree.length === 0) return;
+    if (!fileTree || fileTree.length === 0) {
+      if (rootHandle && !isLoading) indexRestoreSettled();
+      return;
+    }
     // Both halves must have moved on: see sessionRootRef's note above. Equal on
     // either one means this commit is mid-switch (openVaultHandle commits the
     // tree before recordVault sets the id) or this vault has already been
@@ -3386,7 +3402,7 @@ export default function App() {
     // tabs for one document — restoreLayout dedupes the layout, not the tabs.
     const paths = stored ? [...new Set(stored.paths)] : [];
     if (linkedNode && !paths.includes(linkedNode.path)) paths.push(linkedNode.path);
-    if (paths.length === 0) return;
+    if (paths.length === 0) { indexRestoreSettled(); return; }
 
     // Persistence stays shut from here until the merge is dispatched — see
     // restoringRef. Released in `finally` too, so no exit leaves it shut.
@@ -3653,9 +3669,10 @@ export default function App() {
         // this lands in the merge's batch, so the writer sees the note active
         // and nothing pending in one commit — no flash of the bare vault.
         if (linkedNode) setPendingLinkFile(null);
+        indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable

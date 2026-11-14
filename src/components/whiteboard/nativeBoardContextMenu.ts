@@ -6,6 +6,7 @@ import { translateBoard } from '../../whiteboard/chrome/language';
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import type { NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
+import type { KeyboardContextRequest } from '../../whiteboard/viewer/keyboardContext';
 import { contextEntries, type BoardCommand, type BoardCommandSource } from './chrome/boardCommands';
 import { localizeBoardChrome } from './chrome/localize';
 
@@ -21,11 +22,10 @@ export function createNativeBoardContextMenu(options: {
     readonly notice: (message: string) => void;
 }) {
     const { runtime } = options, session = runtime.session, backend = createPageMoveBackend(runtime);
-    return (event: MouseEvent) => {
-        event.preventDefault();
-        const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
-        if (!(opener instanceof HTMLElement) || !options.current()) return;
+    const openAt = (point: { x: number; y: number }, opener: HTMLElement, expected?: KeyboardContextRequest['selection']) => {
+        if (!options.current()) return;
         const selection = runtime.selection.getSnapshot(), revision = session.doc.rev;
+        if (expected && expected !== selection) return;
         const same = () => options.current() && session.doc.rev === revision && runtime.selection.getSnapshot() === selection;
         const safeRun = (id: BoardCommand) => {
             if (!same()) { options.notice('The selection changed; open the menu again.'); return; }
@@ -60,7 +60,15 @@ export function createNativeBoardContextMenu(options: {
                 if (!same() || !options.canWrite()) throw new Error('The board view or selection changed');
                 backend.moveToPage(id);
             } };
-        openContextMenu({ x: event.clientX, y: event.clientY, label: 'Board', opener,
+        openContextMenu({ x: point.x, y: point.y, label: 'Board', opener,
             lang: lang.locale, dir: lang.table.dir, entries: contextEntries(source) });
+    };
+    return {
+        pointer(event: MouseEvent) {
+            event.preventDefault();
+            const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
+            if (opener instanceof HTMLElement) openAt({ x: event.clientX, y: event.clientY }, opener);
+        },
+        keyboard(request: KeyboardContextRequest) { openAt(request.client, request.opener, request.selection); },
     };
 }

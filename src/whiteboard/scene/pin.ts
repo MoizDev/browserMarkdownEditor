@@ -76,10 +76,12 @@ export function createSceneSnapshot(options: {
         const index = new SceneCellIndex();
         try {
             const stack: Iterator<import('../model/nodes').Node>[] = [records.children(sheetId)[Symbol.iterator]()];
+            // A build is whole-sheet work, so its slices are sized for throughput: 2048 nodes or 4 ms, never
+            // one host task per 64 nodes, which would make a million-node index spend most of its time yielding.
             let visited = 0, started = performance.now();
             while (stack.length) {
                 check();
-                if (++visited >= 64 || performance.now() - started >= 0.25) {
+                if (++visited >= 2048 || performance.now() - started >= 4) {
                     await cooperateSlice(); check(); visited = 0; started = performance.now();
                 }
                 const next = stack[stack.length - 1].next();

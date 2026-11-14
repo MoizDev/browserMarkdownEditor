@@ -10,6 +10,8 @@ export interface PointerRouterOptions<Context> {
   readonly router: InputRouter<Context>
   readonly mac: boolean
   readonly current: () => boolean
+  claim(): boolean
+  releaseClaim(): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<Context> | null
   ended(reason: FinishReason): void
   hover?(event: PointerEvent): void
@@ -29,22 +31,25 @@ export class PointerRouter<Context> {
       down: (sample, modifiers, event) => {
         if (!options.current()) return false
         const route = options.resolve(sample, modifiers, event)
-        if (!route || !options.router.begin(options.token, route.tool, sample, modifiers, route.context)) return false
-        this.pointerId = sample.pointerId
-        return true
+        if (!route || !options.claim()) return false
+        try {
+          if (!options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
+          this.pointerId = sample.pointerId
+          return true
+        } catch (error) { options.releaseClaim(); throw error }
       },
       move: (id, samples, modifiers) => { if (options.current()) options.router.update(options.token, id, samples, modifiers) },
       up: (id, samples, modifiers) => {
         if (this.pointerId !== id || !options.current()) return
         options.router.update(options.token, id, samples, modifiers)
         this.pointerId = null
-        try { options.router.finish(options.token, id, 'up') } finally { options.ended('up') }
+        try { options.router.finish(options.token, id, 'up') } finally { options.releaseClaim(); options.ended('up') }
       },
       cancel: (id, reason) => {
         if (this.pointerId !== id) return
         this.pointerId = null
         const end = reason === 'capture-lost' ? 'capture-lost' : 'os-cancel'
-        try { options.router.interrupt(options.token, 'os-cancel') } finally { options.ended(end) }
+        try { options.router.interrupt(options.token, 'os-cancel') } finally { options.releaseClaim(); options.ended(end) }
       },
       hover: event => options.hover?.(event),
       prediction: (id, event) => options.prediction?.(id, event),
@@ -58,11 +63,11 @@ export class PointerRouter<Context> {
     if (this.options.current() && this.pointerId !== null) this.options.router.update(this.options.token, this.pointerId, [], modifiers)
   }
   discardPreview(): void {
-    if (this.options.router.discardPreview(this.options.token)) { this.pointerId = null; this.options.ended('os-cancel') }
+    if (this.options.router.discardPreview(this.options.token)) { this.pointerId = null; this.options.releaseClaim(); this.options.ended('os-cancel') }
   }
   interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
     const ended = this.options.router.interrupt(this.options.token, reason)
-    if (ended) { this.pointerId = null; this.options.ended(reason) }
+    if (ended) { this.pointerId = null; this.options.releaseClaim(); this.options.ended(reason) }
     return ended
   }
   dispose(): void {

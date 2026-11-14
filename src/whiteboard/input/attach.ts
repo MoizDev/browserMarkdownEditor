@@ -48,17 +48,19 @@ export interface BoardInputServices {
   error(error: unknown): void
   contextMenu?(event: MouseEvent): void
   bindPenMode?(exit: () => void): Detach
-  cancelPendingGestures?(): void
+  penModeChanged?(enabled: boolean): void
+  clearLatches(): void
+  cancelPendingGestures(): void
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
-const attachedSession = new WeakMap<BoardSession, Detach>()
+const gestureOwner = new WeakMap<BoardSession, symbol>()
 
 // View generations own listeners only. The session owns history, gesture queue and
 // tool choice; replacing a view first flushes its prefix, then installs a new one.
 export function attachBoardInput(view: BoardInputView, session: BoardSession, services: BoardInputServices, mode: BoardInputMode): Detach {
-  attachedSession.get(session)?.()
   attached.get(view.surface)?.()
+  const owner = Symbol('board-input-view')
   let live = true
   const current = () => live && view.visible() && view.current(view.token)
   const editable = () => mode === 'edit' && !session.isReadOnly
@@ -79,6 +81,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
+    claim() {
+      if (gestureOwner.has(session) || session.isGestureActive) return false
+      gestureOwner.set(session, owner)
+      return true
+    },
+    releaseClaim() { if (gestureOwner.get(session) === owner) gestureOwner.delete(session) },
     resolve(sample, modifiers, event) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
       start = services.tools.getSnapshot()
@@ -106,7 +114,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cancelTouchPreview: () => { if (activeSource === 'touch') pointer.discardPreview() },
     endTouchCamera: services.cameraChanged,
     changed: services.cameraChanged,
-    penModeChanged: enabled => { services.commands.run(enabled ? 'penMode.enter' : 'penMode.exit', new KeyboardEvent('keydown')) },
+    penModeChanged: enabled => services.penModeChanged?.(enabled),
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
@@ -140,10 +148,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.commands.run('pan.release', new KeyboardEvent('keyup')); services.commands.run('zoom.release', new KeyboardEvent('keyup')) },
+    clearLatches: () => { router.resumeInk(view.token); services.clearLatches() }
     run(id, event) {
       if (!current()) return false
-      if (id === 'escape') { services.cancelPendingGestures?.(); if (pointer.interrupt('escape')) return true }
+      if (id === 'escape') { services.cancelPendingGestures(); if (pointer.interrupt('escape')) return true }
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
@@ -158,7 +166,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       }
       if (id === 'pan.release') router.resumeInk(view.token)
       if (id.startsWith('tool.') && editable()) {
-        services.cancelPendingGestures?.()
+        services.cancelPendingGestures()
         const tool = id.slice(5)
         if (services.tools.getRegistration(tool)) { services.tools.setTool(tool); return true }
       }
@@ -170,7 +178,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const snapshot = services.tools.getSnapshot()
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
-      services.cancelPendingGestures?.()
+      services.cancelPendingGestures()
       pointer.interrupt('flush')
     }
     if (current()) view.a11y.toolState(snapshot)
@@ -179,7 +187,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   updateMirror()
   const detach = () => {
     if (!live) return
-    services.cancelPendingGestures?.()
+    services.cancelPendingGestures()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('pointerdown', down, true)
@@ -188,9 +196,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointercancel', up, true)
     stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopMirror(); stopWet()
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
-    if (attachedSession.get(session) === detach) attachedSession.delete(session)
+    if (gestureOwner.get(session) === owner) gestureOwner.delete(session)
   }
   attached.set(view.surface, detach)
-  attachedSession.set(session, detach)
   return detach
 }

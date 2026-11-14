@@ -10,8 +10,8 @@ import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 
-/** Until a real GPU executor exists the pane must select its Canvas2D backend. */
-export const BOARD_BACKEND_PREFERENCE = 'canvas2d' as const;
+/** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
+export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
 export interface BoardLayersOptions {
     readonly frames: PaintFrameAssembler;
     readonly images: PaintImageProvider;
@@ -131,6 +131,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
         if (!adapter) {
             allocatorHost = host;
+            options.frames.bindMemory?.(host.allocator.cpu);
             adapter = createCanvasPaintAdapter({ frames: options.frames, images: options.images,
                 invalidate: () => activeHost()?.invalidate('board-resource') },
             (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
@@ -214,7 +215,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 releaseGpu(reason) { clearResources(reason); },
                 memory() {
                     const extra = gpu?.memory();
-                    return allocatorHost === host ? { gpuBytes: extra?.gpuBytes ?? 0, cpuBytes: reserved + (extra?.cpuBytes ?? 0) }
+                    return allocatorHost === host ? { gpuBytes: extra?.gpuBytes ?? 0, cpuBytes: reserved + (options.frames.memoryBytes?.() ?? 0) + (extra?.cpuBytes ?? 0) }
                         : { gpuBytes: 0, cpuBytes: 0 };
                 },
                 needsFrame() {
@@ -230,7 +231,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!hosts.size) {
                         disposed = true; gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
                         options.frames.clear(); known.clear(); presented = null;
-                    } else if (!allocatorHost) allocatorHost = activeHost()!;
+                    } else if (!allocatorHost) {
+                        allocatorHost = activeHost()!;
+                        options.frames.bindMemory?.(allocatorHost.allocator.cpu);
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report);
+                    }
                 },
             };
             return layer;
@@ -239,7 +244,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         cpuWorkingSet() {
             const upcoming = estimate && !reservations.has(estimate.frame) ? estimate.bytes : 0;
             const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
-            return { mandatoryBytes: hosts.get(band) === allocatorHost ? reserved + upcoming + scratch : 0, prefetchBytes: 0 };
+            return { mandatoryBytes: hosts.get(band) === allocatorHost
+                ? reserved + upcoming + scratch + (options.frames.cpuWorkingSet?.() ?? 0) : 0, prefetchBytes: 0 };
         },
         critical() { return !adapter?.readyFrame(); },
         coverage(layer, frame, backend) {

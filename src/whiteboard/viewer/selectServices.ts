@@ -46,7 +46,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
     let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
     let guides: readonly BoardSnapGuide[] = [];
-    let warmedRevision = -1, warmed = new Set<NodeId>();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && !session.isReadOnly;
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
@@ -128,10 +127,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             check(signal); const revision = doc.rev;
             const point = { x: sample.x, y: sample.y }, input = sample.source === 'keyboard' ? 'mouse' : sample.source;
             const id = await options.point.hit(point, input, signal); check(signal);
-            const ids = new Set(runtime.selection.getSnapshot().selected); if (id) ids.add(id);
-            await render.prepareChangeGeometry(ids, signal); check(signal);
-            if (doc.rev !== revision) throw new DOMException('Board changed during selection preflight', 'AbortError');
-            warmedRevision = revision; warmed = ids;
+            if (doc.rev !== revision) throw new DOMException('Board changed during selection query', 'AbortError');
             return id;
         },
         async region(region, signal) {
@@ -142,9 +138,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 points: [{ x: a.x, y: a.y }, { x: b.x, y: a.y }, { x: b.x, y: b.y }, { x: a.x, y: b.y }] }, signal);
         },
         preview(value) { regionPreview = value; if (!value) previewIds.clear(); requestFrame(); },
-        beginTransform(sample, hit, modifiers) {
+        beginTransform(sample, _hit, modifiers) {
             check(); const ids = runtime.selection.getSnapshot().selected, revision = doc.rev;
-            if (warmedRevision !== revision || !warmed.has(hit) || ids.some(id => !warmed.has(id))) throw new Error('Selection geometry is not preflighted');
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
                 zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
                 hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,

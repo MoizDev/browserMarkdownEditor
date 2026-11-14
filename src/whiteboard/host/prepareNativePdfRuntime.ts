@@ -237,7 +237,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                     }, pinPdf: build.pinPdf } });
                     releaseCreators(); acquired?.dispose();
                     transferred = true;
-                    return { board: owned.board, sources, dispose: close };
+                    return { board: owned.board, runtime: owned.runtime, sources, dispose: close };
                 } catch (error) {
                     try { journal?.dispose(); } finally { void close(); }
                     throw error;

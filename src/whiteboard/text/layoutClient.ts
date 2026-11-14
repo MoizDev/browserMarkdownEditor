@@ -4,6 +4,19 @@ import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import type { Face, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 
+function layoutClass(request: TextLayoutRequest): string {
+    let text = '', styles = 0;
+    for (const block of request.text.blocks) {
+        for (const run of block.runs) {
+            text += run.text;
+            styles |= (run.marks.b ? 1 : 0) | (run.marks.i ? 2 : 0) | (run.marks.code ? 4 : 0);
+        }
+    }
+    const scripts = [/\p{Script=Latin}/u, /\p{Script=Arabic}/u, /\p{Script=Hebrew}/u, /\p{Script=Han}/u,
+        /\p{Script=Devanagari}/u, /\p{Script=Thai}/u, /\p{Extended_Pictographic}/u];
+    return JSON.stringify([request.style.font, styles, scripts.map(script => script.test(text))]);
+}
+
 export interface LayoutProduct {
     readonly paint: TextPaint;
     readonly measurement: TextMeasurement;
@@ -32,10 +45,11 @@ export class TextLayoutClient {
     private readonly versions = new Map<string, number>();
     private readonly pending = new Map<string, AbortController>();
     private readonly unsubscribe: (() => void)[] = [];
-    private compatibility: 'unknown' | 'matching' | 'different' = 'unknown';
+    private readonly compatibleClasses = new Set<string>();
+    private different = false;
     private epoch = 0;
     constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
-        const changed = (key: FontKey) => { this.compatibility = 'unknown'; onFontArrival?.(key); };
+        const changed = (key: FontKey) => { this.compatibleClasses.clear(); this.different = false; onFontArrival?.(key); };
         this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
             if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
@@ -79,7 +93,8 @@ export class TextLayoutClient {
         const current = () => !controller.signal.aborted && this.epoch === epoch && this.versions.get(node) === version && isCurrent(identity);
         try {
         let workerProduct: LayoutProduct | undefined;
-        if (this.worker && this.compatibility !== 'different') {
+        const kind = layoutClass(request);
+        if (this.worker && !this.different) {
             try {
                 const [, product] = await Promise.all([
                     this.main.prepare(request),
@@ -88,16 +103,16 @@ export class TextLayoutClient {
                 workerProduct = product;
             } catch {
                 if (!current()) return null;
-                this.compatibility = 'different';
+                this.different = true;
             }
         }
         if (!current()) return null;
-        if (workerProduct && this.compatibility === 'unknown') {
+        if (workerProduct && !this.compatibleClasses.has(kind)) {
             const mainProduct = this.onMain(request);
-            this.compatibility = matches(mainProduct, workerProduct) ? 'matching' : 'different';
-            if (this.compatibility === 'different') return mainProduct;
+            if (!matches(mainProduct, workerProduct)) { this.different = true; return mainProduct; }
+            this.compatibleClasses.add(kind);
         }
-        if (workerProduct && this.compatibility === 'matching') return workerProduct;
+        if (workerProduct && !this.different) return workerProduct;
         await new Promise<void>(resolve => setTimeout(resolve, 0));
         if (!current()) return null;
         await this.main.prepare(request).catch(() => {});

@@ -3,7 +3,8 @@ import type { BoardDoc, BoardDocInput } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { createLoadedBoardDoc } from '../model/loadDocument';
 import { boardPageStack } from '../model/pages';
-import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintNode, PaintNodeSource } from '../render/paintStream';
+import type { ScenePaintNodeStream } from '../render/scenePaintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import { BoundsQuality, validBox } from './bounds';
 import { createPinnedPaintDoc } from './paintDoc';
@@ -41,6 +42,7 @@ export function createSceneSnapshot(options: {
     occupiedBounds?: SceneOccupiedBounds | null;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
+    prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => ScenePaintNodeStream;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
 }): SceneSnapshot {
@@ -55,6 +57,7 @@ export function createSceneSnapshot(options: {
         ? Object.freeze({ revision, bounds: Object.freeze([...supplied.bounds] as [number, number, number, number]) }) : null;
     let released = false, building: Promise<BoardDoc> | undefined, paintDoc: BoardDoc | undefined, closing: Promise<void> | undefined;
     const inFlight = new Set<Promise<unknown>>();
+    const streams = new Set<() => Promise<void>>();
     const check = () => { if (released || controller.signal.aborted) throw cancelled(); };
     const track = <T,>(promise: Promise<T>): Promise<T> => {
         inFlight.add(promise);
@@ -86,6 +89,52 @@ export function createSceneSnapshot(options: {
                 stack.push(records.children(node.id)[Symbol.iterator]());
             }
         }
+    };
+    const copyRequest = (request: ScenePaintRequest): ScenePaintRequest => Object.freeze({ ...request,
+        ...(request.world ? { world: Object.freeze({ ...request.world }) } : {}),
+        ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}) });
+    const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController): ScenePaintNodeStream => {
+        let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
+        const close = (): Promise<void> => {
+            if (closePromise) return closePromise;
+            closePromise = Promise.resolve().then(async () => {
+                local.abort(cancelled());
+                const pending = next;
+                const retiring = Promise.resolve().then(() => source.release());
+                const [result] = await Promise.allSettled(pending ? [retiring, pending] : [retiring]);
+                if (result.status === 'rejected') throw result.reason;
+                signal.removeEventListener('abort', abort);
+                streams.delete(close);
+            });
+            return closePromise;
+        };
+        const abort = () => { void close().catch(error => { try { options.onError?.(error); } catch { /* Preserve retirement failure. */ } }); };
+        streams.add(close);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+        return {
+            token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
+            async next() {
+                if (closePromise) throw cancelled();
+                signal.throwIfAborted();
+                if (next) throw new Error('Scene paint stream is sequential');
+                const pending = Promise.resolve().then(() => source.next());
+                next = pending;
+                try {
+                    const node = await pending;
+                    if (next === pending) next = undefined;
+                    signal.throwIfAborted();
+                    if (closePromise) throw cancelled();
+                    if (node === null) await close();
+                    return node;
+                } catch (error) {
+                    if (next === pending) next = undefined;
+                    try { await close(); } catch (cleanupError) { try { options.onError?.(cleanupError); } catch { /* Preserve the original failure. */ } }
+                    throw error;
+                }
+            },
+            release: close,
+        };
     };
     const document = (): Promise<BoardDoc> => {
         check();
@@ -124,25 +173,50 @@ export function createSceneSnapshot(options: {
         async paintSource(request, signal) {
             check();
             if (signal?.aborted) throw signal.reason ?? cancelled();
-            const pinnedRequest = { ...request, ...(request.world ? { world: { ...request.world } } : {}),
-                ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}) };
+            const pinnedRequest = copyRequest(request);
             const work = track((async () => {
                 const doc = paintDocument();
                 check();
                 const source = await options.prepare(doc, pinnedRequest, controller.signal, ordered(pinnedRequest));
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
+                const extended = source as PaintNodeSource & { readonly sessionRasters?: unknown; readonly rasterVariant?: unknown };
                 return { sourceDoc: doc, token, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,
+                    ...{ sessionRasters: extended.sessionRasters, rasterVariant: extended.rasterVariant, sourceWorld: pinnedRequest.world },
                     readNode: (index: number) => source.readNode(index), isCurrent: () => !released && !controller.signal.aborted } satisfies PaintNodeSource;
             })());
             return waitFor(work, signal);
         },
+        ...(options.prepareStream ? { async paintStream(request: ScenePaintRequest, signal?: AbortSignal) {
+            check(); signal?.throwIfAborted();
+            const pinnedRequest = copyRequest(request), local = new AbortController();
+            const combined = AbortSignal.any(signal ? [controller.signal, local.signal, signal] : [controller.signal, local.signal]);
+            const work = track((async () => {
+                const doc = paintDocument();
+                const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(pinnedRequest));
+                const stream = wrapStream(source, combined, local);
+                try {
+                    check(); combined.throwIfAborted();
+                    if (source.sceneRevision !== revision || !sameToken(source.token, token) || source.sourceDoc !== doc) {
+                        throw new TypeError('Paint stream does not match scene snapshot');
+                    }
+                    return stream;
+                } catch (error) {
+                    try { await stream.release(); } catch (cleanupError) { try { options.onError?.(cleanupError); } catch { /* Preserve the original failure. */ } }
+                    throw error;
+                }
+            })());
+            return work;
+        } } : {}),
         release() {
             if (closing) return closing;
             released = true;
             controller.abort(cancelled());
             closing = (async () => {
                 await Promise.allSettled([...inFlight]);
+                const retired = await Promise.allSettled([...streams].map(close => close()));
+                const failure = retired.find(result => result.status === 'rejected');
+                if (failure?.status === 'rejected') throw failure.reason;
                 try { records.release(); } finally { options.renderer?.release(); }
             })();
             return closing;

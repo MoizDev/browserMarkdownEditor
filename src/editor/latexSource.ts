@@ -3,6 +3,8 @@ import { EditorSelection, Prec } from '@codemirror/state';
 import type { EditorState, Extension, Range, Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { docString } from './docCache';
+import { overlapsRange, straddlesPoint } from './rangeSearch';
+import type { CharRange } from './rangeSearch';
 
 /** One $…$ / $$…$$ span. `latex` is the inner source, delimiters excluded. */
 export interface MathRegion {
@@ -10,11 +12,6 @@ export interface MathRegion {
     to: number;
     latex: string;
     block: boolean;
-}
-
-interface CharRange {
-    from: number;
-    to: number;
 }
 
 /** Ranges where $ is literal text: fenced/indented code blocks and inline
@@ -43,7 +40,7 @@ export function collectCodeRanges(state: EditorState): CharRange[] {
  */
 export function findMathRegions(doc: string, codeRanges: CharRange[]): MathRegion[] {
     const regions: MathRegion[] = [];
-    const inCode = (from: number, to: number) => codeRanges.some(r => from < r.to && to > r.from);
+    const inCode = (from: number, to: number) => overlapsRange(codeRanges, from, to);
 
     const blocks: CharRange[] = [];
     const blockRe = /(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$/g;
@@ -62,7 +59,7 @@ export function findMathRegions(doc: string, codeRanges: CharRange[]): MathRegio
         const to = from + m[0].length;
         if (m[1].endsWith('\\')) continue; // …\$ — escaped closing dollar
         if (inCode(from, to)) continue;
-        if (blocks.some(b => from < b.to && to > b.from)) continue;
+        if (overlapsRange(blocks, from, to)) continue;
         regions.push({ from, to, latex: m[1], block: false });
     }
 
@@ -158,18 +155,15 @@ export function firstMathFrom(analysis: DocAnalysis, from: number): number {
  * boundary can never fall inside a formula the live preview draws as one widget.
  * Nodes that CONTAIN a whole region (a paragraph, a heading line) are not.
  *
- * Binary-searched rather than scanned: the tree walk runs this for EVERY node
- * of the whole tree, so a linear scan made it O(nodes x regions) — ~186M
- * comparisons and ~138ms per keystroke on a large math note (see firstMathFrom).
+ * Disjoint regions can only partly intersect a node by straddling one of its
+ * edges. Two searches also keep Document/list/paragraph ancestors O(log M),
+ * rather than visiting every formula they contain on every tree walk.
  */
 export function mathSkipsRange(analysis: DocAnalysis, from: number, to: number): boolean {
-    const regions = analysis.mathRegions;
-    for (let i = firstMathFrom(analysis, from); i < regions.length; i++) {
-        const r = regions[i];
-        if (r.from >= to) break;
-        if (!(from <= r.from && to >= r.to)) return true;
-    }
-    return false;
+    const start = analysis.mathRegions[firstMathFrom(analysis, from)];
+    if (start && start.from < from) return true;
+    const end = analysis.mathRegions[firstMathFrom(analysis, to)];
+    return !!end && end.from < to;
 }
 
 /** True when [from, to) overlaps any math region. */
@@ -229,9 +223,7 @@ export function isInMathContext(state: EditorState, pos: number): boolean {
     // garbage. It essentially always follows a buildDecorations pass on the
     // same state, so it is a cache hit.
     const { doc, mathRegions } = analyzeDoc(state);
-    for (const r of mathRegions) {
-        if (pos > r.from && pos < r.to) return true;
-    }
+    if (straddlesPoint(mathRegions, pos)) return true;
     const line = state.doc.lineAt(pos);
     const dollars = doc.slice(line.from, pos).match(/(?<!\\)\$/g);
     return (dollars?.length ?? 0) % 2 === 1;
@@ -242,7 +234,7 @@ const CLOSERS = new Set(Object.values(BRACKET_PAIRS));
 
 function inCodeRange(state: EditorState, pos: number): boolean {
     // Memoized: this used to walk the whole syntax tree afresh on every `$`.
-    return analyzeDoc(state).codeRanges.some(r => pos > r.from && pos < r.to);
+    return straddlesPoint(analyzeDoc(state).codeRanges, pos);
 }
 
 /**

@@ -419,7 +419,9 @@ back where it started.
 
 A PDF you have already written on is left alone, with a note saying so. Your
 marks are drawn against the pages as they are, and turning the paper would move
-every one of them — so straighten a scan before you start annotating it.
+every one of them — so straighten a scan before you start annotating it. Only a
+plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
+ones this app can read, is left alone too, and its note says what to do instead.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -441,6 +443,16 @@ which is what lets you come back days later and move, recolour or erase a mark
 rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
+
+**A PDF that cannot be written on safely stays read-only.** Before the pen opens,
+the app checks what the file actually carries, not its name. A PDF holding an
+unrelated \`original.pdf\`, attachments that cannot be read or that contradict each
+other, or annotations written by a newer version stays in the reader with a note
+saying it is read-only; drawing and saving change nothing in it. You can still
+read, select, copy and find in it, and open its Text. Choose **Retry** if an
+attachment could not be read; otherwise open it in a version of the app that wrote
+it, or recover the annotations first. Never delete attachments from your only copy
+just to make the note go away.
 
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the

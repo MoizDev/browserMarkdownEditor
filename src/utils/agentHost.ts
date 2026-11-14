@@ -253,6 +253,18 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
             return readNativeCanvasView({ deps, path, guard: { signal: guard.signal, isCurrent: current } });
         },
+        async closedNativePdfPicture(path, maxSide, guard) {
+            const deps = getDeps();
+            // Only a CLOSED PDF has this route; an open PDF keeps its mounted view.
+            if (!deps.root || !isPdfFile(path) || openTabAt(deps, path)) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            const found = await fileAt(deps.root, path);
+            guard.signal?.throwIfAborted();
+            if (!found || !current()) return null;
+            const { readClosedNativePdfPicture } = await import('./nativeCanvasAgentRead');
+            return readClosedNativePdfPicture({ deps, path, handle: found.handle, maxSide,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
             if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;

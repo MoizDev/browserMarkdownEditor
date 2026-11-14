@@ -733,6 +733,19 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             ctx.ensureLive();
             return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
+        // A closed native ink board is pictured from its admitted source; every other PDF keeps the routes below.
+        if (!view && ctx.host.closedNativePdfPicture) {
+            const picture = await ctx.host.closedNativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (picture) {
+                const count = picture.pageCount;
+                const pages = `${count} PDF page${count === 1 ? '' : 's'}`;
+                const note = page !== undefined ? ' (an ink board is pictured whole, not by page)' : '';
+                return pngResult(picture.png, `${path}, the whole sheet of its ${pages}${note}:`, `"${path}"`);
+            }
+        }
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
         const target = page ?? 1;

@@ -75,6 +75,9 @@ three nested fixtures while both controls still succeed, with the named `FAIL ha
 All patches require git apply --check then apply; any setup/patch failure is invalid, not a kill.
 Each scratch source has its own npm ci, production configuration and cache/output directories.
 
-The cached-collator change is a SEPARATE commit. Its sensitivity mutant must fail `FAIL sort-order`
-against the captured original DOM order; merely recording a nonzero exit is not evidence.
+The cached-collator change is a SEPARATE commit. Apply `variant-collator.patch` to a scratch source
+copy and build production; its sensitivity mutant must fail `FAIL sort-order` against the captured
+original DOM order (use the same `order.mjs --reference` invocation). Merely recording a nonzero
+exit is not evidence. The original hostile fixture and 10,000 siblings are captured BEFORE changing
+the collator; both ordered arrays, not only their sorted sets, must match on the candidate.
 Static gates remain npm run typecheck and npm run lint, both through L static.

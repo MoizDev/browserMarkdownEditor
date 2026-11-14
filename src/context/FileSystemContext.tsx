@@ -216,6 +216,10 @@ async function buildFileTree(
     return (await listDir(dirHandle, path, reuse)).children;
 }
 
+// Reuse the same locale/options ordering without constructing a collator for
+// every comparison in a directory with thousands of siblings.
+const treeNameCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
+
 /**
  * `buildFileTree` for one directory, plus the one thing about the directory
  * ITSELF that the walk is the cheap place to learn: whether it holds an
@@ -288,7 +292,7 @@ async function listDir(
     // Sort: directories first, then files. Alphabetical within each group.
     children.sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        return treeNameCollator.compare(a.name, b.name);
     });
 
     return { children, styleFile };

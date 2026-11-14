@@ -211,8 +211,9 @@ third-party code included (normally "none") · date.
 | `export/rasterWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Sliced OffscreenCanvas shared painter, pinned loaded/fallback text faces, padded tiles and streaming PNG; no tldraw source | none | 2026-11-13 |
 | `export/streamRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Pinned paint stream, shared ink outline, chunked geometry and owned bitmap transfers; no tldraw source | none | 2026-11-13 |
 | `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
-| `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, conditional set-file and PDF assembly ports; no tldraw source | none | 2026-11-13 |
+| `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, atomic conditional set-file batch and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
+| `host/pinMediaRestore.ts` | lane w-k | C7.1/5; F-INT-004 | integration §4; media §8 | Pinned media leases, revision-fenced restoration and atomic filename-change batch; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -291,6 +292,8 @@ third-party code included (normally "none") · date.
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
+| `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
+| `tools/transform.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; cancellable derived preview, pending preflight and atomic pointer-up apply | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

@@ -11,6 +11,8 @@ import type { PoolStorage } from './webgl2Pool';
 import { COMPOSITION_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
+import { Webgl2IsolationPool } from './webgl2Isolation';
+import type { GpuIsolationAdmission, IsolationReservation } from './webgl2Isolation.types';
 import { ArenaError, ResourceArena } from '../resourceArena';
 import type { ArenaEncoding, ArenaLeaseMemory, ArenaMemory, ArenaResourceKind, ResourceArenaBackend } from '../resourceArena';
 import type { MemoryAllocator } from '../memoryGovernor';
@@ -55,7 +57,7 @@ export interface Webgl2Services {
 }
 
 /** Platform-internal owner only; layers never receive an arena or raw GL (design:88). */
-export interface Webgl2Owner extends BrokerGpuOwner {
+export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     readonly resources: GfxDevice;
     /** Availability only; per-frame completeness comes from the scheduler's observed calls,
      * never a claim that an unobserved frame had zero upload cost. */
@@ -229,6 +231,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #arena: ResourceArena<Descriptors, Objects>;
     readonly #parallel: KHR_parallel_shader_compile | null;
     readonly #timer: Webgl2Timer;
+    readonly #isolation: Webgl2IsolationPool;
     readonly #sampleCounts = new Map<number, ReadonlySet<number>>();
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
@@ -340,6 +343,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             destroy: storage => { this.destroy(storage.target); this.destroy(storage.texture); },
             completed: serial => this.#complete(serial),
         });
+        this.#isolation = new Webgl2IsolationPool(
+            request => this.acquireTarget(request), lease => this.releaseTarget(lease),
+            () => this.#reserve(this.#services.working, 0), lease => this.closeLease(lease),
+            (base, request, metadata) => this.#isolationAlias(base, request, metadata),
+            lease => { this.#destroyDirect(lease.target); this.#destroyDirect(lease.texture); });
         // This is the broker's reservation signal, not the pane-hide work signal.
         // After its abort the broker may synchronously destroy a context whose canvas
         // listeners are already removed; observe actual loss after that task, not zero
@@ -354,13 +362,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     get uniformRingBytes(): number { return this.#uniformBytes; }
 
+    get frameResourcesReady(): boolean { return this.#white !== null && !this.#lost && !this.#disposed && !this.#paused; }
+    prepareFrameResources(): void { this.#usable(); this.#ensureWhite(); }
+    admitIsolation(plan: readonly IsolationReservation[]): boolean { this.#usable(); return this.#isolation.admit(plan); }
+
     beginFrame(): FrameEncoder {
         this.#usable();
-        this.#ensureWhite();
+        if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
         const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null,
             offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
+        this.#isolation.begin(encoding);
         const frame = createWebgl2Frame(this.#frameBackend(work));
         work.controller = frame;
         this.#controlledFrames.set(frame, frame);
@@ -640,7 +653,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(false), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+                () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
                 () => this.#arena.releaseAll(reason),
                 () => {
                     for (const handle of this.#handles) {
@@ -665,7 +678,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#work.abort();
         this.#cleanup([
             ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-            () => this.#timer.clear(false), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+            () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
             () => this.#arena.releaseAll('hidden'),
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
@@ -681,7 +694,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(true), () => this.#pool.abandon(),
+                () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
                 ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
@@ -787,8 +800,23 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #textureBacking(handle: TextureHandle): TextureHandle[] {
-        const texture = this.#arena.validate(handle, 'texture');
-        return texture.reference ? [texture.reference] : [];
+        const result: TextureHandle[] = [];
+        let texture = this.#arena.validate(handle, 'texture');
+        while (texture.reference) {
+            result.push(texture.reference);
+            texture = this.#arena.validate(texture.reference, 'texture');
+        }
+        return result;
+    }
+
+    #retainTextureDependency(handle: TextureHandle): (() => void) | undefined {
+        let current: TextureHandle | undefined = handle;
+        while (current) {
+            const release = this.#pool.retainDependency(current);
+            if (release) return release;
+            current = this.#arena.validate(current, 'texture').reference;
+        }
+        return undefined;
     }
 
     #createPoolStorage(request: TargetRequest): PoolStorage {
@@ -817,6 +845,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         } catch (error) { this.#destroyDirect(texture); throw error; }
     }
 
+    /** Only opaque metadata is minted here; storage and its lease were admitted in prepare. */
+    #isolationAlias(base: TargetLease, request: TargetRequest, metadata: ByteLease): TargetLease {
+        const texture = this.#allocate('texture', { reference: base.texture }, 0, metadata);
+        this.#arena.validate(texture, 'texture').usedRect = { x: 0, y: 0, width: request.width, height: request.height };
+        try {
+            const target = this.#allocate('target', { reference: base.target, color: texture, purpose: request.purpose }, 0,
+                metadata, [texture, base.texture, ...this.#textureBacking(base.texture)]);
+            return Object.freeze({ target, texture, width: base.width, height: base.height,
+                format: base.format, samples: base.samples, stencil: base.stencil });
+        } catch (error) { this.#destroyDirect(texture); throw error; }
+    }
+
     #cancelEncoding(encoding: ArenaEncoding): void {
         this.#arena.cancel(encoding);
         this.#pool.finish(encoding, this.#frames.get(encoding)?.issued ?? null);
@@ -827,15 +867,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#pool.touch(handle, encoding);
         if (kind === 'texture') {
             const texture = native as NativeTexture;
-            if (texture.reference) this.#arena.pin(encoding, texture.reference, 'texture');
+            if (texture.reference) this.#pin(encoding, texture.reference, 'texture');
         } else if (kind === 'target') {
             const target = native as NativeTarget;
-            if (target.reference) this.#arena.pin(encoding, target.reference, 'target');
-            if (target.colorTexture.reference) this.#arena.pin(encoding, target.colorTexture.reference, 'texture');
+            if (target.reference) this.#pin(encoding, target.reference, 'target');
+            if (target.colorTexture.reference) this.#pin(encoding, target.colorTexture.reference, 'texture');
             this.#pool.touch(target.color, encoding);
         } else if (kind === 'clip') {
             const clip = native as NativeClip;
-            if (clip.texture.reference) this.#arena.pin(encoding, clip.texture.reference, 'texture');
+            if (clip.texture.reference) this.#pin(encoding, clip.texture.reference, 'texture');
             this.#pool.touch(clip.mask, encoding);
         } else if (kind === 'pipeline') {
             const pipeline = native as Objects['pipeline'];
@@ -903,15 +943,23 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
                 return () => this.#drawQuad(program, sampler, command);
             },
-            acquireTarget: request => this.acquireTarget(request), releaseTarget: lease => this.releaseTarget(lease),
+            acquireTarget: request => this.#isolation.borrow(work.encoding, request, true),
+            releaseTarget: lease => this.#isolation.put(work.encoding, lease, true),
+            acquireIsolation: request => this.#isolation.borrow(work.encoding, request, false),
+            releaseIsolation: lease => this.#isolation.put(work.encoding, lease, false),
             issue: () => { if (work.surface) this.#timer.end(); return this.#issue(work.encoding); },
             cancel: () => this.#cancelEncoding(work.encoding),
             finish: serial => {
                 if (work.finished) return;
                 work.finished = true;
-                if (work.surface && !work.signal.aborted) this.#timer.end();
-                if (work.slot) { work.slot.owner = null; work.slot.serial = serial ?? work.issued ?? 0; work.slot = null; }
-                this.#frames.delete(work.encoding);
+                try { this.#isolation.finish(work.encoding); }
+                finally {
+                    try { if (work.surface && !work.signal.aborted) this.#timer.end(); }
+                    finally {
+                        if (work.slot) { work.slot.owner = null; work.slot.serial = serial ?? work.issued ?? 0; work.slot = null; }
+                        this.#frames.delete(work.encoding);
+                    }
+                }
             },
             failure: error => this.#failure(error), onPass: surface => { work.passes = true; work.surface ||= surface; },
         };
@@ -1561,7 +1609,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             case 'target': object = this.#createTarget(descriptor as TargetDesc); break;
             case 'clip': {
                 const desc = descriptor as Descriptors['clip'];
-                object = { ...desc, texture: this.#arena.validate(desc.mask, 'texture'), releaseDependency: this.#pool.retainDependency(desc.mask) };
+                object = { ...desc, texture: this.#arena.validate(desc.mask, 'texture'), releaseDependency: this.#retainTextureDependency(desc.mask) };
                 break;
             }
             case 'pipeline': {
@@ -1590,7 +1638,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const framebuffer = gl.createFramebuffer();
         if (!framebuffer) throw new ArenaError('allocation');
         const target: NativeTarget = { ...desc, colorTexture: texture, capture: false, framebuffer, resolveFramebuffer: framebuffer,
-            releaseDependency: this.#pool.retainDependency(desc.color), multisample: null, depthStencil: null,
+            releaseDependency: this.#retainTextureDependency(desc.color), multisample: null, depthStencil: null,
             width: texture.width, height: texture.height, format: texture.format, colorStored: false, stencilStored: false };
         try {
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);

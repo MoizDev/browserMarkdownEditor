@@ -48,8 +48,13 @@ export function createNotebookController({ session, signal, geometry, currentPag
             });
         },
         async removeLast(): Promise<void> {
-            const doc = session.doc, contents = lastPageContents(doc), revision = doc.rev;
-            if (!await confirmDelete(contents) || signal.aborted) return;
+            const doc = session.doc;
+            if (doc.host.kind !== 'notebook') throw new StructureRefused('Not a notebook');
+            for (const id of doc.byPage.get(doc.host.paper.pageCount - 1) ?? []) {
+                if (doc.nodes.get(id)?.kind === 'opaque') throw new StructureRefused(`Unsupported item ${id} prevents page deletion`);
+            }
+            const contents = lastPageContents(doc), revision = doc.rev;
+            if ((contents.length > 0 && !await confirmDelete(contents)) || signal.aborted) return;
             await queue(() => {
                 const latest = session.doc;
                 if (latest.rev !== revision) throw new StructureRefused('Board changed; confirm deletion again');

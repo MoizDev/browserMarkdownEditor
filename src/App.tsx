@@ -1172,6 +1172,11 @@ export default function App() {
       retainedThroughGeneration: bytesGeneration, activation: vaultActivation, kind, emergencyReadOnly });
     const digest = acquisition.legacyOriginalSha256;
     const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    // The bridge's initial conversion report follows this callback synchronously,
+    // before React commits the representation update.
+    tabsRef.current = tabsRef.current.map(current => current.id === owner.documentId && live()
+      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
+      : current);
     setTabs(previous => previous.map(current => current.id === owner.documentId && live()
       ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
       : current));
@@ -1262,6 +1267,22 @@ export default function App() {
           throw new DOMException('Canvas session ended', 'AbortError');
         }
         return result;
+      },
+      acceptConvertedSource(identity, source, digest) {
+        const tab = current(identity);
+        if (!tab || !writable(identity) || !/^[a-f0-9]{64}$/.test(digest)
+          || getBaseline(identity.documentId)?.hash !== digest || tab.representation.legacyOriginalSha256 !== digest
+          || tab.representation.nativeCanvasKind !== identity.kind || tab.representation.nativeCanvasSession !== identity.session
+          || source.kind !== 'deferred' || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
+          || !documentSessions.isLiveOwner(identity.documentId, source.owner)) {
+          throw new DOMException('Legacy conversion is no longer authorized', 'AbortError');
+        }
+        const prior = documentBuffers.get(identity.documentId);
+        sessionReportRef.current(identity.documentId, source);
+        const accepted = documentBuffers.get(identity.documentId);
+        if (!accepted || accepted.revision === prior?.revision || accepted.source !== source) {
+          throw new Error('Legacy conversion source was not accepted');
+        }
       },
       async appendJournal(identity, source, capture) {
         if (!current(identity) || !writable(identity) || typeof source === 'string' || source.kind !== 'deferred'

@@ -159,6 +159,21 @@ export function notebookGrowthOp(doc: BoardDoc, deepestWorldY: number): BoardOp 
     return { t: 'board', key: 'host.paper', value: { ...paper, pageCount: Math.min(MAX_PAGES, paper.pageCount + extra) } };
 }
 
+const NODE_NAMES: Record<Node['kind'], readonly [string, string]> = {
+    stroke: ['stroke', 'strokes'], figure: ['shape', 'shapes'], text: ['text', 'texts'],
+    sticky: ['sticky note', 'sticky notes'], connector: ['arrow', 'arrows'], polyline: ['line', 'lines'],
+    frame: ['frame', 'frames'], group: ['group', 'groups'], picture: ['picture', 'pictures'],
+    clip: ['video', 'videos'], linkcard: ['bookmark', 'bookmarks'], embed: ['embed', 'embeds'],
+    opaque: ['unsupported item', 'unsupported items'],
+};
+
+/** Describe the actual items, not every kind of content as a stroke (WB-D29). */
+export function describePageContents(contents: readonly Node[]): string {
+    const counts = new Map<Node['kind'], number>();
+    for (const node of contents) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
+    return [...counts].map(([kind, count]) => `${count} ${NODE_NAMES[kind][count === 1 ? 0 : 1]}`).join(', ');
+}
+
 export function lastPageContents(doc: BoardDoc): readonly Node[] {
     const paper = notebook(doc);
     if (paper.pageCount <= 1) throw new StructureRefused('A notebook must keep one page');

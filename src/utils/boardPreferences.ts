@@ -52,7 +52,9 @@ export function getBoardPreferences(): BoardPreferences {
     // This is the only read of the old library record. Once the registered
     // record exists, neither the new engine nor the bridge consults it again.
     const legacy = object(readJSON<unknown>(LEGACY_KEY, null));
-    current = clamp(object(legacy.user));
+    const user = object(legacy.user);
+    current = clamp(user.colorScheme == null && typeof user.isDarkMode === 'boolean'
+        ? { ...user, colorScheme: user.isDarkMode ? 'dark' : 'light' } : user);
     writeJSON(KEY, current);
     return current;
 }

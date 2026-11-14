@@ -79,6 +79,10 @@ workspace cycles through all of it.
   A save reports "Saved" when its path is **visible** (any pane of the tab on screen), not merely
   focused.
 
+- **Every `flushTab` drains its registered canvas serializer before capturing `contentOf(path)`.**
+  Close removes paths from layout immediately but keeps documents and PDF annotation canvases mounted
+  until drain and write settle; failed saves restore the tab, and a reopen reattaches to its buffer.
+  A vault switch awaits all drains and writes in the provider's pre-commit hook, before changing root.
 - **Writes are versioned and serialized per DOCUMENT.** `flushTab` chains on `flushChainsRef` keyed by
   `OpenTab.id` (a rename mid-write cannot split a chain; `flushingRef` counts what is queued or running)
   and writes only through `writeFileVersioned` against `getBaseline(id)` (`utils/docBaselines.ts` —
@@ -94,7 +98,7 @@ workspace cycles through all of it.
 
 - **Every read that fills a tab records a baseline** (`readFileVersioned`): `handleFileClick`, the restore
   pass (versions carried to the merge), `retryUnreadTab`, `addTabQuietly`. `releaseTab` drops it; the
-  vault switch clears all of it after its synchronous flush captures.
+  vault switch clears all of it only after its pre-commit drains and saves complete.
 - **`checkOpenDocs(scope | 'all', batch?)`** — serialized promise queue; waits out `vaultMovesRef`,
   `trashInFlightRef` and `restoringRef` (mid copy-then-delete the old file is simply gone); skips and
   re-queues a document with a write in flight. Per tab: fresh handle from the root → missing → follow a

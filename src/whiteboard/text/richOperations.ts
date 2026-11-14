@@ -4,7 +4,8 @@ import { normalizePlainInsertion, normalizePlainInsertionCooperative, type Plain
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { carrierForTail, trackBlock, trackRun } from './carriers';
-import { runContaining, runIndex } from './runIndex';
+import { firstRunAt, runContaining, runIndex } from './runIndex';
+import { linkRangeAtBlock } from './linkIndex';
 import { applyRichTransaction, validateRichFragment } from './richTransaction';
 
 const position = projectionPosition;
@@ -70,24 +71,15 @@ export function marksAt(value: RichText, offset: number): Marks {
     if (!link) return marks;
     if (local < end) return { ...marks, link };
     // Formatting may split one link into adjacent runs; only its true end stops extension.
-    for (let next = i + 1; next < block.runs.length; next++) {
-        if (!block.runs[next].text.length) continue;
-        return block.runs[next].marks.link === link ? { ...marks, link } : marks;
-    }
-    return marks;
+    const range = linkRangeAtBlock(block, local);
+    return range && range.url === link && local < range.to ? { ...marks, link } : marks;
 }
 export function linkRangeAt(value: RichText, offset: number): { readonly from: number; readonly to: number; readonly url: string } | null {
     check(value, offset);
-    const found = position(value, offset), runs = found.block.runs, indexed = runIndex(found.block);
-    if (!indexed.length) return null;
-    const chosen = runContaining(indexed, found.offset ? found.offset - 1 : 0);
-    if (!runs[chosen].marks.link) return null;
-    const url = runs[chosen].marks.link!;
-    let first = chosen, last = chosen;
-    while (first > 0 && (!runs[first - 1].text.length || runs[first - 1].marks.link === url)) first--;
-    while (last + 1 < runs.length && (!runs[last + 1].text.length || runs[last + 1].marks.link === url)) last++;
-    const from = found.start + indexed.starts[first], to = found.start + indexed.starts[last + 1];
-    return from < to && textBoundaries.isBoundary(value, from) && textBoundaries.isBoundary(value, to) ? { from, to, url } : null;
+    const found = position(value, offset), range = linkRangeAtBlock(found.block, found.offset);
+    if (!range) return null;
+    const from = found.start + range.from, to = found.start + range.to;
+    return from < to && textBoundaries.isBoundary(value, from) && textBoundaries.isBoundary(value, to) ? { from, to, url: range.url } : null;
 }
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
@@ -105,9 +97,19 @@ function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks)
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);
-    const fragment = sliceRichText(value, from, to);
-    const runs = fragment.blocks.flatMap(block => block.runs).filter(run => run.text.length > 0);
-    const remove = runs.length > 0 && runs.every(run => run.marks[mark] === true);
+    const first = position(value, from), last = position(value, to);
+    let seen = false, remove = true;
+    outer: for (let block = first.index; block <= last.index; block++) {
+        const current = value.blocks[block], indexed = runIndex(current);
+        const low = block === first.index ? first.offset : 0, high = block === last.index ? last.offset : indexed.length;
+        if (low === high) continue;
+        for (let run = firstRunAt(indexed, low); run < indexed.count && indexed.starts[run] < high; run++) {
+            if (indexed.starts[run] === indexed.starts[run + 1] || indexed.starts[run + 1] <= low) continue;
+            seen = true;
+            if (current.runs[run].marks[mark] !== true) { remove = false; break outer; }
+        }
+    }
+    remove &&= seen;
     return mapMarks(value, from, to, marks => {
         const next = { ...marks };
         if (remove) delete next[mark]; else next[mark] = true;

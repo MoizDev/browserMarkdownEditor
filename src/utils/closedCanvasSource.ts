@@ -3,7 +3,7 @@ import type { RenderToken } from '../platform/render/types';
 import { createJobAuthority, type JobAuthority } from '../whiteboard/security/admission';
 import { hashBytes, sameStat, type DiskVersion } from './diskVersion';
 import type { ContentSource, SourceOwner } from './documentBuffers';
-import type { DocumentSessionStore, SessionAdapter, SessionEntry } from './documentSessions';
+import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 import type { createClosedCanvasVersions } from './closedCanvasVersions';
 
 export interface ClosedCanvasSourceLease {
@@ -75,9 +75,8 @@ export async function acquireClosedCanvasSource(options: {
         const diskRevision = await lock.observe(handle, version, io.handleIO.sameEntry, options.isCurrent);
         guard();
         if (sessions.get(options.documentId)) throw new Error('Closed canvas owner id is already in use');
-        let entry!: SessionEntry<SnapshotAdapter>;
         type SnapshotAdapter = SessionAdapter & { readonly authority: JobAuthority; revoke(): void };
-        entry = sessions.ensure(options.documentId, options.kind, 0, (owner: SourceOwner): SnapshotAdapter => {
+        const entry = sessions.ensure(options.documentId, options.kind, 0, (owner: SourceOwner): SnapshotAdapter => {
             const authority = createJobAuthority(`${owner.documentId}:${owner.session}`, activation, 0);
             let live = true;
             const listeners = new Set<(source: ContentSource) => void>();

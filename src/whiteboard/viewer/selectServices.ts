@@ -6,6 +6,8 @@ import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { flipBoardLeaves } from '../commands/flipLeaves';
+import type { StickyDirection } from '../commands/stickyNeighbour';
+import { isLocked } from '../change/commands';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
@@ -325,11 +327,23 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             cancel,
         };
     };
+    const stickyNeighbour = (direction: StickyDirection): boolean => {
+        if (!mutable()) return false;
+        const selection = runtime.selection.getSnapshot();
+        const node = selection.selected.length === 1 ? doc.nodes.get(selection.selected[0]) : undefined;
+        if (!node || node.kind !== 'sticky' || isLocked(doc, node)) return false;
+        const release = session.beginGesture();
+        let unregister: (() => void) | undefined;
+        try { unregister = registerPending(() => stickyHandles.hide()); }
+        catch (error) { release(); throw error; }
+        void stickyHandles.activate(direction, true).finally(() => { try { unregister?.(); } finally { release(); } });
+        return true;
+    };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, nudge, transform, setGuides, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, nudge, transform, stickyNeighbour, setGuides, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

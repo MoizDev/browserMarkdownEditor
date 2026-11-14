@@ -105,14 +105,19 @@ export function planPreviewWindows(tr: Transaction, analysis: DocAnalysis, edit:
     const widened: PreviewWindow[] = [];
     for (const range of dirty) {
         let from = Math.max(0, Math.min(doc.length, range.from)), to = Math.max(0, Math.min(doc.length, range.to));
-        syntaxTree(state).iterate({ from, to: Math.max(from, to), enter(node) {
-            if (/^(Paragraph|ATXHeading[1-6]|SetextHeading[12]|ThematicBreak|HTMLBlock|LinkReference)$/.test(node.name)) {
-                from = Math.min(from, node.from); to = Math.max(to, node.to);
+        let oldFrom: number, oldTo: number;
+        do {
+            oldFrom = from; oldTo = to;
+            syntaxTree(state).iterate({ from, to: Math.max(from, to), enter(node) {
+                if (/^(Paragraph|ATXHeading[1-6]|SetextHeading[12]|ThematicBreak|HTMLBlock|LinkReference)$/.test(node.name)) {
+                    from = Math.min(from, node.from); to = Math.max(to, node.to);
+                }
+            } });
+            for (const items of [analysis.mathRegions, analysis.objects.embeds, analysis.objects.tables]) {
+                candidates<CharRange>(items, [{ from, to: to + 1 }], item => { from = Math.min(from, item.from); to = Math.max(to, item.to); });
             }
-        } });
-        for (const items of [analysis.mathRegions, analysis.objects.embeds, analysis.objects.tables]) {
-            candidates<CharRange>(items, [{ from, to: to + 1 }], item => { from = Math.min(from, item.from); to = Math.max(to, item.to); });
-        }
+            if (to - from > doc.length / 2) return [{ from: 0, to: doc.length + 1 }];
+        } while (from !== oldFrom || to !== oldTo);
         const start = doc.lineAt(from), end = doc.lineAt(to);
         widened.push({ from: start.from, to: end.number < doc.lines ? doc.line(end.number + 1).from : doc.length + 1 });
     }

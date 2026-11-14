@@ -1,4 +1,22 @@
+import { parseJson } from '../../whiteboard/format/jsonRead';
+import type { JsonSpan } from '../../whiteboard/format/jsonRead';
+
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
+
+function sameJson(a: JsonSpan, b: JsonSpan): boolean {
+    if (a.kind !== b.kind) return false;
+    if (a.kind === 'object') {
+        const left = a.fieldMap(), right = b.fieldMap();
+        return left.size === right.size && [...left].every(([key, value]) => {
+            const other = right.get(key); return !!other && sameJson(value, other);
+        });
+    }
+    if (a.kind === 'array') {
+        const left = [...a.items()], right = [...b.items()];
+        return left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
+    }
+    return Object.is(a.value(), b.value());
+}
 
 /** Read only the native envelope and its ordered host record; drawing records
  * remain opaque to the PDF stream. This binds the board to the PDF-owned id. */
@@ -23,7 +41,7 @@ export async function validateBoardWriteIdentity(blob: Blob, format: string, wri
         const record = value as { type?: unknown; pdf?: unknown };
         if (record.type !== 'host') return false;
         if (found || !record.pdf || typeof record.pdf !== 'object' || (record.pdf as { writeId?: unknown }).writeId !== writeId ||
-            (expectedHostLine !== undefined && (text.endsWith(',') ? text.slice(0, -1) : text) !== expectedHostLine)) {
+            (expectedHostLine !== undefined && !sameJson(parseJson(text.endsWith(',') ? text.slice(0, -1) : text), parseJson(expectedHostLine)))) {
             throw new Error('Board host identity does not match the PDF');
         }
         found = true;

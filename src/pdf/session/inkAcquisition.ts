@@ -69,11 +69,11 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
     };
     const onAbort = () => { void release(); };
     options.signal?.addEventListener('abort', onAbort, { once: true });
-    const readOnly = async (reason: string): Promise<PdfInkAcquisition> => {
+    const readOnly = async (reason: string, notebook?: { notebookSource: { path: string; exportedAt?: number }; outerFingerprint: string }): Promise<PdfInkAcquisition> => {
         guard();
         await release();
         if (!callerCurrent()) throw stale();
-        return { kind: 'read-only', reason, release };
+        return { kind: 'read-only', reason, ...(notebook ? { ...notebook, isCurrent: callerCurrent } : {}), release };
     };
     try {
         guard();
@@ -87,7 +87,13 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         if (outer.source !== 'outer' || outer.docKey !== pdfDocKey({ ...token, source: 'outer' })) throw new Error('Invalid outer PDF lease');
         const inspection: PdfInkInspection = await outer.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
-        if (inspection.kind === 'read-only') return await readOnly(`PDF ink is read-only: ${inspection.reason}.`);
+        if (inspection.kind === 'read-only') {
+            if (inspection.reason !== 'notebook-source') return await readOnly(`PDF ink is read-only: ${inspection.reason}.`);
+            const outerFingerprint = await chunkedBlobSha256(options.outer, guard);
+            guard();
+            if (outerFingerprint !== inspection.outerFingerprint) return await readOnly('The PDF source fingerprint does not match the inspected bytes.');
+            return await readOnly('This PDF was exported from a notebook.', { notebookSource: Object.freeze({ ...inspection.notebookSource }), outerFingerprint });
+        }
         if ((inspection.kind !== 'plain' && inspection.kind !== 'native') || inspection.formatId !== NATIVE_FORMAT_ID ||
             !memoryBlob(inspection.pristine) || !HASH.test(inspection.outerFingerprint) || !HASH.test(inspection.pristineFingerprint) ||
             (inspection.kind === 'plain' && (inspection.board !== null || inspection.media.length !== 0)) ||

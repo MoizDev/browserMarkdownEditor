@@ -171,13 +171,12 @@ export class BenchmarkCanvas2D {
             const capture = createImageBitmap(witness.canvas);
             void capture.then(bitmap => {
                 this.allocators.cpu.release(staging);
-                if (this.disposed) { bitmap.close(); this.outstanding--; recordCoverageDrop(tag, 'disposed'); return; }
                 const key = this.key(tag), queue = this.pending.get(key) ?? [];
                 queue.push({ tag, ratio }); this.pending.set(key, queue);
                 this.counter.count(bitmap, tag, 'rgb');
-            }, () => { this.allocators.cpu.release(staging); this.outstanding--; recordCoverageDrop(tag, 'error'); });
+            }, () => { this.allocators.cpu.release(staging); recordCoverageDrop(tag, 'error'); this.finishOutstanding(); });
         } catch {
-            if (lease) { this.allocators.cpu.release(lease); this.outstanding--; }
+            if (lease) { this.allocators.cpu.release(lease); this.finishOutstanding(); }
             witness.invalid = true; recordCoverageDrop(tag, 'error');
         }
     }
@@ -192,8 +191,12 @@ export class BenchmarkCanvas2D {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
-        this.counter.dispose();
         for (const native of this.shadows.keys()) this.close(native);
+        if (!this.outstanding) this.counter.dispose();
+    }
+    private finishOutstanding(): void {
+        this.outstanding--;
+        if (this.disposed && !this.outstanding) this.counter.dispose();
     }
     private key(frame: CoverageFrameTag): string {
         const t = frame.token;
@@ -203,7 +206,7 @@ export class BenchmarkCanvas2D {
     private retire(frame: CoverageFrameTag): { tag: PerfTag; ratio: number } | undefined {
         const key = this.key(frame), queue = this.pending.get(key), tag = queue?.shift();
         if (queue && !queue.length) this.pending.delete(key);
-        if (tag) this.outstanding--;
+        if (tag) this.finishOutstanding();
         return tag;
     }
 }

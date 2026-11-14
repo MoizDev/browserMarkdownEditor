@@ -30,6 +30,7 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     inList(offset: number): boolean;
     changed(selection: EditSelection): void;
     reportError(error: unknown): void;
+    announce(message: string): void;
     autoScroll(x: number, y: number): void;
     stopAutoScroll(): void;
     touchHandles(show: boolean): void;
@@ -213,7 +214,7 @@ export class TextEditSession {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];
                 if (mark) {
-                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); }
+                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.services.announce(`${command} formatting changed`); }
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
                 } else {
@@ -302,7 +303,7 @@ export class TextEditSession {
         let applied: boolean;
         try { applied = this.controller.applyLink(url, selection); }
         catch (error) { this.services.reportError(error); return false; }
-        if (applied) { this.selection = selection; this.services.changed(selection); this.host.focus(); }
+        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce('Link formatting changed'); this.host.focus(); }
         return applied;
     }
 

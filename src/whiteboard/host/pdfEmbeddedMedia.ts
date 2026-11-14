@@ -73,7 +73,7 @@ export function createPdfEmbeddedMediaStorage(options: {
                         release() { if (!released) { released = true; held.release(); } } };
                 } finally { if (!returned) held.release(); }
             };
-            const receipt = options.issue({ entry, blob, ...proof }, { kind: 'embedded', token, source: lease,
+            const receipt = options.issue({ entry, blob, runtime: proof.runtime, context: proof.context, inspection: proof.inspection }, { kind: 'embedded', token, source: lease,
                 assertWritable, captureCurrentBytes });
             transferred = true;
             return receipt;

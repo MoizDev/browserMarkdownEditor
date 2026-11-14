@@ -16,6 +16,7 @@ export interface CachedClipboard {
 }
 export interface ClipboardCopyHost {
     readonly runtime: BoardRuntime;
+    /** Shared session allocator; cache leases can outlive the originating pane. */
     readonly memory: MemoryAllocator;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;

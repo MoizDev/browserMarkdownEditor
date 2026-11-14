@@ -6219,6 +6219,7 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onNativeCanvasReady={onNativeCanvasReady}
+            nativeCanvasHost={nativeCanvasHost}
             attachCanvasSession={attachNativeCanvasSession}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}

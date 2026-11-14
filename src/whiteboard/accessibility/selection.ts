@@ -1,6 +1,15 @@
-import type { NodeId } from '../../whiteboard/model/ids';
-import type { SelectionState } from '../../whiteboard/selection';
-import type { BoardAccessibilityItem, BoardAccessibilitySnapshot, BoardAccessibilitySource } from './BoardAccessibility';
+import type { NodeId } from '../model/ids';
+import type { SelectionState } from '../selection';
+
+export interface BoardAccessibilityItem { readonly id: string; readonly label: string; readonly selected: boolean }
+export interface BoardAccessibilitySnapshot {
+    readonly sheetName: string; readonly total: number; readonly items: readonly BoardAccessibilityItem[];
+    readonly selectedCount: number; readonly focusedId: string | null;
+}
+export interface BoardAccessibilitySource {
+    getSnapshot(): BoardAccessibilitySnapshot;
+    subscribe(listener: () => void): () => void;
+}
 
 export interface AccessibilityWindow {
     readonly sheetName: string;

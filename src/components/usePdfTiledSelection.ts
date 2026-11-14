@@ -25,6 +25,7 @@ export interface PdfTiledSelectionOptions {
     touchPointer?(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent): void;
     contextMenu(x: number, y: number, keyboard: boolean): void;
     findOpen(): boolean;
+    cancelCopy?(): boolean;
     closeFindPreservingHit(): void;
     setReaderVisible(visible: boolean): void;
     clearMirrorPages(): void;
@@ -85,6 +86,7 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
             isFocused: () => live.current.isFocused,
             page: (page, signal) => geometry.get(page, 0, signal),
             findOpen: () => live.current.findOpen(),
+            cancelCopy: () => live.current.cancelCopy?.() ?? false,
             closeFindPreservingHit: () => live.current.closeFindPreservingHit(),
         });
         const lifecycle = new PdfTextVisibility({

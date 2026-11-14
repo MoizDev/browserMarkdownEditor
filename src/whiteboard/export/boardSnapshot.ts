@@ -48,7 +48,7 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
             const paper = options.includeNotebookPaper && doc.host.kind === 'notebook' ? { ...doc.host.paper } : null;
             if (options.includeNotebookPaper && !paper) throw new Error('Notebook export paper is unavailable');
             if (paper && selected) throw new Error('Selection exports cannot include notebook paper');
-            const pages = paper && pin.layout ? pin.layout.rects.map((rect, page) => ({ rect: { ...rect }, page })).filter(({ rect, page }) => {
+            const paperPages = paper && pin.layout ? pin.layout.rects.map((rect, page) => ({ rect: { ...rect }, page })).filter(({ rect, page }) => {
                 if (request.page !== undefined && request.page !== page) return false;
                 const world = request.world;
                 return !world || rect.x < world.x + world.width && rect.x + rect.width > world.x
@@ -91,11 +91,18 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
             return {
                 token, revision: pin.revision, images: provider,
                 readImage: (key, signal) => read(mediaId(key), signal),
-                async paintSource(signal) {
+                async paintSource(signal) { return this.paintSourceFor!(request.world, request.page, signal); },
+                async paintSourceFor(world, page, signal) {
                     signal.throwIfAborted();
+                    const pages = paperPages.filter(entry => {
+                        if (page !== undefined && page !== entry.page) return false;
+                        const rect = entry.rect;
+                        return !world || rect.x < world.x + world.width && rect.x + rect.width > world.x
+                            && rect.y < world.y + world.height && rect.y + rect.height > world.y;
+                    });
                     const sources: PaintNodeSource[] = [];
                     for (const sheetId of sheets) {
-                        const source = await pin.paintSource({ ...request, sheetId, theme: paper ? 'light' : request.theme }, signal);
+                        const source = await pin.paintSource({ ...request, sheetId, world, page, theme: paper ? 'light' : request.theme }, signal);
                         signal.throwIfAborted();
                         const candidate = source.token;
                         if (source.sceneRevision !== pin.revision || candidate.documentId !== token.documentId || candidate.session !== token.session

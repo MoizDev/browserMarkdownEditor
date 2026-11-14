@@ -29,11 +29,13 @@ export function pinPagedPrintSource(pin: PinExportSnapshot, pageRects: readonly 
     return {
         pageCount: pages.length,
         async pdf(signal) {
-            const combined = active(signal), source = await snapshotPaintSource(snapshot, combined);
+            const combined = active(signal);
+            const shared = snapshot.paintSourceFor ? null : await snapshotPaintSource(snapshot, combined);
             const images = createExportImageResolver(snapshot.token, snapshot.images, snapshot.readImage, combined);
             const render = async (page: number) => {
                 combined.throwIfAborted();
                 const world = pages[page];
+                const source = shared ?? await snapshotPaintSource(snapshot, combined, { world, page });
                 return { width: world.width, height: world.height,
                     displayList: await streamPageDisplayList(source, page, world, 1, images, combined) };
             };
@@ -56,7 +58,7 @@ export function pinPagedPrintSource(pin: PinExportSnapshot, pageRects: readonly 
         async pngPage(page, signal) {
             const world = pages[page];
             if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
-            const combined = active(signal), source = await snapshotPaintSource(snapshot, combined);
+            const combined = active(signal), source = await snapshotPaintSource(snapshot, combined, { world, page });
             return streamRasterPng(source, snapshot.images, world, 200 / 72, combined, { background: '#ffffff' });
         },
         release() { if (!released) { released = true; lifetime.abort(); snapshot.release(); } },

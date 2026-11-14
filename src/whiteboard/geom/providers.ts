@@ -1,4 +1,4 @@
-import type { Affine, Rect } from '../../platform/types';
+import type { Affine, PathCommand, Rect } from '../../platform/types';
 import type { ClipNode, EmbedNode, FigureNode, FrameNode, LinkcardNode, PictureNode, StickyNode, TextNode } from '../model/nodes';
 import type { InkCoverage } from '../ink/outline';
 import { InkPickJob } from '../ink/pick';
@@ -16,6 +16,16 @@ import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
 import type { KindGeometry, NarrowResult } from './types';
 import { DashWalker, DotWalker, dashPath, dotPath, drawPath } from './variants';
+
+/** Translate the engine's retained path into the platform paint/export command vocabulary. */
+export function* pathCommands(ops: Iterable<PathOp>): Generator<PathCommand> {
+    for (const op of ops) {
+        if (op.op === 'Z') yield ['Z'];
+        else if (op.op === 'C') yield ['C', op.c1.x, op.c1.y, op.c2.x, op.c2.y, op.p.x, op.p.y];
+        else if (op.op === 'M') yield ['M', op.p.x, op.p.y];
+        else yield ['L', op.p.x, op.p.y];
+    }
+}
 
 export interface FigurePaintPath {
     readonly ops: readonly PathOp[];
@@ -63,7 +73,11 @@ export function* figureHatch(geometry: FigureGeometry, node: Readonly<FigureNode
 }
 
 export function geometrySceneBounds(geometry: Readonly<{ inkBoundsLocal: Rect; selectBoundsLocal: Rect }>): Readonly<{ ink: Box; hit: Box }> {
-    const box = (r: Rect): Box => [r.x, r.y, r.x + r.width, r.y + r.height];
+    const box = (r: Rect): Box => {
+        const right = r.x + r.width, bottom = r.y + r.height;
+        if (![r.x, r.y, r.width, r.height, right, bottom].every(Number.isFinite) || r.width < 0 || r.height < 0) throw new RangeError('Invalid scene geometry bounds');
+        return [r.x, r.y, right, bottom];
+    };
     return { ink: box(geometry.inkBoundsLocal), hit: box(geometry.selectBoundsLocal) };
 }
 export const figureSceneBounds = geometrySceneBounds;

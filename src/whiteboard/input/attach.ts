@@ -50,11 +50,12 @@ export interface BoardInputServices {
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
-  cancelPendingGestures(): void
+  cancelPendingGestures(): boolean
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
 const gestureOwner = new WeakMap<BoardSession, symbol>()
+const sessionPenMode = new WeakMap<BoardSession, { enabled: boolean; listeners: Set<(enabled: boolean) => void> }>()
 
 // View generations own listeners only. The session owns history, gesture queue and
 // tool choice; replacing a view first flushes its prefix, then installs a new one.
@@ -62,6 +63,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   attached.get(view.surface)?.()
   const owner = Symbol('board-input-view')
   let live = true
+  let penMode = sessionPenMode.get(session)
+  if (!penMode) { penMode = { enabled: false, listeners: new Set() }; sessionPenMode.set(session, penMode) }
+  const sharedPenMode = penMode
   const current = () => live && view.visible() && view.current(view.token)
   const editable = () => mode === 'edit' && !session.isReadOnly
   const handover = new WetInkHandover()
@@ -114,8 +118,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cancelTouchPreview: () => { if (activeSource === 'touch') pointer.discardPreview() },
     endTouchCamera: services.cameraChanged,
     changed: services.cameraChanged,
-    penModeChanged: enabled => services.penModeChanged?.(enabled),
-  })
+    penModeChanged: enabled => {
+      if (sharedPenMode.enabled === enabled) return
+      sharedPenMode.enabled = enabled
+      for (const listener of sharedPenMode.listeners) listener(enabled)
+    },
+  }, sharedPenMode.enabled)
+  const onPenMode = (enabled: boolean) => { touch.setPenMode(enabled); services.penModeChanged?.(enabled) }
+  sharedPenMode.listeners.add(onPenMode)
+  services.penModeChanged?.(touch.penMode)
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
@@ -126,7 +137,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }
     }
   }
-  const move = (event: PointerEvent) => { if (current() && event.pointerType === 'touch') touch.touchMove(contact(event)) }
+  const move = (event: PointerEvent) => {
+    if (!current()) return
+    if (event.pointerType === 'touch') touch.touchMove(contact(event))
+    else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
+  }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp)
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
@@ -135,6 +150,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('pointermove', move, true)
   view.surface.addEventListener('pointerup', up, true)
   view.surface.addEventListener('pointercancel', up, true)
+  view.surface.addEventListener('lostpointercapture', up, true)
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
     if (current() && router.activeOwner instanceof LiveInk) router.activeOwner.publish()
@@ -151,7 +167,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { router.resumeInk(view.token); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
-      if (id === 'escape') { services.cancelPendingGestures(); if (pointer.interrupt('escape')) return true }
+      if (id === 'escape') {
+        const cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('escape') || cancelled) return true
+      }
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
@@ -194,6 +213,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointermove', move, true)
     view.surface.removeEventListener('pointerup', up, true)
     view.surface.removeEventListener('pointercancel', up, true)
+    view.surface.removeEventListener('lostpointercapture', up, true)
+    sharedPenMode.listeners.delete(onPenMode)
     stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopMirror(); stopWet()
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
     if (gestureOwner.get(session) === owner) gestureOwner.delete(session)

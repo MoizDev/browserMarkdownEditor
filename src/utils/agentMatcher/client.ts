@@ -2,6 +2,9 @@ import type { WorkerClient } from '../../platform/workers';
 import type { MatchAnswer, MatchBatch, MatchConfig, MatchFile, MatchProgress } from './types';
 
 const CHUNK_CHARS = 64 * 1024;
+// Matching line by line limits input granularity, not one regex match's runtime.
+// The host enforces this deadline and recycles the worker even if it is stuck;
+// clipping the returned text is not execution containment.
 const QUERY_MS = 5000;
 let active: AbortController | undefined;
 let owner: WorkerClient | undefined;

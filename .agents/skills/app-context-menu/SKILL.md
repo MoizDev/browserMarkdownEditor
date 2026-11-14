@@ -81,10 +81,10 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   taken the keyboard**: a row's `run` may place focus deliberately and runs synchronously while the
   cleanup does not — measured, an unconditional restore sent the caret from the new table's first cell
   back to `.cm-content`, past the table.
-- **Both the menu and the flyout cancel their own `dragover`/`drop`.** An uncancelled drop target
-  navigates the whole app away to the dropped file, taking every unsaved buffer with it — the same
-  rule `.view-content` and the split divider already follow. A right-click **on** the menu is
-  prevented too, or the browser's menu opens on top of the app's.
+- **Both the menu and the flyout cancel their own `dragover`/`drop`.** An unclaimed desktop file
+  drop opened a separate browser tab in the D11 reproduction; the app and dirty note remained open.
+  The window fallback also refuses unclaimed file/link drops, but these surfaces consume their own.
+  A right-click **on** the menu is prevented too, or the browser's menu opens on top of the app's.
 - **The clipboard is two different stories and the menu has to tell both.** `⌘X`/`⌘C`/`⌘V` are the
   browser's and need no permission — they *are* the gesture. A **menu row** is not: by the time it is
   clicked the right-click is spent, so Chromium permission-gates `navigator.clipboard.readText()` and

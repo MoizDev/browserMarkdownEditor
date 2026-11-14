@@ -43,7 +43,7 @@ import { useActivated } from './floatingSlot';
 const PdfPaneHost = React.memo(function PdfPaneHost({
     reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
     registerKeyboardTarget, ...rest
-}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading'> & {
+}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading' | 'documentId'> & {
     reading: ReaderIntegration;
     tab: OpenTab;
     emphasisEnabled: boolean;
@@ -91,7 +91,7 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         </div>
     );
     const LoadedPdfPane = module.Component;
-    return <LoadedPdfPane reading={binding} {...rest} />;
+    return <LoadedPdfPane reading={binding} documentId={tab.id} {...rest} />;
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
@@ -101,6 +101,7 @@ interface EditorPaneProps {
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
+    closingDocumentIds: ReadonlySet<string>;
     /** The columns, each with its own tabs, and which column has focus. */
     layout: TabLayout;
     theme: Theme;
@@ -308,7 +309,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1103,6 +1104,7 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             registerKeyboardTarget={registerKeyboardTarget}
                             file={tab.file}
                             isVisible={visible}
+                            retainClosing={closingDocumentIds.has(tab.id)}
                             isFocused={tab.file.path === focusedPath}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}

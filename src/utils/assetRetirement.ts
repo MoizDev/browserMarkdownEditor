@@ -96,7 +96,7 @@ export interface RetirementProof {
 
 export interface RetirementDecision {
     retire: Set<string>;
-    /** Unknown proofs are retried; a positively referenced asset is not an orphan. */
+    /** Referenced or unknown candidates retry after a relevant change. */
     blocked: RetirementCandidates;
 }
 
@@ -149,8 +149,15 @@ async function linkedNames(source: string | ReadableStream<Uint8Array>, candidat
 export async function decideAssetRetirement(proof: RetirementProof): Promise<RetirementDecision> {
     const note = new Set(proof.candidates.note), board = new Set(proof.candidates.board);
     const candidates = new Set([...note, ...board]);
-    const blocked = (): RetirementDecision => ({ retire: new Set(), blocked: { note, board } });
-    const keep = (name: string) => { candidates.delete(name); note.delete(name); board.delete(name); };
+    const retainedNote = new Set<string>(), retainedBoard = new Set<string>();
+    const blocked = (): RetirementDecision => ({ retire: new Set(), blocked: {
+        note: new Set([...note, ...retainedNote]), board: new Set([...board, ...retainedBoard]),
+    } });
+    const keep = (name: string) => {
+        candidates.delete(name);
+        if (note.delete(name)) retainedNote.add(name);
+        if (board.delete(name)) retainedBoard.add(name);
+    };
     try {
         for (const read of proof.notes) {
             if (!proof.current()) return blocked();
@@ -159,14 +166,14 @@ export async function decideAssetRetirement(proof: RetirementProof): Promise<Ret
             const linked = await linkedNames(text, candidates);
             if (!proof.current() || linked === null) return blocked();
             for (const name of linked) keep(name);
-            if (!candidates.size) return { retire: candidates, blocked: { note, board } };
+            if (!candidates.size) return { retire: candidates, blocked: { note: retainedNote, board: retainedBoard } };
         }
         for (const read of proof.boards) {
             if (!proof.current()) return blocked();
             const refs = await read();
             if (!proof.current() || !refs.ok) return blocked();
             for (const name of refs.names) keep(name);
-            if (!candidates.size) return { retire: candidates, blocked: { note, board } };
+            if (!candidates.size) return { retire: candidates, blocked: { note: retainedNote, board: retainedBoard } };
         }
         for (const name of [...board]) {
             if (note.has(name)) continue;
@@ -177,6 +184,6 @@ export async function decideAssetRetirement(proof: RetirementProof): Promise<Ret
             if (!proof.current() || hash === null) return blocked();
             if (hash !== match[1]) keep(name);
         }
-        return { retire: candidates, blocked: { note: new Set(), board: new Set() } };
+        return { retire: candidates, blocked: { note: retainedNote, board: retainedBoard } };
     } catch { return blocked(); }
 }

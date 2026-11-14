@@ -57,7 +57,8 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   waits for sustained low usage and no gesture. Never bypass a denied reservation. Report worker
   owned/WASM byte estimates (not real JS heap or bytes already leased) with
   `reportWorkerMemory(worker, bytes)`; `releaseWorkerMemory(worker)` on stop/crash/recycle.
-  Both are lazy render exports, keyed by the actual worker incarnation and charged to CPU.
+  Both are lazy render exports keyed by the actual worker incarnation; these estimates are
+  report-only, separate from the decoded-raster CPU budget C (design §6.2; worker-host §5.8).
 
 ## Boundaries
 
@@ -71,3 +72,6 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   never evicts a visible neighbour; insufficient shared memory lowers resolution, never blanks.
   Respect app visibility separately from focus and window suspension. Rendering and mirror updates
   must be lease/token checked so a late old pane cannot overwrite a replacement (design §3.3).
+- The benchmark CPU coverage witness reserves `4P` bytes for its transferred immutable bitmap plus
+  `16 * bandArea` for worker scratch (bands of at most 65,536 pixels). Counting yields cooperatively
+  between bands. Accepted observations drain after hide as retirement; hide never starts fresh paint.

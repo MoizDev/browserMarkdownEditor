@@ -440,6 +440,8 @@ The **⋯ → Read extracted text** action is a separate, manual reading choice 
 
 **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
 
+The tiled PDF reader's **PDF feature limitations** notice explains its font policy: when it substitutes non-embedded fonts, it uses bundled Noto faces where supported. Ambiguous Chinese uses Simplified Chinese (SC), and a known character set takes precedence over a conflicting language hint. This is a general policy, not a claim that a particular page needed a substitute.
+
 In the tiled PDF reader, **Contents** in the bottom controls opens the PDF's bookmarks when it has them. Click a heading to jump there; use the arrow keys to move through or expand the tree, and Enter to follow a heading. Escape closes Contents and returns focus to its button. Page thumbnails use the same physical page numbers as the page box.
 
 In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.

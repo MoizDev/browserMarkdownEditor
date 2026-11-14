@@ -34,7 +34,6 @@ export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { update
     const id = context.resolve(op.id), node = editableNode(context.doc, context.sheet, id), builder = context.builder;
     const geometry = op.page !== undefined || op.x !== undefined || op.y !== undefined || op.w !== undefined
         || op.h !== undefined || op.rotation !== undefined;
-    const placement = geometry ? context.placement(node, op) : { ops: [] as readonly NodeSetOp[], notes: [] as readonly string[] };
     if (op.text !== undefined && node.kind !== 'text' && node.kind !== 'sticky' && node.kind !== 'figure' && node.kind !== 'connector')
         throw new AgentOpRefused('shape does not support text');
     if (op.color !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'text'
@@ -43,7 +42,6 @@ export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { update
     if (op.dash !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'connector' && node.kind !== 'polyline') throw new AgentOpRefused('shape does not support dash');
     if (op.size !== undefined && node.kind !== 'stroke' && node.kind !== 'figure' && node.kind !== 'text'
         && node.kind !== 'sticky' && node.kind !== 'connector' && node.kind !== 'polyline') throw new AgentOpRefused('shape does not support size');
-    for (const change of placement.ops) builder.push(change);
     if (op.text !== undefined) {
         if (node.kind === 'text' || node.kind === 'sticky') builder.push({ t: 'set', id, key: 'text', value: plainRichText(op.text) });
         else if (node.kind === 'figure' || node.kind === 'connector') builder.push({ t: 'set', id, key: 'label', value: op.text ? plainRichText(op.text) : null });
@@ -68,5 +66,9 @@ export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { update
             }
         }
     }
+    // Text/style changes can change bounds. Measure the staged node, not its
+    // stale pre-op record; a refusal rolls all of these changes back together.
+    const placement = geometry ? context.placement(context.doc.nodes.get(id)!, op) : { ops: [] as readonly NodeSetOp[], notes: [] as readonly string[] };
+    for (const change of placement.ops) builder.push(change);
     return { updated: [id], notes: placement.notes ?? [] };
 }

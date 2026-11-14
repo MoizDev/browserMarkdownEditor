@@ -28,6 +28,7 @@ export async function capturePng(capture: PngCapture, signal: AbortSignal): Prom
   try {
     return await encodeTiledPngInWorker(width, height,
       createRasterTileRenderer({ frame, resources: prepared.resources, world, scale, background }),
+      { session: crypto.randomUUID(), epoch: frame.token.vaultEpoch, revision: frame.sceneRevision },
       { clipboard, pixelsPerWorldUnit: scale, signal })
   } finally { prepared.dispose() }
 }

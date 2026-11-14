@@ -93,6 +93,35 @@ export class ClipboardCopy {
         }
     }
 
+    /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
+    async copyMenuFresh(capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
+        if (this.disposed) throw new Error('Clipboard cache is closed');
+        const controller = new AbortController();
+        let held: HeldSnapshot | undefined, finished = false;
+        const prepared = capture(controller.signal).then(snapshot => {
+            const owner: HeldSnapshot = { snapshot, count: 1 };
+            if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
+            held = owner;
+            if (!this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
+            if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
+            const commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
+            return { owner, envelope: encodeClipboardNow(snapshot, new Map()), commitCut };
+        });
+        const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
+        const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));
+        void plain.catch(() => undefined); void html.catch(() => undefined);
+        try {
+            await navigator.clipboard.write([new ClipboardItem({ 'text/plain': plain, 'text/html': html })]);
+            const result = await prepared;
+            if (this.disposed) return;
+            this.remember(result.owner, result.envelope);
+            if (result.envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
+            if (result.owner.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${result.owner.snapshot.skippedOpaque.join(', ')}`);
+            result.commitCut?.();
+        } catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.'); }
+        finally { finished = true; controller.abort(); if (held) release(held); }
+    }
+
     async copyMenu(cut = false): Promise<void> {
         const candidate = this.candidate;
         if (!candidate) throw new Error('Nothing selected');

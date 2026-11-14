@@ -1,7 +1,7 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NodeId } from '../model/ids';
-import type { MediaEntry } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 
 // Provenance: media §6 session playback, C4 visibility and verified-blob
 // authority; independent detached video lifecycle, no upstream engine source.
@@ -17,6 +17,7 @@ export interface VideoPlaybackHost {
 }
 interface Player {
     readonly id: NodeId;
+    readonly mediaId: MediaId;
     readonly video: HTMLVideoElement;
     readonly url: string;
     readonly memory: ByteLease;
@@ -75,7 +76,7 @@ export class BoardVideoPlayback {
     enableSound(id: NodeId): void {
         if (!this.host.current() || !this.visible) throw new DOMException('Video session is unavailable', 'AbortError');
         const state = this.state(id), player = state.player;
-        if (!player || player.closed || !state.visible) throw new Error('Video is not visible');
+        if (!player || player.closed || !state.visible || this.host.source(id)?.entry.id !== player.mediaId) throw new Error('Video is not visible');
         if (soundOwner && soundOwner !== player && !soundOwner.closed) soundOwner.video.muted = true;
         soundOwner = player; state.muted = false; player.video.muted = false;
     }
@@ -87,7 +88,7 @@ export class BoardVideoPlayback {
     frame(id: NodeId): HTMLVideoElement | null {
         const state = this.states.get(id), player = state?.player;
         return !this.disposed && this.visible && state?.visible && player && !player.closed && this.host.current()
-            && player.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ? player.video : null;
+            && this.host.source(id)?.entry.id === player.mediaId && player.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ? player.video : null;
     }
     remove(id: NodeId): void {
         const state = this.states.get(id); if (!state) return;
@@ -101,8 +102,9 @@ export class BoardVideoPlayback {
     }
     private reconcile(id: NodeId, state: State): void {
         if (this.disposed || !this.visible || !state.visible || !this.host.current()) { this.close(state); return; }
+        const source = this.host.source(id);
+        if (state.player && (!source || source.entry.id !== state.player.mediaId)) this.close(state);
         if (!state.player) {
-            const source = this.host.source(id);
             if (!source || !(source.blob instanceof Blob) || !source.entry.mime.startsWith('video/') || source.blob.size !== source.entry.bytes) return;
             const pixels = source.entry.w * source.entry.h;
             if (!Number.isSafeInteger(pixels) || pixels < 1 || pixels > 2 ** 26) throw new RangeError('Invalid video dimensions');
@@ -113,7 +115,7 @@ export class BoardVideoPlayback {
                 url = URL.createObjectURL(source.blob);
                 const video = document.createElement('video');
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
-                const player: Player = { id, video, url, memory, callback: null, closed: false };
+                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false };
                 state.player = player; state.muted = true;
                 video.addEventListener('loadedmetadata', () => {
                     if (player.closed || !this.host.current()) return;
@@ -125,6 +127,7 @@ export class BoardVideoPlayback {
                 video.src = url;
                 const frame = () => {
                     if (player.closed || !this.visible || !state.visible || !this.host.current()) return;
+                    if (this.host.source(id)?.entry.id !== player.mediaId) { this.close(state); return; }
                     this.host.invalidate(id);
                     player.callback = video.requestVideoFrameCallback(frame);
                 };

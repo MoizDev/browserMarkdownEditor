@@ -112,7 +112,8 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                     }
                     const ends: number[] = [];
                     let count = pages.length;
-                    for (const source of sources) { count += source.nodeCount; ends.push(count); }
+                    // Each sheet's underlay precedes its own content, while later sheets stay above earlier sheets.
+                    for (const source of sources) { count += source.nodeCount * 2; ends.push(count); }
                     if (!Number.isSafeInteger(count)) throw new RangeError('Export paint count exceeds limits');
                     return { token, sceneRevision: pin.revision, nodeCount: count,
                         isCurrent: () => !released && sources.every(source => source.isCurrent()),
@@ -125,9 +126,10 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                             let sourceIndex = 0;
                             while (index >= ends[sourceIndex]) sourceIndex++;
                             const start = sourceIndex === 0 ? pages.length : ends[sourceIndex - 1];
-                            const node = sources[sourceIndex].readNode(index - start);
-                            return selected ? { underlay: node.underlay?.filter(item => selected.has(item.nodeId)),
-                                content: node.content.filter(item => selected.has(item.nodeId)) } : node;
+                            const source = sources[sourceIndex], relative = index - start;
+                            const node = source.readNode(relative % source.nodeCount);
+                            const items = relative < source.nodeCount ? node.underlay ?? [] : node.content;
+                            return { content: selected ? items.filter(item => selected.has(item.nodeId)) : items };
                         } };
                 },
                 release() {

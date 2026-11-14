@@ -1,6 +1,8 @@
 import type { Box } from './bounds';
 import { createCircleClipBoundsJob } from './circleClipBounds';
 import type { CircleClipResult } from './circleClipBounds';
+import { exactLineThrough, exactPoint, exactSide } from './homogeneous';
+import type { ExactLine, ExactPoint } from './homogeneous';
 import { add, dyadic, dyadicSubtract, interval, multiply, nextDown, nextUp, sqrtInterval, subtract } from './numeric';
 import type { Dyadic, Interval } from './numeric';
 import type { Cubic, Vec2 } from './path';
@@ -11,6 +13,7 @@ export type ClippedTubeResult =
     | { readonly status: 'uncertain'; readonly reason: string };
 export type ClippedTubeStep = { readonly done: false } | { readonly done: true; readonly result: ClippedTubeResult };
 export interface ClippedTubeLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number }
+export type ClippedTubeClip = readonly Vec2[] | { readonly inner: readonly Vec2[]; readonly outer: readonly Vec2[] };
 export interface ClippedTubeBudget { readonly deadline: number; readonly maxWork: number }
 
 type Coordinate = { readonly range: Interval; readonly exact: Dyadic; readonly value: number };
@@ -57,29 +60,37 @@ function union(a: Box | null, b: Box): Box {
 function uncertainty(reason: string): ClippedTubeResult { return { status: 'uncertain', reason }; }
 
 /** A depth-first certified union of clipped outer balls and actual inner discs. */
-export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readonly [number, number], clip: readonly Vec2[], tolerance: number,
+export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readonly [number, number], clip: ClippedTubeClip, tolerance: number,
     limits: ClippedTubeLimits = {}): { step(budget: ClippedTubeBudget): ClippedTubeStep } {
     const points = [curve.p0, curve.p1, curve.p2, curve.p3];
     const radii: readonly [number, number] = typeof radius === 'number' ? [radius, radius] : radius;
     if (!points.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) || radii.length !== 2 || radii.some(r => !Number.isFinite(r) || r < 0)
         || !Number.isFinite(tolerance) || tolerance <= 0) throw new RangeError('Invalid cubic tube or tolerance');
     const maxDepth = limits.maxDepth ?? 32, maxNodes = limits.maxNodes ?? 65536, maxWork = limits.maxWork ?? 10000000;
+    const sourceOuter = 'outer' in clip ? clip.outer : clip, sourceInner = 'inner' in clip ? clip.inner : clip;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 64 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
-        || !Number.isSafeInteger(maxWork) || maxWork < 1 || clip.length > 256) throw new RangeError('Invalid cubic tube work limits');
-    const polygon = clip.map(p => ({ ...p }));
+        || !Number.isSafeInteger(maxWork) || maxWork < 1 || sourceOuter.length > 1024 || sourceInner.length > 1024) throw new RangeError('Invalid cubic tube work limits');
+    const outerPolygon = sourceOuter.map(p => ({ ...p }));
+    const innerPolygon = sourceInner === sourceOuter ? outerPolygon : sourceInner.map(p => ({ ...p }));
     const controls = points.map(p => ({ x: coord(p.x), y: coord(p.y) })) as unknown as Controls;
     const stack: WorkNode[] = [{ controls, radii: [interval(radii[0]), interval(radii[1])], depth: 0 }];
     let nodes = 1, spent = 0, result: ClippedTubeResult | undefined = tolerance / 8 === 0
-        ? uncertainty('Cubic tube tolerance is below the numeric budget') : undefined;
+        ? uncertainty('Cubic tube tolerance is below the numeric budget') : outerPolygon.length === 0 && innerPolygon.length === 0
+            ? { status: 'empty' } : undefined;
     let outer: Box | null = null;
     // Each entry bounds an actual inner extremum on the inside, not merely the
     // outward edge of the circle job's numerical enclosure.
     let innerMinX = Infinity, innerMinY = Infinity, innerMaxX = -Infinity, innerMaxY = -Infinity;
-    type Pending = { readonly kind: 'outer' | 'inner'; readonly job: ReturnType<typeof createCircleClipBoundsJob> };
+    type Pending = { readonly kind: 'outer' | 'inner' | 'validateOuter' | 'validateInner'; readonly job: ReturnType<typeof createCircleClipBoundsJob> };
     let pending: Pending | undefined, node: WorkNode | undefined, parts: ReturnType<typeof split> | undefined;
     let currentOuter: Box | null = null, sample = 0;
+    let phase: 'validateOuter' | 'validateInner' | 'outerLines' | 'innerLines' | 'outerWinding' | 'innerWinding' | 'subset' | 'ready' = 'validateOuter';
+    const outerLines: ExactLine[] = [], innerLines: ExactLine[] = [];
+    let index = 0, subIndex = 0, outerWinding = 0, innerWinding = 0;
+    let witness: { point: ExactPoint; control: Control; edge: number } | undefined;
     const finish = (value: ClippedTubeResult): ClippedTubeStep => { result = value; return { done: true, result: value }; };
     const startCircle = (kind: Pending['kind'], centre: Vec2, r: number) => {
+        const polygon = kind === 'inner' || kind === 'validateInner' ? innerPolygon : outerPolygon;
         pending = { kind, job: createCircleClipBoundsJob({ centre, radius: r }, polygon, tolerance / 8) };
     };
     const acceptInner = (value: CircleClipResult) => {
@@ -100,11 +111,52 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readon
                 if (!progress.done) continue;
                 const kind = pending.kind; pending = undefined;
                 if (progress.result.status === 'uncertain') return finish(uncertainty(progress.result.reason));
+                if (kind === 'validateOuter') { phase = innerPolygon.length ? 'validateInner' : 'outerLines'; continue; }
+                if (kind === 'validateInner') { phase = 'outerLines'; continue; }
                 if (kind === 'outer') {
                     if (progress.result.status === 'empty') { node = undefined; parts = undefined; continue; }
                     currentOuter = progress.result.bounds; sample = 0;
                 } else acceptInner(progress.result);
                 continue;
+            }
+            if (phase === 'validateOuter' || phase === 'validateInner') { startCircle(phase, { x: 0, y: 0 }, 0); continue; }
+            if (phase === 'outerLines' || phase === 'innerLines') {
+                const polygon = phase === 'outerLines' ? outerPolygon : innerPolygon, lines = phase === 'outerLines' ? outerLines : innerLines;
+                if (index < polygon.length) { lines.push(exactLineThrough(polygon[index], polygon[(index + 1) % polygon.length])); index++; continue; }
+                index = 2; phase = phase === 'outerLines' ? 'innerLines' : 'outerWinding';
+                if (phase === 'innerLines') index = 0;
+                continue;
+            }
+            if (phase === 'outerWinding' || phase === 'innerWinding') {
+                const polygon = phase === 'outerWinding' ? outerPolygon : innerPolygon, lines = phase === 'outerWinding' ? outerLines : innerLines;
+                if (polygon.length && index < polygon.length) {
+                    const side = exactSide(lines[0], exactPoint(polygon[index++]));
+                    if (side) { if (phase === 'outerWinding') outerWinding = side; else innerWinding = side; index = polygon.length; }
+                    continue;
+                }
+                if (polygon.length && !(phase === 'outerWinding' ? outerWinding : innerWinding)) return finish(uncertainty('Clip envelope has no area'));
+                if (phase === 'outerWinding') { phase = 'innerWinding'; index = 2; }
+                else { phase = 'subset'; index = 0; subIndex = 0; }
+                continue;
+            }
+            if (phase === 'subset') {
+                if (index < innerPolygon.length && outerLines.length) {
+                    if (exactSide(outerLines[subIndex], exactPoint(innerPolygon[index])) * outerWinding < 0) return finish(uncertainty('Inner clip is not contained in outer clip'));
+                    if (++subIndex === outerLines.length) { subIndex = 0; index++; }
+                    continue;
+                }
+                if (!outerLines.length) return finish(uncertainty('Outer clip is empty while inner clip is not'));
+                phase = 'ready'; continue;
+            }
+            if (witness) {
+                if (witness.edge < innerLines.length) {
+                    if (exactSide(innerLines[witness.edge++], witness.point) * innerWinding < 0) witness = undefined;
+                    continue;
+                }
+                const p = witness.control;
+                innerMinX = Math.min(innerMinX, p.x.range.hi); innerMinY = Math.min(innerMinY, p.y.range.hi);
+                innerMaxX = Math.max(innerMaxX, p.x.range.lo); innerMaxY = Math.max(innerMaxY, p.y.range.lo);
+                witness = undefined; continue;
             }
             if (!node) {
                 node = stack.pop();
@@ -128,9 +180,11 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readon
                 // Shrinking by centre uncertainty makes this disc a subset of
                 // the real disc; a nonrepresentable radius-zero sample is skipped.
                 const radius = Math.max(0, r.lo);
-                if (actual.error > radius || (radius === 0 && actual.error !== 0)) continue;
                 const innerRadius = actual.error === 0 ? radius : nextDown(radius - actual.error);
-                if (innerRadius < 0 || !Number.isFinite(innerRadius)) continue;
+                if (innerPolygon.length && (radius === 0 || actual.error > radius || innerRadius < 0 || !Number.isFinite(innerRadius))) {
+                    witness = { point: { x: p.x.exact, y: p.y.exact, w: { n: 1n, e: 0 } }, control: p, edge: 0 }; continue;
+                }
+                if (!innerPolygon.length) continue;
                 startCircle('inner', actual.centre, innerRadius); continue;
             }
             const box = currentOuter!;
@@ -149,7 +203,7 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readon
 }
 
 /** Synchronous convenience; interactive callers must drive the resumable job. */
-export function clippedTubeBounds(curve: Cubic, radius: number | readonly [number, number], clip: readonly Vec2[], tolerance: number,
+export function clippedTubeBounds(curve: Cubic, radius: number | readonly [number, number], clip: ClippedTubeClip, tolerance: number,
     limits?: ClippedTubeLimits): ClippedTubeResult {
     const job = createClippedTubeBoundsJob(curve, radius, clip, tolerance, limits);
     for (;;) { const step = job.step({ maxWork: 4096, deadline: Number.MAX_VALUE }); if (step.done) return step.result; }

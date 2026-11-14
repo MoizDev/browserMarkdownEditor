@@ -24,6 +24,8 @@ export interface PreparePdfInkSessionOptions {
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
+    /** Cold agent acquisition cannot initiate annotation of an unannotated PDF. */
+    readonly requireExistingNative?: boolean;
     readonly prepareOwned: typeof prepareOwnedPdfInk;
     readonly createHost: typeof createPdfInkHost;
     readonly validateLoadedHost: typeof validateLoadedPdfInkHost;
@@ -67,6 +69,10 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     let accepted;
     try { signal.throwIfAborted(); if (!current()) throw stale(); accepted = acquisition.take(); }
     catch (error) { await acquisition.dispose(); throw error; }
+    if (options.requireExistingNative && accepted.kind !== 'native') {
+        await accepted.release();
+        throw new Error('Open Annotate before editing an unannotated PDF.');
+    }
     return prepareAcceptedPdfInkSession(options, accepted);
 }
 

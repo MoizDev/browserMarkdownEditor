@@ -15,6 +15,9 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   `PlatformLayerDefinition` and borrow the stable `LayerHost` in `compositor.types.ts`. A layer
   supplies both `drawGpu` and the complete `draw2d` path, including normal, hidden-show and loss
   fallback; 2D is not a placeholder. Compositors borrow layers; the pane lifecycle owns them.
+- `PlatformPaneOptions.backendPreference: 'canvas2d'` fixes an attachment to CPU without requesting a
+  GPU context; omitted/`'auto'` permits normal qualification. An optional `camera` shares the same
+  `CameraController` instance with the pane scheduler; otherwise attachment creates its own.
 - A layer never owns an rAF loop. Call `host.invalidate(reason)` on input or ready async data and
   `host.wakeAt(deadline)` for real delayed work, cancel with `wakeAt(null)`. `needsFrame()` is false
   while merely waiting on a worker. The app-wide scheduler coalesces visible panes and sleeps when
@@ -41,7 +44,8 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   canonical CPU/GPU allocators; a failed `reserve` means defer or use a lower-quality/2D path, not
   an unaccounted allocation. Return the same lease to the allocator that issued it; GPU retirement
   remains charged until complete (C4.3, design §§5.6, 6, 7.1).
-- `host.device()` can be null; reacquire it after backend/generation changes, and never import the
+- `host.device()` describes the GPU resources available to the preparing compositor, not a promise
+  about the displayed backend; it can be null. Reacquire it after backend/generation changes, and never import the
   broker or native GL into a layer. `host.uniforms(bytes)` is valid only during `drawGpu` and uses
   the current encoder's fenced ring. `host.drawTexturedQuad` takes source texels including real
   gutters and a device-pixel destination for either backend. `host.paintWorld` and `host.paintPage`
@@ -58,6 +62,12 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   owned/WASM byte estimates (not real JS heap or bytes already leased) with
   `reportWorkerMemory(worker, bytes)`; `releaseWorkerMemory(worker)` on stop/crash/recycle.
   Both are lazy render exports, keyed by the actual worker incarnation and charged to CPU.
+- Capture belongs to the session: select an idle GPU route only if its full document/session token
+  matches the immutable capture snapshot, otherwise use CPU. Capture snapshots retain their own layers,
+  revision and isolation inventory for the requested region/scale; never reuse the live viewport plan.
+- CPU coverage witnesses and their helpers are benchmark-only conditional imports. Shadow backing,
+  bitmap staging and counting scratch are charged to the canonical allocators as measurement bytes;
+  they are not a dependency of normal rendering.
 
 ## Boundaries
 

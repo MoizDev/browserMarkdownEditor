@@ -73,6 +73,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
+    let trimQueued = false;
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
 
@@ -92,6 +93,17 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return { token: current, sourceRole: '', contentRevision: options.revision(), colourVersion: 0,
             geometryDigest: '', nominalDpr: lastView.viewport.dpr, view: lastView };
     };
+    const queueTrim = (): void => {
+        if (trimQueued) return;
+        trimQueued = true;
+        queueMicrotask(() => {
+            trimQueued = false;
+            if (disposed || !visible) return;
+            // Rebalance rebuildable caches without revoking another pane's native context.
+            lifecycle?.releaseGpu('pressure');
+            lifecycle?.invalidate('budget');
+        });
+    };
     const layerSet = new PaneLayerSet((id, current) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -103,7 +115,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         try {
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
-                evict: () => lifecycle?.releaseGpu('pressure') });
+                evict: queueTrim });
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
@@ -183,10 +195,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
         frameInterval: () => lastFrameInterval,
-        onEvict: () => {
-            const surface = lifecycle?.surface;
-            if (surface && gpu) surface.failGpu(surface.stamp, gpu.grant.generation, 'out-of-budget');
-        },
+        onEvict: queueTrim,
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;
@@ -323,6 +332,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     const view = mirrorView();
                                     if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete)) return null;
                                 }
+                                if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, viewEpoch: frame.view.epoch, revision });
                                 if (lastQuality !== qualityScale) {

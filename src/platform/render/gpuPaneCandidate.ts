@@ -36,6 +36,7 @@ interface Generation {
     grant: GpuGrant | null;
     disposed: boolean;
     failureReported: boolean;
+    deferredReported: boolean;
 }
 
 /** Qualified devices are built against the broker's context and kept detached until the lifecycle
@@ -78,7 +79,8 @@ export class GpuPaneCandidate {
                 onFramebufferFailure: () => defer(() => this.options.runtime.trouble('framebuffer')),
                 evict: () => defer(this.options.onEvict) });
         } catch (error) { backing.close(); throw error; }
-        const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
+        const generation: Generation = { preparation, services, backing, bundle: null, grant: null,
+            disposed: false, failureReported: false, deferredReported: false };
         generationRef.current = generation;
         this.current = generation;
         try {
@@ -100,7 +102,12 @@ export class GpuPaneCandidate {
                             code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
                     }
                 }),
-                onDeferred: () => this.options.invalidate('gpu-deferred'),
+                onDeferred: () => {
+                    const compositor = generation.bundle?.compositor;
+                    if (!compositor || !('retryPending' in compositor) || compositor.retryPending !== true || generation.deferredReported) return;
+                    generation.deferredReported = true;
+                    defer(() => this.options.runtime.trouble('allocation'));
+                },
             });
             generation.bundle = bundle;
             if (this.current !== generation || generation.disposed || preparation.signal.aborted) {
@@ -137,6 +144,10 @@ export class GpuPaneCandidate {
         generation.grant = grant;
         this.options.runtime.clearCapabilityFailure(this.options.paneId);
         this.options.onReady({ bundle: generation.bundle, grant, backing: generation.backing });
+    }
+
+    presented(generation: number): void {
+        if (this.current?.preparation.generation === generation) this.current.deferredReported = false;
     }
 
     /** Called only by the broker after it has actually set the native canvas to zero. */

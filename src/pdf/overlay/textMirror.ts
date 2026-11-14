@@ -75,6 +75,7 @@ export class PdfTextMirror {
     private readonly populated = new Set<number>();
     private readonly rendered = new Map<number, MirrorPageText>();
     private readonly live: HTMLDivElement;
+    private readonly skip: HTMLButtonElement;
     private announceTimer: ReturnType<typeof setTimeout> | undefined;
     private expectedSelection: MirrorSelection | null = null;
     private readonly onFocus: (event: FocusEvent) => void;
@@ -95,6 +96,7 @@ export class PdfTextMirror {
         skip.className = 'pdf-mirror-skip';
         skip.style.pointerEvents = 'auto';
         skip.addEventListener('click', options.openTextView);
+        this.skip = skip;
         root.append(skip);
         this.live = document.createElement('div');
         this.live.setAttribute('aria-live', 'polite');
@@ -136,6 +138,14 @@ export class PdfTextMirror {
         };
         root.addEventListener('focusin', this.onFocus);
         document.addEventListener('selectionchange', this.onSelection);
+    }
+
+    setViewport(x: number, y: number, zoom: number): void {
+        this.element.style.transform = `translate(${-x * zoom}px, ${-y * zoom}px) scale(${zoom})`;
+        this.skip.style.left = `${x}px`;
+        this.skip.style.top = `${y}px`;
+        this.skip.style.transformOrigin = '0 0';
+        this.skip.style.transform = `scale(${1 / zoom})`;
     }
 
     setPageBox(page: number, box: Rect): void {

@@ -1080,10 +1080,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 let work: HTMLCanvasElement | undefined;
                 let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
                 let ownedTask: RenderTask | undefined;
+                let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
                 st.rendering = target;
                 try {
-                    const page = await getPage(i);
+                    await getPage(i);
+                    renderLease = await session.acquireRender(i);
+                    const page = renderLease.page;
                     if (!current()) continue;
+                    session.markRendered(i);
                     const canvas = canvasElsRef.current[i];
                     if (!canvas) return;
                     const { rect, dpr } = target;
@@ -1133,6 +1137,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     }
                 } finally {
                     emphasis?.dispose();
+                    renderLease?.release();
                     if (st.renderTask === ownedTask) st.renderTask = undefined;
                     if (st.rendering === target) st.rendering = undefined;
                     if (work) { work.width = 0; work.height = 0; }
@@ -1149,7 +1154,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice, session]);
 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
@@ -1271,6 +1276,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     cancelPageRender(st);
                 }
             } else evictPage(i);
+            const st = pageStatesRef.current.get(i);
+            const held = st?.pageLease;
+            if (st && held) void Promise.allSettled([st.loopPromise, st.textPromise, st.linksPromise]).then(async () => {
+                if (visibleRef.current || st.pageLease !== held) return;
+                st.pageLease = undefined;
+                st.pagePromise = undefined;
+                (await held).release();
+            }).catch(() => {});
         }
     }, [isVisible, evictPage]);
 
@@ -1292,6 +1305,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
 
         // What is literally under the viewport, for the hide path below.
         onScreenRef.current = { first, last };
+        session.setVisible(true, first);
 
         const renderFrom = Math.max(0, first - RENDER_AHEAD);
         const renderTo = Math.min(n - 1, last + RENDER_AHEAD);
@@ -1330,7 +1344,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
-    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, session]);
     /** So the hide/show effect above can call the latest `updateWindow` without
      *  being re-created (and re-evicting) every time one of its deps moves. */
     const updateWindowRef = useRef(updateWindow);

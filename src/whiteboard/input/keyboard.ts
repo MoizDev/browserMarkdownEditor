@@ -38,6 +38,9 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
   { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
   { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', shift: true },
+  { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
+  { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
+  { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter', accel: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
   { id: 'delete', group: 'edit', label: 'Delete', key: 'Delete' },
@@ -80,8 +83,17 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'select.parent', group: 'edit', label: 'Select parent', key: 'ArrowUp', accel: true, shift: true },
   { id: 'text.bold', group: 'text-formatting', label: 'Bold', key: 'b', accel: true },
   { id: 'text.italic', group: 'text-formatting', label: 'Italic', key: 'i', accel: true },
+  { id: 'text.underline', group: 'text-formatting', label: 'Underline', key: 'u', accel: true },
+  { id: 'text.strike', group: 'text-formatting', label: 'Strikethrough', key: 's', accel: true, shift: true },
+  { id: 'text.highlight', group: 'text-formatting', label: 'Highlight', key: 'h', accel: true, shift: true },
+  { id: 'text.code', group: 'text-formatting', label: 'Inline code', key: 'e', accel: true },
+  { id: 'text.bullets', group: 'text-formatting', label: 'Bulleted list', key: '8', accel: true, shift: true },
+  { id: 'text.numbered', group: 'text-formatting', label: 'Numbered list', key: '7', accel: true, shift: true },
+  ...(['0', '1', '2', '3', '4', '5', '6'] as const).map(key => ({ id: `text.heading.${key}`, group: 'text-formatting', label: key === '0' ? 'Paragraph' : `Heading ${key}`, key, accel: true, alt: true })),
   { id: 'camera.zoomIn', group: 'view', label: 'Zoom in', key: '=', repeat: true },
   { id: 'camera.zoomOut', group: 'view', label: 'Zoom out', key: '-', repeat: true },
+  { id: 'camera.zoomInCursor', group: 'view', label: 'Zoom in at cursor', key: '=', shift: true, repeat: true },
+  { id: 'camera.zoomOutCursor', group: 'view', label: 'Zoom out at cursor', key: '-', shift: true, repeat: true },
   { id: 'camera.reset', group: 'view', label: 'Reset zoom', key: '0', shift: true },
   { id: 'camera.fit', group: 'view', label: 'Zoom to fit', key: '1', shift: true },
   { id: 'camera.selection', group: 'view', label: 'Zoom to selection', key: '2', shift: true },
@@ -110,6 +122,7 @@ export function shortcutGroups(mac: boolean): readonly ShortcutGroup[] {
 export interface KeyboardActions {
   readonly visible: () => boolean
   readonly enabled: () => boolean
+  readonly shortcutsEnabled?: () => boolean
   readonly modalOpen: () => boolean
   readonly editing: () => boolean
   run(id: string, event: KeyboardEvent): boolean
@@ -135,7 +148,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (actions.run('escape', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
-    if (!accel && !event.altKey && (event.key === ' ' || key === 'z')) {
+    if (actions.shortcutsEnabled?.() !== false && !accel && !event.altKey && (event.key === ' ' || key === 'z')) {
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
@@ -144,7 +157,8 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       : event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1).toLowerCase()
       : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code] : key
     const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
-    if (!binding || (event.repeat && !binding.repeat)) return
+    if (!binding || binding.group === 'text-formatting' || (event.repeat && !binding.repeat)) return
+    if (actions.shortcutsEnabled?.() === false && binding.id !== 'accessibility.repeat') return
     if (!actions.enabled() && !(['view', 'accessibility'].includes(binding.group) || binding.id === 'tool.select' || binding.id === 'tool.hand' || binding.id.startsWith('select.') || binding.id.startsWith('preferences.'))) return
     if (actions.run(binding.id, event)) { event.preventDefault(); event.stopPropagation() }
   }

@@ -29,7 +29,7 @@ function addNativeBytes(document: WriterNativeDocument, name: string, data: Uint
         if (!attachment) throw new PdfEngineError('FileError', 'Cannot add PDF attachment');
         const ptr = arena.bytes(data);
         if (!runtime.call('FPDFAttachment_SetFile', attachment, document.handle, ptr, data.byteLength)) throw new PdfEngineError('FileError', 'Cannot write PDF attachment');
-        setParameter(runtime, attachment, 'LocalVaultMarker', marker, arena);
+        if (!runtime.call('FPDFAttachment_SetDescription', attachment, arena.wide(marker))) throw new PdfEngineError('FileError', 'Cannot mark PDF attachment');
         if (writeMark !== undefined) setParameter(runtime, attachment, 'VaultWriteMark', writeMark, arena);
     } finally { arena.dispose(); }
 }
@@ -40,10 +40,8 @@ export function addNativeWriteMark(document: WriterNativeDocument, format: strin
     addNativeBytes(document, mark.name, mark.payload, mark.marker, mark.value);
 }
 
-/** FPDF_NO_INCREMENTAL, bounded sink, no filesystem handle. A failed callback,
- * cancelled request or absent/invalid mark can never produce commit-ready bytes. */
-export async function saveNativeMarkedPdf(document: WriterNativeDocument, writeId: string,
-    cancelled: () => boolean): Promise<Uint8Array> {
+/** FPDF_NO_INCREMENTAL, bounded sink, no filesystem handle. */
+export function saveNativePdf(document: WriterNativeDocument, cancelled: () => boolean): Uint8Array {
     const runtime = document.runtime, arena = new WriterArena(runtime), chunks: Uint8Array[] = [];
     let size = 0, callback = 0, failure: Error | undefined;
     try {
@@ -70,12 +68,18 @@ export async function saveNativeMarkedPdf(document: WriterNativeDocument, writeI
         const saved = runtime.call('FPDF_SaveAsCopy', document.handle, pointer, 2);
         if (failure) throw failure;
         if (!saved || cancelled()) throw new PdfEngineError(cancelled() ? 'AbortError' : 'FileError', 'PDFium could not complete the save');
-        const bytes = await sealPdfWriteMark(join(chunks));
-        const check = await checkPdfWriteMarkForBoard(bytes, writeId);
-        if (check.kind !== 'verified') throw new PdfEngineError('FileError', 'PDF write identity could not be verified');
-        return bytes;
+        return join(chunks);
     } finally {
         if (callback) runtime.removeFunction(callback);
         arena.dispose();
     }
+}
+
+/** A mark failure is never returned as commit-ready bytes. */
+export async function saveNativeMarkedPdf(document: WriterNativeDocument, writeId: string, cancelled: () => boolean): Promise<Uint8Array> {
+    const bytes = await sealPdfWriteMark(saveNativePdf(document, cancelled));
+    const check = await checkPdfWriteMarkForBoard(bytes, writeId);
+    if (cancelled()) throw new PdfEngineError("AbortError", "PDF save cancelled");
+    if (check.kind !== "verified") throw new PdfEngineError("FileError", "PDF write identity could not be verified");
+    return bytes;
 }

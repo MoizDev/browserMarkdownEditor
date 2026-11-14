@@ -15,6 +15,7 @@ export interface CoveragePlan {
     domain: BenchmarkPaintDomain;
     root: CoverageRoot | null;
     missing: boolean;
+    standInRatio: number;
     width: number;
     height: number;
 }

@@ -150,7 +150,8 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
         // A merged-away future block has no lossless carrier in the surviving tuple.
-        if (first.block !== last.block && endBlock.tail !== undefined && endBlock.tail !== '[]')
+        if (first.block !== last.block && endBlock.tail !== undefined && endBlock.tail !== '[]'
+            && (insert.blocks.length < 2 || insert.blocks[insert.blocks.length - 1].tail !== endBlock.tail))
             throw new Error('This edit would discard future block formatting');
         const prefix = sliceRuns(startBlock, 0, first.offset, false);
         const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to);

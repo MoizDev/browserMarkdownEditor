@@ -1,4 +1,4 @@
-import { createPlatformMirrors } from '../../platform/render';
+import { createPlatformMirrors, pagePresentation } from '../../platform/render';
 import type { BorrowedMirror, ByteLease, MirrorEntry, MirrorView, Rect, RenderToken } from '../../platform/render';
 import type { PlatformSessionSlots } from '../../platform/render/createPlatformMirrors';
 import type { CompositorMirrorQuad } from '../../platform/render/compositor.types';
@@ -10,6 +10,7 @@ export interface PdfMirrorPixels {
     readonly bitmap: ImageBitmap;
     readonly world: Readonly<Rect>;
     readonly source: Readonly<Rect>;
+    readonly page: Readonly<Rect>;
 }
 
 export interface PdfMirrorPublish {
@@ -73,11 +74,12 @@ export function getPdfSessionMirrors(options: {
         },
         /** The compositor consumes device-pixel destinations for the identical frozen view. */
         mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad {
-            const { bitmap, world, source } = item.pixels;
+            const { bitmap, world, source, page } = item.pixels;
             const { camera, viewport } = view.view;
             const scale = camera.z * viewport.dpr;
+            const offset = pagePresentation(page, { ...view.view, epoch: 0, moving: false }).restOffsetDevice;
             return { image: bitmap, sourceRect: source,
-                destRect: { x: (world.x - camera.x) * scale, y: (world.y - camera.y) * scale,
+                destRect: { x: (world.x - camera.x) * scale + offset.x, y: (world.y - camera.y) * scale + offset.y,
                     width: world.width * scale, height: world.height * scale } };
         },
     };

@@ -22,6 +22,7 @@ export class PdfSelectionGeometryCache {
     private visibility = new AbortController();
     private visible = true;
     private pinned = new Set<number>();
+    private findPage: number | null = null;
     private bytes = 0;
 
     constructor(private readonly document: PdfPoolDocument) { this.key = document.docKey; }
@@ -34,6 +35,10 @@ export class PdfSelectionGeometryCache {
     }
     setEndpoints(pages: readonly number[]): void {
         this.pinned = new Set(pages.filter(page => Number.isInteger(page) && page >= 0 && page < this.document.info.pageCount));
+        if (!this.visible) this.dropUnpinned();
+    }
+    setFindPage(page: number | null): void {
+        this.findPage = page !== null && Number.isInteger(page) && page >= 0 && page < this.document.info.pageCount ? page : null;
         if (!this.visible) this.dropUnpinned();
     }
     async get(page: number, priority: 0 | 1 | 2 | 3, external?: AbortSignal): Promise<PdfSelectionReply> {
@@ -55,7 +60,7 @@ export class PdfSelectionGeometryCache {
             if (previous) this.bytes -= previous.bytes;
             this.pages.delete(page);
             while (this.pages.size >= MAX_PAGES || this.bytes + bytes > MAX_BYTES) {
-                const victim = [...this.pages.keys()].find(index => !this.pinned.has(index));
+                const victim = [...this.pages.keys()].find(index => !this.pinned.has(index) && index !== this.findPage);
                 if (victim === undefined) break;
                 this.bytes -= this.pages.get(victim)!.bytes; this.pages.delete(victim);
             }
@@ -69,11 +74,11 @@ export class PdfSelectionGeometryCache {
         if (visible === this.visible) return;
         this.visible = visible;
         if (visible) this.visibility = new AbortController();
-        else { this.visibility.abort(); this.dropUnpinned(); }
+        else { this.visibility.abort(); this.findPage = null; this.dropUnpinned(); }
     }
     diagnostics(): { pages: number; bytes: number } { return { pages: this.pages.size, bytes: this.bytes }; }
     dispose(): void {
-        this.lifetime.abort(); this.visibility.abort(); this.pages.clear(); this.pinned.clear(); this.bytes = 0;
+        this.lifetime.abort(); this.visibility.abort(); this.pages.clear(); this.pinned.clear(); this.findPage = null; this.bytes = 0;
     }
     private dropUnpinned(): void {
         for (const [page, entry] of this.pages) if (!this.pinned.has(page)) { this.bytes -= entry.bytes; this.pages.delete(page); }

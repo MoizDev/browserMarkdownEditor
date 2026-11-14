@@ -101,7 +101,7 @@ async function spanMarks(style: string, inherited: Marks): Promise<Marks> {
     }
     return marks;
 }
-async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
+async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise<unknown> {
     const input = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
     // eslint-disable-next-line bme/html-sinks -- fixed opaque-origin sandbox, network-denied CSP; parsed nodes never enter its live DOM.
     const doc = new DOMParser().parseFromString(input, 'text/html');
@@ -110,6 +110,19 @@ async function parse(blob: Blob, mode: 'markers' | 'rich'): Promise<unknown> {
         if (depth > MAX_DEPTH || ++visited > MAX_NODES) throw new RangeError('Clipboard HTML is too complex');
         if ((visited & 255) === 0 || performance.now() - sliceStart > 4) { await pause(); sliceStart = performance.now(); }
     };
+    if (mode === 'metadata') {
+        let title = '', description = '', count = 0;
+        for (let child = doc.head.firstElementChild; child; child = child.nextElementSibling) {
+            if (++count > SECURITY_LIMITS.htmlElements) throw new RangeError('Preview metadata is too complex');
+            const tag = child.localName.toLowerCase();
+            if (!title && tag === 'title') title = (child.textContent ?? '').trim().slice(0, 500);
+            if (!description && tag === 'meta' && (child.getAttribute('name') ?? '').toLowerCase() === 'description') {
+                description = (child.getAttribute('content') ?? '').trim().slice(0, 2000);
+            }
+            if ((count & 255) === 0) await pause();
+        }
+        return { title, description };
+    }
     if (mode === 'markers') {
         let hasPrivate = false, payload: string | null = null, legacy: string | null = null;
         const walk = async (node: Node, depth: number): Promise<void> => {
@@ -229,7 +242,7 @@ const initialize = (event: MessageEvent) => {
                 done = true; send({ type: 'error' }); return;
             }
             parts.push(data.bytes); total += data.bytes.byteLength; send({ type: 'ack', seq: expected++ });
-        } else if (data.type === 'finish' && data.seq === expected && (data.mode === 'markers' || data.mode === 'rich')) {
+        } else if (data.type === 'finish' && data.seq === expected && (data.mode === 'markers' || data.mode === 'rich' || data.mode === 'metadata')) {
             done = true;
             void parse(new Blob(parts, { type: 'text/html' }), data.mode).then(result => send({ type: 'result', result }), () => send({ type: 'error' }));
         }

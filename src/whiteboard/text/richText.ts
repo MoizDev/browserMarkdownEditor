@@ -141,6 +141,9 @@ export function sliceRichText(text: RichText, from: number, to: number, preserve
 }
 
 function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {
+    const sourceHasCarriers = before.some((block, index) => !!block.carriers?.length || (index > 0 && block.tail !== undefined && block.tail !== '[]'));
+    const insertedHasCarriers = insert.blocks.some((block, index) => !!block.carriers?.length || (index === 0 && block.tail !== undefined && block.tail !== '[]'));
+    if (!sourceHasCarriers && !insertedHasCarriers) return insert.blocks.map(() => undefined);
     const last = before.length - 1, output = insert.blocks.map(() => [] as BlockCarrier[]);
     const lastOutput = output.length - 1;
     const suffixStart = (lastOutput === 0 ? firstOffset : 0) + blockTextLength(insert.blocks[lastOutput]);

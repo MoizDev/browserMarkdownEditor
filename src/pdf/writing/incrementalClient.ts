@@ -1,8 +1,10 @@
+import { createWorkerClient, cpuGovernor } from '../../platform/workers';
 import type { IncrementalPdfPage, IncrementalPdfSession, IncrementalPdfWriter } from '../../whiteboard/export/incrementalPdf';
 import type { IncrementalEmittedPdf, IncrementalOperation } from './incrementalTypes';
 export type { IncrementalEmittedPdf } from './incrementalTypes';
 
 const aborted = () => new DOMException('PDF export cancelled', 'AbortError');
+let nextSession = 0;
 
 /** Each session has one lazy worker and at most one in-flight chunk. */
 export function createIncrementalPdfWriter(options: {
@@ -13,43 +15,36 @@ export function createIncrementalPdfWriter(options: {
         async open(input, signal) {
             signal.throwIfAborted();
             if (input.notebookSource && !options.onFinish) throw new Error('Notebook source requires the native notebook finalizer');
-            const worker = new Worker(new URL('./incrementalWorker.ts', import.meta.url), { type: 'module' });
-            let closed = false, busy = false, serial = 0;
-            const lifetime = new AbortController();
-            let rejectPending: ((reason: unknown) => void) | undefined;
+            const client = createWorkerClient({ name: `pdf-incremental-${++nextSession}`, protocol: 1, permits: cpuGovernor,
+                spawn: () => new Worker(new URL('./incrementalWorker.ts', import.meta.url), { type: 'module' }) });
+            let closed = false, busy = false, generation: number | undefined;
+            const lifetime = new AbortController(), retirements = new Set<Promise<void>>();
             let finalizing: Promise<Uint8Array> | undefined;
             const cancel = () => {
                 if (closed) return;
-                closed = true; lifetime.abort(); worker.terminate(); rejectPending?.(aborted()); rejectPending = undefined;
+                closed = true; lifetime.abort(); client.dispose();
             };
-            const send = (operation: IncrementalOperation, requestSignal: AbortSignal): Promise<IncrementalEmittedPdf | undefined> => {
-                if (closed || requestSignal.aborted) { cancel(); return Promise.reject(aborted()); }
-                if (busy) { cancel(); return Promise.reject(new Error('Concurrent PDF export requests are not allowed')); }
+            const send = async (operation: IncrementalOperation, requestSignal: AbortSignal): Promise<IncrementalEmittedPdf | undefined> => {
+                if (closed || requestSignal.aborted) { cancel(); throw aborted(); }
+                if (busy) { cancel(); throw new Error('Concurrent PDF export requests are not allowed'); }
+                if (generation !== undefined && client.generation !== generation) { cancel(); throw new Error('PDF export worker was replaced'); }
                 busy = true;
-                const id = ++serial;
-                return new Promise((resolve, reject) => {
-                    let settled = false;
-                    const finish = (error?: unknown, value?: IncrementalEmittedPdf) => {
-                        if (settled) return; settled = true; busy = false; rejectPending = undefined;
-                        requestSignal.removeEventListener('abort', onAbort); worker.removeEventListener('message', onMessage);
-                        worker.removeEventListener('error', onError); worker.removeEventListener('messageerror', onError);
-                        if (error) { cancel(); reject(error); } else resolve(value);
-                    };
-                    const onAbort = () => finish(aborted());
-                    const onError = () => finish(new Error('PDF export worker failed'));
-                    const onMessage = (event: MessageEvent<{ id: number; ok: boolean; result?: IncrementalEmittedPdf }>) => {
-                        if (event.data?.id !== id) return finish(new Error('Invalid PDF export reply'));
-                        if (!event.data.ok) return finish(new Error('PDF export refused invalid input'));
-                        finish(undefined, event.data.result);
-                    };
-                    rejectPending = error => finish(error);
-                    requestSignal.addEventListener('abort', onAbort, { once: true });
-                    worker.addEventListener('message', onMessage); worker.addEventListener('error', onError); worker.addEventListener('messageerror', onError);
-                    try { worker.postMessage({ id, operation }); } catch (error) { finish(error); }
-                });
+                const request = client.request<IncrementalEmittedPdf | undefined>('step', operation,
+                    { priority: 2, cpu: 'governed', signal: requestSignal });
+                const retired = client.whenRetired(request);
+                retirements.add(retired);
+                void retired.then(() => retirements.delete(retired));
+                try {
+                    const result = await request;
+                    if (closed || requestSignal.aborted) throw aborted();
+                    if (generation === undefined) generation = client.generation;
+                    else if (client.generation !== generation) throw new Error('PDF export worker was replaced');
+                    return result;
+                } catch (error) { cancel(); throw error; }
+                finally { busy = false; }
             };
             try { await send({ kind: 'open', revision: input.revision, pageCount: input.pageCount }, signal); }
-            catch (error) { cancel(); throw error; }
+            catch (error) { cancel(); await Promise.all([...retirements]); throw error; }
             let activePage: IncrementalPdfPage | null = null;
             const session: IncrementalPdfSession = {
                 async beginPage(page, requestSignal) {
@@ -89,9 +84,9 @@ export function createIncrementalPdfWriter(options: {
                         finishSignal.throwIfAborted();
                         if (!(bytes instanceof Uint8Array) || !bytes.length) throw new Error('Invalid final PDF');
                         return bytes;
-                    } finally { cancel(); }
+                    } finally { cancel(); await Promise.all([...retirements]); }
                 },
-                async cancel() { cancel(); await finalizing?.then(() => {}, () => {}); },
+                async cancel() { cancel(); await Promise.all([...retirements]); await finalizing?.then(() => {}, () => {}); },
             };
             return session;
         },

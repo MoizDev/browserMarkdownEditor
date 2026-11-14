@@ -42,6 +42,7 @@ export interface ScheduledSubmission {
     readonly completed?: () => boolean;
     /** Benchmark observation is committed only after this exact display and its overlays agree. */
     readonly commitObservation?: () => void;
+    readonly cancelObservation?: () => void;
 }
 
 /** Encoding/submission belong to the compositor; abort cleanup must not publish pixels (§7.1:687–688).
@@ -661,7 +662,10 @@ export class FrameScheduler {
                     const submission = item.encoding.submit();
                     item.done = true;
                     if (!submission) { this.mark(item.work.entry, 'presentation-deferred', true); return; }
-                    if (!this.valid(item.work.entry, item.work.frame.token)) return;
+                    if (!this.valid(item.work.entry, item.work.frame.token)) {
+                        if (__BME_BENCH__) submission.cancelObservation?.();
+                        return;
+                    }
                     item.work.batch.submitted = true; item.work.batch.damage.consume();
                     item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)

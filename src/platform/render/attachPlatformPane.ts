@@ -372,7 +372,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 let qualityScale: number;
                                 if (mirrored) {
                                     encoding?.discard();
-                                    presented = { drawn: [], ...(__BME_BENCH__ ? { commitObservation: mirror!.commitObservation } : {}) };
+                                    presented = { drawn: [], ...(__BME_BENCH__ ? { commitObservation: mirror!.commitObservation,
+                                        cancelObservation: mirror!.cancelObservation } : {}) };
                                     complete = mirror!.complete;
                                     sharp = mirror!.sharp;
                                     staleVersion = mirror!.staleVersion;
@@ -381,7 +382,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     presented = encoding?.submit();
                                     if (!presented) return null;
                                     const coverage = drawing.coverage(frame);
-                                    if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
+                                    if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) {
+                                        if (__BME_BENCH__) presented.cancelObservation?.();
+                                        return null;
+                                    }
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
                                     staleVersion = coverage.staleVersion;
@@ -392,13 +396,19 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 const geometry = observer.current;
                                 if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision ||
                                     (liveCamera.x !== sourceCamera.x || liveCamera.y !== sourceCamera.y || liveCamera.z !== sourceCamera.z) ||
-                                    geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) return null;
+                                    geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) {
+                                    if (__BME_BENCH__) presented.cancelObservation?.();
+                                    return null;
+                                }
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;
                                 } else if (surfaceHost.current !== drawing) {
                                     const view = mirrorView();
-                                    if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete)) return null;
+                                    if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete)) {
+                                        if (__BME_BENCH__) presented.cancelObservation?.();
+                                        return null;
+                                    }
                                 }
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,

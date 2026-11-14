@@ -93,8 +93,9 @@ as live tldraw shapes.
 - `pdfRotation.ts` is pure quarter-turn arithmetic with no imports; `pdfRotate.ts` holds the pdf-lib
   half and is imported **only by `pdfBuild.worker.ts`** — App reaches it through
   `pdfBuildClient.rotatePdfAsync` (dynamically imported; the client imports types only), so pdf-lib
-  stays out of the main bundle. A page in the wild can carry 450, -90 or 89.9 — `asQuarter`
-  normalizes on the way in as well as out, because pdf-lib throws on a non-multiple of 90.
+  stays out of the main bundle. The worker accepts only finite quarter-turn deltas and valid page
+  indices; existing non-quarter rotations are refused rather than rounded into a destructive write.
+  Multiples such as 450 and -90 are normalized modulo 360.
 - **It runs in the build worker, with pdf-lib's ticks OFF — and so does every pdf-lib load/save.**
   By default `PDFDocument.load` stops on a `setTimeout(0)` every 100 objects and `save()` every 50,
   so one rotation scheduled ~3 × objects / 100 zero-delay timers on the MAIN thread, each costing
@@ -122,7 +123,7 @@ as live tldraw shapes.
   `recordFileWritten`, `clearPdfRenderData` (the parked original predates the turn) and a `diskRev`
   bump, which is what remounts the pane on the new bytes. The reader comes back on its page because
   the position record is per path and survives the remount.
-- **Refused on a PDF this app has annotated**, with a notice that says why: the strokes are authored
+- **Refused on a PDF this app has annotated**, in App and again at the worker's role gate, with a notice that says why: the strokes are authored
   against the pages as they are and `/Rotate` would turn the paper out from under every mark.
   The role read that decides it happens in the HANDLER, at the moment of the gesture — doing it on
   open would undo `needsSource`'s whole point (an attachment read for every PDF merely read).

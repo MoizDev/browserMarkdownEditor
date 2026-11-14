@@ -1,7 +1,7 @@
 import { createPdfFindEngine } from '../../utils/pdfFind';
 import type { PdfFindPageText } from '../../utils/pdfFind';
-import { pdfTextAnchor, PDF_TEXT_LIMITS } from '../../utils/pdfReadingText';
-import type { PdfFindBatch, PdfFindHit, PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextReaderOptions } from '../../utils/pdfReadingText';
+import { PDF_TEXT_LIMITS } from '../../utils/pdfReadingText';
+import type { PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextReaderOptions } from '../../utils/pdfReadingText';
 import { resolvePdfTextAnchor } from '../../utils/pdfTextAnchors';
 import type { PdfTextAnchorOptions, PdfTextAnchorResolution } from '../../utils/pdfTextAnchors';
 
@@ -9,12 +9,13 @@ import type { PdfTextAnchorOptions, PdfTextAnchorResolution } from '../../utils/
  * cancellation and priority promotion across all its callers. */
 export interface PdfPoolTextSource {
     readonly generation: number;
+    /** Raw immutable docKey plus extraction schema, not a path. */
+    readonly cacheKey?: string;
     readonly pageCount: number;
     text(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfFindPageText>;
     model(page: number, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PdfTextPage>;
 }
 const abort = () => new DOMException('PDF text operation cancelled', 'AbortError');
-const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
 /** The Text and Original surfaces share this reader and its one find index. */
 export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfTextReaderOptions): PdfTextReader {
@@ -60,7 +61,7 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
             throw error;
         } finally { active--; }
     };
-    const findEngine = createPdfFindEngine({ pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
+    const findEngine = createPdfFindEngine({ cacheKey: source.cacheKey, pageCount: signal => pageCount(signal), page: (page, signal) => source.text(page, 1, signalFor(signal)) });
     const resolveAnchor = async (anchor: PdfTextAnchor, opts: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution> => {
         const signal = signalFor(opts.signal);
         const count = await pageCount(signal);
@@ -72,33 +73,11 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
     return {
         generation: source.generation, getPageCount: pageCount, getPage, findEngine, resolveAnchor,
         async navigate(anchor) { return (await resolveAnchor(anchor, { sameSchema: true })).anchor; },
-        async *find(query, external): AsyncIterable<PdfFindBatch> {
-            const signal = signalFor(external), snippets = new Map<string, PdfFindHit>();
-            for await (const batch of findEngine.search(query, center, signal)) {
-                const hits: PdfFindHit[] = [];
-                let snippetPage = -1, text = '', steps = 0, deadline = performance.now() + 4;
-                for (const hit of batch.hits) {
-                    if ((++steps & 127) === 0 && performance.now() >= deadline) { await yieldTask(); deadline = performance.now() + 4; }
-                    if (signal.aborted) throw abort();
-                    const key = `${hit.page}:${hit.from}:${hit.to}`;
-                    let result = snippets.get(key);
-                    if (!result) {
-                        if (snippetPage !== hit.page) { text = (await findEngine.pageText(hit.page, signal)).text; snippetPage = hit.page; }
-                        result = { anchor: pdfTextAnchor({ text, physicalPageIndex: hit.page }, hit.from),
-                            snippet: text.slice(Math.max(0, hit.from - 32), Math.min(hit.to + 64, hit.from + 320)) };
-                        snippets.set(key, result);
-                    }
-                    hits.push(result);
-                }
-                yield { queryId: String(batch.queryId), hits, done: batch.done, pagesDone: batch.pagesDone,
-                    pagesTotal: batch.pagesTotal, truncated: batch.capped, textlessPages: batch.textlessPages,
-                    unavailablePages: [...new Set([...batch.failedPages, ...batch.partialPages])] };
-            }
-        },
         setWindow(index) { center = index; },
         setVisible(next) {
-            if (next === visible) return;
+            if (lifetime.signal.aborted || next === visible) return;
             visible = next;
+            findEngine.setVisible(next);
             if (next) { visibility = new AbortController(); if (hiddenTimer !== undefined) clearTimeout(hiddenTimer); hiddenTimer = undefined; }
             else { visibility.abort(); hiddenTimer = setTimeout(() => { findEngine.clearIndex(); hiddenTimer = undefined; }, 60_000); }
         },

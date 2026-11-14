@@ -2,6 +2,9 @@ import type { NoteFacts } from './facts';
 
 export interface IndexSession { vaultId: string; sessionNo: number }
 export interface IndexFile { path: string; kind: string }
+/** The list is usable for retirement only while fresh and after each version is re-statted. */
+export interface IndexBoardMedia { path: string; mtime: number; size: number; names: string[] }
+export interface IndexMediaSnapshot { folder: string; fresh: boolean; boards: IndexBoardMedia[] }
 export interface FileRecord extends IndexFile {
     rev: number;
     mtime: number;

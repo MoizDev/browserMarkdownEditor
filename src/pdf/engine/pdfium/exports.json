@@ -1,5 +1,5 @@
 {
-  "source": "planning/20-pdf/pipeline/02-engine-build.md section 3, op-to-exact-export table lines 348-393. Rows retain the table's grouping so each of the 136 native symbols is recorded exactly once; repeated operation names aggregate and requires edges resolve transitively.",
+  "source": "planning/20-pdf/pipeline/02-engine-build.md section 3, op-to-exact-export table lines 348-393. Rows retain the table's grouping; the two public Filespec description accessors are added by the PDF lead so all 138 native symbols are recorded exactly once. Repeated operation names aggregate and requires edges resolve transitively.",
   "rows": [
     { "ops": ["engine.init"], "exports": ["FPDF_InitLibraryWithConfig", "FPDF_DestroyLibrary", "FPDF_SetSystemFontInfo", "FPDF_AddInstalledFont"] },
     { "ops": ["doc.open", "writer.prepareSource", "writer.inspect", "writer.rotate"], "exports": ["FPDF_LoadCustomDocument", "FPDF_GetLastError"] },
@@ -20,9 +20,9 @@
     { "ops": ["page.links"], "exports": ["FPDFLink_Enumerate", "FPDFLink_GetAnnotRect", "FPDFLink_CountQuadPoints", "FPDFLink_GetQuadPoints", "FPDFLink_GetDest", "FPDFLink_GetAction", "FPDF_CountNamedDests", "FPDF_GetNamedDestByName"] },
     { "ops": ["page.links", "doc.outline"], "exports": ["FPDFAction_GetType", "FPDFAction_GetDest", "FPDFAction_GetURIPath", "FPDFAction_GetFilePath", "FPDFDest_GetDestPageIndex", "FPDFDest_GetView", "FPDFDest_GetLocationInPage"] },
     { "ops": ["doc.outline"], "exports": ["FPDFBookmark_GetFirstChild", "FPDFBookmark_GetNextSibling", "FPDFBookmark_GetTitle", "FPDFBookmark_GetDest", "FPDFBookmark_GetAction"] },
-    { "ops": ["doc.open", "doc.attachment", "writer.inspect", "write.inspectAttachments"], "exports": ["FPDFDoc_GetAttachmentCount", "FPDFDoc_GetAttachment", "FPDFAttachment_GetName", "FPDFAttachment_GetStringValue"] },
+    { "ops": ["doc.open", "doc.attachment", "writer.inspect", "write.inspectAttachments"], "exports": ["FPDFDoc_GetAttachmentCount", "FPDFDoc_GetAttachment", "FPDFAttachment_GetName", "FPDFAttachment_GetStringValue", "FPDFAttachment_GetDescription"] },
     { "ops": ["doc.attachment", "writer.inspect", "write.inspectAttachments"], "exports": ["FPDFAttachment_GetFile"] },
-    { "ops": ["writer.finishAnnotated", "writer.buildNotebook"], "exports": ["FPDFDoc_AddAttachment", "FPDFAttachment_SetFile", "FPDFAttachment_SetStringValue"] },
+    { "ops": ["writer.finishAnnotated", "writer.buildNotebook"], "exports": ["FPDFDoc_AddAttachment", "FPDFAttachment_SetFile", "FPDFAttachment_SetStringValue", "FPDFAttachment_SetDescription"] },
     { "ops": ["writer.stageAnnotated", "writer.finishAnnotated", "writer.buildNotebook", "writer.rotate"], "exports": ["FPDF_SaveAsCopy"] },
     { "ops": ["writer.buildNotebook"], "exports": ["FPDF_CreateNewDocument", "FPDFPage_New"] },
     { "ops": ["writer.rotate"], "exports": ["FPDFPage_SetRotation"] },

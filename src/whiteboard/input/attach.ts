@@ -10,6 +10,7 @@ import { PointerRouter, type PointerRoute } from './pointerRouter'
 import { predictedTail, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
+import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
 import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
 
 export type BoardInputMode = 'edit' | 'view'
@@ -43,10 +44,12 @@ export interface BoardInputServices {
   readonly commands: { run(id: string, event: KeyboardEvent): boolean }
   ink(tool: 'pen' | 'highlighter', sample: RealSample): Omit<SessionInkServices, 'session' | 'tool' | 'clearRedoAtDown'>
   resolveTool(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null
+  zoomBrush(): ZoomBrushContext
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void
   contextMenu?(event: MouseEvent): void
+  linkAt?(sample: RealSample): (() => void) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
@@ -73,6 +76,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let start: ToolStateSnapshot | null = null
   let activeSource: RealSample['source'] | null = null
   let completeTool = false
+  let spaceHeld = false
+  let zoomHeld = false
+  let temporaryPan = false
   let suppressMenu = false
   const touchAdmission = new Map<number, boolean>()
   const handContext: HandContext = {
@@ -123,6 +129,35 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
       if (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey)) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
       if (event.button !== 0) return null
+      if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
+      if (zoomHeld) {
+        const context = services.zoomBrush()
+        return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
+      }
+      if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {
+        const open = services.linkAt?.(sample)
+        if (open) {
+          const origin = view.sampleToSurface(sample)
+          const fallback = mode === 'view' ? { tool: hand, context: undefined } : services.resolveTool(choice, sample, modifiers, event)
+          const link: Tool<unknown> = { id: 'view-link', begin: (_point, keys) => {
+            let dragged = false
+            let owner: GestureOwner | null = null
+            return {
+              kind: mode === 'view' ? 'pan' : 'node-edit', pointerIds: new Set([sample.pointerId]),
+              update: (samples, nextKeys) => { for (const point of samples) {
+                const next = view.sampleToSurface(point)
+                if (!dragged && Math.hypot(next.x - origin.x, next.y - origin.y) >= 4) {
+                  dragged = true
+                  owner = fallback?.tool.begin(sample, keys, fallback.context) ?? null
+                }
+                if (dragged) owner?.update([point], nextKeys)
+              } },
+              finish: reason => { if (reason === 'up' && !dragged) open(); owner?.finish(reason) }, cancel: reason => owner?.cancel(reason),
+            }
+          } }
+          return { tool: link, context: undefined }
+        }
+      }
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null
       completeTool = true
@@ -132,6 +167,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     ended(reason) {
       if (reason === 'up' && start && completeTool) services.tools.complete(start)
       completeTool = false
+      temporaryPan = false
       start = null
       activeSource = null
     },
@@ -195,7 +231,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { router.resumeInk(view.token); services.clearLatches() },
+    clearLatches: () => { spaceHeld = false; zoomHeld = false; pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {
@@ -206,7 +242,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); services.commands.run('tool.lock', event); return true }
-      if (id === 'pan.hold' && router.activeOwner instanceof LiveInk) {
+      if (id === 'pan.hold') {
+        spaceHeld = true
+        if (!(router.activeOwner instanceof LiveInk)) return true
         let previous: Point
         return router.suspendInk(view.token, {
           begin: sample => { previous = view.sampleToSurface(sample) },
@@ -214,7 +252,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
           end: () => {},
         })
       }
-      if (id === 'pan.release') router.resumeInk(view.token)
+      if (id === 'pan.release') {
+        spaceHeld = false
+        router.resumeInk(view.token)
+        if (temporaryPan) pointer.interrupt('flush')
+        return true
+      }
+      if (id === 'zoom.hold') { zoomHeld = true; return true }
+      if (id === 'zoom.release') { zoomHeld = false; return true }
       if (id.startsWith('tool.') && editable()) {
         services.cancelPendingGestures()
         const tool = id.slice(5)

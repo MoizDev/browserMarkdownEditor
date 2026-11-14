@@ -18,9 +18,14 @@
 // would darken and duplicate the annotations and inflate the file. Verified: 4
 // save cycles leave the embedded original byte-identical and the size flat.
 
-import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
+import { bindPdfNativeEmphasis, makePdfEmphasisPlan } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
-import { openClassicPdf } from './pdfClassicOpen';
+import { createPdfDocumentSession } from './pdfDocumentSession';
+import { completedClassicDisplayList } from './pdfClassicDisplayList';
+import { classicEmphasisPageKey } from './pdfEmphasisProfile';
+import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from './pdfEmphasisPlanCache';
+import { watchPdfEmphasis } from './pdfEmphasisWatch';
+import { hashBytes } from './diskVersion';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // Role extraction uses the build worker's read-only inventory operation; this
@@ -90,6 +95,9 @@ export interface PdfPageSource {
      * page is re-rendered sharp.
      */
     renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
+    /** Observe and, if needed, prove the current pristine page independently
+     * of a backdrop raster or its cancellation signal. */
+    watchEmphasis(index: number, publish: (result: PdfNativeEmphasisResult | undefined) => void): () => void;
     /** Tear down the pdf.js worker. */
     close(): Promise<void>;
 }
@@ -109,42 +117,58 @@ export interface PdfPageSource {
  * strokes load on top, i.e. everything doubled.
  */
 export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
-    // The render task must outlive this call so pages can be rasterized on
-    // demand. Unlike the short role-read job, its close() belongs to the caller.
-    const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop' });
-    const doc = await task.promise;
-
-    const sizes: PdfPageSize[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-        const page = await doc.getPage(i);
-        const { width, height } = page.getViewport({ scale: 1 });
-        sizes.push({ width, height });
-    }
+    // The source's identity is that of the pristine bytes, not the stamped
+    // file. Hashing runs alongside startup and never delays backdrop pixels.
+    const identity = { token: crypto.randomUUID(), hash: hashBytes(original) };
+    void identity.hash.catch(() => {});
+    const session = createPdfDocumentSession(original, 0);
+    let sizes: PdfPageSize[];
+    try { sizes = await session.geometry(); }
+    catch (error) { await session.dispose(); throw error; }
 
     return {
         sizes,
-        async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
-            const page = await doc.getPage(index + 1);
+        watchEmphasis: (index, publish) => watchPdfEmphasis(session, identity, index, publish),
+        async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, _onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
+            const lease = await session.acquireRender(index, signal);
+            const page = lease.page;
             const viewport = page.getViewport({ scale });
             const canvas = document.createElement('canvas');
             canvas.width = Math.ceil(viewport.width);
             canvas.height = Math.ceil(viewport.height);
             const context = canvas.getContext('2d');
-            if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
-            const emphasis = emphasisEnabled || onEmphasisResult ? await bindPdfNativeEmphasis(page, context, emphasisEnabled) : undefined;
             let rendering: import('pdfjs-dist').RenderTask | undefined;
+            let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
             const cancel = () => rendering?.cancel();
-            const current = () => !signal?.aborted;
             signal?.addEventListener('abort', cancel);
             try {
+                if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
                 signal?.throwIfAborted();
+                const key = classicEmphasisPageKey(identity.token, index, page);
+                const verdict = session.emphasisVerdicts.getVerdict(key);
+                const useOn = emphasisEnabled && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
+                let plan = useOn ? getPdfEmphasisPlan(page) : undefined;
+                if (plan) emphasis = await bindPdfNativeEmphasis(page, context, true, plan);
                 rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
                 await rendering.promise;
-                await emphasis?.verify({ viewport }, task => { rendering = task; }, current);
                 signal?.throwIfAborted();
-                if (emphasis) onEmphasisResult?.({ ...emphasis.result });
-                const blob = await new Promise<Blob | null>(res =>
-                    canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
+                if (useOn && !plan) {
+                    const list = completedClassicDisplayList(rendering);
+                    if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
+                    else {
+                        plan = makePdfEmphasisPlan(list);
+                        const reason = !plan.result.supported ? plan.result.reason ?? 'glyph-data'
+                            : !rememberPdfEmphasisPlan(page, plan) ? 'page-budget' : undefined;
+                        if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
+                        else {
+                            emphasis = await bindPdfNativeEmphasis(page, context, true, plan);
+                            rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis.operationsFilter });
+                            await rendering.promise;
+                            signal?.throwIfAborted();
+                        }
+                    }
+                }
+                const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
                 signal?.throwIfAborted();
                 if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
                 return URL.createObjectURL(blob);
@@ -152,10 +176,10 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                 signal?.removeEventListener('abort', cancel);
                 emphasis?.dispose();
                 canvas.width = canvas.height = 0;
-                page.cleanup();
+                lease.release();
             }
         },
-        close: () => task.destroy(),
+        close: () => session.dispose(),
     };
 }
 

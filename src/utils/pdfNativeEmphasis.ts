@@ -37,14 +37,19 @@ interface Glyph {
     unicode: string; fontChar: string; isSpace: boolean; isInFont: boolean;
     accent?: { fontChar: string } | null;
 }
-interface Paint { char: string; selected: boolean; inFont: boolean }
+interface Paint { readonly char: string; readonly selected: boolean; readonly inFont: boolean }
 interface RunGlyph { glyph: Glyph; op: number; from: number; to: number }
+export interface PdfEmphasisPlan {
+    readonly result: Readonly<PdfNativeEmphasisResult>;
+    readonly paints: ReadonlyMap<number, readonly Paint[]>;
+    readonly fontIds: ReadonlyMap<number, string>;
+}
 
 /** The operator stream carries the embedded font's own Unicode↔glyph mapping,
  * so TextItem merging/splitting and visual column order cannot move a prefix.
  * Ligatures are indivisible: a prefix ending INSIDE one leaves that glyph alone.
  * The shared Unicode policy currently selects Latin words only. */
-function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>) {
+export function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>): PdfEmphasisPlan {
     const result: PdfNativeEmphasisResult = { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
         supported: version === PDF_EMPHASIS_RENDERER_VERSION,
         reason: version === PDF_EMPHASIS_RENDERER_VERSION ? undefined : 'renderer-version' };
@@ -112,10 +117,10 @@ function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorL
     return { result, paints, fontIds };
 }
 
-export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, enabled = true) {
-    let plan: ReturnType<typeof makePdfEmphasisPlan>;
+export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, enabled = true, suppliedPlan?: PdfEmphasisPlan) {
+    let plan: PdfEmphasisPlan;
     try {
-        plan = makePdfEmphasisPlan(await page.getOperatorList());
+        plan = suppliedPlan ?? makePdfEmphasisPlan(await page.getOperatorList());
     } catch {
         plan = { result: { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
             supported: false, reason: 'glyph-data' }, paints: new Map(), fontIds: new Map() };
@@ -124,7 +129,7 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
     const result = { ...plan.result };
     const originalFillText = ctx.fillText;
     const originalFill = ctx.fill;
-    let queue: Paint[] | undefined, cursor = 0;
+    let queue: readonly Paint[] | undefined, cursor = 0;
     let font: { isType3Font?: boolean; missingFile?: boolean } | undefined;
     const eligible = () => result.supported && queue && !font?.isType3Font;
     const take = (char?: string) => {
@@ -198,7 +203,7 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
                 full.width = Math.max(1, Math.ceil(viewport.width)); full.height = Math.max(1, Math.ceil(viewport.height));
                 const context = full.getContext('2d');
                 if (!context) throw new Error('Could not verify full PDF page');
-                const binding = await bindPdfNativeEmphasis(page, context, enabled);
+                const binding = await bindPdfNativeEmphasis(page, context, enabled, plan);
                 try {
                     if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
                     const task = page.render({ canvas: full, canvasContext: context, viewport, operationsFilter: binding.operationsFilter });
@@ -216,7 +221,7 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
             if (!other) throw new Error('Could not verify original PDF glyph paint');
             let binding: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
             try {
-                binding = await bindPdfNativeEmphasis(page, other, !enabled);
+                binding = await bindPdfNativeEmphasis(page, other, !enabled, plan);
                 if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
                 const task = page.render({ ...parameters, canvas, canvasContext: other, operationsFilter: binding.operationsFilter });
                 onTask(task);
@@ -238,7 +243,7 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
         dispose() {
             ctx.fillText = originalFillText;
             ctx.fill = originalFill;
-            paints.clear(); fontIds.clear(); queue = undefined; font = undefined;
+            queue = undefined; font = undefined;
         },
     };
 }

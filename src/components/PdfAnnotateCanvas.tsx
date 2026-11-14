@@ -10,7 +10,10 @@ import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
+import { protectPageBackdrops } from './protectPageBackdrops';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen, recordPdfNavigation,
@@ -72,6 +75,7 @@ interface PdfAnnotateCanvasProps {
  * its own background, so it has no white page to contrast against.
  */
 const ANNOTATE_COLOR_SCHEME = 'light';
+const PAPER_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu };
 
 /**
  * Shape types that cannot become paths in the saved PDF, so their pages carry a
@@ -446,7 +450,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             // Either a first open, or the PDF's page count changed under us —
             // rebuild from scratch rather than leave a half-matching backdrop.
             if (existing.length) {
-                editor.deleteShapes(existing.map(s => s.id));
+                editor.run(() => editor.deleteShapes(existing.map(s => s.id)), { ignoreShapeLock: true });
                 const staleAssets = existing
                     .map(s => (s as TLImageShape).props.assetId)
                     .filter((id): id is TLAssetId => !!id);
@@ -488,6 +492,18 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             // annotation, whatever order they were added in.
             editor.sendToBack(pageShapeIds);
         }
+
+        // Older snapshots may contain pages unlocked or moved by Unlock all.
+        // Repair the view without turning opening a PDF into a document edit.
+        editor.run(() => editor.store.mergeRemoteChanges(() => {
+            for (const shape of editor.getCurrentPageShapes()) {
+                const index = shape.meta?.pdfPage;
+                if (typeof index !== 'number' || !boxes[index] || shape.type !== 'image') continue;
+                editor.updateShape({ id: shape.id, type: 'image', x: boxes[index].x, y: boxes[index].y,
+                    isLocked: true, props: { w: boxes[index].width, h: boxes[index].height } });
+            }
+        }), { ignoreShapeLock: true });
+        const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.pdfPage !== undefined);
 
         // Open on the page being READ, at the reader's size — not on the whole
         // document. This used to zoomToFit() on a first open, which on a long PDF
@@ -926,6 +942,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
+            backdropGuard.dispose();
             closed = true;
             activePaint?.abort();
             if (refreshEmphasis.current === refresh) refreshEmphasis.current = undefined;
@@ -994,11 +1011,12 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                     snapshot={parsed.snapshot}
                     assets={assetStore}
                     onMount={handleMount}
-                    components={CANVAS_COMPONENTS}
+                    components={PAPER_COMPONENTS}
                     shapeUtils={CANVAS_SHAPE_UTILS}
                     options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                     colorScheme={ANNOTATE_COLOR_SCHEME}
+                    user={PAPER_USER}
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />
             </div>

@@ -28,7 +28,7 @@ function priority(request: PdfTileRequest, focused: boolean): Priority {
 export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTileProducerOptions) => {
     const { document } = options;
     // The pool returns reply credit only when every bitmap conversion has finished (C5.3).
-    const releaseTile = (document as typeof document & { releaseTile(result: PageTileResult): void }).releaseTile.bind(document);
+    const releaseTile = document.releaseTile.bind(document);
     const flights = new Map<string, Flight>();
     return {
         render(request, signal) {

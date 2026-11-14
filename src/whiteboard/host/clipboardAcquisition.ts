@@ -2,6 +2,7 @@ import type { CachedClipboard } from '../clipboard/copy';
 import { makeClipboardNativeRecords } from '../clipboard/nativeRecords';
 import type { BoardPayload, CopySnapshot } from '../clipboard/snapshot';
 import type { SampleStore } from '../ink/samples';
+import type { SampleRef } from '../model/samples';
 import type { MediaId } from '../model/media';
 import type { NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
@@ -24,6 +25,7 @@ export interface BoardClipboardAcquisition {
     readonly inline: readonly Readonly<{ id: MediaId; blob: Blob }>[];
     /** Exact in-window copy data for bindings outside the native source container. */
     readonly externalBindings?: ReadonlyMap<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>;
+    readonly cachedSamples?: ReadonlyMap<NodeId, SampleRef>;
     readonly report: NativeLoadReply;
     readonly originalSourceKind: BoardPayload['from']['kind'];
     dispose(): void;
@@ -77,7 +79,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         source = snapshot(cache.match.snapshot.payload);
     }
     if (!source.records.length) throw new Error('Clipboard contains no native records');
-    const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>();
+    const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>(), cachedSamples = new Map<NodeId, SampleRef>();
     const cacheMatch = options.cache;
     const cached = options.duplicateSnapshot ?? (cacheMatch && cacheMatch.match.encoded === cacheMatch.encoded
         && (!cacheMatch.match.cacheOnly || cacheMatch.match.plain === cacheMatch.plain) ? cacheMatch.match.snapshot : undefined);
@@ -97,6 +99,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
                 options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
                 if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
             }
+            if (node.kind === 'stroke') cachedSamples.set(node.id, node.samples);
             if (node.kind !== 'connector' && node.kind !== 'polyline') continue;
             const line = node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
             const start = external(node.kind === 'connector' ? node.start.attach : line.startAttach);
@@ -139,7 +142,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         const owned = acquisition;
         acquisition = undefined;
         let disposed = false;
-        return { payload: source, load: owned.load, samples: owned.samples, inline, externalBindings, report: owned.report,
+        return { payload: source, load: owned.load, samples: owned.samples, inline, externalBindings, cachedSamples, report: owned.report,
             originalSourceKind: result.originalSourceKind,
             dispose() { if (!disposed) { disposed = true; owned.dispose(); } } };
     } catch (error) { acquisition?.dispose(); throw error; }

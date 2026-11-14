@@ -75,8 +75,8 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             if ((++count & 127) === 0) await cooperate();
         }
         const rootIds = new Set(sourceRoots.map(node => node.id)), originalCount = source.nodes.size;
-        const mayKeepExternal = !options.external && acquisition.payload.from.board === options.receivingBoardId
-            && acquisition.payload.from.sheet === targetSheet;
+        const mayReuseSamples = !options.external && acquisition.payload.from.board === options.receivingBoardId;
+        const mayKeepExternal = mayReuseSamples && acquisition.payload.from.sheet === targetSheet;
         const remapAttachment = (attachment: ConnectorNode['start']['attach']) => {
             if (!attachment) return null;
             const mapped = ids.get(attachment.target);
@@ -114,7 +114,11 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 order: root ? rootOrders.get(original.id)! : original.order, x, y, rotation, page });
             if (node.kind === 'stroke') {
                 let ref = copiedSamples.get(node.samples);
-                if (ref === undefined) { const lease = samples.importImmutable(acquisition.samples, node.samples); leases.push(lease); ref = lease.ref; copiedSamples.set(node.samples, ref); }
+                if (ref === undefined) {
+                    const cached = mayReuseSamples ? acquisition.cachedSamples?.get(original.id) : undefined;
+                    const lease = cached !== undefined && samples.has(cached) ? samples.retain(cached) : samples.importImmutable(acquisition.samples, node.samples);
+                    leases.push(lease); ref = lease.ref; copiedSamples.set(node.samples, ref);
+                }
                 node = { ...node, samples: ref };
             } else if (node.kind === 'connector') {
                 const external = acquisition.externalBindings?.get(original.id);

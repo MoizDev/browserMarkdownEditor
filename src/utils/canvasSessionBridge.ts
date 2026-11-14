@@ -41,10 +41,13 @@ export function attachCanvasSession<A extends SessionAdapter>(
 export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => ContentSource): CanvasSessionBridge {
     let adapter: SessionAdapter | undefined;
     let unsubscribe: (() => void) | undefined;
+    let unsubscribePending: (() => void) | undefined;
     let disposeAdapter: (() => void | Promise<void>) | undefined;
     let releaseWork: Promise<void> | undefined;
     let disposed = false;
     const listeners = new Set<(source: ContentSource) => void>();
+    const pendingListeners = new Set<() => void>();
+    const emitPending = () => { if (!disposed) for (const listener of [...pendingListeners]) listener(); };
     const owned = (source: ContentSource): boolean => typeof source !== 'string'
         && source.owner.documentId === owner.documentId && source.owner.session === owner.session;
     const emit = (source: ContentSource) => {
@@ -68,7 +71,19 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 // entry before onChange returns its cleanup.
                 if (disposed) { detach(); throw new Error('Canvas session was released during attachment'); }
                 unsubscribe = detach;
+                const detachPending = next.onPending?.(emitPending);
+                if (detachPending) {
+                    if (disposed) { detachPending(); throw new Error('Canvas session was released during attachment'); }
+                    unsubscribePending = detachPending;
+                }
+                emitPending();
+                if (disposed) throw new Error('Canvas session was released during attachment');
             } catch (error) {
+                const detach = unsubscribe, detachPending = unsubscribePending;
+                unsubscribe = undefined;
+                unsubscribePending = undefined;
+                try { detachPending?.(); } catch (cleanupError) { console.error('Canvas pending subscription cleanup failed:', cleanupError); }
+                try { detach?.(); } catch (cleanupError) { console.error('Canvas subscription cleanup failed:', cleanupError); }
                 adapter = undefined;
                 const dispose = disposeAdapter;
                 disposeAdapter = undefined;
@@ -89,13 +104,17 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         dispose() {
             if (releaseWork) return releaseWork;
             disposed = true;
+            pendingListeners.clear();
             const detach = unsubscribe;
+            const detachPending = unsubscribePending;
             const dispose = disposeAdapter;
             unsubscribe = undefined;
+            unsubscribePending = undefined;
             disposeAdapter = undefined;
             adapter = undefined;
             let detachError: unknown;
-            try { detach?.(); } catch (error) { detachError = error; }
+            try { detachPending?.(); } catch (error) { detachError = error; }
+            try { detach?.(); } catch (error) { detachError ??= error; }
             releaseWork = Promise.resolve().then(async () => {
                 // A detach error wins over a dispose error, as a throw in `finally` would make it.
                 let disposeFailed = false;
@@ -113,6 +132,11 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             if (!adapter?.recover) throw new Error('Canvas session is not ready for recovery');
             await adapter.recover(payload);
         },
+        onPending(listener) {
+            if (disposed) throw new Error('Cannot subscribe to a released canvas session');
+            pendingListeners.add(listener);
+            return () => { pendingListeners.delete(listener); };
+        },
         onChange(listener) {
             if (disposed) throw new Error('Cannot subscribe to a released canvas session');
             listeners.add(listener);
@@ -122,10 +146,11 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 // The store detaches before releasing its slots; a late engine
                 // callback must not report into the next session at this path.
                 disposed = true;
-                const detach = unsubscribe;
+                const detach = unsubscribe, detachPending = unsubscribePending;
                 unsubscribe = undefined;
+                unsubscribePending = undefined;
                 adapter = undefined;
-                detach?.();
+                try { detachPending?.(); } finally { detach?.(); }
             };
         },
     };

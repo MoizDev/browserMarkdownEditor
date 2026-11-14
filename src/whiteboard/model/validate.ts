@@ -393,7 +393,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                     const s = op.sheet;
                     if (!closed(op, KEYS.sheetCreate) || !object(s) || !closed(s, KEYS.sheet) || !id(s.id)) return refuse('V-1', opIndex, null, 'Sheet create requires a valid record');
                     if (doc.sheets.has(s.id as unknown as SheetId) || doc.nodes.has(s.id)) return refuse('V-1', opIndex, s.id, 'Sheet id is already used');
-                    if (doc.sheets.size >= 40) return refuse('schema', opIndex, null, 'Maximum 40 sheets reached');
+                    if (doc.sheets.size >= (context.origin === 'recovery' ? SECURITY_LIMITS.sheets : 40)) return refuse('schema', opIndex, null, 'Maximum sheet count reached');
                     if (!sheetName(s.name) || !extension(s.ext)) return refuse('schema', opIndex, null, 'Invalid sheet name or metadata');
                     return typeof s.order === 'string' && isValidKey(s.order) ? OK : refuse('V-3', opIndex, null, 'Invalid sheet order key');
                 }
@@ -410,7 +410,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 return refuse('schema', opIndex, null, 'Unknown sheet property');
             }
             case 'ext': {
-                if ((context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
+                if ((context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert' && context.origin !== 'recovery') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
                 switch (op.target) {
                     case 'node': {
                         if (!id(op.id)) return refuse('V-1', opIndex, nodeId, 'Extension node id is invalid');
@@ -454,7 +454,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 if (op.op === 'drop' && closed(op, KEYS.mediaDrop) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
                     const media = op.id as MediaId;
                     if (!doc.media.has(media)) return refuse('V-9', opIndex, null, 'Media does not exist');
-                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
+                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert' && context.origin !== 'recovery'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
                     if (doc.mediaRefs.get(media)?.size) return refuse('V-9', opIndex, null, 'Media is still referenced by live nodes');
                     return op.restoreMissing === true || !(doc.preservedMediaRefs.get(media) ?? 0)
                         ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by preserved data');

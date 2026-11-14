@@ -17,5 +17,7 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     presented(frame: PaintFrame): void;
     /** Called when the backend no longer holds this frame, including cancelled staging. */
     retire(frame: PaintFrame): void;
+    /** Drop all pins on hide while keeping this assembler reusable. */
+    clear(): void;
     dispose(): void;
 }

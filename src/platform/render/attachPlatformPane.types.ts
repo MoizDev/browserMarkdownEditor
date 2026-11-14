@@ -1,6 +1,6 @@
 import type { Camera, Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
-import type { Point } from './camera';
+import type { CameraController, Point } from './camera';
 import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
 import type { PageStack } from './pageStack';
@@ -20,6 +20,8 @@ export interface PlatformLayerDefinition {
         prefetchBytes: number;
     }>;
     critical(layer: Layer, view: ViewState): boolean;
+    /** Optional raster document denominator; compiled out with its benchmark-only provider. */
+    benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];
     coverage(layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
 }
 
@@ -51,6 +53,7 @@ export interface PlatformPaneOptions<T extends object> {
     readLayout?(): Readonly<PageStack> | null;
     readAppearance(): CompositorAppearance;
     currentToken(): RenderToken | null;
+    readonly camera?: CameraController;
     readCamera(): Camera;
     readMirrorView?(view: ViewState): MirrorView;
     revision(): string;

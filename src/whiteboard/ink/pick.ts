@@ -36,14 +36,30 @@ export class ConvexDistance {
     private ax = 0; private ay = 0; private r0 = 0;
     private bx = 0; private by = 0; private r1 = 0;
     private hx = 0; private hy = 0;
+    private capsule: Readonly<{ ax: number; ay: number; bx: number; by: number; radius: number }> | null = null;
     constructor(private readonly m: Affine, private readonly qx: number, private readonly qy: number,
         private readonly tolerance: number) { }
+    setQueryCapsule(a: Readonly<{ x: number; y: number }>, b: Readonly<{ x: number; y: number }>, rCss: number): void {
+        if (![a.x, a.y, b.x, b.y, rCss, this.qx, this.qy].every(Number.isFinite) || rCss < 0) throw new RangeError('Invalid query capsule');
+        const capsule = { ax: a.x - this.qx, ay: a.y - this.qy, bx: b.x - this.qx, by: b.y - this.qy, radius: rCss };
+        if (!Object.values(capsule).every(Number.isFinite)) throw new RangeError('Query capsule overflows');
+        this.capsule = capsule;
+    }
     private support(dx: number, dy: number): void {
         const m = this.m, ux = m[0] * dx + m[1] * dy, uy = m[2] * dx + m[3] * dy, norm = Math.hypot(ux, uy);
         const useB = this.bx * dx + this.by * dy + this.r1 * norm > this.ax * dx + this.ay * dy + this.r0 * norm;
         const radius = useB ? this.r1 : this.r0, factor = norm ? radius / norm : 0;
         this.supportPoint[0] = (useB ? this.bx : this.ax) + factor * (m[0] * ux + m[2] * uy) + (dx >= 0 ? this.hx : -this.hx);
         this.supportPoint[1] = (useB ? this.by : this.ay) + factor * (m[1] * ux + m[3] * uy) + (dy >= 0 ? this.hy : -this.hy);
+        const capsule = this.capsule;
+        if (capsule) {
+            const dotA = capsule.ax * dx + capsule.ay * dy, dotB = capsule.bx * dx + capsule.by * dy;
+            if (!Number.isFinite(dotA) || !Number.isFinite(dotB)) throw new RangeError('Query capsule support overflows');
+            const useEnd = dotB < dotA;
+            const length = Math.hypot(dx, dy), scale = length ? capsule.radius / length : 0;
+            this.supportPoint[0] += -(useEnd ? capsule.bx : capsule.ax) + scale * dx;
+            this.supportPoint[1] += -(useEnd ? capsule.by : capsule.ay) + scale * dy;
+        }
     }
     run(ax: number, ay: number, r0: number, bx: number, by: number, r1: number, hx: number, hy: number): void {
         const m = this.m;
@@ -57,8 +73,9 @@ export class ConvexDistance {
         const s = this.simplex;
         s[0] = s[6] = this.supportPoint[0]; s[1] = s[7] = this.supportPoint[1];
         let count = 1;
+        const capsule = this.capsule;
         const magnitude = Math.max(1, Math.abs(this.ax), Math.abs(this.ay), Math.abs(this.bx), Math.abs(this.by),
-            r0 * maxScale(m), r1 * maxScale(m), hx, hy);
+            r0 * maxScale(m), r1 * maxScale(m), hx, hy, capsule ? Math.max(Math.abs(capsule.ax), Math.abs(capsule.ay), Math.abs(capsule.bx), Math.abs(capsule.by), capsule.radius) : 0);
         for (let iteration = 0; iteration < 64; iteration++) {
             const distance = Math.hypot(s[6], s[7]);
             const numeric = 256 * Number.EPSILON * magnitude * (iteration + 1);

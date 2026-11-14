@@ -1,11 +1,16 @@
+import { cpuGovernor } from '../../platform/workers';
+import { boardWorker } from '../workers/client';
+import { matchingIdentity } from '../workers/protocol';
+import type { InspectedMedia } from './ingest';
 import type { SvgAdmissionProfile } from './inspect';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { MediaRasterGeometry } from './mips';
+import { svgFrameFactory } from './svgFrameHost';
 
 // SEC-W2 supplies the opaque sandbox, fixed bootstrap, chunked channel and
 // exact-hash CSP. Separate profiles prevent XML parsing from gaining blob loads.
 export interface SvgContainedFrame {
-    request(operation: 'header' | 'probe' | 'raster', blob: Blob, signal: AbortSignal,
+    request(operation: 'header' | 'probe' | 'raster' | 'full-frame', blob: Blob, signal: AbortSignal,
         size?: { readonly width: number; readonly height: number; readonly raster?: MediaRasterGeometry }): Promise<unknown>;
     dispose(): void;
 }
@@ -41,6 +46,45 @@ export function createSvgAdmissionProfile(frames: SvgFrameFactory, identity: Boa
             const result = await request('svg-image', 'probe', blob, signal, { width, height });
             if (result !== true) throw new Error('This picture could not be read');
         },
+    };
+}
+
+let fullFrameJob = 0;
+/** Full intrinsic SVG decoding remains inside the CSP-contained image profile.
+ * The caller holds output, decoded-input and temporary-canvas reservations. */
+export function createIsolatedFullFrameSvgDecoder(isCurrent: (identity: BoardJobIdentity) => boolean):
+    (blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal) => Promise<ImageBitmap> {
+    return async (blob, info, identity, signal) => {
+        signal.throwIfAborted();
+        if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File) || blob.size > 5 * 1024 * 1024
+            || info.mime !== 'image/svg+xml' || !/^sha256:[0-9a-f]{64}$/.test(info.id)
+            || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
+            || info.width < 1 || info.height < 1 || info.width > (2 ** 26) / info.height || !isCurrent(identity)) throw new TypeError('Invalid full-frame SVG request');
+        const pinned = Object.freeze({ ...identity });
+        const current = (value: BoardJobIdentity) => !signal.aborted && matchingIdentity(value, pinned) && isCurrent(pinned);
+        const worker = boardWorker('decode');
+        const preflight = await worker.request<boolean>('svgPreflight', { blob }, pinned, { priority: 0, deadlineMs: 5000, signal }, current);
+        if (preflight !== true) throw new Error('Invalid SVG preflight response');
+        const hash = await worker.request<string>('hash', { blob }, pinned, { priority: 0, deadlineMs: 10000, signal }, current);
+        signal.throwIfAborted();
+        if (!current(pinned) || hash !== info.id) throw new Error('Full-frame SVG hash mismatch');
+        const permit = cpuGovernor.acquire({ name: 'whiteboard-svg-full-frame', id: ++fullFrameJob, priority: 0,
+            start() {}, pause() {}, resume() {} });
+        if (!permit.held) { permit.release(); throw new Error('SVG full-frame CPU permit unavailable'); }
+        let frame: SvgContainedFrame | undefined, result: unknown;
+        try {
+            const size = await createSvgAdmissionProfile(svgFrameFactory, pinned, current).header(blob, signal);
+            signal.throwIfAborted();
+            if (!current(pinned) || size.width !== info.width || size.height !== info.height) throw new Error('Full-frame SVG header mismatch');
+            frame = await svgFrameFactory.open('svg-image', signal, pinned);
+            result = await frame.request('full-frame', blob, signal, { width: info.width, height: info.height });
+            signal.throwIfAborted();
+            if (!current(pinned) || !(result instanceof ImageBitmap) || result.width !== info.width || result.height !== info.height) throw new Error('Invalid full-frame SVG result');
+            const bitmap = result; result = undefined; return bitmap;
+        } finally {
+            if (result instanceof ImageBitmap) result.close();
+            frame?.dispose(); permit.release();
+        }
     };
 }
 

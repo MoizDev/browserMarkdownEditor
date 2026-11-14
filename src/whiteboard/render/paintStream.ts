@@ -28,9 +28,13 @@ export interface PaintPathItem extends PaintBase {
     readonly fillRule: FillRule;
     readonly material: PathMaterial;
 }
+export type PaintInkCoverage = InkCoverage | readonly InkCoverage[];
+export function inkCoverageChunks(coverage: PaintInkCoverage): readonly InkCoverage[] {
+    return Array.isArray(coverage) ? coverage : [coverage as InkCoverage];
+}
 export interface PaintInkItem extends PaintBase {
     readonly kind: 'ink';
-    readonly coverage: InkCoverage;
+    readonly coverage: PaintInkCoverage;
     readonly material: InkMaterial;
 }
 export interface PaintImageItem extends PaintBase {
@@ -67,6 +71,7 @@ export interface PaintNodeSource {
 export interface PaintFrame {
     readonly token: RenderToken;
     readonly sceneRevision: number;
+    readonly inkNodeIds: ReadonlySet<string>;
     readonly underlay: readonly PaintItem[];
     readonly content: readonly PaintItem[];
 }

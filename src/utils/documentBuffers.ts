@@ -24,6 +24,14 @@ export interface DeferredSource {
 
 export type ContentSource = string | DeferredSource;
 
+/** Compare pinned reporters without reading or flattening either source. */
+export function sourceIsNewer(candidate: ContentSource, prior: ContentSource | undefined): boolean {
+    if (typeof candidate === 'string') return candidate !== prior;
+    return prior === undefined || typeof prior === 'string'
+        || candidate.owner.documentId !== prior.owner.documentId || candidate.owner.session !== prior.owner.session
+        || candidate.revision > prior.revision;
+}
+
 /** A disk reload reports its new immutable source without creating an unsaved edit. */
 export interface SourceReportOptions {
     readonly fromDisk?: boolean;

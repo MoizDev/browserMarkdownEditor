@@ -1,0 +1,219 @@
+import type { Affine, Rect } from '../../platform/types';
+import type { ConnectorNode } from '../model/nodes';
+import type { Arrowhead } from '../model/styles';
+import { inverse, transformPoint } from './affine';
+import { ContourClipper, type ClipInterval } from './clip';
+import { connectorBody } from './connectors';
+import { bodyCrossingSteps, bodyLength, pointAtLength, tangentAtLength, trimBodyPath } from './connectorPath';
+import type { AttachmentSurface, ConnectorBody, ConnectorGeometryRequest, ConnectorGeometryResult, ConnectorLabelPaint, ResolvedConnectorEnd } from './connectorTypes';
+import { routeElbow } from './elbow';
+import { connectorHeadScale, headGeometry } from './heads';
+import type { PathOp, Vec2 } from './path';
+import { transformedPathBounds } from './providers';
+import { styleGeometryMetrics } from './styleMetrics';
+
+const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
+function intersect(a: readonly ClipInterval[], b: readonly ClipInterval[]): ClipInterval[] {
+    const result: ClipInterval[] = [];
+    for (const left of a) for (const right of b) {
+        const from = Math.max(left.from, right.from), to = Math.min(left.to, right.to);
+        if (to > from) result.push({ from, to });
+    }
+    return result;
+}
+function probe(surface: AttachmentSurface, maxPieces: number) {
+    const contours = [{ outline: surface.outline, localToWorld: surface.localToWorld }, ...surface.clips].map(value => {
+        const worldToLocal = inverse(value.localToWorld, 1e12);
+        if (!worldToLocal) throw new RangeError('Attachment transform is not invertible');
+        return { contour: new ContourClipper([value.outline], maxPieces), worldToLocal };
+    });
+    return {
+        contains(point: Vec2) { return contours.every(value => value.contour.contains(transformPoint(value.worldToLocal, point))); },
+        clip(a: Vec2, b: Vec2) {
+            let result: ClipInterval[] = [{ from: 0, to: 1 }];
+            for (const value of contours) result = intersect(result,
+                value.contour.clip(transformPoint(value.worldToLocal, a), transformPoint(value.worldToLocal, b)));
+            return result;
+        },
+    };
+}
+function aim(node: ConnectorNode, terminal: 'start' | 'end', matrix: Affine, surface: AttachmentSurface | undefined): Vec2 {
+    const end = node[terminal], a = end.attach;
+    if (!a || !surface) return transformPoint(matrix, end);
+    const box = surface.logicalBox, precise = a.precise || a.exact;
+    return transformPoint(surface.localToWorld, { x: box.x + box.width * (precise ? a.anchor.x : .5),
+        y: box.y + box.height * (precise ? a.anchor.y : .5) });
+}
+function union(a: Rect | null, b: Rect): Rect {
+    if (!a) return b;
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+}
+function closedHead(kind: Arrowhead): boolean { return !['none', 'arrow', 'pipe'].includes(kind); }
+
+/** One independent provider for free/attached arcs and received rectilinear
+ * routes. It returns an explicit refusal for a route without a valid candidate;
+ * the load admission owner must preserve original bytes/read-only in that case. */
+type LabelWork = { readonly kind: 'label'; readonly position: Vec2; readonly length: number };
+function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolean):
+    Generator<void | LabelWork, ConnectorGeometryResult, ConnectorLabelPaint | null> {
+    const { node, toleranceWorld: error, maxPieces } = request;
+    if (!Number.isFinite(error) || error <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1
+        || !request.localToWorld.every(Number.isFinite)) throw new RangeError('Invalid connector geometry budget');
+    const startTarget = node.start.attach ? request.resolveTarget(node.start.attach.target) : undefined;
+    const endTarget = node.end.attach ? request.resolveTarget(node.end.attach.target) : undefined;
+    if ((node.start.attach && !startTarget) || (node.end.attach && !endTarget)) return { status: 'pending', reason: 'target' };
+    const a = aim(node, 'start', request.localToWorld, startTarget), b = aim(node, 'end', request.localToWorld, endTarget);
+    const startProbe = startTarget ? probe(startTarget, maxPieces) : undefined, endProbe = endTarget ? probe(endTarget, maxPieces) : undefined;
+    let route: readonly Vec2[] | undefined;
+    if (node.route === 'elbow') {
+        const gap = Math.max(12, node.width * 6);
+        let escape: Rect = { x: Math.min(a.x, b.x) - gap, y: Math.min(a.y, b.y) - gap,
+            width: Math.abs(a.x - b.x) + gap * 2, height: Math.abs(a.y - b.y) + gap * 2 };
+        for (const target of [startTarget, endTarget]) if (target) {
+            const box = target.logicalBox;
+            const corners = [{ x: box.x, y: box.y }, { x: box.x + box.width, y: box.y },
+                { x: box.x, y: box.y + box.height }, { x: box.x + box.width, y: box.y + box.height }].map(p => transformPoint(target.localToWorld, p));
+            const x = Math.min(...corners.map(p => p.x)) - gap, y = Math.min(...corners.map(p => p.y)) - gap;
+            escape = union(escape, { x, y, width: Math.max(...corners.map(p => p.x)) + gap - x, height: Math.max(...corners.map(p => p.y)) + gap - y });
+        }
+        const intervals = (points: readonly Vec2[], target: ReturnType<typeof probe>) => {
+            const parts: { from: number; to: number }[] = []; let offset = 0;
+            for (let i = 1; i < points.length; i++) {
+                const length = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+                for (const span of target.clip(points[i - 1], points[i])) {
+                    const from = offset + span.from * length, to = offset + span.to * length, previous = parts[parts.length - 1];
+                    if (previous && from - previous.to <= error) previous.to = to; else parts.push({ from, to });
+                }
+                offset += length;
+            }
+            return { parts, length: offset };
+        };
+        const selected = routeElbow({ start: a, end: b, mid: node.elbowMid, escape,
+            validPort(points, terminal) {
+                const target = terminal === 'start' ? startProbe : endProbe, end = node[terminal];
+                if (!target || end.attach?.exact) return true;
+                return target.contains(terminal === 'start' ? points[0] : points[points.length - 1]);
+            },
+            crossesForbidden(points) {
+                for (const [target, terminal] of [[startProbe, 'start'], [endProbe, 'end']] as const) {
+                    if (!target || node[terminal].attach?.exact) continue;
+                    const value = intervals(points, target);
+                    if (value.parts.length > 1) return true;
+                    if (value.parts.length && (terminal === 'start' ? value.parts[0].from > error : value.length - value.parts[0].to > error)) return true;
+                }
+                return false;
+            } });
+        if (selected.status === 'unroutable') return { status: 'unroutable', connector: node.id, reason: 'Every received elbow candidate crosses a target or leaves an invalid port' };
+        route = selected.points;
+    }
+    // Only the observed default threshold bracket is available; v1 chooses its
+    // lower straight endpoint (6 at width2), without rewriting stored bend.
+    const metric = styleGeometryMetrics.bendThreshold(node.size, node.width);
+    const threshold = metric.status === 'bracket' ? metric.min : metric.status === 'provisional' ? metric.value : node.width * 3;
+    const bodies: ConnectorBody[] = route && route.length > 1 ? route.slice(1).map((point, i) => connectorBody(route![i], point, 0, error))
+        : [connectorBody(a, b, Math.abs(node.bend) <= threshold ? 0 : node.bend, error)];
+    const offsets = [0];
+    for (const body of bodies) offsets.push(offsets[offsets.length - 1] + bodyLength(body));
+    const total = offsets[offsets.length - 1];
+    const locate = (distance: number) => {
+        const value = Math.max(0, Math.min(total, distance));
+        let i = 0; while (i + 1 < bodies.length && offsets[i + 1] < value) i++;
+        return { body: bodies[i], distance: value - offsets[i] };
+    };
+    const point = (distance: number) => { const value = locate(distance); return pointAtLength(value.body, value.distance); };
+    const tangent = (distance: number, direction: 1 | -1) => { const value = locate(distance); return tangentAtLength(value.body, value.distance, direction); };
+    const crossings = function* (target: AttachmentSurface): Generator<void, { distance: number; entering: boolean }[]> {
+        const result: { distance: number; entering: boolean }[] = [];
+        for (let i = 0; i < bodies.length; i++) {
+            for (const hit of yield* bodyCrossingSteps(bodies[i], target, error, maxPieces)) result.push({ distance: offsets[i] + hit.distance, entering: hit.entering });
+            yield;
+        }
+        return result;
+    };
+    let startBoundary = 0, endBoundary = total;
+    if (startTarget && !node.start.attach!.exact) startBoundary = (yield* crossings(startTarget)).find(hit => !hit.entering)?.distance ?? 0;
+    if (endTarget && !node.end.attach!.exact) {
+        const values = yield* crossings(endTarget);
+        for (let i = values.length - 1; i >= 0; i--) if (values[i].entering) { endBoundary = values[i].distance; break; }
+    }
+    const span = Math.max(0, endBoundary - startBoundary);
+    // v1 uses the recorded default rectangular gap, scaled only by actual width.
+    let startGap = startTarget && !node.start.attach!.exact ? 6 * node.width : 0;
+    let endGap = endTarget && !node.end.attach!.exact ? 6 * node.width : 0;
+    const gapScale = startGap + endGap > span ? span / (startGap + endGap) : 1;
+    startGap *= gapScale; endGap *= gapScale;
+    const from = Math.min(total, startBoundary + startGap), to = Math.max(from, endBoundary - endGap);
+    const startTip = point(from), endTip = point(to), startTangent = tangent(from, -1), endTangent = tangent(to, 1);
+    const head = (kind: Arrowhead, tip: Vec2, vector: Vec2, scale: number) => headGeometry({ kind, tip, tangent: vector,
+        width: node.width, scale, tolerance: error, maxPieces });
+    const fullStart = head(node.headStart, startTip, startTangent.vector, 1), fullEnd = head(node.headEnd, endTip, endTangent.vector, 1);
+    const scale = connectorHeadScale(fullStart.reserve, fullEnd.reserve, to - from);
+    const hs = head(node.headStart, startTip, startTangent.vector, scale), he = head(node.headEnd, endTip, endTangent.vector, scale);
+    const bodyFrom = Math.min(to, from + (closedHead(node.headStart) ? hs.reserve : 0));
+    const bodyTo = Math.max(bodyFrom, to - (closedHead(node.headEnd) ? he.reserve : 0));
+    const body: PathOp[] = [];
+    for (let i = 0; i < bodies.length; i++) {
+        if (offsets[i + 1] < bodyFrom || offsets[i] > bodyTo) continue;
+        body.push(...trimBodyPath(bodies[i], Math.max(0, bodyFrom - offsets[i]), Math.min(bodyLength(bodies[i]), bodyTo - offsets[i]), error, maxPieces));
+        if (body.length > maxPieces) throw new RangeError('Connector path budget exceeded');
+    }
+    const label = resolveLabel ? yield { kind: 'label', position: point(from + (to - from) * node.labelAt), length: to - from } : request.label;
+    const exclusions: { outline: readonly PathOp[]; localToWorld: Affine }[] = [];
+    if (label) {
+        const { w, h } = label.paint.box;
+        // The plan leaves halo calibration open; v1 pads each label by four units.
+        exclusions.push({ outline: [{ op: 'M', p: { x: -4, y: -4 } }, { op: 'L', p: { x: w + 4, y: -4 } },
+            { op: 'L', p: { x: w + 4, y: h + 4 } }, { op: 'L', p: { x: -4, y: h + 4 } }, { op: 'Z' }], localToWorld: label.localToWorld });
+    }
+    const heads = [...hs.paths, ...he.paths];
+    let bounds: Rect | null = null;
+    for (const path of [body, ...heads]) { const box = transformedPathBounds(path, IDENTITY); if (box) bounds = union(bounds, box); }
+    bounds ??= { x: startTip.x, y: startTip.y, width: 0, height: 0 };
+    bounds = { x: bounds.x - node.width / 2, y: bounds.y - node.width / 2, width: bounds.width + node.width, height: bounds.height + node.width };
+    if (label) {
+        const box = label.paint.ink;
+        const outline: PathOp[] = [{ op: 'M', p: { x: box.x, y: box.y } }, { op: 'L', p: { x: box.x + box.width, y: box.y } },
+            { op: 'L', p: { x: box.x + box.width, y: box.y + box.height } }, { op: 'L', p: { x: box.x, y: box.y + box.height } }, { op: 'Z' }];
+        const labelBounds = transformedPathBounds(outline, label.localToWorld); if (labelBounds) bounds = union(bounds, labelBounds);
+    }
+    const resolved = (terminal: 'start' | 'end', distance: number, tip: Vec2, direction: typeof startTangent): ResolvedConnectorEnd => ({
+        aimWorld: terminal === 'start' ? a : b, boundaryWorld: point(distance), tipWorld: tip, tangentWorld: direction.vector,
+        degenerate: direction.degenerate, target: node[terminal].attach?.target ?? null });
+    return { status: 'ready', geometry: { key: request.key, start: resolved('start', startBoundary, startTip, startTangent),
+        end: resolved('end', endBoundary, endTip, endTangent), body, heads, label, bodyExclusions: exclusions, inkBoundsWorld: bounds } };
+}
+
+export function resolveConnectorGeometryNow(request: ConnectorGeometryRequest, options: {
+    label?: (position: Vec2, bodyLength: number) => ConnectorLabelPaint | null;
+} = {}): ConnectorGeometryResult {
+    const steps = connectorSteps(request, !!options.label);
+    let input: ConnectorLabelPaint | null = null;
+    for (;;) {
+        const next = steps.next(input);
+        if (next.done) return next.value;
+        input = next.value?.kind === 'label' ? options.label!(next.value.position, next.value.length) : null;
+    }
+}
+
+export async function resolveConnectorGeometry(request: ConnectorGeometryRequest, options: {
+    signal: AbortSignal;
+    cooperate?: () => Promise<void>;
+    label?: (position: Vec2, bodyLength: number, signal: AbortSignal) => Promise<ConnectorLabelPaint | null>;
+}): Promise<ConnectorGeometryResult> {
+    const steps = connectorSteps(request, !!options.label), signal = options.signal;
+    let input: ConnectorLabelPaint | null = null, count = 0, started = performance.now();
+    signal.throwIfAborted();
+    for (;;) {
+        const next = steps.next(input); input = null;
+        if (next.done) { signal.throwIfAborted(); return next.value; }
+        if (next.value?.kind === 'label') {
+            input = await options.label!(next.value.position, next.value.length, signal);
+            signal.throwIfAborted();
+        } else if (++count >= 256 || performance.now() - started >= 3) {
+            signal.throwIfAborted();
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            signal.throwIfAborted(); count = 0; started = performance.now();
+        }
+    }
+}

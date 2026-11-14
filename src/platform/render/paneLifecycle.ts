@@ -23,6 +23,8 @@ export interface MirrorPresentation {
     readonly staleVersion?: boolean;
     /** Vector/procedural truth can be exact without a raster mirror. */
     readonly usedMirror: boolean;
+    readonly commitObservation?: () => void;
+    readonly cancelObservation?: () => void;
 }
 
 export interface PreparedMirrorPresentation {

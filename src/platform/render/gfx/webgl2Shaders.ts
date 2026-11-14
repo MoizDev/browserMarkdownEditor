@@ -37,9 +37,11 @@ ${block}
 uniform sampler2D gfxTexture0;
 uniform sampler2D gfxTexture1;
 uniform sampler2D gfxTexture2;
+${__BME_BENCH__ ? 'uniform sampler2D gfxTexture3;\nuniform sampler2D gfxTexture4;' : ''}
 in vec2 sourceUV;
 in vec2 pixel;
 layout(location=0) out vec4 gfxColour;
+${__BME_BENCH__ ? 'layout(location=1) out vec4 gfxClass;' : ''}
 void main() {
     vec4 source = texture(gfxTexture0, sourceUV);
     if (sourceSizeOpacityEffect.w > 0.5) {
@@ -55,6 +57,16 @@ void main() {
         if (any(lessThan(unit, vec2(0.0))) || any(greaterThanEqual(unit, vec2(1.0)))) coverage = 0.0;
         else coverage *= texture(gfxTexture2, vec2(maskUV.z + unit.x * maskUV.x, maskUV.w - unit.y * maskUV.y)).r;
     }
+    ${__BME_BENCH__ ? `
+    float sourceClass = mod(options.w, 2.0) > 0.5 && coverage > 0.0 ? texture(gfxTexture3, sourceUV).r : 0.0;
+    float backdropClass = 0.0;
+    if (options.w > 1.5 && options.x > 0.5) {
+        vec2 unit = (pixel - backdropRect.xy) / backdropRect.zw;
+        backdropClass = texture(gfxTexture4, vec2(unit.x, 1.0 - unit.y)).r;
+    }
+    float resultClass = options.x > 0.5 && sourceClass == 0.0 ? backdropClass : sourceClass;
+    gfxClass = vec4(resultClass, 0.0, 0.0, resultClass > 0.0 ? 1.0 : 0.0);
+    ` : ''}
     if (options.z > 0.5) {
         float value = source.r * coverage;
         if (options.x > 0.5) {
@@ -76,7 +88,7 @@ void main() {
     },
     layout: {
         uniforms: [{ binding: 0, byteSize: 128 }],
-        textures: [0, 1, 2].map(binding => ({ binding, format: 'rgba8' as const })),
+        textures: (__BME_BENCH__ ? [0, 1, 2, 3, 4] : [0, 1, 2]).map(binding => ({ binding, format: 'rgba8' as const })),
         attributes: [],
     },
 };

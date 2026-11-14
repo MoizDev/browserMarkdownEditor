@@ -7,6 +7,7 @@ import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
 import { createSvgAdmissionProfile } from './svgProfile';
 import { svgFrameFactory } from './svgFrameHost';
+import { videoFrameInProfile } from './videoFrameHost';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
 // port deliberately cannot fall back to a detached parser in the vault origin.
@@ -26,40 +27,6 @@ const worker = boardWorker('decode');
 
 function validSize(width: number, height: number): boolean {
     return checkMediaDimensions(width, height).ok;
-}
-
-async function videoProbe(blob: Blob, header: WorkerInspection, signal: AbortSignal): Promise<number> {
-    const url = URL.createObjectURL(blob);
-    const video = document.createElement('video');
-    video.preload = 'auto';
-    video.muted = true;
-    try {
-        return await new Promise<number>((resolve, reject) => {
-            const clean = () => {
-                video.removeEventListener('loadeddata', loaded);
-                video.removeEventListener('error', failed);
-                signal.removeEventListener('abort', aborted);
-            };
-            const failed = () => { clean(); reject(new Error('This video could not be read')); };
-            const aborted = () => { clean(); reject(signal.reason); };
-            const loaded = () => {
-                const width = video.videoWidth, height = video.videoHeight;
-                const matches = (width === header.width && height === header.height) || (width === header.height && height === header.width);
-                if (!matches || !validSize(width, height) || !Number.isFinite(video.duration) || video.duration < 0) { failed(); return; }
-                clean();
-                resolve(video.duration);
-            };
-            video.addEventListener('loadeddata', loaded);
-            video.addEventListener('error', failed);
-            signal.addEventListener('abort', aborted, { once: true });
-            if (signal.aborted) aborted();
-            else { video.src = url; video.load(); }
-        });
-    } finally {
-        video.removeAttribute('src');
-        video.load();
-        URL.revokeObjectURL(url);
-    }
 }
 
 export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator;
@@ -111,7 +78,16 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     const lease = options.memory.reserve(4 * result.decodePixels);
     if (!lease) throw new Error('Not enough memory to decode this media');
     try {
-        const duration = result.mime.startsWith('video/') ? await videoProbe(blob, result, signal) : null;
+        let duration: number | null = null;
+        if (result.mime.startsWith('video/')) {
+            const transport = options.memory.reserve(blob.size * 3);
+            if (!transport) throw new Error('Not enough memory for contained video transfer');
+            try {
+                const probed = await videoFrameInProfile(blob, result, options.identity, options.isCurrent, signal, 'probe');
+                if (typeof probed !== 'number') { if (probed instanceof ImageBitmap) probed.close(); throw new Error('Invalid contained video probe'); }
+                duration = probed;
+            } finally { options.memory.release(transport); }
+        }
         if (duration === null) {
             try {
                 await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);

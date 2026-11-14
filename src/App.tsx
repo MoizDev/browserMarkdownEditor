@@ -5206,6 +5206,7 @@ export default function App() {
       createFile,
       createFolder,
       nameTaken,
+      contentOf,
       updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.

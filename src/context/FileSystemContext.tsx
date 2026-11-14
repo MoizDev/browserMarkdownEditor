@@ -1719,6 +1719,36 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return job;
     }, [boardAssetGuard, findBoardAsset, withMutation]);
 
+    const restoreConversionCopy = useCallback((request: BoardAssetAccess, item: TrashItem) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardAssetGuard(request, activation);
+            if (item.kind !== 'file' || item.origin !== 'trashed') throw new Error('Not a conversion backup');
+            const sourcePath = await request.root.resolve(item.handle);
+            if (!sourcePath?.includes(TRASH_DIR)) throw new Error('Backup is not in this vault’s Trash');
+            const source = await item.parentHandle.getFileHandle(item.name);
+            if (!await source.isSameEntry(item.handle)) throw new Error('Backup changed');
+            const file = await source.getFile();
+            if (await fingerprintSnapshot(file, request.signal) !== request.hash) throw new Error('Backup no longer matches');
+            await boardAssetGuard(request, activation);
+            const name = await freeEntryName(request.parent, item.name);
+            await boardAssetGuard(request, activation);
+            const target = await request.parent.getFileHandle(name, { create: true });
+            const output = await target.createWritable();
+            try {
+                await output.write(file);
+                await boardAssetGuard(request, activation);
+                await output.close();
+            } catch (error) { await output.abort().catch(() => {}); throw error; }
+            await boardAssetGuard(request, activation);
+            const parentPath = await request.root.resolve(request.parent);
+            if (parentPath) await patchTreeDirs(request.root, [parentPath.join('/')]);
+            return name;
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, withMutation, patchTreeDirs]);
+
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
      * happens once the last note in that folder stops referring to it (see
@@ -2727,6 +2757,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        restoreConversionCopy,
     }), [
         rootHandle,
         requestIndexPermission,
@@ -2777,6 +2808,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        restoreConversionCopy,
     ]);
 
     return (

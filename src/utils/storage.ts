@@ -1,6 +1,83 @@
 // Helpers for JSON-encoded localStorage values, so the
 // get → parse → fallback / stringify → set idiom lives in one place with
 // consistent error handling instead of being hand-rolled at each call site.
+import { createLocalStorageMirror } from './localStorageMirror';
+
+export const STORAGE_MIRROR_SENTINEL = 'bme.lsMirror';
+const MIRROR_VERSION = '1';
+
+// Exact keys only: the old canvas library shares this origin, but restoring
+// its own state could bring back the state that caused its reset screen.
+export const LOCAL_STORAGE_KEYS = [
+    'theme', 'editorFontSize', 'codeFontSize', 'rainbowBrackets', 'treeFontSize',
+    'editorPadding', 'tabSize', 'recentVaultLimit', 'showVaultInTitle', 'caretStyle',
+    'caretThickness', 'smoothCaret', 'caretSpeed', 'fontFamily', 'accentColor',
+    'codeBlockColor', 'sidebarCollapsed', 'agentPanelOpen', 'terminalOpen', 'agentPanelWidth',
+    'terminalHeight', 'vaultAgentChoice', 'vaultAgentUpdateDismissed', 'vaultAgentDrafts',
+    'terminalFdaNoticeDismissed', 'vaultAgentOpenChat', 'canvasStylePanelCollapsed',
+    'pdfThumbnailsOpen', 'pdfInverted', 'readingPreferences', 'vaultAgentConnectedOnce',
+    'agentReplyMode', 'penScale', 'terminalFontFamily', 'terminalFontSize',
+    'fileTreeSortOrder', 'fileTreeAutoReveal', 'expandedPaths', 'vaultSessions',
+    'fileScrollAnchors', 'collapsedHeadings', 'canvasViewPositions', 'pdfViewPositions',
+    'readerViewState', 'pdfTextViewState',
+    // Migration removals also need tombstones, or an old backup resurrects them.
+    'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus',
+    'openTabGroupSizes', 'openTabsVaultId', 'activeTabPath', 'lastFilePath',
+    STORAGE_MIRROR_SENTINEL,
+] as const;
+const ownedKeys = new Set<string>(LOCAL_STORAGE_KEYS);
+let restoreNotice: string | null = null;
+const restoreListeners = new Set<() => void>();
+const mirror = createLocalStorageMirror({
+    keys: LOCAL_STORAGE_KEYS.filter(key => key !== STORAGE_MIRROR_SENTINEL),
+    get: key => localStorage.getItem(key),
+    put: (key, value) => { localStorage.setItem(key, value); },
+    hasSentinel: () => localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION,
+    stamp: () => { localStorage.setItem(STORAGE_MIRROR_SENTINEL, MIRROR_VERSION); },
+    restored: () => {
+        restoreNotice = 'Settings restored after another tab reset them';
+        for (const listener of restoreListeners) listener();
+    },
+});
+
+export function isRegisteredStorageKey(key: string): boolean { return ownedKeys.has(key); }
+
+/** Raw-string writer for keys whose readers do not JSON-parse their value. */
+export function writeStoredValue(key: string, value: string): boolean {
+    if (!ownedKeys.has(key)) { console.error(`Unregistered browser setting: ${key}`); return false; }
+    try {
+        localStorage.setItem(key, value);
+        mirror.queue(key, value);
+        return true;
+    } catch (error) {
+        console.error(`Failed to persist "${key}":`, error);
+        return false;
+    }
+}
+
+export function removeStoredValue(key: string): boolean {
+    if (!ownedKeys.has(key)) { console.error(`Unregistered browser setting: ${key}`); return false; }
+    try {
+        localStorage.removeItem(key);
+        mirror.queue(key, null);
+        return true;
+    } catch (error) {
+        console.error(`Failed to remove "${key}":`, error);
+        return false;
+    }
+}
+
+/** Consume once, including a restore completed before App mounted. */
+export function takeRestoreNotice(): string | null {
+    const notice = restoreNotice;
+    restoreNotice = null;
+    return notice;
+}
+
+export function subscribeRestoreNotice(listener: () => void): () => void {
+    restoreListeners.add(listener);
+    return () => { restoreListeners.delete(listener); };
+}
 
 /** Read and JSON-parse a localStorage value, returning `fallback` if it's
  *  missing, null, or unparseable. */
@@ -21,8 +98,7 @@ export function readJSON<T>(key: string, fallback: T): T {
  *  migration) has to know the new one actually took. */
 export function writeJSON(key: string, value: unknown): boolean {
     try {
-        localStorage.setItem(key, JSON.stringify(value));
-        return true;
+        return writeStoredValue(key, JSON.stringify(value));
     } catch (err) {
         console.error(`Failed to persist "${key}":`, err);
         return false;

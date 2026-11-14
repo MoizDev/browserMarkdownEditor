@@ -237,6 +237,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
+    services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'pen') touch.penDown(event.pointerId, services.isDirectPen(event))
     else if (event.pointerType === 'touch') {
@@ -245,6 +246,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
   }
   const move = (event: PointerEvent) => {
+    services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'touch') touch.touchMove(contact(event))
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
@@ -253,6 +255,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp)
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
+  // Deferred text hits must also stop before non-tool keys, touch navigation and wheel changes.
+  const keyActivity = (event: KeyboardEvent) => {
+    const cancelled = services.textInput?.cancelPending()
+    if (cancelled && event.key === 'Escape') { event.preventDefault(); event.stopPropagation() }
+  }
+  const wheelActivity = () => { services.textInput?.cancelPending() }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
   const doubleClick = (event: MouseEvent) => {
     if (current() && editable() && event.button === 0 && services.textInput?.doubleClick(event.clientX, event.clientY)) {
@@ -261,6 +269,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const dragover = (event: DragEvent) => { event.preventDefault(); event.stopPropagation() }
   const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (current() && editable()) services.drop?.(event) }
+  view.surface.addEventListener('keydown', keyActivity, true)
+  view.surface.addEventListener('wheel', wheelActivity, { capture: true, passive: true })
   view.surface.addEventListener('dragover', dragover)
   view.surface.addEventListener('drop', drop)
   view.surface.addEventListener('auxclick', auxclick)
@@ -336,7 +346,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { services.textInput?.cancelPending(); spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {
@@ -383,6 +393,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const snapshot = services.tools.getSnapshot()
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
+      services.textInput?.cancelPending()
       services.cancelPendingGestures()
       if (cursor.active) cursor.escape()
       pointer.interrupt('flush')
@@ -422,6 +433,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     stopFlush?.(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
+    view.surface.removeEventListener('keydown', keyActivity, true)
+    view.surface.removeEventListener('wheel', wheelActivity, true)
     view.surface.removeEventListener('dragover', dragover)
     view.surface.removeEventListener('drop', drop)
     view.surface.removeEventListener('auxclick', auxclick)

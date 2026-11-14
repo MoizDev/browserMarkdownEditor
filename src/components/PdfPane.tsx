@@ -75,7 +75,7 @@ export interface PdfPaneProps {
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
     /** Writes to disk immediately; used as the canvas hands over to the viewer. */
     onFlushNow: (path: string, content: string) => void;
-    onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean }>;
+    onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
      *  PDF's own path too, so App can put its tab back into reading mode. */
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void;
@@ -127,19 +127,21 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
     const printEpoch = useRef(0), printPending = useRef<number | null>(null), printExpiry = useRef<number | null>(null);
-    const printReady = useRef<{ url: string; valid: () => boolean } | null>(null);
+    const printReady = useRef<{ url: string; valid: () => boolean; validate: () => Promise<boolean> } | null>(null);
+    const printPopup = useRef<Window | null>(null);
     const cancelPrint = useCallback(() => {
         ++printEpoch.current; printPending.current = null;
         if (printExpiry.current !== null) window.clearTimeout(printExpiry.current);
         printExpiry.current = null;
+        printPopup.current?.close(); printPopup.current = null;
         if (printReady.current) URL.revokeObjectURL(printReady.current.url);
         printReady.current = null;
         setPrint('closed'); setPrintError('');
     }, []);
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
-    useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
+    useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); printPopup.current?.close(); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
-        if (printPending.current !== null) return;
+        if (print === 'preparing' || printPending.current !== null || printPopup.current) return;
         const epoch = ++printEpoch.current;
         printPending.current = epoch;
         setPrint('preparing'); setPrintError('');
@@ -148,9 +150,10 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             if (printEpoch.current !== epoch) return;
             if (!result.valid()) throw new Error('The document changed while preparing to print.');
             const url = URL.createObjectURL(new Blob([result.bytes.slice().buffer], { type: 'application/pdf' }));
-            printReady.current = { url, valid: result.valid };
+            printReady.current = { url, valid: result.valid, validate: result.validate };
             printExpiry.current = window.setTimeout(() => {
                 if (printReady.current?.url !== url) return;
+                ++printEpoch.current; printPopup.current?.close(); printPopup.current = null;
                 URL.revokeObjectURL(url); printReady.current = null; printExpiry.current = null;
                 setPrintError('The prepared PDF expired. Prepare it again to print.'); setPrint('confirm');
             }, 60_000);
@@ -160,18 +163,30 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             setPrintError(error instanceof Error ? error.message : 'Could not prepare this PDF.'); setPrint('confirm');
         } finally { if (printPending.current === epoch) printPending.current = null; }
     };
-    const openPrint = () => {
+    const openPrint = async () => {
+        if (printPopup.current) return;
         const ready = printReady.current;
         if (!ready?.valid()) { setPrintError('The document changed. Prepare it again before printing.'); if (ready) URL.revokeObjectURL(ready.url); printReady.current = null; setPrint('confirm'); return; }
+        // Reserve the tab in the click gesture, then recheck disk before any
+        // bytes leave this pane. A cancelled or stale handoff closes only it.
         const opened = window.open('', '_blank');
         if (!opened) { setPrintError('The browser blocked the new tab. Allow pop-ups and try again.'); return; }
-        try { opened.opener = null; opened.location.replace(ready.url); }
-        catch { opened.close(); setPrintError('Could not open the PDF tab. Please try again.'); return; }
+        opened.opener = null; printPopup.current = opened;
+        const epoch = ++printEpoch.current;
+        setPrint('preparing');
+        if (!await ready.validate() || printEpoch.current !== epoch || opened.closed) {
+            if (printEpoch.current !== epoch) return;
+            opened.close(); printPopup.current = null;
+            URL.revokeObjectURL(ready.url); printReady.current = null;
+            setPrintError('The saved PDF changed or the new tab closed. Prepare it again.'); setPrint('confirm'); return;
+        }
+        try { opened.location.replace(ready.url); }
+        catch { opened.close(); printPopup.current = null; setPrintError('Could not open the PDF tab. Please try again.'); setPrint('ready'); return; }
         // The native viewer consumes the URL asynchronously; releasing it in the
         // same gesture can race its navigation. Bound the handoff independently
         // of this pane, which may close as soon as the new tab opens.
         window.setTimeout(() => URL.revokeObjectURL(ready.url), 60_000);
-        printReady.current = null; cancelPrint();
+        printPopup.current = null; printReady.current = null; cancelPrint();
     };
     useEffect(() => {
         if (!isVisible || !isFocused) return;
@@ -791,7 +806,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         >
             <button className="pdf-pane-print" onClick={() => setPrint(value => value === 'closed' ? 'confirm' : value)}>Print…</button>
             {print !== 'closed' && <ConfirmDialog title="Open PDF for printing" confirmLabel={print === 'ready' ? 'Open PDF' : print === 'preparing' ? 'Preparing…' : 'Prepare PDF'}
-                onCancel={cancelPrint} onConfirm={() => { if (print === 'ready') openPrint(); else void preparePrint(); }}>
+                onCancel={cancelPrint} onConfirm={() => { if (print === 'ready') void openPrint(); else void preparePrint(); }}>
                 {print === 'ready' ? 'Open the saved PDF in a new tab, then print from the browser’s PDF viewer. An encrypted PDF may ask for its password again.' : 'Any pending annotations will be saved first. The saved PDF opens in the browser’s PDF viewer for printing.'}
                 {printError && <> {printError}</>}
             </ConfirmDialog>}

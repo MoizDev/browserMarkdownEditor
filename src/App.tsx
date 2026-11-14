@@ -466,11 +466,14 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  const [graphState, setGraphState] = useState<{ activation: number; value: GraphData }>(() => ({ activation: searchActivation, value: EMPTY_GRAPH }));
+  const graph = graphState.activation === searchActivation ? graphState.value : EMPTY_GRAPH;
   const publishIndexGraph = useCallback((next: GraphData | null) => {
+    if (getVaultActivation() !== searchActivation) return;
     const value = next ?? EMPTY_GRAPH;
-    setGraph(previous => sameGraph(previous, value) ? previous : value);
-  }, []);
+    setGraphState(previous => previous.activation === searchActivation && sameGraph(previous.value, value)
+      ? previous : { activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
   const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
@@ -5207,6 +5210,7 @@ export default function App() {
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
+            key={searchActivation}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

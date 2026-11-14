@@ -87,7 +87,12 @@ export async function htmlPreflight(blob: Blob, context: WorkerContext): Promise
         const implicit = autoClose[name];
         if (implicit) close(implicit, name === 'li' ? ['ul', 'ol'] : name === 'dt' || name === 'dd' ? ['dl']
             : name === 'option' || name === 'optgroup' ? ['select', 'datalist'] : ['table']);
-        const foreign = name === 'svg' || name === 'math' || stack.some(tag => tag === 'svg' || tag === 'math');
+        let foreignParent = false;
+        for (let index = stack.length - 1; index >= 0; index--) {
+            if (stack[index] === 'foreignobject' || stack[index] === 'desc' || stack[index] === 'title') break;
+            if (stack[index] === 'svg' || stack[index] === 'math') { foreignParent = true; break; }
+        }
+        const foreign = name === 'svg' || name === 'math' || foreignParent;
         if (foreign ? selfClosing : VOID.has(name)) continue;
         stack.push(name);
         if (stack.length > SECURITY_LIMITS.htmlDepth) throw new RangeError('Clipboard HTML nesting is too deep');

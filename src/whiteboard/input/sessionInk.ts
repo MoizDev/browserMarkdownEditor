@@ -47,7 +47,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
       const lease = services.admit(builder)
       try {
         const node: StrokeNode = createStroke({ id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page,
-          x: origin.x, y: origin.y, tool, samples: lease.ref, pressure: pressure ? 'real' : 'none',
+          x: origin.x, y: origin.y, ext: null, tool, samples: lease.ref, pressure: pressure ? 'real' : 'none',
           widthModel: { id: 'uniform' },
           geomVersion: 1, fairTol, closed: false, width, color })
         const applied = session.apply({ origin: 'tool', label: tool === 'pen' ? 'Draw' : 'Highlight', ops: [{ t: 'create', node }] })

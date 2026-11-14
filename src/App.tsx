@@ -505,12 +505,16 @@ export default function App() {
     if (kind === 'unavailable') setIndexUnavailable(true);
     setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);
+  const [indexStartupActivation, setIndexStartupActivation] = useState<number | null>(null);
+  const indexRestoreSettled = useCallback(() => {
+    if (getVaultActivation() === searchActivation) setIndexStartupActivation(searchActivation);
+  }, [getVaultActivation, searchActivation]);
   const reportIndexTimes = useCallback((changes: [string, number, number][], complete: boolean) => {
     stampIndexedFileTimes(changes);
     if (complete) markIndexTimesReady();
   }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
-    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
+    getActivation: getVaultActivation, autoStart: indexStartupActivation === searchActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
     publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
@@ -976,12 +980,19 @@ export default function App() {
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
   const sessionReportRef = useRef<(documentId: string, source: ContentSource) => void>(() => {});
+  const bytesGenerationsRef = useRef(new Map<string, number>());
   const [documentBuffers] = useState(() => createDocumentBuffers(path => tabsRef.current.find(tab => tab.file.path === path)?.id));
   const [documentSessions] = useState(() => createDocumentSessions({
     bufferState: id => documentBuffers.get(id),
     reportChange: (id, source) => sessionReportRef.current(id, source),
   }));
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
+  const bumpBytesGeneration = useCallback((id: string) => {
+    const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
+    bytesGenerationsRef.current.set(id, generation);
+    const session = documentSessions.get(id);
+    if (session) session.bytesGeneration = generation;
+  }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
@@ -1022,7 +1033,22 @@ export default function App() {
   }, [announce]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
-  useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useLayoutEffect(() => {
+    tabsRef.current = tabs;
+    for (const tab of tabs) documentBuffers.open(tab.id, tab.content, canReadTabText(tab));
+    // A PDF reader has no editable engine until Annotate is entered, but its
+    // tiled resources still belong to the document, not the mounted pane.
+    for (const path of visiblePaths(layout)) {
+      const tab = tabs.find(t => t.file.path === path);
+      if (!tab || tab.readError || tab.representation.loadedKind !== 'pdf' || tab.mode !== 'read') continue;
+      documentSessions.ensure(tab.id, 'pdf-reader', bytesGenerationsRef.current.get(tab.id) ?? 0, () => ({
+        hasPendingEdits: () => false,
+        checkpoint: () => documentBuffers.get(tab.id)?.source ?? '',
+        acknowledge: () => {},
+        onChange: () => () => {},
+      }));
+    }
+  }, [tabs, layout, documentBuffers, documentSessions]);
   useEffect(() => {
     layoutRef.current = layout;
     visiblePathsRef.current = visiblePaths(layout);
@@ -1068,6 +1094,15 @@ export default function App() {
    * Replace update it synchronously beside their own tab fix-ups.
    */
   const restorePendingRef = useRef<PendingRestore | null>(null);
+  useEffect(() => {
+    if (!rootHandle) return;
+    // A failed vault-id write can prevent any restore claim; do not leave that
+    // vault without an index forever. A restore already reading owns its release.
+    const timer = setTimeout(() => {
+      if (sessionRootRef.current !== rootHandle && !restoringRef.current) indexRestoreSettled();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [rootHandle, indexRestoreSettled]);
   /**
    * Every rename, move, trash and bin Replace still RUNNING, from its first
    * filesystem call to the end of its tab fix-up. Each is copy → removeEntry →
@@ -2282,6 +2317,7 @@ export default function App() {
     const snapshot = contentOf(path) ?? tab.content;
     if (isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
     const revision = pendingRevision?.revision ?? 0;
+    const bufferRevision = documentBuffers.get(tab.id)?.revision;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
     if (__BME_BENCH__) {
@@ -2403,6 +2439,7 @@ export default function App() {
         // By id: a rename mid-write moved the document, not the write.
         const currentRevision = pendingRevisionsRef.current.get(id);
         if (currentRevision && revision > currentRevision.saved) currentRevision.saved = revision;
+        if (bufferRevision !== undefined) documentBuffers.markSaved(id, bufferRevision);
         const current = !currentRevision || currentRevision.revision === revision;
         setTabs(prev => prev.map(t =>
           t.id === id && current && t.content === snapshot ? { ...t, dirty: false } : t));
@@ -2452,7 +2489,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [clearSaveTimer, contentOf, documentBuffers, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2491,6 +2528,8 @@ export default function App() {
     }
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
+    documentBuffers.open(target.id, target.content, canReadTabText(target));
+    documentBuffers.report(target.id, content, !!options?.fromDisk);
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -2502,7 +2541,7 @@ export default function App() {
     notifySearchChanges();
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
-  }, [reportRevision, scheduleSave]);
+  }, [documentBuffers, reportRevision, scheduleSave]);
 
   const updateAgentTabContent = useCallback((path: string, content: string) => {
     if (__BME_BENCH__) {
@@ -2525,11 +2564,9 @@ export default function App() {
   const flushTabNow = useCallback(async (path: string, content: string) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     if (!target || !canUpdateTabContent(target, 'annotation')) return;
-    latestContentRef.current.set(path, content);
-    reportRevision(target.id);
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    updateTabContent(path, content);
     await flushTab(path, true, false, undefined, false, true);
-  }, [flushTab, reportRevision]);
+  }, [flushTab, updateTabContent]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
   const checkpointAgainRef = useRef(false);
@@ -2668,7 +2705,7 @@ export default function App() {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return;
         }
-        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) { setBaseline(id, result.version); bumpBytesGeneration(id); }
         if (tabsRef.current.some(t => t.id === id)) publishPdfRotation(id, preview, expected?.hash, result.version.hash);
         recordFileWritten(path, result.version.lastModified);
         // The parked original predates the rotation, and the next annotation
@@ -2699,7 +2736,7 @@ export default function App() {
       if (chains.get(id) === chained) chains.delete(id);
       endPdfRotation(path);
     }
-  }, [readFileBytes, setDiskState]);
+  }, [readFileBytes, setDiskState, bumpBytesGeneration]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
@@ -3298,7 +3335,10 @@ export default function App() {
     // that has not landed). That is why the switch effect re-points the id ref
     // at the vault being LEFT rather than leaving it on the last claim; see
     // there for what went wrong when it did not.
-    if (!fileTree || fileTree.length === 0) return;
+    if (!fileTree || fileTree.length === 0) {
+      if (rootHandle && !isLoading) indexRestoreSettled();
+      return;
+    }
     // Both halves must have moved on: see sessionRootRef's note above. Equal on
     // either one means this commit is mid-switch (openVaultHandle commits the
     // tree before recordVault sets the id) or this vault has already been
@@ -3386,7 +3426,7 @@ export default function App() {
     // tabs for one document — restoreLayout dedupes the layout, not the tabs.
     const paths = stored ? [...new Set(stored.paths)] : [];
     if (linkedNode && !paths.includes(linkedNode.path)) paths.push(linkedNode.path);
-    if (paths.length === 0) return;
+    if (paths.length === 0) { indexRestoreSettled(); return; }
 
     // Persistence stays shut from here until the merge is dispatched — see
     // restoringRef. Released in `finally` too, so no exit leaves it shut.
@@ -3653,9 +3693,10 @@ export default function App() {
         // this lands in the merge's batch, so the writer sees the note active
         // and nothing pending in one commit — no flash of the bare vault.
         if (linkedNode) setPendingLinkFile(null);
+        indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -4643,6 +4684,7 @@ export default function App() {
     const { id, file } = tab;
     const path = file.path;
     if (isEpubFile(file.name) || isPdfFile(file.name)) invalidReaderTokens.current.add(`${id}|${tab.representation.generation}`);
+    bumpBytesGeneration(id);
     clearSaveTimer(path);
     setBaseline(id, version);
     diskStateRef.current.delete(id);
@@ -4653,6 +4695,8 @@ export default function App() {
       // The parked original would otherwise be rebuilt over the new file by
       // the next annotation save.
       if (isPdfFile(file.name)) clearPdfRenderData(path);
+      documentBuffers.open(id, tab.content, canReadTabText(tab));
+      documentBuffers.report(id, text, true);
       latestContentRef.current.set(path, text);
       setTabs(prev => prev.map(t => (t.id === id
         ? { ...t, content: text, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
@@ -4671,7 +4715,7 @@ export default function App() {
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [clearSaveTimer, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,

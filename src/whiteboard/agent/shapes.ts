@@ -1,4 +1,6 @@
+import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { forEachNodeInZOrder, type BoardDoc } from '../model/doc';
+import { SIZES } from '../model/styles';
 import type { SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { RichText } from '../text/richText';
@@ -60,6 +62,12 @@ function summarize(node: Node, geometry: AgentGeometry, page: number | undefined
     if ('fill' in node) result.fill = node.fill;
     if ('dash' in node) result.dash = node.dash;
     if ('size' in node) result.size = node.size;
+    if (node.kind === 'stroke') {
+        const kind = node.tool === 'pen' ? 'stroke:pen' : 'stroke:highlighter';
+        result.size = SIZES.reduce((best, size) =>
+            Math.abs(styleGeometryMetrics.actualWidth(kind, size, 1) - node.width)
+                < Math.abs(styleGeometryMetrics.actualWidth(kind, best, 1) - node.width) ? size : best);
+    }
     if (node.kind === 'figure') result.geo = node.shape;
     if (node.kind === 'text' || node.kind === 'sticky') result.text = plainText(node.text);
     if ((node.kind === 'figure' || node.kind === 'connector') && node.label) result.text = plainText(node.label);

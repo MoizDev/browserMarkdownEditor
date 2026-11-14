@@ -223,9 +223,9 @@ is still the open vault, and the provider writes root and tree only via `commitR
 
 ## What a save may NOT cost
 
-A cache HIT still costs a `getFile()` — one browser round trip per note. Measured: a 1,000-note
-vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
-vault to discover nothing had changed. So:
+A cache HIT still costs a `getFile()` — one browser round trip per note. Historically, before #58,
+a 1,000-note vault paid 1,004 of them per autosave because the old `buildGraph` path revalidated the
+whole vault to discover nothing had changed. So:
 
 - **`flushTab` primes rather than re-reads.** It captures the index owner before the write, then
   sends its saved text and stat to that same activation. The worker parses it, publishing a graph

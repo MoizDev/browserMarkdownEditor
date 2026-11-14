@@ -456,6 +456,7 @@ export default function App() {
     readFileVersioned,
     readFileSnapshot,
     readBoardAsset,
+    readLegacyBoardAsset,
     putBoardAsset,
     readBytesVersioned,
     inspectExportTarget,
@@ -1320,6 +1321,21 @@ export default function App() {
         if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         return { name: found.name, blob };
       },
+      async readLegacyAsset(identity, src, signal) {
+        signal.throwIfAborted();
+        const tab = current(identity), root = rootHandleRef.current;
+        if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+        const path = tab.file.path, owner = tab.file.handle as FileSystemFileHandle, parent = tab.file.parentHandle;
+        const isCurrent = () => {
+          const latest = current(identity);
+          return !!latest && rootHandleRef.current === root && latest.file.path === path
+            && latest.file.handle === owner && latest.file.parentHandle === parent;
+        };
+        const blob = await readLegacyBoardAsset({ root, parent, owner, src, signal, isCurrent });
+        signal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        return blob;
+      },
       async putMedia(identity, media, blob, signal) {
         const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
@@ -1327,7 +1343,7 @@ export default function App() {
         return name;
       },
     };
-  }, [nativeClipboard, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal]);
+  }, [nativeClipboard, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);

@@ -71,6 +71,7 @@ export class PdfTileLayer implements Layer {
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
+    private motionScaleAt = 0;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
 
@@ -107,9 +108,14 @@ export class PdfTileLayer implements Layer {
             this.failed.clear();
             this.contentIdentity = identity;
             this.lastMotionScale = undefined;
+            this.motionScaleAt = 0;
         }
+        const now = performance.now();
+        const holdMotionScale = input.moving && this.lastMotionScale && now - this.motionScaleAt < 50;
         const planned = planPdfTileDemand({ ...input, previousMotionScale: this.lastMotionScale,
+            motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
+        if (input.moving && !holdMotionScale) this.motionScaleAt = now;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         for (const [key, entry] of this.entries) {

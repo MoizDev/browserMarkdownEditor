@@ -15,6 +15,7 @@ export interface PdfInkAcquisitionOptions {
 
 export type PdfEditableInkSource = {
     source: WriterSource;
+    readonly writeSafety: { readonly kind: 'safe' };
     pages: readonly Readonly<PageGeometry>[];
     readMedia(name: string, signal?: AbortSignal): Promise<Blob>;
     openWriter(signal?: AbortSignal): Promise<TypedPdfWriter>;

@@ -5,6 +5,8 @@ import { createStructureCommands, type StructureCommandsOptions } from './struct
 
 export interface StructureControlsOptions extends Omit<StructureCommandsOptions, 'geometry'> {
     readonly newSheetName: () => string;
+    /** The attached view may be less privileged than its shared document session. */
+    readonly canWrite?: () => boolean;
     /** Current zero-based physical page and the view's real navigation operation. */
     readonly readPage: () => number;
     readonly jump: (page: number) => void;
@@ -14,13 +16,13 @@ export interface StructureControlsOptions extends Omit<StructureCommandsOptions,
 export function createStructureControls(options: StructureControlsOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createStructureCommands({ ...options, geometry: runtime.render.changeGeometry,
-        current: () => options.current() && !session.isGestureActive });
+        current: () => options.current() && (options.canWrite?.() ?? true) && !session.isGestureActive });
     const live = () => {
         if (!options.current()) throw new DOMException('Board session ended', 'AbortError');
     };
     const editable = () => {
         live();
-        if (session.isReadOnly) throw new Error(session.readOnlyReason ?? 'Board is read-only');
+        if (session.isReadOnly || options.canWrite?.() === false) throw new Error(session.readOnlyReason ?? 'Board view is read-only');
         if (session.isGestureActive) throw new Error('Finish the current gesture first');
     };
     let cached: { revision: number; selection: SelectionSnapshot; value: {

@@ -1,5 +1,5 @@
 import { createPlatformMirrors, pagePresentation } from '../../platform/render';
-import type { BorrowedMirror, ByteLease, MirrorEntry, MirrorView, Rect, RenderToken } from '../../platform/render';
+import type { BorrowedMirror, ByteLease, MirrorEntry, MirrorView, Rect, RenderToken, ViewState } from '../../platform/render';
 import type { PlatformSessionSlots } from '../../platform/render/createPlatformMirrors';
 import type { CompositorMirrorQuad } from '../../platform/render/compositor.types';
 import type { MirrorSet } from '../../platform/render/mirrorSet';
@@ -85,7 +85,8 @@ export function getPdfSessionMirrors(options: {
             const { bitmap, world, source, page } = item.pixels;
             const { camera, viewport } = view.view;
             const scale = camera.z * viewport.dpr;
-            const offset = pagePresentation(page, { ...view.view, epoch: 0, moving: false }).restOffsetDevice;
+            const moving = (view.view as Partial<ViewState>).moving ?? false;
+            const offset = pagePresentation(page, { ...view.view, epoch: 0, moving }).restOffsetDevice;
             return { image: bitmap, sourceRect: source,
                 destRect: { x: (world.x - camera.x) * scale + offset.x, y: (world.y - camera.y) * scale + offset.y,
                     width: world.width * scale, height: world.height * scale } };

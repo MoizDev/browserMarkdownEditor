@@ -66,6 +66,8 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
             });
             return layer;
         },
+        ...(__BME_BENCH__ ? { benchmarkDomain: (layer: Layer, frame: Parameters<PlatformLayerDefinition['coverage']>[1]) =>
+            layer instanceof PreviewBitmapLayer ? layer.benchmarkDomain?.(frame.view) ?? [] : [] } : {}),
         revision: () => scene?.revision ?? 0,
         critical: (layer, view) => layer instanceof PreviewBitmapLayer && layer.hasGpuWork(view),
         coverage: (_layer, frame, backend) => scene?.coverage(frame.view, backend !== 'canvas2d') ?? { complete: false, sharp: false },

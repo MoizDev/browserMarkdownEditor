@@ -7,6 +7,7 @@ import { PaneCapturer } from './capture';
 import type { CaptureGpuOwner, CaptureOptions, CaptureRequest, CaptureSnapshot } from './capture';
 import { CaptureQueue } from './captureQueue';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
+import type { RenderToken } from './types';
 
 /** One queue across every session; it never starts work or retains a pane by itself (design §4.6). */
 const queue = new CaptureQueue();
@@ -16,13 +17,14 @@ interface CaptureGpuScope {
     withCapturePass(encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void): void;
 }
 type ScopedCaptureOwner = CaptureGpuOwner & CaptureGpuScope;
-const gpuOwners = new Map<string, () => ScopedCaptureOwner | null>();
+const gpuOwners = new Map<string, { readonly token: RenderToken; readonly getOwner: () => ScopedCaptureOwner | null }>();
 
 /** Internal pane adapter capability; document/PDF code never receives a WebGL owner. */
-export function registerCaptureGpu(paneId: string, getOwner: () => ScopedCaptureOwner | null): () => void {
+export function registerCaptureGpu(paneId: string, token: RenderToken, getOwner: () => ScopedCaptureOwner | null): () => void {
     if (gpuOwners.has(paneId)) throw new Error('A GPU capture route is already registered for this pane');
-    gpuOwners.set(paneId, getOwner);
-    return () => { if (gpuOwners.get(paneId) === getOwner) gpuOwners.delete(paneId); };
+    const route = { token: Object.freeze({ ...token }), getOwner };
+    gpuOwners.set(paneId, route);
+    return () => { if (gpuOwners.get(paneId) === route) gpuOwners.delete(paneId); };
 }
 
 /** Callbacks remain bound to the originating generation, including a loss during readback. */
@@ -66,7 +68,16 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
         release: lease => { cache.release(lease); live -= lease.bytes; },
     };
     const capturer = new PaneCapturer({ paneId: options.paneId, queue, memory, snapshot: request => options.snapshot(request, memory),
-        tryGpu: () => gpuOwners.get(options.paneId)?.() ?? null });
+        tryGpu: snapshot => {
+            for (const route of gpuOwners.values()) {
+                const a = route.token, b = snapshot.token;
+                if (a.vaultEpoch !== b.vaultEpoch || a.documentId !== b.documentId ||
+                    a.bytesGeneration !== b.bytesGeneration || a.session !== b.session) continue;
+                const owner = route.getOwner();
+                if (owner) return owner;
+            }
+            return null;
+        } });
     let disposed = false;
     return {
         captureRegion: (rect, maxSide, request) => capturer.captureRegion(rect, maxSide, request),

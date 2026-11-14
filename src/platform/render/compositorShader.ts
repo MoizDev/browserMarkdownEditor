@@ -31,7 +31,11 @@ ${uniforms}
 uniform sampler2D gfxTexture0;
 in vec2 uv;
 layout(location=0) out vec4 gfxColour;
-void main() { gfxColour = texture(gfxTexture0, uv) * sourceSizeOpacity.z; }`,
+${__BME_BENCH__ ? 'layout(location=1) out vec4 gfxClass;' : ''}
+void main() {
+    gfxColour = texture(gfxTexture0, uv) * sourceSizeOpacity.z;
+    ${__BME_BENCH__ ? 'gfxClass = vec4(sourceSizeOpacity.w / 255.0, 0.0, 0.0, sourceSizeOpacity.w > 0.0 && sourceSizeOpacity.z > 0.0 ? 1.0 : 0.0);' : ''}
+}`,
     },
     layout: {
         uniforms: [{ binding: 0, byteSize: 64 }],

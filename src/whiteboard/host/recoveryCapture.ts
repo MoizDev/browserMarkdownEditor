@@ -17,6 +17,7 @@ import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 // contracts; independently implemented, no third-party source.
 type Dirty = { readonly revision: number; readonly change: SerializerChange | null; readonly identity: RecordIdentity };
 type Hold = { path: string | null; readonly lease?: { release(): void }; asset?: RecoveryMediaAsset };
+type BoardCapture = JournalCapture & { payload: BoardRecoveryRecipe };
 function copyPrime(prime: SerializerPrime): SerializerPrime {
     if (!Number.isSafeInteger(prime.revision) || prime.revision < 0 || !(prime.baseline instanceof Blob)
         || (typeof File !== 'undefined' && prime.baseline instanceof File) || typeof prime.header !== 'string'
@@ -32,9 +33,9 @@ export function createBoardRecoveryCapture(options: {
     representation: 'drawing' | 'notebook' | 'pdf-ink'; mediaPath: (id: MediaId) => string | null;
     mediaAsset: (id: MediaId) => RecoveryMediaAsset | undefined;
     /** PDF copy must wrap the native recipe in a complete containing-PDF recipe. */
-    pdfCopy?: (board: BoardRecoveryRecipe) => PdfRecoveryRecipe;
+    pdfCopy?: (board: BoardRecoveryRecipe, context: unknown) => PdfRecoveryRecipe;
     retainMedia?: (id: MediaId) => { release(): void };
-}): { record(applied: Applied, revision: number): void; capture(): JournalCapture | undefined;
+}): { record(applied: Applied, revision: number): void; capture(context: unknown): JournalCapture | undefined;
     acknowledge(revision: number, baseline?: SerializerPrime): void; dispose(): void } {
     const { doc } = options;
     if ((options.representation === 'drawing' && doc.kind !== 'whiteboard')
@@ -46,7 +47,8 @@ export function createBoardRecoveryCapture(options: {
     const records = new RecordChanges(current, options.records);
     let dirty = new Map<string, Dirty>();
     const held = new Map<MediaId, Hold>();
-    let cached: JournalCapture | undefined, disposed = false, failure: unknown, failed = false;
+    let cached: BoardCapture | undefined, disposed = false, failure: unknown, failed = false;
+    let copiedBoard: BoardRecoveryRecipe | undefined, copiedContext: unknown, copiedPdf: PdfRecoveryRecipe | undefined;
     const assertOpen = () => { if (disposed) throw new Error('Recovery capture disposed'); };
     const copyAsset = (id: MediaId, source: RecoveryMediaAsset): RecoveryMediaAsset => {
         if (source.id !== id || source.hash !== id.slice(7) || !/^[0-9a-f]{64}$/.test(source.hash)
@@ -81,7 +83,7 @@ export function createBoardRecoveryCapture(options: {
         if (options.representation === 'pdf-ink') for (const id of doc.media.keys()) hold(id, initial);
     } catch (error) { unhold(initial); throw error; }
     const snapshot = (nextPrime: SerializerPrime, revision: number, items: ReadonlyMap<string, Dirty>, header: string,
-        expected: ReturnType<RecordChanges['integrity']>): JournalCapture | undefined => {
+        expected: ReturnType<RecordChanges['integrity']>): BoardCapture | undefined => {
         if (revision <= nextPrime.revision) return undefined;
         const changed: SerializerChange[] = [], removed: RecordIdentity[] = [];
         for (const item of items.values()) { if (item.change) changed.push(item.change); else removed.push(item.identity); }
@@ -100,19 +102,14 @@ export function createBoardRecoveryCapture(options: {
         const recipe: BoardRecoveryRecipe = { version: 1, prime: nextPrime,
             delta: { previous: nextPrime.revision, revision, header, changed, removed }, expected, endFields,
             retainedMedia: Object.freeze(retainedMedia), mediaRecords: Object.freeze(mediaRecords) };
-        const copy = options.representation === 'pdf-ink' ? options.pdfCopy!(recipe) : recipe;
-        if (options.representation === 'pdf-ink'
-            && (!('board' in copy) || !copy.board || !('source' in copy) || !copy.source || !('pages' in copy) || !Array.isArray(copy.pages))) {
-            throw new Error('PDF recovery copy wrapper is unavailable');
-        }
-        return { payload: recipe, copy: { kind: 'recipe', payload: copy }, mediaRefs };
+        return { payload: recipe, copy: { kind: 'recipe', payload: recipe }, mediaRefs };
     };
     let header = prime.header;
     return {
         record(applied, revision) {
             assertOpen();
             if (failed) throw failure;
-            cached = undefined;
+            cached = undefined; copiedBoard = undefined; copiedPdf = undefined; copiedContext = undefined;
             const encodedHeader = encodeHeader(doc.kind, doc.preserved);
             if (!encodedHeader.ok) { failed = true; failure = new Error(encodedHeader.error.reason); throw failure; }
             const encoded = records.encode(doc, applied.touched, options.encoder, revision, encodedHeader.value);
@@ -131,14 +128,36 @@ export function createBoardRecoveryCapture(options: {
             try { cached = snapshot(prime, revision, next, header, encoded.value.expected); failure = undefined; }
             catch (error) { failure = error; throw error; }
         },
-        capture() {
+        capture(context) {
             assertOpen();
             if (failed) throw failure;
             if (!cached && current > prime.revision) {
                 try { cached = snapshot(prime, current, dirty, header, records.integrity()); failure = undefined; }
                 catch (error) { failure = error; throw error; }
             }
-            return cached;
+            if (cached) {
+                const previousPaths = new Set<string>();
+                const paths: string[] = [];
+                for (const [id, hold] of held) {
+                    if (hold.path) previousPaths.add(hold.path);
+                    const path = options.mediaPath(id) ?? hold.path;
+                    if (path) { hold.path = path; paths.push(path); }
+                }
+                // Keep references not accounted for by a held asset: an unknown
+                // reference is a reason to retain media, never to discard it.
+                for (const path of cached.mediaRefs) if (!previousPaths.has(path)) paths.push(path);
+                if (paths.length !== cached.mediaRefs.length || paths.some((path, i) => path !== cached!.mediaRefs[i])) {
+                    cached = { ...cached, mediaRefs: paths };
+                }
+            }
+            if (!cached || options.representation !== 'pdf-ink') return cached;
+            const board = cached.payload;
+            if (copiedBoard !== board || copiedContext !== context || !copiedPdf) {
+                const copy = options.pdfCopy!(board, context);
+                if (!copy.board || !copy.source || !Array.isArray(copy.pages)) throw new Error('PDF recovery copy wrapper is unavailable');
+                copiedBoard = board; copiedContext = context; copiedPdf = copy;
+            }
+            return { ...cached, copy: { kind: 'recipe', payload: copiedPdf } };
         },
         acknowledge(revision, baseline) {
             assertOpen();
@@ -150,10 +169,11 @@ export function createBoardRecoveryCapture(options: {
             for (const [key, item] of dirty) if (item.revision > revision) next.set(key, item);
             const capture = snapshot(nextPrime, current, next, header, records.integrity());
             prime = nextPrime; dirty = next; cached = capture;
+            copiedBoard = undefined; copiedPdf = undefined; copiedContext = undefined;
         },
         dispose() {
             if (disposed) return;
-            disposed = true; cached = undefined; dirty.clear();
+            disposed = true; cached = undefined; copiedBoard = undefined; copiedPdf = undefined; copiedContext = undefined; dirty.clear();
             for (const entry of held.values()) entry.lease?.release();
             held.clear();
         },

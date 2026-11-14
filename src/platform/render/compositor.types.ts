@@ -39,6 +39,8 @@ export interface CompositorLayer {
     readonly layer: Layer;
     readonly group: CompositorLayerGroup;
     readonly isolation?: CompositorIsolation;
+    /** Benchmark denominator only, in device pixels; never a declaration of painted coverage. */
+    readonly benchmarkDomain?: (frame: ScheduledFrame) => readonly Readonly<Rect>[];
     coverage(frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
 }
 

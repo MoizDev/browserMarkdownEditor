@@ -10,6 +10,8 @@ import type { TiledDocumentPool } from './documentSession';
 import type { PdfTiledSource, PdfTiledSourceFactory } from './hostTypes';
 import { pdfSessionCapturer } from './sessionCapture';
 import { requestPdfPassword } from './passwords';
+import { getPdfFontEpoch } from '../fonts/profiles';
+import { pdfMirrorRevision, pdfVersionTransitionOwner } from './versionOwner';
 
 const sourceSlot = Symbol('tiled PDF source');
 interface Entry {
@@ -75,7 +77,13 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                         currentToken: () => current(token) ? token : null });
                     const capturer = pdfSessionCapturer(owner.session, stack);
                     const selection = new PdfSelectionState(document.poolDocument.docKey);
-                    return { session: owner.session, document, mirror, capturer, selection };
+                    const transition = pdfVersionTransitionOwner(id, 'outer');
+                    const bridge = await transition.adopt({ session: owner.session, document, mirror },
+                        () => pdfMirrorRevision(owner.binding.emphasisEnabled, getPdfFontEpoch(document.poolDocument.docKey), document.emphasis.revision()),
+                        owner.session.lifetimeSignal);
+                    owner.session.lifetimeSignal.throwIfAborted();
+                    if (!current(token)) throw new DOMException('PDF session replaced', 'AbortError');
+                    return { session: owner.session, document, mirror, capturer, selection, transition, bridge };
                 })();
                 owner.ready = ready;
                 void ready.catch(() => { if (owner.ready === ready) owner.ready = undefined; });

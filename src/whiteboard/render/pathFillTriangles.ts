@@ -1,14 +1,11 @@
 import type { PathCommand } from '../../platform/types';
+import { PATH_COVERAGE_STENCIL_MAX_EDGES } from '../../platform/render/pathCoverage';
 import { flattenCubic } from '../geom/flatten';
 import type { Vec2 } from '../geom/path';
 
-/** Winding of a point never exceeds the number of flattened edges: a ray from the point crosses each
- * edge at most once, and the signed crossing count is the winding. An 8-bit stencil that counts
- * with wrapping arithmetic therefore cannot turn a nonzero winding into zero while the count is at
- * most 255. Larger nonzero paths must take the bounded CPU coverage route instead. */
-export const PATH_FILL_STENCIL_MAX_EDGES = 255;
 /** Work bound for one path tile; beyond it the whole path takes the reference route. */
 export const PATH_FILL_MAX_EDGES = 65_536;
+export { PATH_COVERAGE_STENCIL_MAX_EDGES as PATH_FILL_STENCIL_MAX_EDGES };
 
 export interface PathFillOptions {
     /** Maximum deviation of flattened curves, in the same units as the commands (device px / scale). */

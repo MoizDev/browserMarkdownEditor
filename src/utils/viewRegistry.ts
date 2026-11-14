@@ -151,7 +151,7 @@ export interface CanvasAgentOps {
      *  two boxes and the arrow between them. Page backdrops and locked shapes
      *  are refused per op. `errors` also carries `op N: note: …` lines for ops
      *  that applied with an adjustment (a point moved onto the page). */
-    apply(ops: CanvasOp[]): CanvasApplyResult;
+    apply(ops: CanvasOp[], guard?: { readonly signal?: AbortSignal; isCurrent(): boolean }): CanvasApplyResult | Promise<CanvasApplyResult>;
     /** 1-based page the user is on (default target for ops without `page`). */
     currentPage(): number;
 }

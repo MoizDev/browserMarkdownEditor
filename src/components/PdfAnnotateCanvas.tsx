@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
-import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Tldraw, getSnapshot, createTLStore, loadSnapshot, defaultShapeUtils, defaultBindingUtils, AssetRecordType, createShapeId, Box, inlineBase64AssetStore, react } from 'tldraw';
+import type { Editor, TLAssetStore, TLEditorSnapshot, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
 import { setPdfRenderData } from '../utils/pdfRenderCache';
@@ -204,6 +204,21 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
+function AnnotationLoadNotice() {
+    return <div className="canvas-readonly-notice" role="alert" onContextMenu={event => event.preventDefault()}><div className="canvas-readonly-card">
+        <h2>PDF annotations are read-only</h2>
+        <p>The existing annotations could not be loaded safely. Switch to View to read the PDF, or use a compatible version to recover them.</p>
+        <p className="canvas-readonly-preserved">The original file has not been changed. No edits will be saved.</p>
+    </div></div>;
+}
+
+class AnnotationLoadBoundary extends Component<{ original: Uint8Array; children: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() { return { failed: true }; }
+    componentDidCatch() { revokePdfSource(this.props.original); }
+    render() { return this.state.failed ? <AnnotationLoadNotice /> : this.props.children; }
+}
+
 export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
     const sniff = useMemo(() => sniffCanvas(props.snapshot, 'pdf'), [props.snapshot]);
     const reason = canvasReadOnlyReason(sniff);
@@ -212,7 +227,26 @@ export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
         // guard: no editor, pending serializer or rebuild capability survives it.
         if (reason) revokePdfSource(props.original);
     }, [reason, props.original]);
-    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyPdfAnnotateCanvas {...props} />;
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
+}
+
+function CheckedPdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    // P-09 validates the envelope; only the library can validate every record
+    // and migration. Reject before an editor, listener or save cache exists.
+    const [loadable] = useState(() => {
+        try {
+            const parsed = parseSnapshot(props.snapshot);
+            if (parsed.snapshot) {
+                const store = createTLStore({ shapeUtils: defaultShapeUtils, bindingUtils: defaultBindingUtils });
+                loadSnapshot(store, parsed.snapshot);
+            }
+            return true;
+        } catch {
+            revokePdfSource(props.original);
+            return false;
+        }
+    });
+    return loadable ? <LegacyPdfAnnotateCanvas {...props} /> : <AnnotationLoadNotice />;
 }
 
 function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
@@ -410,67 +444,43 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
         //
         // All of this runs BEFORE the store listener is attached, so none of it
         // marks the file dirty.
-        const existing = editor.getCurrentPageShapes().filter(s => s.meta?.pdfPage !== undefined);
-        const backdropMatchesFile = existing.length === pages.length;
-
-        if (!backdropMatchesFile) {
-            // Either a first open, or the PDF's page count changed under us —
-            // rebuild from scratch rather than leave a half-matching backdrop.
-            if (existing.length) {
-                editor.run(() => editor.deleteShapes(existing.map(s => s.id)), { ignoreShapeLock: true });
-                const staleAssets = existing
-                    .map(s => (s as TLImageShape).props.assetId)
-                    .filter((id): id is TLAssetId => !!id);
-                if (staleAssets.length) editor.deleteAssets(staleAssets);
-            }
-
-            const pageShapeIds = pages.map((_, i) => createShapeId(`pdf-page-${i}`));
-            editor.createShapes(pages.map((page, i) => {
-                // Deterministic ids so a rebuild replaces these in place rather
-                // than piling up a fresh copy of every page.
+        const reconcileBackdrops = () => editor.run(() => editor.store.mergeRemoteChanges(() => {
+            const existing = editor.getCurrentPageShapes().filter(s => s.meta?.pdfPage !== undefined);
+            const keep = new Set<TLShapeId>();
+            pages.forEach((page, i) => {
                 const assetId = AssetRecordType.createId(`pdf-page-${i}`);
-                editor.createAssets([{
-                    id: assetId,
-                    type: 'image',
-                    typeName: 'asset',
-                    props: {
-                        name: `page-${i + 1}.jpg`,
-                        // Not a blob URL: see assetStore above. `meta.pdfPage` is
-                        // what the resolver keys on.
-                        src: `asset:pdf-page-${i}`,
-                        w: page.width,
-                        h: page.height,
-                        mimeType: 'image/jpeg',
-                        isAnimated: false,
-                    },
+                // One document asset is shared by all sheets; deleting it when
+                // changing sheets would make the other sheets lose their paper.
+                if (!editor.getAsset(assetId)) editor.createAssets([{
+                    id: assetId, type: 'image', typeName: 'asset',
+                    props: { name: `page-${i + 1}.jpg`, src: `asset:pdf-page-${i}`,
+                        w: page.width, h: page.height, mimeType: 'image/jpeg', isAnimated: false },
                     meta: { pdfPage: i },
                 }]);
-                return {
-                    id: pageShapeIds[i],
-                    type: 'image' as const,
-                    x: boxes[i].x,
-                    y: boxes[i].y,
-                    isLocked: true,
-                    props: { assetId, w: page.width, h: page.height },
-                    meta: { pdfPage: i },
-                };
-            }));
-            // Belt and braces: pages are backdrop and must sit beneath every
-            // annotation, whatever order they were added in.
-            editor.sendToBack(pageShapeIds);
-        }
-
-        // Older snapshots may contain pages unlocked or moved by Unlock all.
-        // Repair the view without turning opening a PDF into a document edit.
-        editor.run(() => editor.store.mergeRemoteChanges(() => {
-            for (const shape of editor.getCurrentPageShapes()) {
-                const index = shape.meta?.pdfPage;
-                if (typeof index !== 'number' || !boxes[index] || shape.type !== 'image') continue;
-                editor.updateShape({ id: shape.id, type: 'image', x: boxes[index].x, y: boxes[index].y,
-                    isLocked: true, props: { w: boxes[index].width, h: boxes[index].height } });
-            }
+                const found = existing.find(s => s.meta.pdfPage === i && s.type === 'image');
+                const legacy = createShapeId(`pdf-page-${i}`);
+                const id = found?.id ?? (editor.getShape(legacy) ? createShapeId() : legacy);
+                keep.add(id);
+                const shape = { id, type: 'image' as const, x: boxes[i].x, y: boxes[i].y,
+                    isLocked: true, props: { assetId, w: page.width, h: page.height }, meta: { pdfPage: i } };
+                if (found) editor.updateShape(shape);
+                else editor.createShapes([shape]);
+            });
+            const stale = existing.filter(s => !keep.has(s.id)).map(s => s.id);
+            if (stale.length) editor.deleteShapes(stale);
+            editor.sendToBack([...keep]);
+            pageShapeIdsRef.current = keep;
         }), { ignoreShapeLock: true });
+        reconcileBackdrops();
         const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.pdfPage !== undefined);
+        let paperSheet = editor.getCurrentPageId();
+        const stopSheetWatch = react('pdf paper sheet', () => {
+            const sheet = editor.getCurrentPageId();
+            if (sheet === paperSheet) return;
+            paperSheet = sheet;
+            backdropGuard.allow(reconcileBackdrops);
+            thumbsRef.current?.invalidate(boxes.map((_, i) => i));
+        });
 
         // Open on the page being READ, at the reader's size — not on the whole
         // document. This used to zoomToFit() on a first open, which on a long PDF
@@ -489,9 +499,6 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             savedPos?.offset ?? 0,
         ));
 
-        for (const shape of editor.getCurrentPageShapes()) {
-            if (shape.meta?.pdfPage !== undefined) pageShapeIdsRef.current.add(shape.id);
-        }
 
         /**
          * Keep the backdrop true to the view: rasterize pages as they come near
@@ -901,6 +908,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
+            stopSheetWatch();
             backdropGuard.dispose();
             closed = true;
             activePaint?.abort();

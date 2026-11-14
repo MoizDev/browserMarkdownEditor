@@ -1,5 +1,22 @@
-import { pageAt, type PageStack } from '../../platform/render/pageStack';
+import { pageAt, pageStack, type PageStack } from '../../platform/render/pageStack';
 import type { Affine, Rect } from '../../platform/types';
+import { paperPageSize } from '../../utils/paper';
+import type { HostBlock } from './doc';
+
+const stacks = new WeakMap<HostBlock, PageStack>();
+
+// Host records are immutable and replaced by apply on each paper change.
+export function boardPageStack(host: HostBlock): Readonly<PageStack> | undefined {
+    if (host.kind === 'whiteboard') return undefined;
+    const cached = stacks.get(host);
+    if (cached) return cached;
+    const dimensions = host.kind === 'notebook'
+        ? Array.from({ length: host.paper.pageCount }, () => paperPageSize(host.paper))
+        : host.pages.map(([width, height]) => ({ width, height }));
+    const result = pageStack(dimensions);
+    stacks.set(host, result);
+    return result;
+}
 
 export interface PageAnchor {
     readonly page: number;

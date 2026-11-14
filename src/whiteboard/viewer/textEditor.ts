@@ -106,8 +106,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         }).catch(error => { spellSource = null; if (!disposed) report(error); });
     };
     const stopDictionary = options.spelling.subscribe(() => {
-        spellSource = null;
-        if (spell) void spell.setDictionary(options.spelling.words()).then(checkSpelling, report);
+        spellSource = null; spellGeneration++;
+        const words = options.spelling.words();
+        const added = new Set(words.map(word => word.toLowerCase()));
+        misspellings = misspellings.filter(range => !added.has(range.word.toLowerCase()));
+        requestFrame();
+        if (spell) void spell.setDictionary(words).then(checkSpelling, report);
         else checkSpelling();
     });
     const live = document.createElement('div');

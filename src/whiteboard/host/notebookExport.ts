@@ -1,6 +1,7 @@
 import type { PageDisplayList } from '../../platform/types';
 import { paperPageSize, type NotebookPaper } from '../../utils/paper';
 import type { SheetId } from '../model/ids';
+import type { DisplayPdfWriter } from '../export/capturePdf';
 import { notebookPaperList } from './notebookPaper';
 
 export interface NotebookExportPage {
@@ -37,4 +38,13 @@ export async function notebookExportPages(snapshot: NotebookExportSnapshot, sign
         pages.push({ width, height, paper: { page, items: paperItems }, displayList });
     }
     return pages;
+}
+
+/** The host dynamically supplies the PDF writer only for an explicit export. */
+export async function exportNotebookPdf(
+    snapshot: NotebookExportSnapshot, sourcePath: string, writer: DisplayPdfWriter, signal: AbortSignal,
+): Promise<Uint8Array> {
+    const pages = await notebookExportPages(snapshot, signal);
+    signal.throwIfAborted();
+    return writer({ schema: 1, pages, notebookSource: { path: sourcePath } }, { signal });
 }

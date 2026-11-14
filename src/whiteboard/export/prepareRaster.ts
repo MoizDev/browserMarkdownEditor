@@ -46,7 +46,9 @@ export async function prepareRaster(
     geometry.clear()
   }
   try {
+    let count = 0
     for (const band of [frame.underlay, frame.content]) for (const item of band) {
+      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
       signal.throwIfAborted()
       for (const clip of item.clips) if (!clips.has(clip.key)) {
         clips.set(clip.key, await finishPath(new Path2dJob(clip.d, origin(clip.d)), signal))

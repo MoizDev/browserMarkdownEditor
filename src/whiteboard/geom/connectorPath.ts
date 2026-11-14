@@ -130,15 +130,11 @@ export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurfa
         if (previous < 1) yield* probe(a + (b - a) * ((previous + 1) / 2));
         yield* probe(b);
     }
-    // A tangential touch has no interior interval; do not invent an enter/exit pair.
-    const filtered: { distance: number; entering: boolean }[] = [];
-    for (const item of result) {
-        yield;
-        const last = filtered[filtered.length - 1];
-        if (last && last.entering && !item.entering && item.distance - last.distance <= 2 * error) filtered.pop();
-        else filtered.push(Object.freeze(item));
-    }
-    return Object.freeze(filtered);
+    // Two observed state changes remain distinct even when their separation is
+    // below the crossing tolerance; short real interior runs are not tangencies.
+    const frozen: { readonly distance: number; readonly entering: boolean }[] = [];
+    for (const item of result) { frozen.push(Object.freeze(item)); yield; }
+    return Object.freeze(frozen);
 }
 
 export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurface, error: number, maxPieces: number,

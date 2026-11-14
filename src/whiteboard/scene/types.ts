@@ -11,6 +11,10 @@ import type { PaintNodeOrder } from '../render/paintOrder';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
+export interface SceneOccupiedBounds {
+    readonly revision: number;
+    readonly bounds: Box;
+}
 export interface SceneBounds {
     readonly revision: number;
     readonly quality: BoundsQuality;
@@ -49,6 +53,9 @@ export interface SceneSnapshot {
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
+    readonly nodeCount: number;
+    /** Null means empty or not conservatively known; nodeCount distinguishes an empty pin. */
+    readonly occupiedBounds: SceneOccupiedBounds | null;
     worldBounds(id: NodeId): SceneBounds | null;
     /** Pinned immutable row and metadata reads; neither scans the document. */
     readNodeNow(id: NodeId): Node | undefined;

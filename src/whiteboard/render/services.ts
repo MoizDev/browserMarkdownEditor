@@ -479,6 +479,7 @@ export function createBoardRenderServices(options: {
             return Object.freeze({
                 token: captured, retainRenderer,
                 preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paint(doc, request, signal, order, captured),
+                prepareOverlay: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => paint(doc, request, signal, ids, captured),
                 prepareOverlayNow: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => {
                     check(signal); return paintNow(doc, request, signal, ids, captured);
                 },

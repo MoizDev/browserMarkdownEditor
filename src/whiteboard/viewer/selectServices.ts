@@ -36,7 +36,7 @@ import type { BoardPreview } from './preview';
 // and shared frame contracts; independent host composition, no third-party source.
 export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
-    readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
+    readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'pinChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
     readonly cameraController: CameraController;
     readonly surface: HTMLElement;
@@ -265,12 +265,23 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return true;
     };
     const eraserSweep = sweep(true);
+    let eraseLease: { release(): void } | undefined;
     const eraser: EraserContext = {
         ...eraserSweep, hold: () => session.beginGesture(), registerPending,
-        prepareCommit(ids, signal) {
+        async prepareCommit(ids, signal) {
             check(signal);
-            options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
-            return options.preview.waitUntilReady(signal);
+            const revision = doc.rev, owner = session.owner, selection = runtime.selection.getSnapshot();
+            const active = () => !signal.aborted && mutable() && session.owner === owner && session.doc === doc && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection;
+            const lease = await render.pinChangeGeometry(ids, signal, doc, active);
+            if (!active()) { lease.release(); throw new DOMException('Erase source changed', 'AbortError'); }
+            const previous = eraseLease; eraseLease = lease;
+            try { previous?.release(); } catch (error) { eraseLease = undefined; lease.release(); throw error; }
+            try {
+                options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
+                await options.preview.waitUntilReady(signal);
+                if (!active()) throw new DOMException('Erase source changed', 'AbortError');
+            } catch (error) { if (eraseLease === lease) eraseLease = undefined; lease.release(); throw error; }
         },
         armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
         commit(ids) {
@@ -279,7 +290,10 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             try { planDelete(doc, builder, runtime.selection.getSnapshot().sheet, [...ids], render.changeGeometry); const applied = builder.commit(); applied.release(); }
             catch (error) { builder.abort(); throw error; }
         },
-        clearPreview() { previewIds.clear(); options.preview.clear(); requestFrame(); }, error: report,
+        clearPreview() {
+            const lease = eraseLease; eraseLease = undefined;
+            try { lease?.release(); } finally { previewIds.clear(); options.preview.clear(); requestFrame(); }
+        }, error: report,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId

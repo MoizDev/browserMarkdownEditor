@@ -22,6 +22,7 @@ import { acquireNativeBoard } from './nativeAcquisition';
 import { createOwnedBoardRuntime, type OwnedBoardRuntime } from './ownedRuntime';
 import { createPdfInkBuildCapture } from './pdfInkBuildCapture';
 import { createPdfInkSourceOwner } from './pdfInkSourceOwner';
+import { inspectPdfVisualModel } from './pdfVisualPreflight';
 import { primeNativeLoad } from './primeNative';
 
 type SourceOwnerPort = ReturnType<typeof createPdfInkSourceOwner>;
@@ -98,6 +99,9 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         if (acquired.status !== 'editable') throw new Error('PDF ink board could not be admitted for editing');
         const { load, samples } = acquired, doc = load.doc;
         if (doc.kind !== 'pdf-ink' || !options.validateLoadedHost(accepted, doc.host)) throw new Error('PDF ink host does not match its inspected source');
+        const visual = await inspectPdfVisualModel(load, { signal });
+        check();
+        if (visual.status !== 'known') throw new Error('This PDF contains ink that cannot be safely displayed or rewritten. Open it in the PDF reader instead.');
         media = new MediaStore();
         const store = media, limiter = new Limiter();
         const loads = await Promise.allSettled([...doc.media.values()].map(entry => limiter.run(async () => {

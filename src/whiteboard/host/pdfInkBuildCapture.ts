@@ -1,16 +1,11 @@
 import type { pinPdfInkHostForSave } from '../../pdf/session/inkHost';
 import type { PdfEditableInkSource } from '../../pdf/session/inkAcquisition.types';
-import { createExportImageResolver } from '../export/exportImage';
-import { streamPageDisplayList } from '../export/streamPage';
 import { encodeHost } from '../format/encode';
 import type { BoardRecoveryRecipe } from '../format/recoveryRecipe';
 import type { SerializerRecordOverride } from '../format/serializerProtocol';
 import { recordKey } from '../format/writeTypes';
-import { createBoardHostImages } from '../media/hostImages';
-import type { MediaLease } from '../media/store';
-import type { MediaId } from '../model/media';
 import type { BoardBuildCapture } from '../session/factoryTypes';
-import type { SceneSnapshot } from '../scene/types';
+import { pinPagedBoardScene } from './pagedSceneCapture';
 import { pinPdfInkAssembly } from './pdfInkAssembly';
 import type { createPdfInkSourceOwner } from './pdfInkSourceOwner';
 import { createPdfRecoveryRecipe } from './pdfRecovery';
@@ -66,68 +61,25 @@ export function createPdfInkBuildCapture(options: {
                 sourceLease.release();
                 throw new Error('PDF source changed during synchronous capture');
             }
-            let scene: SceneSnapshot;
-            try { scene = runtime.scene.pin(); }
+            let scene: ReturnType<typeof pinPagedBoardScene>;
+            try { scene = pinPagedBoardScene(runtime, revision, options.currentOwner, options.onError); }
             catch (error) { sourceLease.release(); throw error; }
-            const held: MediaLease[] = [];
-            let images: ReturnType<typeof createBoardHostImages> | undefined, released = false;
+            let released = false;
             const release = () => {
                 if (released) return;
                 released = true;
-                try { images?.dispose(); } finally {
-                    try { scene.release(); } finally {
-                        try { for (const lease of held) lease.release(); } finally { sourceLease.release(); }
-                    }
-                }
+                try { scene.release(); } finally { sourceLease.release(); }
             };
             try {
-                if (scene.revision !== revision) throw new Error('PDF scene revision changed during capture');
-                const stack = scene.layout, pages = context.acquisition.pages;
-                if (!stack || stack.rects.length !== pages.length || !pages.every((page, index) =>
-                    stack.rects[index].width === page.width && stack.rects[index].height === page.height)) {
+                const pages = context.acquisition.pages;
+                if (scene.rects.length !== pages.length || !pages.every((page, index) =>
+                    scene.rects[index].width === page.width && scene.rects[index].height === page.height)) {
                     throw new Error('PDF ink layout differs from its inspected source');
                 }
-                const entries = new Map([...doc.media].map(([id, entry]) => [id, structuredClone(entry)]));
-                const blobs = new Map<MediaId, Blob>();
-                for (const [id, entry] of entries) {
-                    held.push(runtime.media.retain(id, 'snapshot'));
-                    const blob = runtime.media.get(id);
-                    if (!blob || blob.size !== entry.bytes) throw new Error(`PDF ink media is unavailable: ${id}`);
-                    blobs.set(id, blob);
-                }
-                for (const [id, count] of doc.preservedMediaRefs) {
-                    if (count > 0 && !entries.has(id)) throw new Error(`PDF preserved media has no metadata: ${id}`);
-                }
-                const token = scene.token;
-                const readBlob = (id: MediaId, signal: AbortSignal): Promise<Blob> => {
-                    signal.throwIfAborted();
-                    const blob = blobs.get(id);
-                    if (released || !blob) return Promise.reject(new Error(`Captured PDF media is unavailable: ${id}`));
-                    return Promise.resolve(blob);
-                };
-                images = createBoardHostImages({ token, media: runtime.media, entry: id => entries.get(id), readBlob,
-                    identity: { session: `${token.documentId}:${token.session}`, epoch: token.vaultEpoch, revision },
-                    current: candidate => !released && candidate.documentId === token.documentId && candidate.session === token.session &&
-                        candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
-                    onError: options.onError });
-                const capturedImages = images;
-                const readImage = (key: string, signal: AbortSignal) => {
-                    const match = /^(?:sha256:([0-9a-f]{64})(?::0)?|media:([0-9a-f]{64}):0)$/.exec(key);
-                    if (!match) throw new TypeError('Invalid captured PDF image key');
-                    return readBlob(`sha256:${match[1] ?? match[2]}` as MediaId, signal);
-                };
                 return pinPdfInkAssembly({ revision, source: context.acquisition.source, writeId: context.writeId,
-                    media: [...entries.values()], mediaBlob: id => blobs.get(id),
+                    media: scene.media, mediaBlob: scene.mediaBlob,
                     isCurrent: () => !released && options.currentOwner(), release,
-                    ink: { pages, sheets: doc.sheetOrder.map(sheet => sheet.id),
-                        async readSheetPage(sheet, page, signal) {
-                            signal.throwIfAborted();
-                            const box = stack.rects[page];
-                            if (!box || released) throw new Error('Captured PDF ink page is unavailable');
-                            const source = await scene.paintSource({ sheetId: sheet, page, world: box, theme: 'light' }, signal);
-                            const image = createExportImageResolver(token, capturedImages, readImage, signal);
-                            return streamPageDisplayList(source, page, box, 1, image, signal);
-                        } },
+                    ink: { pages, sheets: scene.sheets, readSheetPage: scene.readSheetPage },
                 }, signal => context.acquisition.openWriter(signal));
             } catch (error) { release(); throw error; }
         },

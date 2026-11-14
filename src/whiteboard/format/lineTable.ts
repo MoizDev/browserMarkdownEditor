@@ -2,7 +2,7 @@ import type { TouchedSet } from '../change/ops';
 import type { ExtBag } from '../model/json';
 import { encodeEnd } from './encode';
 import { FORMAT_LIMITS, RECORD_ORDER } from './schema';
-import { recordKey, utf8Length, writeFailure } from './writeTypes';
+import { recordKey, utf8Length, utf8LengthAsync, writeFailure } from './writeTypes';
 import type { EncodedRecord, RecordIdentity, WriteResult } from './writeTypes';
 
 export interface RecordIntegrity { readonly count: number; readonly digest: string; }
@@ -122,6 +122,7 @@ export class LineTable {
     private header: { text: string; bytes: number; } | null = null;
     private lineBytes = 0;
     private epoch = 0;
+    private mutation = 0;
     private savedEpoch = -1;
     private assembly: { blob: Blob; revision: number; } | null = null;
     private end: { ext: ExtBag | null; count: number; text: string; bytes: number; } | null = null;
@@ -155,7 +156,7 @@ export class LineTable {
         if (this.header?.text === text) return { ok: true, value: false };
         if (!Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
         this.header = { text, bytes: bytes.value };
-        this.epoch++;
+        this.epoch++; this.mutation++;
         return { ok: true, value: true };
     }
 
@@ -164,14 +165,29 @@ export class LineTable {
         if (!record.text.startsWith('{') || !record.text.endsWith('}')) return writeFailure('invalid', 'Record line must be a JSON object');
         const bytes = utf8Length(record.text, FORMAT_LIMITS.recordBytes);
         if (!bytes.ok) return bytes;
+        return this.setMeasured(record, revision, bytes.value);
+    }
+
+    async setAsync(record: EncodedRecord, revision: number, options: { readonly signal?: AbortSignal; cooperate(): Promise<void> }): Promise<WriteResult<boolean>> {
+        if (!identityValid(record.identity) || !revisionValid(revision)) return writeFailure('invalid', 'Invalid record identity or revision');
+        if (!record.text.startsWith('{') || !record.text.endsWith('}')) return writeFailure('invalid', 'Record line must be a JSON object');
+        const snapshot = { identity: ownIdentity(record.identity), text: record.text }, mutation = this.mutation;
+        const bytes = await utf8LengthAsync(snapshot.text, FORMAT_LIMITS.recordBytes, options);
+        options.signal?.throwIfAborted();
+        if (!bytes.ok) return bytes;
+        if (this.mutation !== mutation) return writeFailure('integrity', 'Line table changed during asynchronous admission');
+        return this.setMeasured(snapshot, revision, bytes.value);
+    }
+
+    private setMeasured(record: EncodedRecord, revision: number, byteLength: number): WriteResult<boolean> {
         const key = recordKey(record.identity), previous = this.entries.get(key);
         const changed = previous?.text !== record.text;
         if (changed && !Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
         const integrity = this.keyDigest.replace(record.identity, previous?.revision ?? null, revision);
         if (!integrity.ok) return integrity;
-        const entry: Entry = { identity: previous?.identity ?? ownIdentity(record.identity), text: record.text, bytes: bytes.value, revision };
-        this.entries.set(key, entry);
-        this.lineBytes += bytes.value - (previous?.bytes ?? 0);
+        const entry: Entry = { identity: previous?.identity ?? ownIdentity(record.identity), text: record.text, bytes: byteLength, revision };
+        this.entries.set(key, entry); this.mutation++;
+        this.lineBytes += byteLength - (previous?.bytes ?? 0);
         if (this.ordered) {
             const index = lowerBound(this.ordered, entry);
             if (previous) this.ordered[index] = entry;
@@ -194,11 +210,11 @@ export class LineTable {
     remove(identity: RecordIdentity): WriteResult<boolean> {
         if (!identityValid(identity)) return writeFailure('invalid', 'Invalid record identity');
         const key = recordKey(identity), previous = this.entries.get(key);
-        if (!previous) { this.dirty.delete(key); return { ok: true, value: false }; }
+        if (!previous) { if (this.dirty.delete(key)) this.mutation++; return { ok: true, value: false }; }
         if (!Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
         const integrity = this.keyDigest.replace(previous.identity, previous.revision, null);
         if (!integrity.ok) return integrity;
-        this.entries.delete(key);
+        this.entries.delete(key); this.mutation++;
         this.dirty.delete(key);
         this.lineBytes -= previous.bytes;
         if (this.ordered) this.ordered.splice(lowerBound(this.ordered, previous), 1);
@@ -208,7 +224,7 @@ export class LineTable {
 
     touch(identity: RecordIdentity, revision: number): WriteResult<void> {
         if (!identityValid(identity) || !revisionValid(revision)) return writeFailure('invalid', 'Invalid dirty-record identity or revision');
-        this.dirty.set(recordKey(identity), { identity: ownIdentity(identity), revision });
+        this.dirty.set(recordKey(identity), { identity: ownIdentity(identity), revision }); this.mutation++;
         return { ok: true, value: undefined };
     }
 
@@ -260,7 +276,7 @@ export class LineTable {
             if (!size.ok) return size;
             const changed = this.end !== null && this.end.text !== encoded.value;
             if (changed && !Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
-            this.end = { ext: endExt, count: expected.count, text: encoded.value, bytes: size.value };
+            this.end = { ext: endExt, count: expected.count, text: encoded.value, bytes: size.value }; this.mutation++;
             if (changed) this.epoch++;
         }
         if (this.assembly?.revision === this.epoch) {
@@ -279,6 +295,72 @@ export class LineTable {
         }
         this.assembly = { blob, revision: this.epoch };
         return { ok: true, value: { kind: 'built', blob, revision: this.epoch, integrity } };
+    }
+
+    /** Assemble an immutable snapshot without blocking on document-sized sorting or parts lists.
+     * Publication is atomic: another table mutation invalidates the work before it can commit. */
+    async assembleAsync(expected: RecordIntegrity, endExt: ExtBag | null, options: {
+        readonly signal?: AbortSignal; cooperate(): Promise<void>;
+    }): Promise<WriteResult<LineAssembly>> {
+        options.signal?.throwIfAborted();
+        if (this.dirty.size) return writeFailure('dirty', 'Records still need encoding; the board remains dirty');
+        const integrity = this.keyDigest.snapshot();
+        if (this.entries.size !== expected.count || !sameIntegrity(integrity, expected)) return writeFailure('integrity', 'Record count or revision-key digest does not match the session');
+        const header = this.header;
+        if (!header) return writeFailure('header', 'The native header is missing');
+        const mutation = this.mutation, epoch = this.epoch;
+        const check = () => {
+            options.signal?.throwIfAborted();
+            if (this.mutation !== mutation || this.epoch !== epoch) throw new Error('Line table changed during asynchronous assembly');
+        };
+        let work = 0;
+        const tick = async () => { check(); await options.cooperate(); check(); };
+        const existingEnd = this.end;
+        let end = existingEnd;
+        if (!end || end.ext !== endExt || end.count !== expected.count) {
+            const encoded = encodeEnd(expected.count, endExt);
+            if (!encoded.ok) return encoded;
+            const size = await utf8LengthAsync(encoded.value, FORMAT_LIMITS.recordBytes, options); check();
+            if (!size.ok) return size;
+            end = { ext: endExt, count: expected.count, text: encoded.value, bytes: size.value };
+        }
+        const changedEnd = existingEnd !== null && existingEnd.text !== end.text;
+        if (changedEnd && !Number.isSafeInteger(epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
+        const revision = epoch + Number(changedEnd);
+        if (!changedEnd && this.assembly?.revision === epoch) return { ok: true, value: { kind: 'unchanged', blob: this.assembly.blob, revision: epoch, integrity } };
+        const bytes = header.bytes + 1 + this.lineBytes + 2 * expected.count + end.bytes + 4;
+        if (bytes > FORMAT_LIMITS.fileBytes) return writeFailure('limit', 'Native board exceeds 1 GiB');
+        let ordered: Entry[] = [];
+        for (const entry of this.entries.values()) { ordered.push(entry); if (++work >= 512) { work = 0; await tick(); } }
+        let buffer = new Array<Entry>(ordered.length);
+        for (let width = 1; width < ordered.length; width *= 2) {
+            for (let start = 0; start < ordered.length; start += 2 * width) {
+                const middle = Math.min(start + width, ordered.length), limit = Math.min(start + 2 * width, ordered.length);
+                let left = start, right = middle;
+                for (let out = start; out < limit; out++) {
+                    buffer[out] = left < middle && (right >= limit || compare(ordered[left], ordered[right]) <= 0) ? ordered[left++] : ordered[right++];
+                    if (++work >= 512) { work = 0; await tick(); }
+                }
+            }
+            [ordered, buffer] = [buffer, ordered];
+        }
+        const chunks: Blob[] = [];
+        let parts: BlobPart[] = [header.text, '\n'];
+        for (const entry of ordered) {
+            parts.push(entry.text, ',\n');
+            if (++work >= 512) { chunks.push(new Blob(parts)); parts = []; work = 0; await tick(); }
+        }
+        parts.push(end.text, '\n]}\n');
+        try {
+            chunks.push(new Blob(parts));
+            const blob = new Blob(chunks, { type: 'application/json' });
+            check();
+            this.end = end; this.epoch = revision; this.ordered = ordered; this.assembly = { blob, revision }; this.mutation++;
+            return { ok: true, value: { kind: 'built', blob, revision, integrity } };
+        } catch (error) {
+            if (error instanceof RangeError) return writeFailure('allocation', 'The assembled board could not be allocated');
+            throw error;
+        }
     }
 
     /** Positions in the canonical Blob produced by assemble(). Consumed in the worker to

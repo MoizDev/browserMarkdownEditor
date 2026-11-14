@@ -29,6 +29,7 @@ export class BoardSpellClient {
     private checkAbort: AbortController | null = null;
     private generation = 0;
     private dictionaryVersion = 0;
+    private dictionaryBarrier: Promise<void> = Promise.resolve();
     private readonly name = `whiteboard-spell-${crypto.randomUUID()}`;
 
     constructor(custom: readonly string[]) { this.custom = normalizeUserDictionary(custom); }
@@ -53,6 +54,13 @@ export class BoardSpellClient {
         return loading;
     }
 
+    private abortDictionaryFetch(): void {
+        if (!this.dictionaryFetch) return;
+        this.dictionaryFetch.abort();
+        this.dictionaryFetch = null;
+        this.dictionary = null;
+    }
+
     start(): Promise<void> {
         if (this.disposed) return Promise.reject(new Error('Spelling client disposed'));
         if (this.ready) return this.ready;
@@ -72,16 +80,28 @@ export class BoardSpellClient {
         const ready = host.request('ready', null, { priority: 2, cpu: 'light', deadlineMs: 45_000 }).then(() => {
             if (this.host !== host || this.disposed) throw new DOMException('Spelling client closed', 'AbortError');
         }).catch(error => {
-            if (this.host === host) { this.host = null; this.ready = null; host.dispose(); }
+            if (this.host === host) {
+                this.host = null; this.ready = null; this.dictionaryBarrier = Promise.resolve();
+                host.dispose(); this.abortDictionaryFetch();
+            }
             throw error;
         });
         this.ready = ready;
         return ready;
     }
 
+    private async waitForDictionary(): Promise<void> {
+        for (;;) {
+            const pending = this.dictionaryBarrier;
+            try { await pending; } catch (error) { if (pending === this.dictionaryBarrier) throw error; }
+            if (pending === this.dictionaryBarrier) return;
+        }
+    }
+
     async suggest(word: string): Promise<readonly string[]> {
         if (!word || word.length > 64) return [];
         await this.start();
+        await this.waitForDictionary();
         const host = this.host;
         if (!host || this.disposed) throw new DOMException('Spelling client closed', 'AbortError');
         // nspell is synchronous: recycle a worker that cannot finish a suggestion promptly.
@@ -95,10 +115,15 @@ export class BoardSpellClient {
         this.cancelCheck();
         this.custom = normalizeUserDictionary(words);
         const version = ++this.dictionaryVersion, host = this.host, ready = this.ready;
-        if (!ready || !host) return;
-        await ready;
-        if (host === this.host && !this.disposed && version === this.dictionaryVersion)
-            await host.request('dictionary', { words: this.custom }, { priority: 2, deadlineMs: 10_000, terminateOnDeadline: true });
+        if (!ready || !host) { this.dictionaryBarrier = Promise.resolve(); return; }
+        const previous = this.dictionaryBarrier;
+        const update = previous.catch(() => {}).then(async () => {
+            await ready;
+            if (host === this.host && !this.disposed && version === this.dictionaryVersion)
+                await host.request('dictionary', { words: this.custom }, { priority: 2, deadlineMs: 10_000, terminateOnDeadline: true });
+        });
+        this.dictionaryBarrier = update;
+        await update;
     }
 
     private cancelCheck(): void {
@@ -117,7 +142,8 @@ export class BoardSpellClient {
             this.debounce = null;
             const controller = new AbortController();
             this.checkAbort = controller;
-            void Promise.resolve().then(() => this.start()).then(() => {
+            void Promise.resolve().then(() => this.start()).then(async () => {
+                await this.waitForDictionary();
                 if (this.disposed || generation !== this.generation || controller.signal.aborted) return null;
                 const host = this.host;
                 if (!host) throw new DOMException('Spelling client closed', 'AbortError');
@@ -139,8 +165,9 @@ export class BoardSpellClient {
         this.cancelCheck();
         const host = this.host;
         this.host = null; this.ready = null;
+        this.dictionaryBarrier = Promise.resolve();
         host?.dispose();
-        if (this.dictionaryFetch) { this.dictionaryFetch.abort(); this.dictionaryFetch = null; this.dictionary = null; }
+        this.abortDictionaryFetch();
     }
 
     dispose(): void {

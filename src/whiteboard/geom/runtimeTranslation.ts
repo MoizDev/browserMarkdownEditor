@@ -6,6 +6,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, hasOpaqueDescendant, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
+import { projectFrameMembership } from './frameMembership';
 import type { Vec2 } from './path';
 import { snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
 import { TranslationPlan } from './translation';
@@ -107,7 +108,15 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     if (placement.x !== root.x) ops.push({ t: 'set', id: root.id, key: 'x', value: placement.x });
                     if (placement.y !== root.y) ops.push({ t: 'set', id: root.id, key: 'y', value: placement.y });
                 }
-                const finalDoc = await project(ops); assert();
+                let finalDoc = await project(ops); assert();
+                if ((delta.x || delta.y) && ops.length) {
+                    const placementScope = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: finalDoc, signal: request, current: active, cooperate: options.cooperate });
+                    try {
+                        const membership = await projectFrameMembership({ runtime, doc: finalDoc, roots: roots.map(root => root.id), geometry: placementScope,
+                            current: active, signal: request, cooperate: options.cooperate });
+                        assert(); finalDoc = membership.doc; ops.push(...membership.ops);
+                    } finally { placementScope.release(); }
+                }
                 final = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: finalDoc, signal: request, current: active, cooperate: options.cooperate }); assert();
                 const value = Object.freeze({ ops: Object.freeze(ops.map(op => Object.freeze(op))), doc: finalDoc, guides: Object.freeze([...guides]) });
                 clear(); latest = { value, scope: final, signal: request, serial: turn }; transferred = true; return value;

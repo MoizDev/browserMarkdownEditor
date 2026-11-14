@@ -108,10 +108,32 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
 
     const navigate = useCallback((target: Exclude<PdfLinkTarget, { kind: 'uri' }>) => {
         const current = Math.max(0, pageAt(stack, camera.current.y));
-        if (target.kind === 'destination') goPage(target.page);
-        else goPage(target.name === 'FirstPage' ? 0 : target.name === 'LastPage' ? stack.rects.length - 1 :
+        if (target.kind === 'destination') {
+            const box = stack.rects[target.page];
+            if (!box || !target.view || !target.params) { goPage(target.page); return; }
+            const old = camera.current, size = viewport.current;
+            const availableWidth = Math.max(1, size.width - INSETS.left - INSETS.right);
+            const availableHeight = Math.max(1, size.height - INSETS.top - INSETS.bottom);
+            let z = old.z, x = box.x, y = box.y;
+            const [a, b, c, d] = target.params;
+            switch (target.view) {
+                case 'XYZ': x += a; y += b; if (target.zoom !== undefined) z = target.zoom; break;
+                case 'Fit': case 'FitB': z = Math.min(availableWidth / box.width, availableHeight / box.height); break;
+                case 'FitH': case 'FitBH': z = availableWidth / box.width; y += a; break;
+                case 'FitV': case 'FitBV': z = availableHeight / box.height; x += a; break;
+                case 'FitR': {
+                    const left = Math.min(a, c), top = Math.min(b, d), width = Math.abs(c - a), height = Math.abs(d - b);
+                    if (!width || !height) { goPage(target.page); return; }
+                    x += left; y += top; z = Math.min(availableWidth / width, availableHeight / height);
+                    break;
+                }
+            }
+            z = constraint.clampZoom(z, size);
+            recordPdfNavigation(filePath, 'link');
+            updateCamera({ z, x: x - INSETS.left / z, y: y - INSETS.top / z });
+        } else goPage(target.name === 'FirstPage' ? 0 : target.name === 'LastPage' ? stack.rects.length - 1 :
             current + (target.name === 'NextPage' ? 1 : -1));
-    }, [goPage, stack]);
+    }, [constraint, filePath, goPage, stack, updateCamera]);
 
     useEffect(() => {
         if (!overlay) return;
@@ -277,6 +299,11 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     }, [host, clamp, constraint, filePath, goPage, onRotate, persist, platformPane, stack, updateCamera]);
 
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
+    useEffect(() => {
+        const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] });
+        return () => observer.disconnect();
+    }, [platformPane]);
     useEffect(() => () => { if (settle.current) clearTimeout(settle.current); flushPdfViewPositions(); }, []);
     const zoomBy = (factor: number) => {
         const old = camera.current, z = constraint.clampZoom(old.z * factor, viewport.current);

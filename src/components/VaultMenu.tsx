@@ -26,6 +26,7 @@ interface VaultMenuProps {
      *  `onOpen` — the picker is a vault switch too, so it can come back 'busy'
      *  with no picker ever shown, and this menu is what closes on the result. */
     onBrowse: () => Promise<VaultOpenResult>;
+    onRebuildIndex: () => void;
     onClose: () => void;
     /** Fixed positioning ABOVE the sidebar's vault switcher (it sits at the
      *  bottom of the window), from the switcher's bounding rect. */
@@ -74,7 +75,7 @@ const focusedRowIn = (menu: HTMLElement | null): number =>
  * Positioned `fixed` from the anchor's rect, like the linked-mentions popover:
  * the sidebar clips its overflow and can be narrower than this menu.
  */
-export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onForget, onPin, onBrowse, onClose, style }: VaultMenuProps) {
+export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onForget, onPin, onBrowse, onRebuildIndex, onClose, style }: VaultMenuProps) {
     const [error, setError] = useState<string | null>(null);
     // The vault being opened, if any — a second click while a switch is in
     // flight would race two vaults into the same app.
@@ -316,10 +317,15 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
             {vaults.length > 0 && <div className="vault-menu-separator" role="separator" />}
 
             <div className="vault-menu-row" role="none">
+                <button className="vault-menu-item" role="menuitem" onClick={() => { onRebuildIndex(); onClose(); }}>
+                    <span className="vault-menu-label">Rebuild index</span>
+                </button>
+            </div>
+            <div className="vault-menu-row" role="none">
                 <button
                     className="vault-menu-item"
                     role="menuitem"
-                    onClick={() => void browse()}
+                    onClick={() => void browse()
                 >
                     <span className="vault-menu-label">Open folder…</span>
                 </button>

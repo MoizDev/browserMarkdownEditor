@@ -33,6 +33,7 @@ export class ToolState {
   private readonly penContacts = new Map<symbol, Map<number, number>>()
   private readonly penContactListeners = new Set<(id: number, down: boolean, direct: boolean, time: number) => void>()
   private penContactSequence = 0
+  private documentSyncDepth = 0
 
   constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure', initialLocked = false) {
     for (const registration of registrations) {
@@ -44,6 +45,11 @@ export class ToolState {
   }
 
   getSnapshot = (): ToolStateSnapshot => this.snapshot
+  get syncingDocument(): boolean { return this.documentSyncDepth > 0 }
+  withDocumentSync<T>(action: () => T): T {
+    this.documentSyncDepth++
+    try { return action() } finally { this.documentSyncDepth-- }
+  }
   get penMode(): boolean { return this.penModeValue }
   setPenMode(enabled: boolean): void {
     if (enabled === this.penModeValue) return

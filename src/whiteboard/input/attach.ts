@@ -74,7 +74,6 @@ export interface BoardInputServices {
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
-const syncingSessions = new WeakSet<BoardSession>()
 
 // View generations own listeners only. The session owns history, gesture queue and
 // tool choice; replacing a view first flushes its prefix, then installs a new one.
@@ -435,7 +434,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (cursor.active) cursor.escape()
       pointer.interrupt('flush')
     }
-    if (current() && editable() && !syncingSessions.has(session)) {
+    if (current() && editable() && !services.tools.syncingDocument) {
       const ops: Op[] = []
       const tool = TOOLS.find(id => id === snapshot.active.id)
       if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
@@ -452,15 +451,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopSession = session.subscribe(() => {
     if (!current() || !editable()) return
     const snapshot = services.tools.getSnapshot()
-    syncingSessions.add(session)
-    try {
+    services.tools.withDocumentSync(() => {
       if (snapshot.locked !== session.doc.view.toolLock) {
         services.tools.setLocked(session.doc.view.toolLock)
         services.persistToolLock?.(session.doc.view.toolLock)
       }
       const tool = session.doc.ui.tool
       if (snapshot.active.id !== tool && services.tools.getRegistration(tool)) services.tools.setTool(tool)
-    } finally { syncingSessions.delete(session) }
+    })
   })
   updateMirror()
   const detach = () => {

@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 import type { EditorView } from '@codemirror/view';
 import { preserveTableReadingSelection, queueTableReadingSelection } from './tableReadingSelection';
 import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retuneTableFit } from './tableFit';
@@ -500,6 +501,7 @@ export class TableWidget extends WidgetType {
         readonly emphasis: ReadingEmphasisOptions = { enabled: false, mode: 'edit', locale: '' },
     ) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     private effectiveEmphasis(): ReadingEmphasisOptions {

@@ -1,0 +1,18 @@
+--- a/src/context/FileSystemContext.tsx
++++ b/src/context/FileSystemContext.tsx
+@@ -1562,15 +1562,6 @@
+             // findable again by the name the note used. Two assets that share a
+             // name in one folder are the same picture (the second write replaced
+             // the first in .Assets), so the newest bytes winning is right.
+-            if (__BME_BENCH__) {
+-                try {
+-                    const home = (await benchmarkRoot?.resolve(dirHandle))?.join('/');
+-                    if (home !== undefined) reportVault({
+-                        op: 'retire', path: joinVaultPath(joinVaultPath(home, ASSETS_DIR), fileName),
+-                        to: joinVaultPath(joinVaultPath(joinVaultPath(home, TRASH_DIR), ASSETS_DIR), fileName), caller: 'retireAsset',
+-                    });
+-                } catch { /* instrumentation must never interrupt a file operation */ }
+-            }
+             const graveyard = await retiredAssetsDir(dirHandle, true);
+             await copyFileInto(graveyard, fileName, file);
+             await assetsDir.removeEntry(fileName);

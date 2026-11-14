@@ -73,6 +73,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         for (const controller of controllers) controller.abort(); controllers.clear();
         return had;
     };
+    const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
@@ -157,8 +158,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
                 zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
                 hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
-                show: ops => options.preview.showOps(ops), guides(value) { guides = value; requestFrame(); },
-                clear() { guides = []; options.preview.clear(); requestFrame(); }, error: report,
+                show: ops => options.preview.showOps(ops), guides: setGuides,
+                clear() { setGuides([]); options.preview.clear(); }, error: report,
             });
         },
         onError: report,
@@ -328,7 +329,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, nudge, transform, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, nudge, transform, setGuides, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

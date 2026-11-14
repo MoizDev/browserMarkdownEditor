@@ -21,6 +21,8 @@ import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView, type
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
 import { registerView, type NotebookViewInfo } from '../utils/viewRegistry';
 import { registerPending } from '../utils/unloadCoordinator';
+import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
+import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import {
     captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel,
 } from './canvasAgentOps';
@@ -96,7 +98,12 @@ function pageShapeId(index: number): TLShapeId {
  * the strokes already there instead of rewriting the document, and no page ever
  * gets re-created on top of the writing it belongs under.
  */
-export default function NotebookPane({ documentId, filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
+export default function NotebookPane(props: NotebookPaneProps) {
+    const sniff = useMemo(() => sniffCanvas(props.content, props.filePath), [props.content, props.filePath]);
+    return canvasReadOnlyReason(sniff) ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyNotebookPane {...props} />;
+}
+
+function LegacyNotebookPane({ documentId, filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
     // Parsed once per FILE, not per render: `content` changes on every save
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).

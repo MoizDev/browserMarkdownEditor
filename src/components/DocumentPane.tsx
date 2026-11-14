@@ -955,7 +955,7 @@ function DocumentPane({
                     // marked dirty, it would be saved straight back over the
                     // file it came from (editor/externalReload.ts).
                     const fromDisk = update.transactions.some(tr => tr.annotation(externalReload));
-                    onContentChangeRef.current(path, update.state.doc.toString(), fromDisk ? { fromDisk } : undefined);
+                    onContentChangeRef.current(path, docString(update.state.doc), fromDisk ? { fromDisk } : undefined);
                     // Keyed by path, like everything else baked in here.
                     mapRememberedScroll(path, update.changes);
                 }

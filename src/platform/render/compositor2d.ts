@@ -134,6 +134,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private maskDepth = 0;
     private externalTargets = 0;
     private multiply = false;
+    private shortfall: { key: string; depth: number; bounds: Rect; multiply: boolean } | null = null;
     private admittedDepth = 0;
     private borrowedDepth = 0;
     private host: PaneSurfaceHost | null = null;
@@ -239,6 +240,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const view = frame.view;
         if (this.scene?.view !== view || budget.cameraEpoch !== view.epoch || !sameToken(this.options.currentToken(), budget.token)) return;
         this.budget = budget;
+        this.isolationBounds = null; this.isolationDepth = 0; this.maskDepth = 0;
+        this.externalTargets = 0; this.multiply = false; this.admittedDepth = 0;
+        // A draw-time shortfall survives budget-deferred retries of this scene, but cannot
+        // grow the inventory of a later scene after its declarations have changed.
+        const key = this.key(this.scene!, frame);
+        if (this.shortfall?.key !== key) this.shortfall = null;
+        if (this.shortfall) this.reserveIsolation({ ...this.shortfall, maskDepth: 0 });
         this.busy++;
         try {
             this.init();
@@ -246,7 +254,6 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 if (budget.shouldYield()) break;
                 if (this.allocate(key, request.width, request.height, request.read)) this.requests.delete(key);
             }
-            this.admitIsolation(frame, budget);
             this.prepareCrops(budget);
             for (const buffer of this.buffers.values()) for (const use of buffer.images.values()) {
                 if (use.resident || budget.shouldYield()) continue;
@@ -266,7 +273,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.check();
         if (frame.view !== this.scene?.view || frame.frameId !== budget.frameId || !sameToken(this.options.currentToken(), frame.token)) return;
         this.busy++;
-        try { this.admitIsolation(frame, budget); }
+        try { this.admitIsolation(frame, budget, true); }
         finally { this.busy--; }
     }
 
@@ -290,28 +297,35 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (request.targets) union(request.targets.bounds);
     }
 
-    private admitIsolation(frame: ScheduledFrame, budget: FrameBudget): void {
+    private admitIsolation(frame: ScheduledFrame, budget: FrameBudget, reconcile = false): void {
         const snapshot = this.scene;
         if (!snapshot?.metrics) return;
+        if (this.borrowedDepth || this.encodedSources.size) { this.options.invalidate('2d-isolation-admission-deferred'); return; }
         const own = snapshot.layers.filter(binding => binding.isolation && binding.isolation.opacity > 0);
         for (const binding of own) this.reserveIsolation({ depth: 0, maskDepth: 0,
             bounds: binding.isolation!.bounds?.(frame) ?? { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight },
             multiply: binding.isolation!.blend === 'multiply' });
         const bounds = this.isolationBounds;
-        if (!bounds) return;
-        const left = Math.max(0, Math.floor(bounds.x)), top = Math.max(0, Math.floor(bounds.y));
-        const right = Math.min(snapshot.metrics.backingWidth, Math.ceil(bounds.x + bounds.width));
-        const bottom = Math.min(snapshot.metrics.backingHeight, Math.ceil(bounds.y + bounds.height));
-        if (right <= left || bottom <= top) return;
-        const count = this.isolationDepth + this.maskDepth + this.externalTargets + Number(own.length > 0) + Number(this.multiply);
+        const left = bounds ? Math.max(0, Math.floor(bounds.x)) : 0, top = bounds ? Math.max(0, Math.floor(bounds.y)) : 0;
+        const right = bounds ? Math.min(snapshot.metrics.backingWidth, Math.ceil(bounds.x + bounds.width)) : 0;
+        const bottom = bounds ? Math.min(snapshot.metrics.backingHeight, Math.ceil(bounds.y + bounds.height)) : 0;
+        const count = right > left && bottom > top
+            ? this.isolationDepth + this.maskDepth + this.externalTargets + Number(own.length > 0) + Number(this.multiply) : 0;
         if (!Number.isSafeInteger(count)) throw new RangeError('Isolation depth exceeds safe accounting');
+        const mayShrink = reconcile && !this.borrowedDepth && !this.encodedSources.size;
+        if (mayShrink) for (const [key, buffer] of this.buffers) {
+            if (key.startsWith('isolation-pool:') && Number(key.slice('isolation-pool:'.length)) >= count) this.closeBuffer(key, buffer);
+        }
         this.admittedDepth = 0;
         for (let i = 0; i < count; i++) {
             const key = `isolation-pool:${i}`;
             const old = this.buffers.get(key);
-            const width = Math.max(old?.canvas.width ?? 0, right - left);
-            const height = Math.max(old?.canvas.height ?? 0, bottom - top);
-            if (old && old.canvas.width >= width && old.canvas.height >= height) { this.admittedDepth++; continue; }
+            const width = mayShrink ? right - left : Math.max(old?.canvas.width ?? 0, right - left);
+            const height = mayShrink ? bottom - top : Math.max(old?.canvas.height ?? 0, bottom - top);
+            if (old && old.canvas.width === width && old.canvas.height === height) { this.admittedDepth++; continue; }
+            if (budget.shouldYield() && old && old.canvas.width >= width && old.canvas.height >= height) {
+                this.admittedDepth++; this.options.invalidate('2d-isolation-shrink-deferred'); continue;
+            }
             if (budget.shouldYield() || !this.allocate(key, width, height, false)) {
                 this.options.invalidate('2d-isolation-admission-deferred'); return;
             }
@@ -332,8 +346,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const index = this.borrowedDepth;
         const buffer = this.buffers.get(`isolation-pool:${index}`);
         if (index >= this.admittedDepth || !buffer || buffer.canvas.width < right - left || buffer.canvas.height < bottom - top) {
-            const own = Number(!!this.scene?.layers.some(binding => binding.isolation));
-            this.reserveIsolation({ depth: Math.max(0, index + 1 - own), maskDepth: 0, bounds, multiply: options.blend === 'multiply' });
+            const own = Number(!!this.scene?.layers.some(binding => binding.isolation && binding.isolation.opacity > 0));
+            const depth = Math.max(0, index + 1 - own), multiply = options.blend === 'multiply';
+            const previous = this.shortfall?.key === this.activeKey ? this.shortfall : null;
+            const x = Math.min(previous?.bounds.x ?? bounds.x, bounds.x), y = Math.min(previous?.bounds.y ?? bounds.y, bounds.y);
+            this.shortfall = { key: this.activeKey, depth: Math.max(previous?.depth ?? 0, depth), multiply: !!previous?.multiply || multiply,
+                bounds: { x, y, width: Math.max((previous?.bounds.x ?? bounds.x) + (previous?.bounds.width ?? bounds.width), bounds.x + bounds.width) - x,
+                    height: Math.max((previous?.bounds.y ?? bounds.y) + (previous?.bounds.height ?? bounds.height), bounds.y + bounds.height) - y } };
             this.missing = true; this.options.invalidate('2d-isolation-shortfall'); return;
         }
         this.borrowedDepth++;
@@ -873,7 +892,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.asyncEpoch++; this.cancelJob(); this.cancelMirror();
         for (const [key, buffer] of this.buffers) this.closeBuffer(key, buffer);
         for (const source of this.sources.values()) this.closeSource(source);
-        this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = '';
+        this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = ''; this.shortfall = null;
         this.retained.clear(); this.pendingSources.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.sourceKey = '';
     }
 }

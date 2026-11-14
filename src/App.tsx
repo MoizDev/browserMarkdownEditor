@@ -25,11 +25,14 @@ import { dropPending, retargetPending, type PendingRestore, type PendingRestoreE
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
 import { clearPdfRotation, publishPdfRotation, takePdfRotation } from './utils/pdfRotationPreview';
-import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
+import { getFileTimes, markIndexTimesReady, recordFileWritten, resetFileTimes, stampFileTimes, stampIndexedFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
-import { decodeDocumentText, hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
-import { VaultIndexSession } from './utils/vaultIndexSession';
-import { IndexSessionGuard } from './utils/indexSessionGuard';
+import { hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
+import { notifySearchChanges, subscribeSearchChanges } from './utils/searchChanges';
+import type { SearchController } from './utils/searchController';
+import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
+import type { RecoveryEntry } from './utils/recoveryJournal';
+import { recoveryAdapter } from './utils/recoveryAdapters';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -428,26 +431,7 @@ export default function App() {
   } = useFileSystem();
 
   const searchActivation = getVaultActivation();
-  const searchIndex = useMemo(() => new VaultIndexSession(async node => {
-    const file = await handleIO.file(node.handle);
-    return {
-      version: { lastModified: file.lastModified, size: file.size },
-      read: async () => {
-        const bytes = await file.arrayBuffer();
-        try { return decodeDocumentText(bytes).replace(/\r\n?/g, '\n'); }
-        catch { return undefined; }
-      },
-    };
-  }, new IndexSessionGuard(searchActivation, () => getVaultActivation() === searchActivation)),
-  [searchActivation, handleIO, getVaultActivation]);
-  const searchIndexRef = useRef({ index: searchIndex, activation: getVaultActivation(), root: rootHandle });
-  const searchWriteRevisionRef = useRef(0);
-  useLayoutEffect(() => {
-    const previous = searchIndexRef.current;
-    const activation = getVaultActivation();
-    if (previous.index !== searchIndex) previous.index.dispose();
-    searchIndexRef.current = { index: searchIndex, activation, root: rootHandle };
-  }, [searchIndex, getVaultActivation, rootHandle]);
+  const searchToken = useMemo(() => ({}), [searchActivation]);
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
@@ -514,9 +498,13 @@ export default function App() {
     const problem = value as { kind?: string } | null;
     setIndexProblem({ activation: getVaultActivation(), kind: problem?.kind ?? 'unavailable' });
   }, [getVaultActivation]);
+  const reportIndexTimes = useCallback((changes: [string, number, number][], complete: boolean) => {
+    stampIndexedFileTimes(changes);
+    if (complete) markIndexTimesReady();
+  }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
@@ -2296,9 +2284,7 @@ export default function App() {
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
-    const indexAtCall = searchIndexRef.current;
     const graphAtCall = indexGraphRef.current;
-    const searchWriteRevision = ++searchWriteRevisionRef.current;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
     // going away keeps its text beside it rather than taking it along.
@@ -2404,11 +2390,10 @@ export default function App() {
           && graphAtCall.activation === getVaultActivation()) {
           graphAtCall.echo.remember(path, result.version.lastModified, result.version.size);
           if (isMarkdownFile(file.name)) void graphAtCall.client.prime(path, result.version.lastModified, result.version.size, snapshot).catch(() => {});
+          else if (!isPdf && isTextFile(file.name) && !isCanvasFile(file.name)) void graphAtCall.client.primeText(path, result.version.lastModified, result.version.size, snapshot).catch(() => {});
         }
-        if (!isPdf && !isCanvasFile(file.name) && isTextFile(file.name)
-          && rootAtCall === indexAtCall.root && indexAtCall.activation === getVaultActivation()) {
-          indexAtCall.index.primeWritten(path, result.version, snapshot, searchWriteRevision);
-        }
+        if (current && graphAtCall && graphAtCall === indexGraphRef.current) void graphAtCall.client.dropOverlay(path).catch(() => {});
+        notifySearchChanges();
         bumpSaveEpoch();
         return 'written';
       } catch (err) {
@@ -2485,6 +2470,7 @@ export default function App() {
       return;
     }
     reportRevision(target.id);
+    notifySearchChanges();
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
   }, [reportRevision, scheduleSave]);
@@ -2745,6 +2731,9 @@ export default function App() {
       pdfRebuildRef.current.delete(doc.id);
     }
     latestContentRef.current.delete(path);
+    const owner = indexGraphRef.current;
+    if (owner) void owner.client.dropOverlay(path).catch(() => {});
+    notifySearchChanges();
     // A successful closing flush has already captured the render data.
     clearPdfRenderData(path);
     // A notebook's exporter closes over its editor; dropping it is what stops a
@@ -3210,14 +3199,29 @@ export default function App() {
     sessionVaultIdRef.current = currentVaultIdRef.current;
   }, [rootHandle, flushTab]);
 
-  // Search reads open-tab buffers through this accessor (via tabsRef) so its
-  // results reflect unsaved edits without re-rendering the sidebar on typing.
-  // An unreadable tab (OpenTab.readError) answers null, like a closed note, so
-  // search reads the file from disk rather than matching an empty buffer.
-  const getOpenTabContent = useCallback((path: string) => {
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    return tab && canReadTabText(tab) ? tab.content : null;
-  }, []);
+  useEffect(() => { notifySearchChanges(); }, [fileTree]);
+  const searchBuffers = useCallback(() => tabsRef.current.flatMap(tab => {
+    const revision = pendingRevisionsRef.current.get(tab.id);
+    if (!revision || revision.revision <= revision.saved || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
+    const text = getView(tab.file.path)?.getText?.() ?? contentOf(tab.file.path) ?? tab.content;
+    return [{ path: tab.file.path, revision: revision.revision, text }];
+  }), [contentOf]);
+  const searchController = useMemo<SearchController>(() => ({
+    subscribe: subscribeSearchChanges,
+    async search(query, onBatch, signal) {
+      const activation = getVaultActivation();
+      const owner = await indexGraphRef.whenReady();
+      if (owner.activation !== activation || activation !== getVaultActivation()) throw new DOMException('Vault changed', 'AbortError');
+      return owner.client.searchSidebar(query, searchBuffers(), onBatch, signal);
+    },
+    retry() { indexGraphRef.current?.client.retry(); },
+  }), [getVaultActivation, indexGraphRef, searchBuffers]);
+  const searchAgent = useCallback(async (config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal) => {
+    const activation = getVaultActivation();
+    const owner = await indexGraphRef.whenReady();
+    if (owner.activation !== activation || activation !== getVaultActivation()) throw new DOMException('Vault changed', 'AbortError');
+    return owner.client.searchAgent(config, searchBuffers(), signal);
+  }, [getVaultActivation, indexGraphRef, searchBuffers]);
 
   /**
    * The address bar AS THE PAGE LOADED, captured once.
@@ -4777,7 +4781,7 @@ export default function App() {
           if (held) lift(id, path);
           continue;
         }
-        searchIndexRef.current.index.invalidate(path);
+        notifySearchChanges();
         const graphOwner = indexGraphRef.current;
         if (graphOwner?.root === root && graphOwner.activation === getVaultActivation()) {
           void graphOwner.client.invalidate([path]).catch(() => {});
@@ -4851,8 +4855,7 @@ export default function App() {
     // comes back here as `modified`, and nudging on that echo doubled the
     // graph's vault-wide stat pass per save.
     const open = new Set(tabsRef.current.map(t => t.file.path));
-    if (batch.rescan) searchIndexRef.current.index.revalidate();
-    else for (const path of batch.modified) if (!open.has(path)) searchIndexRef.current.index.invalidate(path);
+    if (batch.rescan || batch.modified.size) notifySearchChanges();
     const graphOwner = indexGraphRef.current;
     if (graphOwner && graphOwner.activation === getVaultActivation()) {
       if (batch.rescan) void graphOwner.client.sweep('rescan').catch(() => {});
@@ -4903,9 +4906,7 @@ export default function App() {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || resolvingRef.current.has(tab.id)) return;
     const { id, file } = tab;
-    const indexAtCall = searchIndexRef.current;
     const graphAtCall = indexGraphRef.current;
-    const searchWriteRevision = ++searchWriteRevisionRef.current;
     if (action === 'keep-pdf' || action === 'rebuild-pdf') {
       const entry = pdfRebuildRef.current.get(id);
       if (!entry || diskStateRef.current.has(id) || !currentPdfOwner(entry.identity)) return;
@@ -4987,10 +4988,7 @@ export default function App() {
         syncExitGuard();
         clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
-        if (typeof data === 'string' && !isCanvasFile(file.name) && isTextFile(file.name)
-          && indexAtCall.activation === getVaultActivation()) {
-          indexAtCall.index.primeWritten(path, result.version, data, searchWriteRevision);
-        }
+        notifySearchChanges();
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
@@ -5000,6 +4998,7 @@ export default function App() {
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
           graphAtCall.echo.remember(path, result.version.lastModified, result.version.size);
           if (typeof data === 'string' && isMarkdownFile(file.name)) void graphAtCall.client.prime(path, result.version.lastModified, result.version.size, data).catch(() => {});
+          else if (typeof data === 'string' && isTextFile(file.name) && !isCanvasFile(file.name)) void graphAtCall.client.primeText(path, result.version.lastModified, result.version.size, data).catch(() => {});
         }
         bumpSaveEpoch();
         return;
@@ -5144,7 +5143,8 @@ export default function App() {
       handleIO,
       ensureVaultId,
       root: rootHandle,
-      searchIndex,
+      searchToken,
+      searchAgent,
       fileTree,
       tabs,
       layout,
@@ -5162,10 +5162,7 @@ export default function App() {
       updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
-        if (activation === getVaultActivation()) {
-          if (version && isTextFile(file.name) && !isCanvasFile(file.name)) searchIndexRef.current.index.primeWritten(file.path, version, after, ++searchWriteRevisionRef.current);
-          else searchIndexRef.current.index.invalidate(file.path);
-        }
+        notifySearchChanges();
         recordFileWritten(file.path);
         requeueAssetsAffected(file.path);
         if (isCanvasFile(file.name)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
@@ -5177,6 +5174,7 @@ export default function App() {
           if (version) {
             graphOwner.echo.remember(file.path, version.lastModified, version.size);
             if (isMarkdownFile(file.name)) void graphOwner.client.prime(file.path, version.lastModified, version.size, after).catch(() => {});
+            else if (isTextFile(file.name) && !isCanvasFile(file.name)) void graphOwner.client.primeText(file.path, version.lastModified, version.size, after).catch(() => {});
           } else void graphOwner.client.invalidate([file.path]).catch(() => {});
         }
         bumpSaveEpoch();
@@ -5388,6 +5386,50 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   }, []);
 
+  const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
+    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle || sessionRootRef.current !== rootHandle || sessionVaultIdRef.current !== entry.vaultId) return 'unavailable';
+    try {
+      const handle = await resolveFileHandle(entry.path);
+      if (!handle) return 'copy';
+      const snapshot = await readFileSnapshot(handle);
+      try {
+        const version = await snapshot.fingerprint();
+        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        const bytes = typeof entry.copy === 'string' ? new TextEncoder().encode(entry.copy) : entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+        const copyHash = await hashBytes(bytes);
+        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        if (copyHash === version.hash) return 'equal';
+        return version.hash === entry.fingerprint ? 'match' : 'copy';
+      } finally { snapshot.dispose(); }
+    } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
+  }, [rootHandle, currentVaultId, resolveFileHandle, readFileSnapshot]);
+
+  const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
+    const tab = tabsRef.current.find(t => t.file.path === entry.path);
+    if (!tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    if (entry.copyOnly || await inspectRecovery(entry) !== 'match') throw new Error('The file changed; save these changes as a copy instead.');
+    const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
+    if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    const adapter = recoveryAdapter(tab.id);
+    if (adapter?.recover) { await adapter.recover(entry.payload); return; }
+    if (typeof entry.payload !== 'string' || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
+    if (!getView(entry.path)?.replaceFromDisk?.(entry.payload)) {
+      const key = `${tab.id}|${entry.path}`;
+      const cached = editorStates.get(key);
+      if (cached) { const spec = reloadSpec(cached, entry.payload); if (spec) editorStates.set(key, cached.update(spec).state); }
+    }
+    updateTabContent(entry.path, entry.payload);
+  }, [hasUnsaved, inspectRecovery, editorStates, updateTabContent]);
+
+  const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
+    const root = rootHandleRef.current;
+    if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+    if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
+    const copy = await writeConflictCopy(entry.path, data, root);
+    announce(`Recovered changes were saved as “${copy}”.`);
+  }, [writeConflictCopy, announce]);
+
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.
   const dialogHost = dialog && (
@@ -5493,7 +5535,7 @@ export default function App() {
         <FileExplorer
           readSnapshot={handleIO.file}
           rootHandle={rootHandle}
-          searchIndex={searchIndex}
+          search={searchController}
           fileTree={fileTree}
           onFileClick={handleFileClick}
           onCreateFile={handleCreateFile}
@@ -5513,7 +5555,6 @@ export default function App() {
           onRenameFile={handleRenameFile}
           onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}
-          getOpenTabContent={getOpenTabContent}
         />
         <SidebarFooter
           vaultName={rootHandle?.name ?? ''}
@@ -5540,6 +5581,7 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
+        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} />}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
             <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>

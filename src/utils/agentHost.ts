@@ -48,7 +48,8 @@ export interface AgentHostDeps {
     handleIO: import('../types').VaultHandleIO;
     ensureVaultId: import('../types').FileSystemContextValue['ensureVaultId'];
     root: FileSystemDirectoryHandle | null;
-    searchIndex: import('./vaultIndexSession').VaultIndexSession;
+    searchToken: object;
+    searchAgent: VaultToolHost['searchAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -210,12 +211,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
-        vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchIndex : null; },
-        async searchTextIndex(files, paths) {
-            const index = getDeps().searchIndex;
-            await index.ensurePaths(files, paths);
-            return index.snapshot();
-        },
+        vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
+        searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
 
         getFileTree: () => getDeps().fileTree,
 

@@ -2,7 +2,8 @@ import { createWorkerClient } from '../../platform/workers';
 import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
 import { observeForegroundReads } from './foreground';
-import type { SearchBatch } from './workerSearch';
+import { newIndexSession } from './session';
+import type { SearchBatch } from '../../utils/searchController';
 import type { MatchAnswer } from '../../utils/agentMatcher/types';
 
 export interface SearchBuffer { path: string; revision: number; text: string }
@@ -29,17 +30,22 @@ export class VaultIndexClient {
     private queue: Promise<void> = Promise.resolve();
     private sweeping?: Promise<void>;
     private sweepAgain = false;
+    private started = false;
     private nextQuery = 0;
     private nextOverlay = 0;
     private overlays = new Map<string, { revision: number; rev: number; text: string }>();
     private resultListeners = new Map<number, (batch: SearchBatch) => void>();
-    constructor(readonly session: IndexSession, onGraph: (graph: IndexGraph) => void,
-        onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void) {
+    constructor(public session: IndexSession, onGraph: (graph: IndexGraph) => void,
+        private readonly onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void,
+        onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {
         this.worker = createWorkerClient({
             name: `vault-index-${session.sessionNo}`, protocol: 1,
             spawn: () => new Worker(new URL('./index.worker.ts', import.meta.url), { type: 'module' }),
-            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status'], eventLimit: Infinity,
+            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes'], eventLimit: Infinity,
             onStart: async bootstrap => {
+                if (this.started) this.session = newIndexSession(this.session.vaultId);
+                this.started = true;
+                const session = this.session;
                 this.graphGen = 0;
                 this.graphEpoch++;
                 await bootstrap.request('open', { session }, control);
@@ -50,20 +56,25 @@ export class VaultIndexClient {
         });
         this.worker.on('graph', value => {
             const graph = value as IndexGraph;
-            if (this.disposed || graph.session.sessionNo !== session.sessionNo || graph.session.vaultId !== session.vaultId
+            if (this.disposed || graph.session.sessionNo !== this.session.sessionNo || graph.session.vaultId !== this.session.vaultId
                 || graph.graphGen <= this.graphGen || graph.treeGen !== this.treeGen) return;
             this.graphGen = graph.graphGen;
             onGraph(graph);
         });
         const currentEvent = (value: unknown) => {
             const event = value as { session?: IndexSession };
-            return !this.disposed && event.session?.sessionNo === session.sessionNo && event.session.vaultId === session.vaultId;
+            return !this.disposed && event.session?.sessionNo === this.session.sessionNo && event.session.vaultId === this.session.vaultId;
         };
         this.worker.on('results', value => {
             const batch = value as SearchBatch;
             if (currentEvent(value)) this.resultListeners.get(batch.queryId)?.(batch);
         });
-        this.worker.on('problem', value => { if (currentEvent(value)) onProblem(value); });
+        this.worker.on('fileTimes', value => {
+            if (!currentEvent(value)) return;
+            const event = value as { changes: [string, number, number][]; sweepComplete: boolean };
+            onTimes?.(event.changes, event.sweepComplete);
+        });
+        this.worker.on('problem', value => { if (currentEvent(value)) this.onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
         this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
     }
@@ -109,6 +120,9 @@ export class VaultIndexClient {
             const rev = await this.worker.request<number | null>('primeReserve', { session: this.session, path, mtime, size, text }, control);
             if (rev !== null) void this.worker.request('primeCommit', { session: this.session, path, rev }, background).catch(() => {});
         });
+    }
+    primeText(path: string, mtime: number, size: number, text: string): Promise<void> {
+        return this.serial(async () => { await this.worker.request('primeText', { session: this.session, path, mtime, size, text }, control); });
     }
     sweep(reason: 'open' | 'rescan' | 'poll' | 'user'): Promise<void> {
         if (this.sweeping) {
@@ -166,23 +180,52 @@ export class VaultIndexClient {
             }
         });
     }
+    dropOverlay(path: string): Promise<void> {
+        return this.serial(async () => {
+            if (!this.overlays.has(path)) return;
+            this.overlays.delete(path);
+            await this.worker.request('overlay', { session: this.session, path, rev: ++this.nextOverlay, text: null }, control);
+        });
+    }
     async searchSidebar(query: string, buffers: readonly SearchBuffer[], onBatch: (batch: SearchBatch) => void, signal: AbortSignal): Promise<void> {
-        await this.syncOverlays(buffers);
-        if (signal.aborted || this.disposed) throw new DOMException('Search cancelled', 'AbortError');
-        const queryId = ++this.nextQuery;
-        this.resultListeners.set(queryId, onBatch);
-        try {
-            await this.worker.request('search', { session: this.session, queryId, kind: 'sidebar', query }, { priority: 1, signal });
-        } finally { this.resultListeners.delete(queryId); }
+        for (let attempt = 0; ; attempt++) {
+            if (signal.aborted || this.disposed) throw new DOMException('Search cancelled', 'AbortError');
+            const queryId = ++this.nextQuery;
+            try {
+                await this.syncOverlays(buffers);
+                await this.worker.request('ready', {}, { priority: 1, signal });
+                this.resultListeners.set(queryId, onBatch);
+                await this.worker.request('search', { session: this.session, queryId, kind: 'sidebar', query }, { priority: 1, signal });
+                return;
+            } catch (error) {
+                if (error instanceof Error && error.name === 'NotAllowedError') this.onProblem({ session: this.session, kind: 'permission', detail: error.message });
+                if (attempt || signal.aborted || !(error instanceof Error) || error.name !== 'WorkerCrashed') throw error;
+                onBatch({ session: this.session, queryId, overlayRevs: {}, batch: [], done: false, clipped: false, matchCount: 0, reset: true });
+            } finally { this.resultListeners.delete(queryId); }
+        }
     }
     async searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number },
         buffers: readonly SearchBuffer[], signal?: AbortSignal): Promise<MatchAnswer> {
         await this.syncOverlays(buffers);
-        return this.worker.request<MatchAnswer>('search', { session: this.session, queryId: ++this.nextQuery, kind: 'agent', ...config }, { priority: 1, signal });
+        await this.worker.request('ready', {}, { priority: 1, signal });
+        try {
+            return await this.worker.request<MatchAnswer>('search', { session: this.session, queryId: ++this.nextQuery, kind: 'agent', ...config }, { priority: 1, signal });
+        } catch (error) {
+            if (error instanceof Error && error.name === 'NotAllowedError') this.onProblem({ session: this.session, kind: 'permission', detail: error.message });
+            throw error;
+        }
     }
     retry(): void {
         this.worker.reset();
         void this.sweep('user').catch(() => {});
     }
-    dispose(): void { this.disposed = true; this.stopForeground(); this.worker.dispose(); }
+    dispose(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.stopForeground();
+        // The worker owns the write-behind batch and releases its vault lock
+        // only after the batch has committed.
+        void this.worker.request('close', { session: this.session }, control)
+            .catch(() => {}).finally(() => this.worker.dispose());
+    }
 }

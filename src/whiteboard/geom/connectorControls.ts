@@ -40,7 +40,7 @@ function bodyParameter(body: ConnectorBody, point: Vec2): number {
     if (forward <= magnitude) return magnitude ? forward / magnitude : 0;
     return Math.hypot(point.x - body.start.x, point.y - body.start.y) <= Math.hypot(point.x - body.end.x, point.y - body.end.y) ? 0 : 1;
 }
-function labelAt(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2): number {
+export function connectorLabelFraction(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2): number {
     if (node.route === 'elbow') {
         const points: Vec2[] = [geometry.start.tipWorld];
         for (const op of geometry.body) if (op.op === 'M' || op.op === 'L') {
@@ -63,7 +63,7 @@ function labelAt(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, poi
 }
 function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, control: ConnectorControl, point: Vec2): NodeSetOp {
     const a = geometry.start.aimWorld, b = geometry.end.aimWorld, dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
-    if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: labelAt(node, geometry, point) };
+    if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: connectorLabelFraction(node, geometry, point) };
     if (control === 'elbow') {
         // Default, calibration cut by owner: the dominant route axis controls the elbow midpoint.
         const value = Math.abs(dx) >= Math.abs(dy) ? (dx ? (point.x - a.x) / dx : 0.5) : (dy ? (point.y - a.y) / dy : 0.5);

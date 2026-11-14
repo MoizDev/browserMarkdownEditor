@@ -7,7 +7,8 @@ import { childrenOf, hasOpaqueDescendant, sheetOf, type BoardDoc } from '../mode
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { Vec2 } from './path';
-import { prepareBoardLeafResize, type BoardLeafResizeResult } from './runtimeResizeKinds';
+import { prepareBoardLeafResize } from './runtimeResizeKinds';
+import { prepareConnectorResize } from './runtimeConnectorResize';
 import { ResizePlan, type SelectionResizePreview } from './resizePlan';
 import type { ResizeTargetSnapshot } from './resizePlan.types';
 import type { KindResizeFactors } from './resizeKinds.types';
@@ -49,7 +50,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     const nodes = selectedRoots(doc, options.ids);
     if (!nodes.length) throw new Error('Nothing selected for resize');
     for (const node of nodes) {
-        if (node.kind === 'opaque' || node.kind === 'connector' || isLocked(doc, node)
+        if (node.kind === 'opaque' || isLocked(doc, node)
             || hasOpaqueDescendant(doc, node.id) || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Unsupported resize target: ${node.id}`);
     }
     const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
@@ -61,7 +62,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
             if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
             else {
-                if (node.kind === 'opaque' || node.kind === 'connector') throw new Error(`Unsupported group resize descendant: ${node.id}`);
+                if (node.kind === 'opaque') throw new Error(`Unsupported group resize descendant: ${node.id}`);
                 result.push(node.id); all.add(node.id);
             }
             if (++count % 256 === 0) { await cooperate(); check(); }
@@ -83,16 +84,17 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                 || (child.kind === 'text' && !!options.handle.x && !!options.handle.y)), worldRotation: pose.rotation });
     } } catch (error) { scope.release(); throw error; }
     const mixed = commonResizeRotation([...snapshots.values()].flatMap(value => value.relevantRotations)) === null;
-    let latest: { value: BoardLeafResizePreview; leases: BoardLeafResizeResult[]; generation: number; signal: AbortSignal } | undefined;
-    let pending: { doc: BoardDoc; leases: BoardLeafResizeResult[]; generation: number } | undefined;
-    const release = (leases: readonly BoardLeafResizeResult[]) => { for (let i = leases.length - 1; i >= 0; i--) leases[i].release(); };
+    type Lease = { release(): void };
+    let latest: { value: BoardLeafResizePreview; leases: Lease[]; generation: number; signal: AbortSignal } | undefined;
+    let pending: { doc: BoardDoc; leases: Lease[]; generation: number } | undefined;
+    const release = (leases: readonly Lease[]) => { for (let i = leases.length - 1; i >= 0; i--) leases[i].release(); };
     const clear = () => { const value = latest; latest = undefined; if (value) release(value.leases); };
     let plan: ResizePlan;
     try { plan = new ResizePlan(nodes, options.down, options.handle, {
         capture(node) { const value = snapshots.get(node.id); if (!value) throw new Error('Resize target disappeared'); return value; },
         isCurrent: current,
         async planAllAsync(targets, frame, request) {
-            const turn = generation, leases: BoardLeafResizeResult[] = [], ops: NodeSetOp[] = [];
+            const turn = generation, leases: Lease[] = [], ops: NodeSetOp[] = [], connectors: NodeId[] = [];
             const active = () => current() && turn === generation && !request.aborted;
             let candidate = doc, transferred = false;
             try {
@@ -104,7 +106,8 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                     for (const id of leaves.get(rootId)!) {
                         check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
                         const node = candidate.nodes.get(id);
-                        if (!node || node.kind === 'opaque' || node.kind === 'group' || node.kind === 'connector') throw new Error('Resize target changed');
+                        if (!node || node.kind === 'opaque' || node.kind === 'group') throw new Error('Resize target changed');
+                        if (node.kind === 'connector') { connectors.push(id); continue; }
                         let factors: KindResizeFactors = target.factors, centreWorld = target.centre;
                         const oldPose = scope.worldPose(id);
                         if (id !== rootId) {
@@ -132,6 +135,14 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                             centreWorld, rotationWorld, signal: request, current: active, cooperate: options.cooperate });
                         leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
                     }
+                }
+                // Default, calibration cut by owner: selected targets are staged before bound connectors resolve.
+                for (const id of connectors) {
+                    check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
+                    const original = doc.nodes.get(id); if (!original || original.kind !== 'connector') throw new Error('Connector source changed');
+                    const result = await prepareConnectorResize({ runtime, source: doc, doc: candidate, node: original,
+                        frame, signal: request, current: active, cooperate: options.cooperate });
+                    leases.push(result); candidate = result.doc; ops.push(...result.ops);
                 }
                 check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
                 pending = { doc: candidate, leases, generation: turn }; transferred = true;

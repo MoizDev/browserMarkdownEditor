@@ -7,6 +7,8 @@ import { newIndexSession } from './session';
 import { indexTree, indexTreeDelta } from './tree';
 import { WriteEchoFilter } from './writeEcho';
 
+export interface IndexProgress { phase: 'sweeping' | 'idle'; done: number; total: number }
+
 export interface ActiveIndexGraph {
     client: VaultIndexClient;
     echo: WriteEchoFilter;
@@ -25,9 +27,11 @@ export function useIndexGraph(options: {
     resolve(path: string): Promise<FileSystemFileHandle | null>;
     stat(handle: FileSystemFileHandle): Promise<{ lastModified: number; size: number } | null>;
     publish(graph: GraphData | null): void;
+    onSnapshot?(stale: boolean): void;
+    onStatus?(status: IndexProgress): void;
     onProblem(problem: unknown): void;
 }) {
-    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onProblem } = options;
+    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
@@ -46,8 +50,10 @@ export function useIndexGraph(options: {
                 const client = new VaultIndexClient(session, snapshot => {
                     if (!live || getActivation() !== activation) return;
                     const graph = graphForTree(snapshot, latestTree.current);
-                    if (graph) publish(graph);
-                }, problem => { if (live && getActivation() === activation) onProblem(problem); });
+                    if (graph) { publish(graph); onSnapshot?.(snapshot.stale); }
+                }, problem => { if (live && getActivation() === activation) onProblem(problem); }, status => {
+                    if (live && getActivation() === activation) onStatus?.(status as IndexProgress);
+                });
                 const echo = new WriteEchoFilter(async path => {
                     const handle = await resolve(path);
                     const version = handle ? await stat(handle) : null;
@@ -81,7 +87,7 @@ export function useIndexGraph(options: {
                 owner.client.dispose();
             }
         };
-    }, [root, vaultId, activation, getActivation, resolve, stat, publish, onProblem]);
+    }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onProblem]);
     useEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;

@@ -1,4 +1,4 @@
-import type { MediaEntry, MediaId } from '../model/media';
+import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 
 export type MediaHolder = 'document' | 'history' | 'clipboard';
 interface StoredMedia {
@@ -14,8 +14,10 @@ export class MediaStore {
     private readonly pending = new Map<MediaId, Map<MediaHolder, number>>();
     private readonly locations = new Map<MediaId, string | null>();
     private idle: ReturnType<typeof setTimeout> | null = null;
+    private closed = false;
 
     put(id: MediaId, blob: Blob): void {
+        if (this.closed) throw new Error('Media session is closed');
         const previous = this.entries.get(id);
         if (previous) return;
         this.entries.set(id, { blob, holders: this.pending.get(id) ?? new Map() });
@@ -28,13 +30,13 @@ export class MediaStore {
     currentFile(id: MediaId): string | null | undefined { return this.locations.get(id); }
 
     setFile(id: MediaId, file: string | null): void {
-        if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
-            throw new Error('Invalid stored media name');
-        }
+        if (this.closed) throw new Error('Media session is closed');
+        if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
         this.locations.set(id, file);
     }
 
     retain(id: MediaId, holder: MediaHolder): MediaLease {
+        if (this.closed) throw new Error('Media session is closed');
         let counts = this.entries.get(id)?.holders ?? this.pending.get(id);
         if (!counts) {
             counts = new Map();
@@ -49,7 +51,10 @@ export class MediaStore {
             if (count <= 1) counts.delete(holder);
             else counts.set(holder, count - 1);
             if (!counts.size) {
-                if (this.pending.get(id) === counts) this.pending.delete(id);
+                if (this.pending.get(id) === counts) {
+                    this.pending.delete(id);
+                    if (this.closed) this.locations.delete(id);
+                }
                 this.schedule();
             }
         } };
@@ -65,9 +70,7 @@ export class MediaStore {
             if (!bytes) continue;
             const file = await restore(entry, bytes);
             signal.throwIfAborted();
-            if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
-                throw new Error('Invalid stored media name');
-            }
+            if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
             if (entry.file !== file) updateFile(entry.id, file);
             this.setFile(entry.id, file);
         }
@@ -75,18 +78,32 @@ export class MediaStore {
     }
 
     clear(): void {
+        if (this.closed) return;
+        this.closed = true;
         if (this.idle !== null) clearTimeout(this.idle);
         this.idle = null;
-        this.entries.clear();
-        this.pending.clear();
-        this.locations.clear();
+        const retained = new Set<MediaId>();
+        for (const [id, entry] of this.entries) {
+            entry.holders.delete('document'); entry.holders.delete('history');
+            if (entry.holders.get('clipboard')) retained.add(id);
+            else this.entries.delete(id);
+        }
+        for (const [id, counts] of this.pending) {
+            counts.delete('document'); counts.delete('history');
+            if (counts.get('clipboard')) retained.add(id);
+            else this.pending.delete(id);
+        }
+        for (const id of this.locations.keys()) if (!retained.has(id)) this.locations.delete(id);
     }
 
     private schedule(): void {
         if (this.idle !== null) return;
         this.idle = globalThis.setTimeout(() => {
             this.idle = null;
-            for (const [id, entry] of this.entries) if (!entry.holders.size) this.entries.delete(id);
+            for (const [id, entry] of this.entries) if (!entry.holders.size) {
+                this.entries.delete(id);
+                if (this.closed) this.locations.delete(id);
+            }
         }, 0);
     }
 }

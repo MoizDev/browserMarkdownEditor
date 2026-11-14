@@ -224,6 +224,7 @@ third-party code included (normally "none") · date.
 | `host/ownedSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | One shared session factory with owner-fenced pinned builds and disposal; no tldraw source | none | 2026-11-13 |
 | `host/prepareSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Native admission ownership and App session preparation ports; no tldraw source | none | 2026-11-13 |
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -249,6 +250,7 @@ third-party code included (normally "none") · date.
 | `input/attach.ts`, `input/keyboard.ts` (text entry seam) | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane's existing input router and keyboard owner; selection-to-edit and double-click bridge | none | 2026-11-13 |
 | `text/edit/binding.ts` | lane w-n | T-4, T-5 | text §§5–6 | W-i's edit session and rich adapter, shared history/layout, IME overlay and pane transforms; frame name as plain text | none | 2026-11-13 |
 | `text/edit/growth.ts` | lane w-n | T-2, T-5 | text §6 | Original local prediction of rich edits, shared layout measurement, and same-transaction text/figure/sticky size updates | none | 2026-11-13 |
+| `text/edit/request.ts` | lane w-n | T-2, T-5 | text §6; spec/text F-TEXT-010/011; spec/labels | Shared geometry label requests, plan's size and connector-width defaults, no tldraw source | none | 2026-11-13 |
 | `text/layoutWorkerHandler.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform shared-worker protocol; w-d coordinated parse-worker integration | none | 2026-11-13 |
 | `text/layoutClient.ts` | lane w-n | T-1, T-2, T-4 | text §§2–3, 7.2; threading §§2–3 | Main/worker layout compatibility selection, worker-host interface, vault/session and node-revision stale reply rejection | none | 2026-11-13 |
 | `change/historyTypes.ts` | lane w-n | H-5, H-6, CH-2 | change-and-history §§3–4; text §5.7 | Published session, selection, media/sample lease and camera-controller reveal ports; w-architect's history rulings | none | 2026-11-13 |
@@ -286,19 +288,19 @@ third-party code included (normally "none") · date.
 | `geom/resizePlacement.types.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected local centre and page-aware placement service contract | none | 2026-11-13 |
 | `geom/resizePlacement.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected bounds-centre mapping through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
-| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.7 | Design; shared resize, rotation and per-kind reflection command services | none | 2026-11-13 |
+| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.2/6.7 | Design; nudge, resize, rotation and per-kind reflection command services | none | 2026-11-13 |
 | `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
 | `geom/flip.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; reflected centres, local sign/flip properties and delegated container/binding policies | none | 2026-11-13 |
-| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-009/015 | geometry §6.7 | Design; ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transaction builders | none | 2026-11-13 |
+| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-002/003/009/015 | geometry §6.2/6.7 | Design; discrete nudges, ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transactions | none | 2026-11-13 |
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |
-| `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres and per-kind transaction planning | none | 2026-11-13 |
+| `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres, explicit selection scope and per-kind transaction planning | none | 2026-11-13 |
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/arrangement.types.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7 | Design; selection bounds, resize and shared page geometry service contracts | none | 2026-11-13 |
-| `geom/arrangement.ts` | lane w-g | GE-4; F-ARR-006/007/009/010 | geometry §6.6–6.7 | Design; roots-only world placement compiled into one ordinary transaction | none | 2026-11-13 |
+| `geom/arrangement.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7 | Design; roots-only world placement and stretch compiled into one ordinary transaction | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |

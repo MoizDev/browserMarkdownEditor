@@ -4,8 +4,12 @@ import type { RenderToken } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
+import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import { flipBoardLeaves } from '../commands/flipLeaves';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
+import { createBoardRotationPlan } from '../geom/runtimeTransforms';
+import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
@@ -184,6 +188,60 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         });
         return true;
     };
+    const transform = (command: string): boolean => {
+        // Default: coarse rotation is 15°, fine rotation is 1°, and scale steps are 10%.
+        const angles: Record<string, number> = { 'rotate.clockwise': Math.PI / 12, 'rotate.counterclockwise': -Math.PI / 12,
+            'rotate.fineClockwise': Math.PI / 180, 'rotate.fineCounterclockwise': -Math.PI / 180 };
+        const flip = command === 'flip.horizontal' ? 'x' : command === 'flip.vertical' ? 'y' : null;
+        const factor = command === 'scale.enlarge' ? 1.1 : command === 'scale.shrink' ? 1 / 1.1 : null;
+        if (!(command in angles) && !flip && factor === null) return false;
+        const selection = runtime.selection.getSnapshot();
+        if (!mutable() || !selection.selected.length) return false;
+        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        // Keyboard transforms share the nudge queue so no two preflights race the same revision.
+        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
+            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
+                || runtime.selection.getSnapshot() !== selection) return;
+            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
+            let unregister: (() => void) | undefined;
+            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
+                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+            try {
+                unregister = registerPending(() => controller.abort());
+                if (factor !== null) {
+                    const plan = await createBoardLeafResizePlan({ runtime, ids, down: { x: 0, y: 0 }, handle: { x: 1, y: 1 },
+                        current: active, signal: controller.signal });
+                    try {
+                        const box = plan.startBox, c = Math.cos(box.rotation), s = Math.sin(box.rotation);
+                        const dx = box.width * (factor - 1) / 2, dy = box.height * (factor - 1) / 2;
+                        const result = await plan.preview({ x: c * dx - s * dy, y: s * dx + c * dy },
+                            { shift: true, alt: true }, controller.signal);
+                        if (active()) plan.commit(result);
+                    } finally { plan.cancel(); }
+                    return;
+                }
+                const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
+                let centre: Vec2;
+                try {
+                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+                    for (const id of ids) { const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
+                    centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+                } finally { scope.release(); }
+                if (!active()) return;
+                if (flip) { await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal }); return; }
+                const angle = angles[command], down = { x: centre.x + 1, y: centre.y };
+                const plan = await createBoardRotationPlan({ runtime, ids, centre, down, orientation: 0,
+                    current: active, signal: controller.signal });
+                try {
+                    const preview = await plan.preview({ x: centre.x + Math.cos(angle), y: centre.y + Math.sin(angle) }, false, controller.signal);
+                    if (active()) plan.commit(preview);
+                } finally { plan.cancel(); }
+            } catch (error) { if (active()) report(error); }
+            finally { try { unregister?.(); } finally { release(); } }
+        });
+        return true;
+    };
     const eraserSweep = sweep(true);
     const eraser: EraserContext = {
         ...eraserSweep, hold: () => session.beginGesture(), registerPending,
@@ -270,7 +328,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, nudge, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, nudge, transform, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

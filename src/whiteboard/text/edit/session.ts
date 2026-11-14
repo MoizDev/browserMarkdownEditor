@@ -129,8 +129,9 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
-        if (next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
+        if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.lastActivity = performance.now();
+        this.typingHistory.invalidateRule();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
         this.controller.setStoredMarks(null);
@@ -249,6 +250,7 @@ export class TextEditSession {
         return { selection, caret, composition, handles };
     }
 
+    externalChange(): void { this.typingHistory.close(); this.sync(); }
     getSelection(): EditSelection { return this.selection; }
     restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 

@@ -227,11 +227,17 @@ A cache HIT still costs a `getFile()` — one browser round trip per note. Histo
 a 1,000-note vault paid 1,004 of them per autosave because the old `buildGraph` path revalidated the
 whole vault to discover nothing had changed. So:
 
-- **`flushTab` primes rather than re-reads.** It captures the index owner before the write, then
-  sends its saved text and stat to that same activation. The worker parses it, publishing a graph
-  only when links changed; no save walks the vault. Old-activation primes are dropped.
-- **Sweep on somebody ELSE's change**, a watcher rescan or vault open; path invalidations handle
-  individual external edits. Self-write observer echoes are deferred and checked once, not swept.
+- **`flushTab` primes rather than re-reads.** Capture `indexGraphRef.current` before IO and, only
+  while that root/activation still owns it, call `client.prime(path, mtime, size, text)`. The worker
+  reserves the path revision before extracting; an older read cannot overwrite that prime. Unchanged
+  links do not rebuild the graph, and a changed link uses cached facts without a vault-wide stat.
+  A closing save still preserves its document, but never primes the incoming activation.
+- **Graph publication has two fences**: worker session/tree/graph generation at receipt, then the
+  captured live-owner predicate inside React's updater. Recovery epochs cannot reuse old publication
+  authority. Only a committed whole tree owns membership; a finishing build never prunes it.
+- **Sweeps are for somebody ELSE's write** — a tree change, watcher rescan or vault open, never one
+  of ours. Newer work survives a failed older sweep.
+  Individual external edits invalidate paths; self-write observer echoes are checked once, not swept.
 - **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
   bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
 - **The first full index runs `onIdle`**, behind the notes the reader actually asked for.

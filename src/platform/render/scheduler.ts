@@ -415,6 +415,17 @@ export class FrameScheduler {
         for (const entry of this.panes.values()) this.mark(entry, 'pressure');
     }
 
+    idleForCapture(): boolean {
+        if (this.inFrame) return false;
+        for (const entry of this.panes.values()) {
+            if (!entry.renderable) continue;
+            if (entry.inputPriority || entry.motion || entry.reasons.size) return false;
+            try { if (entry.pane.isInteracting()) return false; }
+            catch { return false; }
+        }
+        return true;
+    }
+
     private live(entry: PaneEntry): boolean { return this.panes.get(entry.pane.paneId) === entry; }
 
     private mark(entry: PaneEntry, reason: string, preserveDamage = false): void {

@@ -57,7 +57,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const surfaceHost = new PaneBackendSwitch(createPaneSurfaceHost(host));
     const cpuMetrics = new SurfaceMetricsCommitter();
     const gpuMetrics = new SurfaceMetricsCommitter();
-    const camera = new CameraController(options.readCamera(), { width: 0, height: 0, dpr: 1 }, unconstrained);
+    const camera = options.camera ?? new CameraController(options.readCamera(), { width: 0, height: 0, dpr: 1 }, unconstrained);
     const caches: Array<{ cpu: MemoryCacheHandle; gpu: MemoryCacheHandle; layer: () => Layer | null }> = [];
     let cacheSerial = 0;
     let visible = false;
@@ -448,11 +448,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setInputEnabled: options.setInputEnabled, cancelViewWork: options.cancelViewWork,
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
-        removeCapture = registerCaptureGpu(options.paneId, () => {
+        removeCapture = registerCaptureGpu(options.paneId, options.documentToken, () => {
             if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            const current = options.currentToken();
+            if (!current || !sameDocument(current, options.documentToken) || !runtime.scheduler.idleForCapture()) return null;
             const snapshot = lifecycle?.surface.snapshot();
-            if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
-            return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);
+            const compositor = gpu.bundle.compositor as GpuCompositor;
+            if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation || !compositor.captureIdle) return null;
+            return captureGpuOwner(gpu.bundle.owner, compositor);
         });
         runtime.start();
         observer.start();

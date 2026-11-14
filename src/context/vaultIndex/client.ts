@@ -95,7 +95,7 @@ export class VaultIndexClient {
             return this.sweeping.then(() => {});
         }
         const run = async () => {
-            await this.queue;
+            await this.queue.catch(() => {});
             let start = 0, treeGen = this.treeGen;
             while (!this.disposed) {
                 this.sweepAgain = false;
@@ -113,7 +113,7 @@ export class VaultIndexClient {
         return result;
     }
     async invalidate(paths: string[]): Promise<void> {
-        await this.queue;
+        await this.queue.catch(() => {});
         await this.worker.request('invalidate', { session: this.session, paths }, background);
     }
     async foregroundIO(active: number): Promise<void> {

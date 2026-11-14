@@ -101,14 +101,22 @@ export class ClipboardCopy {
         if (this.disposed) throw new Error('Clipboard cache is closed');
         const controller = new AbortController();
         let held: HeldSnapshot | undefined, finished = false;
-        const prepared = capture(controller.signal).then(snapshot => {
+        const prepared = capture(controller.signal).then(async snapshot => {
             const owner: HeldSnapshot = { snapshot, count: 1 };
             if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
             held = owner;
             if (!this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
             const commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
-            return { owner, envelope: encodeClipboardNow(snapshot, new Map()), commitCut };
+            let inline: ReadonlyMap<MediaId, string> = new Map();
+            try { inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), controller.signal); }
+            catch { controller.signal.throwIfAborted(); }
+            if (finished || this.disposed || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
+            let envelope = encodeClipboardNow(snapshot, inline);
+            try { envelope = await compressClipboard(snapshot, envelope, controller.signal); }
+            catch { controller.signal.throwIfAborted(); }
+            if (finished || this.disposed || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
+            return { owner, envelope, commitCut };
         });
         const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
         const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));

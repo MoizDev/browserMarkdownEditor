@@ -73,7 +73,7 @@ export async function primeNativeLoad(load: RehydratedLoad, baseline: Blob, enco
         override(id);
     }
     await tick();
-    const records = new RecordChanges(0, versions);
+    const records = await RecordChanges.from(0, versions, cooperate, signal);
     signal?.throwIfAborted();
     return { prime: { revision: 0, baseline, header, lines, overrides }, records };
 }

@@ -10,7 +10,7 @@ import { PointerRouter, type PointerRoute } from './pointerRouter'
 import { predictedTail, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
-import type { InputToken, Modifiers, RealSample, Tool } from './tool'
+import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
 
 export type BoardInputMode = 'edit' | 'view'
 export type Detach = () => void
@@ -50,7 +50,7 @@ export interface BoardInputServices {
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
-  cancelPendingGestures(): void
+  cancelPendingGestures(): boolean
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
@@ -72,6 +72,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const router = new InputRouter<unknown>(() => session.beginGesture())
   let start: ToolStateSnapshot | null = null
   let activeSource: RealSample['source'] | null = null
+  let completeTool = false
+  let suppressMenu = false
   const touchAdmission = new Map<number, boolean>()
   const handContext: HandContext = {
     toSurface: view.sampleToSurface,
@@ -79,6 +81,27 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     invalidate: services.cameraChanged,
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
+  const secondaryPan: Tool<unknown> = {
+    id: 'secondary-pan',
+    begin(sample, modifiers) {
+      const origin = view.sampleToSurface(sample)
+      const pan = handTool.begin(sample, modifiers, handContext)
+      if (!pan) return null
+      let dragging = false
+      const owner: GestureOwner = {
+        kind: 'pan', pointerIds: pan.pointerIds,
+        update(samples, nextModifiers) {
+          for (const point of samples) {
+            const surface = view.sampleToSurface(point)
+            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) { dragging = true; suppressMenu = true }
+            if (dragging) pan.update([point], nextModifiers)
+          }
+        },
+        finish: reason => pan.finish(reason), cancel: reason => pan.cancel(reason),
+      }
+      return owner
+    },
+  }
   const ink = (id: 'pen' | 'highlighter'): Tool<unknown> => {
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
@@ -96,13 +119,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       start = services.tools.getSnapshot()
       activeSource = sample.source
       const choice = start.active
+      completeTool = false
+      if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
+      if (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey)) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
+      if (event.button !== 0) return null
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null
+      completeTool = true
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
       return services.resolveTool(choice, sample, modifiers, event)
     },
     ended(reason) {
-      if (reason === 'up' && start) services.tools.complete(start)
+      if (reason === 'up' && start && completeTool) services.tools.complete(start)
+      completeTool = false
       start = null
       activeSource = null
     },
@@ -111,7 +140,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       router.activeOwner.publishPrediction(event ? predictedTail(event, view.predictionMapping(), 16) : [])
       view.wet.invalidate()
     },
-    contextMenu: services.contextMenu,
+    contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
     error: services.error,
   })
   const touch = new TouchArbiter(view.camera, {
@@ -146,6 +175,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp)
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
+  const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
+  view.surface.addEventListener('auxclick', auxclick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
   view.surface.addEventListener('pointerup', up, true)
@@ -167,7 +198,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { router.resumeInk(view.token); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
-      if (id === 'escape') { services.cancelPendingGestures(); if (pointer.interrupt('escape')) return true }
+      if (id === 'escape') {
+        const cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('escape') || cancelled) return true
+      }
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
@@ -206,6 +240,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.cancelPendingGestures()
     pointer.dispose()
     live = false
+    view.surface.removeEventListener('auxclick', auxclick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)
     view.surface.removeEventListener('pointerup', up, true)

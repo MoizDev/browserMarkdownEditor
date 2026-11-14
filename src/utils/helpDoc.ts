@@ -48,6 +48,8 @@ At the bottom, a row of five icons: **Neural Brain** (the graph view of how your
 
 In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. Turning developer settings off restores the normal engine choices without deleting your saved selections.
 
+**Settings → Editing → Board dictionary → Manage** lists the words saved for board spelling in this browser. Use **Remove** beside a word to remove it; the list is shared by boards across vaults, not saved inside a vault.
+
 When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
 
 In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.

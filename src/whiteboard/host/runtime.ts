@@ -1,6 +1,7 @@
 import { NoticeDispatcher } from '../change/notices';
 import type { HistorySnapshot, HistoryStepInfo, TextSelectionSnapshot } from '../change/historyTypes';
 import type { NodeId } from '../model/ids';
+import type { createBoardRenderServices } from '../render/services';
 import { SelectionState } from '../selection';
 import { SessionScene } from '../scene/sessionScene';
 import type { SessionSceneOptions } from '../scene/sessionScene';
@@ -25,12 +26,14 @@ export type BoardRuntimeOptions = Omit<BoardSessionFactoryOptions, 'selection' |
     | 'historySnapshot' | 'restoreHistorySelection' | 'revealTouched' | 'finishGesture' | 'finishComposition'
     | 'beforeHistoryReplay' | 'historyLimitReached'> & {
         readonly scene: Omit<SessionSceneOptions, 'doc' | 'invalidate' | 'onError' | 'signal'>;
+        readonly render: ReturnType<typeof createBoardRenderServices>;
         onHistoryLimit(): void;
     };
 export interface BoardRuntime {
     readonly session: ComposedBoardSession;
     readonly selection: SelectionState;
     readonly media: BoardSessionFactoryOptions['media'];
+    readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
     bindView(sink: BoardRuntimeViewSink): () => void;
@@ -129,7 +132,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     })();
     void ready.catch(() => {});
     const runtime: BoardRuntime = {
-        session, selection, media: options.media, ready,
+        session, selection, media: options.media, render: options.render, ready,
         get scene() { return scene; },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');
@@ -144,7 +147,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);
-            try { scene?.dispose(); } finally { scene = null; session.dispose(); }
+            try { scene?.dispose(); } finally { scene = null; try { session.dispose(); } finally { options.render.dispose(); } }
         },
     };
     runtimes.set(session, runtime);

@@ -1,4 +1,4 @@
-import type { Affine, ViewState } from '../../platform/types';
+import type { Affine, Rect, ViewState } from '../../platform/types';
 import { cameraTransform, worldToSurface } from '../../platform/render/camera';
 import { worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
@@ -26,7 +26,8 @@ export interface BoardPointQueryOptions {
     readonly cooperate?: () => Promise<void>;
     readonly onError: (error: unknown) => void;
 }
-interface Candidate { readonly id: NodeId; readonly rank: number; readonly result: NarrowResult }
+export interface BoardTargetHit { readonly id: NodeId; readonly localToWorld: Affine; readonly logicalBox: Readonly<Rect> }
+interface Candidate { readonly id: NodeId; readonly rank: number; readonly result: NarrowResult; readonly target?: BoardTargetHit }
 const miss: NarrowResult = { hit: false, distanceCss: Infinity, part: 'none' };
 const priority = (part: NarrowResult['part']): number => part === 'handle' ? 3 : part === 'label' || part === 'title' ? 2 : 0;
 const better = (a: Candidate, b: Candidate) => priority(a.result.part) > priority(b.result.part)
@@ -70,13 +71,13 @@ function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeomet
 /** Queries one published Scene revision, not a second index or live paint cache. */
 export function createBoardPointQuery(options: BoardPointQueryOptions): {
     hit(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
+    hitTarget(point: Vec2, input: InputKind, signal: AbortSignal): Promise<BoardTargetHit | null>;
     dispose(): void;
 } {
     const jobs = new Set<AbortController>();
     let disposed = false;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    return {
-        async hit(point, input, signal) {
+    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean): Promise<Candidate | null> {
             if (disposed) throw cancelled();
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');
             const { runtime } = options, doc = runtime.session.doc, revision = doc.rev, selection = runtime.selection.getSnapshot();
@@ -108,7 +109,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 while (!scene.ready) { scene.step(32, performance.now() + 3); await tick(); }
                 if (runtime.scene !== scene || scene.revision !== revision) throw cancelled();
                 const matrix = cameraTransform(camera), surface = worldToSurface(point, camera);
-                cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable',
+                cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode,
                     request: { kind: 'point', x: point.x, y: point.y, maxDistance: 8 / camera.z } });
                 const refs: SpatialRef[] = [];
                 for (;;) {
@@ -126,7 +127,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    const selected = selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
+                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
+                    const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false;
                     for (let depth = 0; parent && depth < 64; depth++) {
@@ -140,7 +142,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     const prepared = await options.geometry.prepareForPick(node, combined);
                     check();
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
-                    let result = miss, ambiguous = false;
+                    let result = miss, ambiguous = false, target: BoardTargetHit | undefined;
                     const localToSurface = compose(matrix, ref.localToWorld);
                     if (node.kind === 'stroke') {
                         if (!prepared.ink) throw new Error('Stroke picking geometry is unavailable');
@@ -156,18 +158,28 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                             } finally { job.cancel(); }
                         }
                         if (!result.hit && maybe) { result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = true; }
+                        if (targetMode && result.hit) ambiguous = true;
                     } else if (node.kind === 'connector') {
                         if (!prepared.connector) throw new Error('Connector picking geometry is unavailable');
                         ({ result, uncertain: ambiguous } = connectorPoint(node, prepared.connector, matrix, surface, input));
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
-                        result = prepared.vector.point({ point: surface, localToSurface, input });
+                        const query = { point: surface, localToSurface, input };
+                        const attachment = prepared.vector.attachments;
+                        if (targetMode && attachment) {
+                            result = pointPath([attachment.outline], query, { interiorPaths: [attachment.outline], strokeRadiusLocal: 0,
+                                marginCss: 4, errorCss: 0.01, maxSegments: 8192 });
+                            if (result.hit) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
+                        } else {
+                            result = prepared.vector.point(query);
+                            if (targetMode && result.hit) ambiguous = true;
+                        }
                     }
                     check();
                     if (result.hit) {
-                        const candidate = { id: selected, rank: resolved.rank, result };
+                        const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
                         if (ambiguous) uncertain.push(candidate);
-                        else if (!winner || better(candidate, winner)) winner = candidate;
+                        else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;
                     }
                     await tick();
                 }
@@ -176,19 +188,26 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 for (let i = 0; i < uncertain.length; i++) {
                     if ((i & 127) === 0) await tick();
                     const candidate = uncertain[i];
-                    if (!winner || (candidate.id !== winner.id && !better(winner, candidate))) {
+                    if (!winner || (candidate.id !== winner.id && !(targetMode ? winner.rank > candidate.rank : better(winner, candidate)))) {
                         throw new Error('Point hit is geometrically uncertain');
                     }
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
-                return winner?.id ?? null;
+                return winner;
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }
                 }
                 throw error;
             } finally { cursor?.cancel(); jobs.delete(controller); }
+    }
+    return {
+        async hit(point, input, signal) { return (await run(point, input, signal, false))?.id ?? null; },
+        async hitTarget(point, input, signal) {
+            const result = await run(point, input, signal, true);
+            if (result && !result.target) throw new Error('Attachment target surface is unavailable');
+            return result?.target ?? null;
         },
         dispose() { if (!disposed) { disposed = true; for (const job of jobs) job.abort(cancelled()); jobs.clear(); } },
     };

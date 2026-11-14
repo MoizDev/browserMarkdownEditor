@@ -26,6 +26,7 @@ export interface SessionSceneOptions {
     readonly bounds: BoundsProvider;
     /** Leases refer to captured node versions, not the current document record. */
     retainNode(node: Readonly<Node>): { release(): void };
+    retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
     preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal): Promise<PaintNodeSource>;
     /** Requests bounded platform work; never starts a private animation loop. */
@@ -225,7 +226,8 @@ export class SessionScene implements SceneSpatial {
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
         return createSceneSnapshot({ token: this.options.token, revision: this.options.doc.rev, records: this.records.pin(),
-            metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}), prepare: this.options.preparePaint,
+            metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}),
+            renderer: this.options.retainRenderer?.(), prepare: this.options.preparePaint,
             cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
     }
     dispose(): void {

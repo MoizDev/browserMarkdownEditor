@@ -71,7 +71,7 @@ export function createBoardRenderServices(options: {
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const textIds = new Set<NodeId>();
-    let serial = 0, disposed = false;
+    let serial = 0, disposed = false, ownerReleased = false, holders = 1;
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
@@ -81,6 +81,10 @@ export function createBoardRenderServices(options: {
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (disposed) throw new DOMException('Board rendering services disposed', 'AbortError');
+    };
+    const releaseHolder = () => {
+        if (--holders !== 0) return;
+        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -227,7 +231,16 @@ export function createBoardRenderServices(options: {
     });
     return {
         text, bounds, changeGeometry,
-        prepareForPick(node: Readonly<Node>, signal: AbortSignal) { return prepare(node, options.doc, signal); },
+        /** A save/export pin may finish after its App session closes. Releasing
+         * the runtime owner must not invalidate that pin's geometry/fonts. */
+        retainRenderer() {
+            check();
+            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+            holders++;
+            let held = true;
+            return { release() { if (held) { held = false; releaseHolder(); } } };
+        },
+        prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
         /** Preflight actual font/ink inputs outside the synchronous writer.
          * Staged transforms still resolve through the doc passed by apply. */
         async prepareChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal): Promise<void> {
@@ -293,6 +306,6 @@ export function createBoardRenderServices(options: {
             return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        dispose() { if (!disposed) { disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); } },
+        dispose() { if (!ownerReleased) { ownerReleased = true; releaseHolder(); } },
     };
 }

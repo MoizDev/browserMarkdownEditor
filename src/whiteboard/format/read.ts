@@ -248,7 +248,7 @@ class Records {
             ...(record.category === 'node' && record.bounds ? { nodeBounds: record.bounds } : {}), reencode: record.reencode || reformatted
         });
     }
-    async finish(closed: boolean): Promise<ReadDraft | null> {
+    async finish(closed: boolean, afterFailure = false): Promise<ReadDraft | null> {
         if (!closed) this.problem('syntax', 'Native envelope is incomplete; recovered content is read-only');
         if (!this.endSeen) this.problem('syntax', 'Native input is missing its final end record');
         if (!this.header) return null;
@@ -275,7 +275,7 @@ class Records {
             input, sources: this.sources, unmapped: this.unmapped, coldBounds: this.coldBounds,
             ...(this.savedView ? { savedView: this.savedView } : {})
         };
-        input.preservedMediaRefs = new Map(await retainedMedia(draft, this.options.cooperate));
+        input.preservedMediaRefs = new Map(await retainedMedia(draft, afterFailure ? undefined : this.options.cooperate));
         return draft;
     }
 }
@@ -411,7 +411,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         // A prefix may end inside a multi-byte character. This probe only recognizes the marker;
         // full line/fallback decoding is fatal and remains the authority for UTF-8 admission.
         const probe = new TextDecoder().decode(state.probe.subarray(0, state.probeBytes));
-        native = cooperate ? await hasNativeMarkerIncremental(probe, cooperate) : hasNativeMarker(probe);
+        native = cooperate && !fatal ? await hasNativeMarkerIncremental(probe, cooperate) : hasNativeMarker(probe);
     }
     state.probe = new Uint8Array(0);
     if (!fatal && state.whitespaceOnly) return result('empty', null, true);
@@ -456,7 +456,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         } catch (error) {
             if (error instanceof JsonReadError) records.problem(error.code, error.message);
             else if (error instanceof AdmissionFailure) records.problem('model', error.message);
-            else if (error instanceof ReadFailure) records.problem(error.code, error.message);
+            else if (error instanceof ReadFailure) { fatal = true; records.problem(error.code, error.message); }
             else if (error instanceof RangeError) records.problem('limit', 'Reformatted native input could not be allocated');
             else if (error instanceof TypeError) records.problem('syntax', 'Reformatted native input contains invalid UTF-8');
             else throw error;
@@ -466,6 +466,6 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
     }
     state.fallback = null;
     if (!native) return result('other', null, ioComplete);
-    const draft = await records.finish(closed && ioComplete);
+    const draft = await records.finish(closed && ioComplete, fatal);
     return result('native', draft, closed && ioComplete && records.endSeen && records.countValid);
 }

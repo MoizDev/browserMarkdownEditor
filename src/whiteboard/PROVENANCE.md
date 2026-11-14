@@ -144,6 +144,9 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `geom/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Generic box and affine helpers moved with w-e's agreement from scene/bounds.ts; no tldraw source | none | 2026-11-13 |
 | `scene/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Re-export generic helpers from geom/bounds.ts to retain the scene API | none | 2026-11-13 |
+| `geom/numeric.ts` | lane w-g | GE-1 | geometry §2.1–2.2 | Design; IEEE 754 binary64; independent dyadic arithmetic | none | 2026-11-13 |
+| `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates | none | 2026-11-13 |
+| `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 

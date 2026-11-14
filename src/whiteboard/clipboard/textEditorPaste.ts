@@ -19,6 +19,7 @@ export interface TextEditorPasteOptions {
     readonly input: ClipboardInput; readonly intent: ClipboardIntent;
     readonly classifier: ClipboardClassifierHost; readonly html: Pick<ClipboardHtmlFrameHost, 'projectHTML'>;
     readonly editor: ClipboardTextEditor; readonly cache?: ClipboardCopy | ClipboardCachePin;
+    noticeRefused(items: readonly { readonly name: string; readonly reason: string }[]): void;
     /** Ends editing, then invokes the real board ingest in this same job. */
     pasteBoard(context: JobContext, cache?: Pick<ClipboardCopy, 'match'>): Promise<void>;
     /** Checks the captured editor, selection, pane and session after every await. */
@@ -73,7 +74,8 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
         const projection = await options.html.projectHTML(classification.html, context.signal);
         try {
             check();
-            if (projection.dataImages.length || projection.refusedImages.length) { projection.release(); return await board(); }
+            if (projection.dataImages.length) { projection.release(); return await board(); }
+            if (projection.refusedImages.length) options.noticeRefused(projection.refusedImages);
             const nonempty = projection.rich.blocks.some(block => block.runs.some(run => run.text.length > 0)) || projection.rich.blocks.length > 1;
             if (nonempty) { check(); options.editor.replaceSelection(projection.rich); }
             return 'handled';

@@ -6,6 +6,7 @@ import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
+import { createDuplicateDragPlan, type DuplicateDragPreview } from './duplicateDrag';
 
 export interface AsyncTransformGestureHost {
     hold(): () => void;
@@ -109,6 +110,11 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
 
 export function translationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardTranslationOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost): GestureOwner {
+    if (modifiers.alt) return new AsyncTransformGesture<DuplicateDragPreview>(sample, modifiers, async signal => {
+        const plan = await createDuplicateDragPlan({ ...options, down: sample, signal });
+        return { preview: (point, keys, request) => plan.preview(point, keys.shift, keys.accel, request),
+            display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
+    }, host);
     type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview; readonly drop: FrameDropPlan | null };
     return new AsyncTransformGesture<Preview>(sample, modifiers, async signal => {
         const plan = await createBoardTranslationPlan({ ...options, down: sample, signal });

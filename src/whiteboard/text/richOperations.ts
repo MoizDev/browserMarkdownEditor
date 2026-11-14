@@ -3,6 +3,7 @@ import { projectionLength as indexedLength, projectionPosition, projectionText }
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
+import { trackBlock } from './carriers';
 
 const position = projectionPosition;
 function check(text: RichText, from: number, to = from): void {
@@ -15,8 +16,12 @@ function withoutStart(block: Block): Block {
     const { start: _start, ...rest } = block;
     return rest;
 }
+function insertionBlock(block: Block): Block {
+    const { tail: _tail, carriers: _carriers, ...rest } = block;
+    return rest;
+}
 function continuation(block: Block): Block {
-    const { start: _start, tail: _tail, ...rest } = block;
+    const { start: _start, tail: _tail, carriers: _carriers, ...rest } = block;
     return rest;
 }
 export function plain(value: RichText): string {
@@ -73,12 +78,12 @@ export function insertionFragment(value: RichText, from: number, inserted: strin
     if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
     const lines = normalized.split('\n');
     if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
-    return { blocks: lines.map((text, index) => ({ ...(index === 0 ? block : continuation(block)), runs: [{ text, marks }] })) };
+    return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
 }
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {
     check(value, from, to);
-    const fragment = sliceRichText(value, from, to);
-    return normalizeRichText({ blocks: fragment.blocks.map(block => ({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) })) });
+    const fragment = sliceRichText(value, from, to, true);
+    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) }, block)) });
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);
@@ -114,7 +119,7 @@ export function enter(value: RichText, selection: RichSelection): RichEdit {
     }
     const next = continuation(block);
     const marks = marksAt(value, from);
-    const insert: RichText = { blocks: [{ ...block, runs: [{ text: '', marks }] }, { ...next, runs: [{ text: '', marks }] }] };
+    const insert: RichText = { blocks: [{ ...insertionBlock(block), runs: [{ text: '', marks }] }, { ...next, runs: [{ text: '', marks }] }] };
     return { from, to, insert, selection: { anchor: from + 1, focus: from + 1 } };
 }
 export function blocks(value: RichText, from: number, to: number, kind: Block['kind'] | 'indent' | 'outdent'): RichEdit {

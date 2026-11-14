@@ -10,6 +10,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { createBoardHostImages } from '../media/hostImages';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { SheetId } from '../model/ids';
+import type { SceneSnapshot } from '../scene/types';
 import { inkCoverageChunks, PaintStreamJob, type PaintFrame, type PaintItem } from '../render/paintStream';
 import { paintItem2d } from '../render/reference/paint2d';
 import { prepareRaster, type PreparedRaster } from './prepareRaster';
@@ -22,6 +23,9 @@ export interface BoardCaptureSnapshotOptions {
     /** Must remain usable for this captured entry after its originating view closes. */
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly signal?: AbortSignal;
+    /** The caller owns this pre-await scene pin until the capture has settled. */
+    readonly pin?: SceneSnapshot;
+    readonly selectedNodeIds?: ReadonlySet<string>;
     readonly onError: (error: unknown) => void;
 }
 const UNDERLAY = 'board-underlay', CONTENT = 'board-content', PAPER = 'notebook-paper';
@@ -46,12 +50,14 @@ function validBytes(value: number): number {
 export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions): CaptureSnapshot {
     const { runtime, sheetId, memory } = options, scene = runtime.scene, doc = runtime.session.doc, request = options.request;
     options.signal?.throwIfAborted();
-    if (!scene || !scene.ready || scene.revision !== doc.rev || !doc.sheets.has(sheetId)) throw new Error('Board capture scene is not ready');
+    if (options.pin) {
+        if (!options.pin.metadataNow().sheets.has(sheetId)) throw new Error('Board capture sheet is unavailable');
+    } else if (!scene || !scene.ready || scene.revision !== doc.rev || !doc.sheets.has(sheetId)) throw new Error('Board capture scene is not ready');
     const selected = new Set(request.layers);
     if (selected.size !== request.layers.length || !selected.size || [...selected].some(id => id !== UNDERLAY && id !== CONTENT && id !== PAPER)) {
         throw new Error('Board capture requested an unavailable or presentation-only layer');
     }
-    if (selected.has(PAPER) && doc.host.kind !== 'notebook') throw new Error('Notebook paper is unavailable for this board');
+    if (selected.has(PAPER) && (options.pin?.metadataNow().host.kind ?? doc.host.kind) !== 'notebook') throw new Error('Notebook paper is unavailable for this board');
     const { worldRect: r, view } = request;
     if (request.theme !== 'light' || request.inverted || request.predictions || request.chrome || request.unsealedInput
         || ![r.x, r.y, r.width, r.height, view.camera.x, view.camera.y, view.camera.z,
@@ -61,10 +67,12 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
     }
     const frozen: CaptureRequest = { ...request, worldRect: { ...request.worldRect }, layers: [...request.layers],
         view: { ...request.view, camera: { ...request.view.camera }, viewport: { ...request.view.viewport } } };
-    const pin = scene.pin(), token = Object.freeze({ ...pin.token }), revision = pin.revision;
-    if (revision !== doc.rev || token.documentId !== runtime.session.owner.documentId || token.session !== runtime.session.owner.session) {
-        pin.release(); throw new Error('Board capture pin does not match the session');
+    const pin = options.pin ?? scene!.pin(), token = Object.freeze({ ...pin.token }), revision = pin.revision;
+    if ((!options.pin && revision !== doc.rev) || token.documentId !== runtime.session.owner.documentId || token.session !== runtime.session.owner.session) {
+        if (!options.pin) pin.release();
+        throw new Error('Board capture pin does not match the session');
     }
+    const selectedNodeIds = options.selectedNodeIds && new Set(options.selectedNodeIds);
     const controller = new AbortController(), reservations: ByteLease[] = [];
     let released = false, cleaned = false, ready = false, inFlight: Promise<'exact'> | null = null;
     let images: ReturnType<typeof createBoardHostImages> | null = null, raster: PreparedRaster | null = null;
@@ -83,7 +91,7 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
         try { images?.dispose(); } catch (error) { report(error); } images = null;
         frame = null; paperItems = [];
         for (const lease of reservations.splice(0)) try { memory.release(lease); } catch (error) { report(error); }
-        try { pin.release(); } catch (error) { report(error); }
+        if (!options.pin) try { pin.release(); } catch (error) { report(error); }
     };
     const release = () => {
         if (released) return; released = true; controller.abort();
@@ -130,7 +138,8 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
                 if (!sameToken(source.token, token) || source.sceneRevision !== revision) throw new Error('Board capture source identity changed');
                 let items = 0;
                 const stream = new PaintStreamJob(source, (item, band) => {
-                    if ((band === 'underlay' && !selected.has(UNDERLAY)) || (band === 'content' && !selected.has(CONTENT))) return;
+                    if ((band === 'underlay' && !selected.has(UNDERLAY)) || (band === 'content' && !selected.has(CONTENT)) ||
+                        (selectedNodeIds && !selectedNodeIds.has(item.nodeId))) return;
                     if (items++ % 256 === 0) reserve(256 * 128);
                     (band === 'underlay' ? underlay : content).push(item);
                     if (item.kind === 'ink') inkNodeIds.add(item.nodeId);

@@ -89,7 +89,9 @@ export interface WriterOperations {
         result: StagedWriterResult;
     };
     'writer.buildNotebook': {
-        args: { revision: number; displayListSchema: 1; pages: GeneratedPage[]; notebookSource: { path: string }; writeId: string };
+        args: { revision: number; notebookSource: { path: string }; writeId: string } &
+            ({ kind?: 'display'; displayListSchema: 1; pages: GeneratedPage[] } |
+                { kind: 'pre-emitted'; pdf: Blob; pages: Array<{ width: number; height: number }> });
         result: Omit<StagedWriterResult, 'sourceFingerprint' | 'verification'> & { verification: { pageCount: number; attachmentCount: number } };
     };
     'writer.prepareUnsignedCopy': {

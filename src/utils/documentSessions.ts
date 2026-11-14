@@ -20,6 +20,8 @@ export interface SessionAdapter {
     drain?(): Promise<void>;
     /** Current resolved asset names, or undefined while the engine cannot provide them. */
     mediaReferences?(): readonly string[] | undefined;
+    /** Unresolved media ids conservatively block asset retirement. */
+    mediaReferenceIssues?(): readonly string[] | undefined;
     /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
     journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */

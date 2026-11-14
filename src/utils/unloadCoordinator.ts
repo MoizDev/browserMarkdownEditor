@@ -1,4 +1,5 @@
 import type { DocumentSessionStore } from './documentSessions';
+import type { ContentSource } from './documentBuffers';
 
 // C-01a wires App's exit guard and hidden-page checkpoint; W-10 registers the
 // drawing, notebook and annotated-PDF serializers; C-14 drains before every
@@ -66,6 +67,15 @@ export function anyPending(): boolean {
         } catch { return true; }
     }
     return false;
+}
+
+/** Pin pending session revisions before pagehide can suspend asynchronous work. */
+export function checkpointSessions(report: (documentId: string, source: ContentSource) => void): void {
+    for (const entry of sessionBinding?.store.entries() ?? []) {
+        try {
+            if (entry.hasPendingEdits()) report(entry.documentId, entry.adapter.checkpoint());
+        } catch (error) { console.error('Document checkpoint failed:', entry.documentId, error); }
+    }
 }
 
 /** Start every current serializer before awaiting a PDF's asynchronous build. */

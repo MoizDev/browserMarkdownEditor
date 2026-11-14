@@ -20,7 +20,8 @@ export function pdfDocKey(identity: PdfDocumentIdentity): PdfDocKey {
     if (!Number.isSafeInteger(identity.vaultEpoch) || identity.vaultEpoch < 0 ||
         !Number.isSafeInteger(identity.bytesGeneration) || identity.bytesGeneration < 0 ||
         typeof identity.documentId !== 'string' || !identity.documentId.length || identity.documentId.length > 1024 ||
-        /[:\u0000-\u001f]/u.test(identity.documentId) || !['outer', 'original'].includes(identity.source)) {
+        identity.documentId.includes(':') || [...identity.documentId].some(char => char.charCodeAt(0) < 32) ||
+        !['outer', 'original'].includes(identity.source)) {
         throw new RangeError('Invalid PDF document identity');
     }
     return `${identity.vaultEpoch}:${identity.documentId}:${identity.bytesGeneration}:${identity.source}`;

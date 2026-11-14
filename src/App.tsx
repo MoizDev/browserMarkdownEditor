@@ -2702,6 +2702,11 @@ export default function App() {
     const pdfData = isPdf ? getPdfRenderData(path) : undefined;
     const pdfEntry = isPdf ? pdfRebuildRef.current.get(id) : undefined;
     const pdfOriginal = nativeSource ? pdfEntry?.value.role.original : pdfData?.original;
+    const assertPdfWriteAuthority = () => {
+      if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal))) {
+        throw new Error('The PDF is now read-only. Its unsaved annotations have not been written.');
+      }
+    };
     if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal))) return 'skipped';
     if (isPdf) {
       const refusal = nativeSource ? undefined : pdfSnapshotRefusal(snapshot);
@@ -2731,6 +2736,9 @@ export default function App() {
         const data = isPdf && !nativeSource
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
+        assertPdfWriteAuthority();
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'failed';
+        if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'failed';
         if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
       } catch (error) {
@@ -2798,9 +2806,14 @@ export default function App() {
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
+        // Conversion backup and the versioned write can both yield after a
+        // permission revocation. A kept copy is a write too, not an escape hatch.
+        assertPdfWriteAuthority();
+        if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return closing ? 'failed' : 'skipped';
+        if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return closing ? 'failed' : 'skipped';
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
+          if (closing) { assertPdfWriteAuthority(); if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }

@@ -7,11 +7,14 @@ import { newIndexSession } from './session';
 import { indexTree, indexTreeDelta } from './tree';
 import { WriteEchoFilter } from './writeEcho';
 
+export interface IndexProgress { phase: 'sweeping' | 'idle'; done: number; total: number }
+
 export interface ActiveIndexGraph {
     client: VaultIndexClient;
     echo: WriteEchoFilter;
     root: FileSystemDirectoryHandle;
     activation: number;
+    regrant(): Promise<void>;
 }
 
 /** The owner is an activation, not a directory object or a mounted pane. */
@@ -24,9 +27,13 @@ export function useIndexGraph(options: {
     resolve(path: string): Promise<FileSystemFileHandle | null>;
     stat(handle: FileSystemFileHandle): Promise<{ lastModified: number; size: number } | null>;
     publish(graph: GraphData | null, activation: number, current: () => boolean): void;
+    onSnapshot?(stale: boolean): void;
+    onStatus?(status: IndexProgress): void;
+    onProblem(problem: unknown): void;
 }) {
-    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish } = options;
+    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
+    const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
     const publishedTree = useRef<IndexTreeFile[]>([]);
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
@@ -34,9 +41,11 @@ export function useIndexGraph(options: {
         let live = true;
         publish(null, activation, () => live && getActivation() === activation);
         if (!root) return () => { live = false; };
-        const cancelIdle = onIdle(() => {
-            void import('./client').then(({ VaultIndexClient }) => {
-                if (!live || getActivation() !== activation) return;
+        let starting: Promise<ActiveIndexGraph> | undefined;
+        const start = () => {
+            if (starting) return starting;
+            starting = import('./client').then(({ VaultIndexClient }) => {
+                if (!live || getActivation() !== activation) throw new DOMException('Vault changed', 'AbortError');
                 const session = newIndexSession(vaultId ?? `activation:${activation}`);
                 const client: VaultIndexClient = new VaultIndexClient(session, snapshot => {
                     const treeAtReply = latestTree.current;
@@ -45,20 +54,35 @@ export function useIndexGraph(options: {
                         && latestTree.current === treeAtReply && client.acceptsGraph(snapshot.graphGen, snapshot.treeGen, epoch);
                     if (!current()) return;
                     const graph = graphForTree(snapshot, treeAtReply);
-                    if (graph) publish(graph, activation, current);
-                }, problem => { console.error('Vault index problem:', problem); });
+                    if (graph) { publish(graph, activation, current); onSnapshot?.(snapshot.stale); }
+                }, problem => { if (live && getActivation() === activation) onProblem(problem); }, status => {
+                    if (live && getActivation() === activation) onStatus?.(status as IndexProgress);
+                });
                 const echo = new WriteEchoFilter(async path => {
                     const handle = await resolve(path);
                     const version = handle ? await stat(handle) : null;
                     return version ? { mtime: version.lastModified, size: version.size } : null;
                 }, paths => { void client.invalidate(paths).catch(() => {}); });
-                active.current = { client, echo, root, activation };
+                const owner: ActiveIndexGraph = { client, echo, root, activation,
+                    async regrant() {
+                        client.retry();
+                        const files = publishedTree.current = indexTree(latestTree.current);
+                        await client.setTree(files);
+                        await client.sweep('user');
+                    },
+                };
+                active.current = owner;
                 const files = publishedTree.current = indexTree(latestTree.current);
                 void client.setTree(files).then(() => client.sweep('open')).catch(() => {});
-            }).catch(error => { if (live) console.error('Could not start the vault index:', error); });
-        });
+                return owner;
+            }).catch(error => { starting = undefined; if (live) console.error('Could not start the vault index:', error); throw error; });
+            return starting;
+        };
+        startRef.current = start;
+        const cancelIdle = onIdle(() => { void start().catch(() => {}); });
         return () => {
             live = false;
+            if (startRef.current === start) startRef.current = null;
             cancelIdle();
             const owner = active.current;
             if (owner?.root === root && owner.activation === activation) {
@@ -67,7 +91,7 @@ export function useIndexGraph(options: {
                 owner.client.dispose();
             }
         };
-    }, [root, vaultId, activation, getActivation, resolve, stat, publish]);
+    }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onProblem]);
     useLayoutEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;
@@ -76,5 +100,6 @@ export function useIndexGraph(options: {
         publishedTree.current = next;
         if (delta) void owner.client.treeDelta(delta).catch(() => {});
     }, [tree, root, activation]);
-    return active;
+    return Object.assign(active, { whenReady: () => active.current ? Promise.resolve(active.current)
+        : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')) });
 }

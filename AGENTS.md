@@ -93,17 +93,18 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
   EPUB is binary/read-only; sentinels never enter text saves/assets/tools (`epub-reader`). Word emphasis
   stays in the original PDF/EPUB view; Text is explicit. Images/tables keep source Markdown (`markdown-tables`).
-- **The app draws its own context menu, `confirm()`, `prompt()` and tooltips (`data-tooltip`, `utils/tooltip.ts`;
-  lint bans `title`); the ONLY native one left is `beforeunload`'s, while a save is pending. Keep it so.**
+- **The app draws its own context menu, dialogs and tooltips (`data-tooltip`, `utils/tooltip.ts`; lint bans
+  `title`). The only native exception is browser-controlled `beforeunload` for pending document work
+  and non-macOS terminal Ctrl+W. Never reintroduce native confirm, prompt, alert or tooltip.**
 - **TWO places turn note text into DOM `innerHTML`, safe for different reasons** — `tableWidget`'s
   `renderCellContent` (attribute-free allowlist; one sink AND one write site, KaTeX splices in built DOM,
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
-- **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`; ONE `Limiter` across
-  the tree walk's whole recursion), never `Promise.all`, and nothing the reader waits for queues behind
-  it (the first graph build runs `onIdle`). **A CACHE HIT IS NOT FREE** — a `getFile()` round trip PER
-  NOTE — so a save never walks: it primes the cache (`primeLinks`) and revalidates nothing.
+- **Anything that walks the whole vault uses a `(lastModified, size)`-validated index and a bounded
+  pool** (ONE `Limiter` across the tree walk's whole recursion), never unbounded `Promise.all`, and
+  nothing the reader waits for queues behind it. The worker index (`context/vaultIndex/`) starts on
+  idle, yields to document IO and primes saved text; a save never revalidates the vault. A cache hit
+  still costs a `getFile()` round trip per note, so a save must not walk even cached entries.
 - **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
   that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
   page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.

@@ -20,6 +20,7 @@
 // the bundler emits a second copy of each chunk instead of warming theirs.
 
 import { loadPdfPane } from './pdfPaneModule';
+import { routeEngines } from '../utils/engineRouting';
 
 export interface CanvasKinds {
     epub: boolean;
@@ -49,18 +50,19 @@ export function prefetchPanes(kinds: CanvasKinds): void {
     if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.notebook) return;
 
     const run = () => {
+        const route = routeEngines();
         if (kinds.epub) warm('epub', () => import('./EpubPane'));
         // PdfPane pulls pdf.js; the annotate canvas and its tldraw are left for
         // the moment someone actually annotates, since reading is the common case.
         // Starting the shared worker here too takes the ~1MB worker boot off the
         // first click — dynamically, or pdf.js would land in the main bundle.
-        if (kinds.pdf) {
+        if (kinds.pdf && route.pdfViewer === 'classic') {
             warm('pdf', loadPdfPane);
             warm('pdf-worker', () => import('../utils/pdfClassicOpen').then(m => { m.prefetchClassicPdf(); }));
         }
         // A notebook IS a tldraw canvas, so either kind warms the big one.
-        if (kinds.drawing) warm('drawing', () => import('./DrawingPane'));
-        if (kinds.notebook) warm('notebook', () => import('./NotebookPane'));
+        if (kinds.drawing && route.canvas.drawing.engine === 'tldraw') warm('drawing', () => import('./DrawingPane'));
+        if (kinds.notebook && route.canvas.notebook.engine === 'tldraw') warm('notebook', () => import('./NotebookPane'));
     };
 
     const idle = (window as unknown as {

@@ -309,6 +309,52 @@ export class MemoryGovernor {
         return true;
     }
 
+    /** A detached browser canvas is working scratch until it becomes the one displayed surface.
+     * Promotion keeps the SAME tokens and total charge; arena-owned GPU resources never use it.
+     * The caller has already zeroed the previous displayed backing in the atomic canvas swap.
+     */
+    promoteCanvasBacking(leases: readonly ByteLease[], target: MemoryCacheHandle): boolean {
+        const destination = this.cacheHandles.get(target);
+        if (!destination || destination.registration.pool !== 'gpu' || destination.registration.kind !== 'surface') {
+            throw new MemoryAdmissionError('invalid-input');
+        }
+        if (destination.closed || this.caches.get(destination.registration.id) !== destination) return false;
+        if (new Set(leases).size !== leases.length) throw new MemoryAdmissionError('invalid-lease');
+        const records = leases.map(lease => {
+            const record = this.leases.get(lease);
+            if (!record) throw new MemoryAdmissionError('invalid-lease');
+            return record;
+        });
+        const owner = destination.registration.owner;
+        for (const record of records) {
+            const source = record.cache.registration;
+            if (record.returned) return false;
+            if (source.pool !== 'gpu' || source.kind !== 'canvas-working' || source.paneId !== destination.registration.paneId ||
+                !owner || !source.owner || owner.vaultEpoch !== source.owner.vaultEpoch || owner.documentId !== source.owner.documentId ||
+                owner.session !== source.owner.session || record.bytes % POLICY.surfaceReserveBytesPerPixel !== 0) {
+                throw new MemoryAdmissionError('foreign-owner');
+            }
+        }
+        const paneId = destination.registration.paneId;
+        const pane = this.panes.find(pane => pane.paneId === paneId);
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        const bytes = records.reduce((sum, record) => sum + record.bytes, 0);
+        const displayed = [...this.caches.values()].filter(cache => cache.registration.paneId === paneId &&
+            cache.registration.kind === 'surface').reduce((sum, cache) => sum + cache.bytes, 0);
+        if (!pane?.visible || !grant || destination.activity.hiddenAt !== null || this.charged.gpu > this.target.gpu ||
+            displayed + bytes > grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel) return false;
+        for (const record of records) {
+            const source = record.cache;
+            source.bytes -= record.bytes;
+            source.leaseCount--;
+            destination.bytes += record.bytes;
+            destination.leaseCount++;
+            record.cache = destination;
+            if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
+        }
+        return true;
+    }
+
     reportExternalHeaps(workerHeapBytes: number, sourceBytes: number): void {
         count(workerHeapBytes);
         count(sourceBytes);

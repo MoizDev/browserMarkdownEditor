@@ -10,6 +10,7 @@ import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { PAPER_USER, PaperMainMenu } from './paperCanvas';
 import { bindImageInvertKey } from './invertibleImageShape';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
@@ -72,6 +73,7 @@ interface PdfAnnotateCanvasProps {
  * its own background, so it has no white page to contrast against.
  */
 const ANNOTATE_COLOR_SCHEME = 'light';
+const PAPER_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu };
 
 /**
  * Shape types that cannot become paths in the saved PDF, so their pages carry a
@@ -960,11 +962,12 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                     snapshot={parsed.snapshot}
                     assets={assetStore}
                     onMount={handleMount}
-                    components={CANVAS_COMPONENTS}
+                    components={PAPER_COMPONENTS}
                     shapeUtils={CANVAS_SHAPE_UTILS}
                     options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                     colorScheme={ANNOTATE_COLOR_SCHEME}
+                    user={PAPER_USER}
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />
             </div>

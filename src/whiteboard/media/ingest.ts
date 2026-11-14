@@ -78,10 +78,12 @@ function box(info: InspectedMedia): { w: number; h: number } {
     return { w: info.width * scale, h: info.height * scale };
 }
 
-interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob }
+interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null }
+export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
 export class MediaIngestor {
-    constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost, private readonly jobs: JobAuthority) {}
+    constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost,
+        private readonly jobs: JobAuthority, private readonly locations: MediaLocationWriter) {}
 
     ingest(sources: readonly MediaSource[], options: MediaIngestOptions): Promise<readonly NodeId[]> {
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
@@ -135,6 +137,7 @@ export class MediaIngestor {
         this.host.rememberMedia(info.id, source.blob);
         current();
         const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
+        this.locations.setFile(info.id, file);
         applied.release();
     }
 
@@ -164,7 +167,7 @@ export class MediaIngestor {
                 const file = await this.host.storeMedia(entry, source.blob, signal);
                 current();
                 if (!safeLeaf(file)) throw new Error('Invalid stored media name');
-                staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob });
+                staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
             }
             current();
             const { parent, page, x, y } = options.placement;
@@ -195,6 +198,7 @@ export class MediaIngestor {
             }
             current();
             const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
+            for (const item of staged) this.locations.setFile(item.info.id, item.file);
             applied.release();
             this.host.select(ids);
             return ids;

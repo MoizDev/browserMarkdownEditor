@@ -9,7 +9,7 @@ function aborted(): DOMException { return new DOMException('PDF acquisition canc
  * temporary ArrayBuffer is released after its slice is appended; fingerprinting
  * is a separate worker operation and does not block opening the document.
  */
-export async function stablePdfBlob(file: File, signal?: AbortSignal): Promise<Blob> {
+export async function stablePdfBlob(file: Blob, signal?: AbortSignal): Promise<Blob> {
     if (signal?.aborted) throw aborted();
     let result = new Blob([], { type: 'application/pdf' });
     for (let offset = 0; offset < file.size; offset += COPY_CHUNK_BYTES) {

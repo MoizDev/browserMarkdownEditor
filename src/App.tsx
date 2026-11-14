@@ -13,7 +13,9 @@ import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredV
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
-import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
+import { ASSETS_DIR, TRASH_DIR, assetEmbeds } from './utils/assets';
+import { BoardSaveBaselines, RetirementBacklog, boardMediaDiff, decideAssetRetirement, mediaChanges, resolveBoardMedia } from './utils/assetRetirement';
+import { boardMediaRefs } from './utils/boardMediaRefs';
 import { setTerminalStartSource } from './utils/terminalStart';
 import { ensureVaultId } from './utils/vaultAgentStore';
 import { collectFiles } from './utils/tree';
@@ -23,7 +25,7 @@ import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
 import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
-import { sameStat, type DiskVersion } from './utils/diskVersion';
+import { hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -390,6 +392,7 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
+    handleIO,
     getVaultActivation,
     pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
@@ -1151,11 +1154,13 @@ export default function App() {
   // opening a note — the likeliest one to remove a picture — would have
   // nothing to compare against.
   const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
+  const boardBaselinesRef = useRef(new BoardSaveBaselines());
   const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
   const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
     if (tracksAssets(file)) assetRefsRef.current.set(file.path, assetEmbeds(content));
+    else if (!file.isHelp && isCanvasFile(file.name)) boardBaselinesRef.current.seed(file.path, content);
   }, []);
 
   /**
@@ -1220,6 +1225,7 @@ export default function App() {
   /** Follow a note to its new path (rename/move), so the next save there still
    *  has something to diff against. */
   const moveAssetRefs = useCallback((from: string, to: string) => {
+    boardBaselinesRef.current.move(from, to);
     const refs = assetRefsRef.current.get(from);
     if (!refs) return;
     assetRefsRef.current.delete(from);
@@ -1242,16 +1248,19 @@ export default function App() {
     activation: number; path: string; parentHandle: FileSystemDirectoryHandle | null;
     text: string; before: ReadonlySet<string>; after: ReadonlySet<string>;
     measuredNames?: string[];
+    board?: { before: string; after: string };
   }
   const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
   const assetProofTreeRef = useRef(fileTree);
   const assetReferenceRevisionRef = useRef(0);
-  const pendingAssetDropsRef = useRef(new Map<string, Set<string>>());
+  const assetBacklogRef = useRef(new RetirementBacklog<ReconcileJob>());
   const assetOwnerRootRef = useRef(rootHandle);
+  const assetOwnerActivationRef = useRef(getVaultActivation());
   useLayoutEffect(() => {
-    if (assetOwnerRootRef.current !== rootHandle) {
-      pendingAssetDropsRef.current.clear();
+    if (assetOwnerRootRef.current !== rootHandle || assetOwnerActivationRef.current !== getVaultActivation()) {
+      assetBacklogRef.current.reset();
       assetOwnerRootRef.current = rootHandle;
+      assetOwnerActivationRef.current = getVaultActivation();
     }
     if (rootHandle) assetActivationsRef.current.set(rootHandle, getVaultActivation());
     // The ordinary tree mirror is passive; a proof needs the committed tree
@@ -1260,13 +1269,44 @@ export default function App() {
     assetReferenceRevisionRef.current++;
   }, [rootHandle, fileTree, getVaultActivation]);
 
+  const assetNamesIn = useCallback(async (dir: FileSystemDirectoryHandle): Promise<Set<string>> => {
+    const names = new Set<string>();
+    const collect = async (parent: FileSystemDirectoryHandle, name: string) => {
+      try {
+        const folder = await handleIO.dirIn(parent, name);
+        for await (const [entry, handle] of handleIO.entries(folder)) if (handle.kind === 'file') names.add(entry);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error;
+      }
+    };
+    await collect(dir, ASSETS_DIR);
+    try { await collect(await handleIO.dirIn(dir, TRASH_DIR), ASSETS_DIR); }
+    catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+    return names;
+  }, [handleIO]);
+
   const reconcileAssets = useCallback(async (job: ReconcileJob): Promise<AssetOutcome> => {
-    const { activation, path, parentHandle: dir, before, after } = job;
+    const { activation, path, parentHandle: dir } = job;
+    let { before, after } = job;
     const attached = () => getVaultActivation() === activation;
     if (!attached()) return 'skipped-detached';
     if (!dir) return 'kept';
+    const folder = parentVaultPath(path);
+    const block = () => { if (attached()) assetBacklogRef.current.block(folder, job); };
 
     try {
+      const treeAtStart = assetProofTreeRef.current;
+      const boards = collectFiles(treeAtStart).filter(f => isCanvasFile(f.name) && parentVaultPath(f.path) === folder);
+      const assetNames = boards.length || job.board ? await assetNamesIn(dir) : new Set<string>();
+      if (!attached()) return 'skipped-detached';
+      if (assetProofTreeRef.current !== treeAtStart) { block(); return 'kept'; }
+      if (job.board) {
+        const encoder = new TextEncoder();
+        const diff = await boardMediaDiff({ source: encoder.encode(job.board.before) }, { source: encoder.encode(job.board.after) }, assetNames, boardMediaRefs);
+        if (!attached()) return 'skipped-detached';
+        if (!diff.ok) { block(); return 'kept'; }
+        ({ before, after } = diff);
+      }
       // A reference that came BACK — undo, or the same embed pasted into a
       // sibling note — reclaims its asset from the folder's `.Garbage`. Almost
       // always a no-op (the asset is right where it should be), and cheap.
@@ -1283,83 +1323,84 @@ export default function App() {
       if (reclaimed && attached()) retryMissingAssets();
 
       if (!attached()) return 'skipped-detached';
-      const folder = parentVaultPath(path);
-      const names = new Set(pendingAssetDropsRef.current.get(folder));
-      for (const name of before) if (!after.has(name)) names.add(name);
+      const names = mediaChanges(before, after).removed;
       if (__BME_BENCH__) {
         try { job.measuredNames = [...names]; } catch { /* Measurement cannot interrupt a job. */ }
       }
       if (names.size === 0) return 'kept';
-      const orphaned = new Set(names);
+      for (const board of boards) {
+        const open = tabsRef.current.find(tab => tab.file.path === board.path);
+        if (!open) continue;
+        await drain(open.id);
+        await getView(board.path)?.flushPending?.();
+        if (!attached()) return 'skipped-detached';
+      }
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
+      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, latestContentRef.current.get(tab.file.path) ?? tab.content]));
       // Dirty-only save acknowledgements do not change a reference proof.
       // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
         && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
           const old = proofTabs[i];
           return tab.id === old.id && tab.file.path === old.file.path && tab.content === old.content
-            && tab.readError === old.readError && tab.representation === old.representation;
+            && tab.readError === old.readError && tab.representation === old.representation
+            && (latestContentRef.current.get(tab.file.path) ?? tab.content) === proofContents.get(tab.file.path)
+            && (!isCanvasFile(tab.file.name) || !getView(tab.file.path)?.hasPendingEdits?.());
         });
       let retired = false;
       const abandon = (): AssetOutcome => {
         if (!attached()) return retired ? 'retired' : 'skipped-detached';
-        // Retain only undecided names, not a false last-SAVED embed baseline.
-        // The next real save retries once; this job never restarts itself.
-        if (names.size) pendingAssetDropsRef.current.set(folder, names);
-        else pendingAssetDropsRef.current.delete(folder);
+        if (names.size) block();
         return retired ? 'retired' : 'kept';
       };
       const own = proofTabs.find(tab => tab.file.path === path);
-      const ownText = own ? (canReadTabText(own) ? latestContentRef.current.get(path) ?? own.content : null) : job.text;
-      if (ownText === null) return abandon();
-      for (const name of orphaned) if (referencesAsset(ownText, name)) orphaned.delete(name);
-
-      // Who has to be consulted before a picture is taken away — a picture
-      // shared with another note must survive being removed from this one.
-      //
-      // NOT just this folder's own notes: getAssetUrl walks UP from a note when
-      // its own `.Assets` doesn't have the file, so a note in any DESCENDANT
-      // folder may be showing this very asset. That is exactly how a vault
-      // carried forward from the era of one root-level `.Assets` still renders,
-      // and going by the folder alone would retire the picture out from under
-      // every one of those notes. The subtree is only walked when an embed was
-      // actually dropped, which is rare; same-folder notes come first because
-      // they are the overwhelmingly likely hit, and the walk stops as soon as
-      // every dropped name has been spoken for.
+      const ownText = own ? (canReadTabText(own) ? proofContents.get(path) ?? own.content : null) : job.text;
       const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(assetProofTreeRef.current).filter(f =>
+      const candidates = collectFiles(treeAtStart).filter(f =>
         f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
       ];
-
-      // Every dropped name is answered in ONE pass, holding one note's text at
-      // a time. These are the same files buildGraph deliberately stopped
-      // holding all at once, and for a note at the vault root this subtree is
-      // the whole vault.
-      for (const note of neighbours) {
-        if (orphaned.size === 0) break;
-        if (!proofCurrent()) return abandon();
-        // An open tab is read from its BUFFER, so an unsaved reference counts
-        // just as much as a saved one — unless it could not be read at all
-        // (OpenTab.readError): that buffer is no text, so it answers "keep".
+      const notes = [async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
-        const text = open
-          ? (canReadTabText(open) ? latestContentRef.current.get(note.path) ?? open.content : null)
+        return open ? (canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null)
           : await readFile(note.handle).catch(() => null);
-        if (!proofCurrent()) return abandon();
-        // A note that can't be read might say anything, so it is taken to say
-        // "keep": a stale file costs nothing next to deleting a picture that is
-        // still on screen somewhere.
-        if (text === null) return abandon();
-        for (const name of orphaned) {
-          if (referencesAsset(text, name)) orphaned.delete(name);
+      })];
+      const closedVersions: Array<{ handle: FileSystemFileHandle; modified: number; size: number }> = [];
+      // Before I4, a direct read at retirement time is the fresh answer; an
+      // unreadable board blocks the folder instead of guessing from stale data.
+      const boardReads = boards.map(board => async () => {
+        const open = proofTabs.find(t => t.file.path === board.path);
+        if (open) {
+          if (!canReadTabText(open)) return { ok: false as const, reason: 'unreadable' as const };
+          return resolveBoardMedia({ source: new TextEncoder().encode(proofContents.get(board.path) ?? open.content) }, assetNames, boardMediaRefs);
         }
-      }
-
-      for (const name of orphaned) {
+        try {
+          const file = await handleIO.file(board.handle);
+          const refs = await resolveBoardMedia({ source: file.stream() }, assetNames, boardMediaRefs);
+          closedVersions.push({ handle: board.handle, modified: file.lastModified, size: file.size });
+          return refs;
+        } catch { return { ok: false as const, reason: 'unreadable' as const }; }
+      });
+      const decision = await decideAssetRetirement({
+        candidates: { note: job.board ? new Set() : names, board: job.board ? names : new Set() },
+        notes, boards: boardReads, current: proofCurrent,
+        hash: async name => {
+          try {
+            const assets = await handleIO.dirIn(dir, ASSETS_DIR);
+            const file = await handleIO.file(await handleIO.fileIn(assets, name));
+            return await hashBytes(await file.arrayBuffer());
+          } catch { return null; }
+        },
+      });
+      if (decision.blocked.note.size || decision.blocked.board.size) return abandon();
+      for (const name of decision.retire) {
+        for (const version of closedVersions) {
+          const current = await handleIO.file(version.handle).catch(() => null);
+          if (!current || current.lastModified !== version.modified || current.size !== version.size) return abandon();
+        }
         if (!proofCurrent()) return abandon();
         if (await retireAsset(name, dir, proofCurrent)) {
           retired = true;
@@ -1367,13 +1408,13 @@ export default function App() {
         }
       }
       if (!proofCurrent()) return abandon();
-      pendingAssetDropsRef.current.delete(folder);
       return retired ? 'retired' : 'kept';
     } catch (err) {
+      block();
       console.error('Could not reconcile assets for', path, err);
       return 'failed';
     }
-  }, [readFile, retireAsset, restoreAsset, getVaultActivation]);
+  }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation]);
 
   // Read through a ref for the same reason writeFile and rebuildGraph are: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -1454,7 +1495,7 @@ export default function App() {
       const content = read?.text ?? '';
       // What this note referred to when it was opened — the baseline every
       // later save's asset diff is taken against.
-      rememberAssetRefs(node, content);
+      if (read) rememberAssetRefs(node, content);
       const id = newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, handle);
       // Re-check inside the updater: a second click can land while the first
@@ -2042,6 +2083,7 @@ export default function App() {
     // still wait for it.
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
+    const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
     // going away keeps its text beside it rather than taking it along.
@@ -2060,10 +2102,11 @@ export default function App() {
     // save must capture first), and a second save landing while the first is
     // still reconciling would read a baseline the first had yet to replace,
     // and could retire a picture that save had just put back.
+    const boardBaseline = !isPdf && isCanvasFile(file.name) ? boardBaselinesRef.current.capture(path) : undefined;
     const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
     const embedsAfter = embedsBefore && assetEmbeds(snapshot);
     const assetJob: ReconcileJob | undefined = embedsBefore && embedsAfter ? {
-      activation: rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1,
+      activation: activationAtCall,
       path, parentHandle: file.parentHandle ?? null, text: snapshot, before: embedsBefore, after: embedsAfter,
     } : undefined;
     if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
@@ -2105,6 +2148,11 @@ export default function App() {
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
         if (assetJob) queueReconcile(assetJob);
+        if (boardBaseline) queueReconcile({
+          activation: activationAtCall,
+          path, parentHandle: file.parentHandle ?? null, text: snapshot,
+          before: new Set(), after: new Set(), board: boardBaselinesRef.current.committed(boardBaseline, snapshot),
+        });
         // Only clear `dirty` if the content hasn't changed since we snapshotted.
         // By id: a rename mid-write moved the document, not the write.
         const currentRevision = pendingRevisionsRef.current.get(id);
@@ -2401,6 +2449,7 @@ export default function App() {
     // Same: the flush above captured its own diff before this ran. A closed
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
+    boardBaselinesRef.current.remove(path);
   }, [clearSaveTimer, flushTab, syncExitGuard]);
 
   /**
@@ -2534,7 +2583,8 @@ export default function App() {
       setBaseline(tab.id, version);
       // The asset-diff baseline the restore held back, taken under the path the
       // document answers to NOW.
-      if (tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) {
+      if ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
+          (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path))) {
         rememberAssetRefs(current.file, content);
       }
       setTabs(prev => prev.map(t =>
@@ -2755,6 +2805,7 @@ export default function App() {
     // Those flushes captured what they needed synchronously (see flushTab); the
     // paths themselves index the vault being left.
     assetRefsRef.current.clear();
+    boardBaselinesRef.current.clear();
     setTabs([]);
     setLayout(EMPTY_LAYOUT);
     setSaveStatus('');
@@ -3126,13 +3177,11 @@ export default function App() {
         // — asked of the map itself, which every open of an asset-tracking
         // document seeds before its setTabs and every close clears, not of
         // tabsRef, which only catches up once a commit's effects have run.
-        // (tracksAssets keeps help, PDFs, drawings and notebooks out of the map
-        // entirely, so for those this is a no-op whichever way the test goes.)
         // An unreadable tab takes none: '' as a baseline would have its first
         // save after a retry diff every embed as removed. The retry seeds it.
         for (const tab of restored) {
           if (tab.readError) continue;
-          if (!assetRefsRef.current.has(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
+          if (!assetRefsRef.current.has(tab.file.path) && !boardBaselinesRef.current.capture(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
         }
         // Which of these shared a column, and which tab each column showed. A
         // session written before the editor had columns has no record of it,
@@ -3997,7 +4046,7 @@ export default function App() {
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
         // them or the next save finds nothing and silently writes nothing.
-        if (changedKind) { clearPdfRenderData(from); assetRefsRef.current.delete(from); }
+        if (changedKind) { clearPdfRenderData(from); assetRefsRef.current.delete(from); boardBaselinesRef.current.remove(from); }
         movePdfRenderData(from, dest);
         // Same trap, same fix: an exporter left under the old path means Export
         // to PDF on the renamed notebook silently finds nothing.
@@ -4027,6 +4076,7 @@ export default function App() {
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
+          if (replacement && !replacement.readError) rememberAssetRefs({ ...doc.file, name: handle.name, path: dest, handle, parentHandle }, replacement.content);
         }
         // Buffered edits go to the NEW handle, never the old one. They are not
         // in the copy the rename made: that read the file from disk.
@@ -4037,7 +4087,7 @@ export default function App() {
       }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],

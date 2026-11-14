@@ -11,12 +11,14 @@ import { registerView, type DrawingViewInfo } from '../utils/viewRegistry';
 import { registerPending } from '../utils/unloadCoordinator';
 import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
 import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
+import { BOARD_USER } from './boardLegacyUser';
+import { getBoardPreferences } from '../utils/boardPreferences';
 import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel } from './canvasAgentOps';
 
 interface DrawingPaneProps {
     isVisible: boolean;
     /** OpenTab.id from the host; a rename must not change pending-work identity. */
-    documentId?: string;
+    documentId: string;
     /** The drawing's vault path. Every change is reported against it explicitly
      *  (never "the active tab") so a save landing after a tab switch cannot
      *  write drawing JSON into another file's buffer. */
@@ -96,10 +98,11 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
     const editorRef = useRef<Editor | null>(null);
     const themeRef = useRef(theme);
     /** What the prop is handed, once and for the pane's life — see above. */
-    const mountScheme = useRef<'light' | 'dark'>(theme === 'light' ? 'light' : 'dark').current;
+    const savedScheme = getBoardPreferences().colorScheme;
+    const mountScheme = useRef<'light' | 'dark'>(savedScheme === 'system' ? (theme === 'light' ? 'light' : 'dark') : savedScheme).current;
     useEffect(() => {
+        if (themeRef.current !== theme) editorRef.current?.user.updateUserPreferences({ colorScheme: theme === 'light' ? 'light' : 'dark' });
         themeRef.current = theme;
-        editorRef.current?.user.updateUserPreferences({ colorScheme: theme === 'light' ? 'light' : 'dark' });
     }, [theme]);
 
     // Parsed once per FILE, not per render: `content` changes on every save
@@ -112,7 +115,6 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
 
     const handleMount = useCallback((editor: Editor) => {
         editorRef.current = editor;
-        editor.user.updateUserPreferences({ colorScheme: themeRef.current === 'light' ? 'light' : 'dark' });
 
         // Below 50% zoom tldraw degrades draw-shapes to a thin solid
         // centerline (an LOD for huge boards) — the sudden hairline look when
@@ -157,7 +159,7 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
             flush();
         };
         const reportPending = () => {
-            if (documentId && !unregisterPending) {
+            if (!unregisterPending) {
                 unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
             }
         };
@@ -331,6 +333,7 @@ function LegacyDrawingPane({ documentId, filePath, content, onContentChange, the
                 shapeUtils={CANVAS_SHAPE_UTILS}
                 options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
+                user={BOARD_USER}
                 colorScheme={mountScheme}
                 // Required once deployed, not cosmetic: on a non-localhost HTTPS
                 // origin, tldraw with no key reports `unlicensed-production` and

@@ -1,10 +1,10 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { TxBuilder } from '../change/ops';
+import { allocateOrderKeys } from '../change/commands';
+import type { CommandBuilder } from '../change/ops';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type SheetId } from '../model/ids';
 import { createFigure, createPolyline, createSticky, createText, type Node, type Point } from '../model/nodes';
-import { keyBetween } from '../model/orderKey';
 import { boardPageStack } from '../model/pages';
 import type { FigureShape } from '../model/styles';
 import type { RichText } from '../text/richText';
@@ -16,7 +16,7 @@ export interface CreateContext {
     readonly sheet: SheetId;
     /** Zero-based physical page; ignored on an unpaged board. */
     readonly currentPage: number;
-    readonly builder: TxBuilder;
+    readonly builder: CommandBuilder;
 }
 export interface CreatedShape { readonly id: Node['id']; readonly notes: readonly string[] }
 
@@ -41,7 +41,7 @@ export function createPage(context: CreateContext, requested: number | undefined
     return { page, notes, clamp(point) {
         const x = Math.max(0, Math.min(rect.width, point.x));
         const y = Math.max(0, Math.min(rect.height, point.y));
-        if (x !== point.x || y !== point.y) notes.push('position clamped to page');
+        if ((x !== point.x || y !== point.y) && !notes.length) notes.push('position clamped to page');
         return { x, y };
     } };
 }
@@ -52,7 +52,8 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
     const target = createPage(context, op.page);
     const id = newNodeId(doc);
     const siblings = childrenOf(doc, sheet);
-    const base = { id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page: target.page, ext: null };
+    const order = allocateOrderKeys(doc, builder, sheet, siblings.at(-1)?.id ?? null, null, 1)[0];
+    const base = { id, parent: sheet, order, page: target.page, ext: null };
     let node: Node;
     switch (op.type) {
         case 'text': {
@@ -72,7 +73,12 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
         case 'geo': {
             const point = target.clamp(op);
             const rotation = ((((op.rotation ?? 0) % 360) + 360) % 360) * Math.PI / 180;
-            node = createFigure({ ...base, ...point, rotation, shape: op.geo as FigureShape, w: op.w, h: op.h, growY: 0,
+            // Agent positions name the unrotated top-left; the model rotates its
+            // local origin, so translate the origin to keep the centre fixed.
+            const c = Math.cos(rotation), s = Math.sin(rotation);
+            const x = point.x + (op.w - c * op.w + s * op.h) / 2;
+            const y = point.y + (op.h - s * op.w - c * op.h) / 2;
+            node = createFigure({ ...base, x, y, rotation, shape: op.geo as FigureShape, w: op.w, h: op.h, growY: 0,
                 color: op.color ?? 'black', labelColor: 'black', fill: op.fill ?? 'none', dash: op.dash ?? 'solid',
                 size: op.size ?? 'm', font: 'draw', align: 'middle', valign: 'middle',
                 label: op.text ? plainRichText(op.text) : null,

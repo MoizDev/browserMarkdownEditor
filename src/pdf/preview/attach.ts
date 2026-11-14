@@ -2,7 +2,7 @@ import { attachPlatformPane } from '../../platform/render';
 import type { PlatformLayerDefinition, PlatformPane, RenderToken } from '../../platform/render';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { PreviewBitmapLayer } from './bitmapLayer';
-import type { PdfPreview, PreviewBinding, PreviewSnapshot } from './contracts';
+import type { PdfPreview, PreviewBinding, PreviewSnapshot } from '../../utils/pdfPreviewTypes';
 import { PreviewScene } from './scene';
 
 interface PreviewOptions {
@@ -52,11 +52,11 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
         id: 'classic-pdf-pages', group: 'document',
         create(layerHost) {
             const layer = new PreviewBitmapLayer(layerHost);
-            scene = new PreviewScene(layer, () => pane?.invalidate('pdf-preview-scene'));
+            scene = new PreviewScene(layer, () => { conceal(); pane?.invalidate('pdf-preview-scene'); });
             return layer;
         },
         revision: () => scene?.revision ?? 0,
-        critical: layer => layer.needsFrame(),
+        critical: (layer, view) => layer instanceof PreviewBitmapLayer && layer.hasGpuWork(view),
         coverage: (_layer, frame, backend) => scene?.coverage(frame.view, backend !== 'canvas2d') ?? { complete: false, sharp: false },
     };
     const revision = () => String(scene?.revision ?? 0);

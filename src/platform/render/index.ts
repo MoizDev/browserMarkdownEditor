@@ -15,7 +15,7 @@ export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKey
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
 export { pagePresentation, cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint } from './camera';
-export type { PagePresentation } from './camera';
+export type { PagePresentation, PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
 export { projectPage } from './compositorProjection';
 export { attachPlatformPane } from './attachPlatformPane';
 export { reportWorkerMemory, releaseWorkerMemory } from './workerMemory';

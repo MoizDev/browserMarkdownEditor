@@ -26,7 +26,13 @@
 }
 
 .board-chrome-zoom {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 40%;
+}
+
+.board-chrome-zoom .board-chrome-tool-row {
+    overflow-x: auto;
 }
 
 .board-chrome-pen {
@@ -48,6 +54,14 @@
     justify-content: space-between;
     gap: 8px;
     min-width: 0;
+}
+
+.board-chrome-header > * {
+    min-width: 0;
+}
+
+.board-chrome-header .board-chrome-tool-row {
+    overflow-x: auto;
 }
 
 .board-chrome-action-popup {
@@ -95,7 +109,7 @@
     position: absolute;
     z-index: 1;
     bottom: calc(100% + 6px);
-    left: 0;
+    inset-inline-start: 0;
     flex-wrap: wrap;
     width: min(360px, 90vw);
     max-height: min(50vh, 360px);
@@ -111,6 +125,8 @@
     background: transparent;
     color: inherit;
     cursor: pointer;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .board-chrome-tool:hover,
@@ -185,6 +201,34 @@
     outline: 2px solid var(--interactive-accent);
     outline-offset: 2px;
 }
+
+.board-debug-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+}
+
+.board-debug-outline {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px dashed #ed4da5;
+}
+
+.board-debug-values {
+    position: absolute;
+    inset-inline-start: 8px;
+    bottom: 64px;
+    margin: 0;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font: 12px var(--font-monospace);
+}
+
+.board-debug-values > div { display: flex; gap: 8px; }
+.board-debug-values dd { margin: 0; }
 
 .board-shortcuts-backdrop {
     position: fixed;

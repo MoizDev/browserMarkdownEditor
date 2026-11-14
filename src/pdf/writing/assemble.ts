@@ -27,6 +27,18 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     await doc.attach(new TextEncoder().encode(pointer), NOTEBOOK_SOURCE_ATTACHMENT, {
         mimeType: 'application/json', description: `${marker}\nSource notebook`,
     });
+    // PDFium exposes attachment /Params but not Filespec /Desc. Write both
+    // identical declarations so either generation of reader identifies it.
+    await doc.flush();
+    const namesBefore = doc.catalog.lookup(PDFName.of('Names'), PDFDict);
+    const treeBefore = namesBefore.lookup(PDFName.of('EmbeddedFiles'), PDFDict);
+    const pairsBefore = treeBefore.lookup(PDFName.of('Names'), PDFArray);
+    const specBefore = pairsBefore.lookup(1, PDFDict);
+    const efBefore = specBefore.lookup(PDFName.of('EF'), PDFDict);
+    const streamBefore = efBefore.lookup(PDFName.of('F'));
+    if (!(streamBefore instanceof PDFRawStream)) throw new Error('Notebook source stream missing');
+    const paramsBefore = streamBefore.dict.lookup(PDFName.of('Params'), PDFDict);
+    paramsBefore.set(PDFName.of('LocalVaultMarker'), PDFHexString.fromText(marker));
     await context.slice();
     const bytes = await doc.save({ objectsPerTick: Infinity });
     await context.slice();
@@ -40,8 +52,11 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     const description = spec.lookup(PDFName.of('Desc'));
     const ef = spec.lookup(PDFName.of('EF'), PDFDict);
     const stream = ef.lookup(PDFName.of('F'));
+    const params = stream instanceof PDFRawStream ? stream.dict.lookup(PDFName.of('Params'), PDFDict) : undefined;
+    const paramMarker = params?.lookup(PDFName.of('LocalVaultMarker'));
     if (!(name instanceof PDFString || name instanceof PDFHexString) || name.decodeText() !== NOTEBOOK_SOURCE_ATTACHMENT ||
         !(description instanceof PDFString || description instanceof PDFHexString) || !description.decodeText().startsWith(marker + '\n') ||
+        !(paramMarker instanceof PDFString || paramMarker instanceof PDFHexString) || paramMarker.decodeText() !== marker ||
         !(stream instanceof PDFRawStream) || new TextDecoder('utf-8', { fatal: true }).decode(decodePDFRawStream(stream).getBytes(new TextEncoder().encode(pointer).length + 1)) !== pointer) {
         throw new Error('Notebook source pointer verification failed');
     }

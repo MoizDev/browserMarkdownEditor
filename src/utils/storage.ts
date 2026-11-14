@@ -3,6 +3,9 @@
 // consistent error handling instead of being hand-rolled at each call site.
 import { createLocalStorageMirror } from './localStorageMirror';
 
+// IndexedDB databases are distinct from the mirrored localStorage key registry below.
+export const INDEXED_DB_NAMES = { recoveryJournal: 'bme-recovery-journal' } as const;
+
 export const STORAGE_MIRROR_SENTINEL = 'bme.lsMirror';
 const MIRROR_VERSION = '1';
 const RESTORE_NOTICE = 'Settings restored after another tab reset them';
@@ -25,7 +28,7 @@ export const LOCAL_STORAGE_KEYS = [
     'bme.developer', 'bme.whiteboard.engine.drawing', 'bme.whiteboard.engine.notebook',
     'bme.whiteboard.engine.pdfInk', 'bme.whiteboard.emergencyReadOnly.drawing',
     'bme.whiteboard.emergencyReadOnly.notebook', 'bme.whiteboard.emergencyReadOnly.pdfInk',
-    'bme.pdf.viewer', 'bme.pdf.platformLayer', 'bme.whiteboard.userDictionary',
+    'bme.pdf.viewer', 'bme.pdf.platformLayer', 'bme.whiteboard.userDictionary', 'bme.whiteboard.preferences',
     // Migration removals also need tombstones, or an old backup resurrects them.
     'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus',
     'openTabGroupSizes', 'openTabsVaultId', 'activeTabPath', 'lastFilePath',
@@ -231,9 +234,8 @@ export function flushRecord(key: string): boolean {
    tab sessions make "the same path open in two vaults" routine, so switching
    back would scroll a note to an offset measured in a different file.
 
-   Everything else in the app drops its per-vault caches on a switch
-   (clearLinkCache, the search cache, the object-URL registry); these records
-   deliberately OUTLIVE the session instead, so they carry the vault in the key
+   The worker index and object-URL registry release their active-vault state on
+   a switch; these records deliberately OUTLIVE the session instead, so they carry the vault in the key
    rather than being cleared.
 
    Two costs, both accepted rather than overlooked:

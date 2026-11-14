@@ -1,4 +1,4 @@
-import type { Camera, ViewState } from '../types';
+import type { ViewState } from '../types';
 import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../renderStatus';
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
@@ -87,15 +87,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }), evict: () => {} });
-        let gpu: MemoryCacheHandle;
+        let gpuCache: MemoryCacheHandle;
         try {
-            gpu = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
+            gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
                 evict: () => lifecycle?.releaseGpu('pressure') });
         } catch (error) { cpu.close(); throw error; }
-        caches.push({ cpu, gpu, layer: current });
+        caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
-            allocator: { cpu, gpu }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: () => surfaceHost.current,
             invalidate: reason => lifecycle?.invalidate(reason),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
@@ -103,7 +103,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     layerSet.replace(options.layers);
 
-    const created = cpuFactory<T>({
+    let created: CreatedCompositor2D<T>;
+    try { created = cpuFactory<T>({
         paneId: options.paneId, governor: runtime.governor, currentToken: token,
         invalidate: reason => lifecycle?.invalidate(reason), recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms),
         select2D: cpu => { if (!disposed) surfaceHost.select(cpu); },
@@ -115,7 +116,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
         mirrorCoverage: (view, entries) => options.mirrorCoverage?.(view, entries) ?? { complete: false, sharp: false },
-    });
+    }); } catch (error) {
+        for (const layer of layerSet.layers) layer.dispose();
+        for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
+        throw error;
+    }
     const compositor = created.compositor;
     compositorRef.current = compositor;
     compositor.setLayers(layerSet.compositorLayers);

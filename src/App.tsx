@@ -5552,6 +5552,7 @@ export default function App() {
         let parentHandle = file.parentHandle;
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
+        if (isPdf) bumpBytesGeneration(id);
         diskStateRef.current.delete(id);
         documentBuffers.markSaved(id, dataRevision);
         if (captured.sourceRevision !== undefined && captured.session && documentSessions.get(id) === captured.session) {
@@ -5650,7 +5651,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes

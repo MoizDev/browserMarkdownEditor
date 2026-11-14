@@ -20,6 +20,7 @@ import { mapPool } from '../utils/pool';
 import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
+import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
 import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
 import type { PdfFindHit } from '../utils/pdfFind';
@@ -133,6 +134,10 @@ interface PageState {
     /** A render loop is currently running for this page. */
     busy?: boolean;
     loopPromise?: Promise<void>;
+    /** A real failure is retried only by reopening/retrying the session. */
+    failed?: boolean;
+    /** Hide revokes work but preserves the existing on-screen resume bitmap. */
+    keepBitmap?: boolean;
     /** True once this page's pdf.js state has been released (see cleanupPage);
      *  cleared when it re-enters the render window. */
     cleaned?: boolean;
@@ -144,6 +149,19 @@ interface PageState {
     textReady?: boolean;
     linksStarted?: boolean;
     linksPromise?: Promise<void>;
+}
+
+function cancelPageRender(st: PageState): RenderTask | undefined {
+    const task = st.renderTask;
+    // Revoke ownership before cancel: eviction/hide can hit the same task.
+    st.renderTask = undefined;
+    task?.cancel();
+    return task;
+}
+
+/** D2 supplies the visible session-health channel; keep one reporting seam. */
+function reportClassicPageRenderFailure(error: unknown, index: number): void {
+    console.error(`Could not render PDF page ${index + 1}:`, error);
 }
 
 /** Vertical padding above the first / below the last page, px. */
@@ -219,103 +237,10 @@ interface Layout {
     maxPageW: number;
 }
 
-/** A band of one page, in that page's own CSS pixels at the current layout
- *  scale — the origin is the page's top-left corner, not the document's. */
-interface PageRect {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-}
-
-/** One rasterization request, and everything needed to decide whether a bitmap
- *  already in hand answers it. */
-interface RenderTarget {
-    emphasis: boolean;
-    scale: number;
-    /** The band to rasterize; `null` for the whole page, which is the case at
-     *  every zoom that fits inside MAX_CANVAS_PIXELS. */
-    rect: PageRect | null;
-    /** The strictly visible part of it, which is what must end up painted. */
-    need: PageRect | null;
-    /** `rect` pulled in by half its own margin (except where it already meets
-     *  a page edge): once the visible band escapes THIS, re-rendering buys
-     *  something. Deflating rather than using `rect` itself is what keeps a
-     *  scroll from re-rendering the instant it moves one pixel. */
-    trigger: PageRect | null;
-}
-
-const contains = (outer: PageRect, inner: PageRect): boolean =>
-    inner.x >= outer.x - 0.5 && inner.y >= outer.y - 0.5
-    && inner.x + inner.w <= outer.x + outer.w + 0.5
-    && inner.y + inner.h <= outer.y + outer.h + 0.5;
-
-/** Would the bitmap `have` describes still answer `want`? */
-function satisfies(have: RenderTarget | undefined, want: RenderTarget): boolean {
-    if (!have || have.scale !== want.scale || have.emphasis !== want.emphasis) return false;
-    // The whole page is wanted: only a whole-page bitmap will do, or zooming
-    // back out would leave a band stretched across the page.
-    if (want.rect === null) return have.rect === null;
-    // A whole-page bitmap covers any band of it.
-    if (have.rect === null) return true;
-    return have.trigger !== null && want.need !== null && contains(have.trigger, want.need);
-}
-
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-
-/**
- * Which band of page `i` to rasterize, given where the reader is looking.
- *
- * Returns whole-page targets while the page fits the bitmap budget — the
- * ordinary case, and the one where nothing about scrolling should re-render.
- * Past it, the band is the visible strip grown by as much margin as the budget
- * still affords, so scrolling at zoom moves around inside paint already done.
- */
-function pageRegion(L: Layout, el: HTMLElement, i: number): Omit<RenderTarget, 'scale' | 'emphasis'> {
-    const { w, h } = L.pages[i];
-    const dpr = canvasDpr();
-    if (w * h * dpr * dpr <= MAX_CANVAS_PIXELS) return { rect: null, need: null, trigger: null };
-
-    // Pages are centred in the inner column, so the page's own origin sits at
-    // `left` in scroller content coordinates.
-    const left = (Math.max(el.clientWidth, L.maxPageW) - w) / 2;
-    const x = clamp(el.scrollLeft - left, 0, w);
-    const y = clamp(el.scrollTop - L.tops[i], 0, h);
-    const need: PageRect = {
-        x,
-        y,
-        // At least a pixel: a page that is in the render window but not yet on
-        // screen has an empty intersection, and a zero-sized canvas is invalid.
-        w: Math.max(1, clamp(el.scrollLeft - left + el.clientWidth, 0, w) - x),
-        h: Math.max(1, clamp(el.scrollTop - L.tops[i] + el.clientHeight, 0, h) - y),
-    };
-
-    // Grow it as far as the budget allows: solve (need.w + 2m)(need.h + 2m) =
-    // budget for the margin m. `room` floors at zero for the (tiny viewport,
-    // huge dpr) case where the visible strip alone is already over budget —
-    // then the band is the strip, which is the least that can be rendered.
-    const budget = MAX_CANVAS_PIXELS / (dpr * dpr);
-    const room = Math.max(0, budget - need.w * need.h);
-    const span = need.w + need.h;
-    const m = (Math.sqrt(span * span + 4 * room) - span) / 4;
-    const rx = Math.max(0, need.x - m);
-    const ry = Math.max(0, need.y - m);
-    const rect: PageRect = {
-        x: rx,
-        y: ry,
-        w: Math.min(w, need.x + need.w + m) - rx,
-        h: Math.min(h, need.y + need.h + m) - ry,
-    };
-
-    // Half the margin back off each side that is not already a page edge —
-    // which keeps `need` inside `trigger` the moment the render lands, so this
-    // can never ask for a re-render of what was just rendered.
-    const edge = (lo: number, hi: number, limit: number) =>
-        [lo <= 0.5 ? lo : lo + m / 2, hi >= limit - 0.5 ? hi : hi - m / 2] as const;
-    const [tx0, tx1] = edge(rect.x, rect.x + rect.w, w);
-    const [ty0, ty1] = edge(rect.y, rect.y + rect.h, h);
-    const trigger: PageRect = { x: tx0, y: ty0, w: tx1 - tx0, h: ty1 - ty0 };
-    return { rect, need, trigger };
+function pageRegion(L: Layout, el: HTMLElement, i: number, dpr: number): Pick<RenderTarget, 'rect' | 'need' | 'trigger'> {
+    const left = (Math.max(el.clientWidth, L.maxPageW) - L.pages[i].w) / 2;
+    return pageRenderRegion(L.pages[i], { x: el.scrollLeft - left, y: el.scrollTop - L.tops[i],
+        w: el.clientWidth, h: el.clientHeight }, dpr, MAX_CANVAS_PIXELS);
 }
 
 /** Put the canvas where its bitmap belongs: filling the page, or pinned over
@@ -552,8 +477,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             textLayers.clear();
             for (const st of pageStates.values()) {
                 st.wantRender = false;
-                st.renderTask?.cancel();
-                void Promise.allSettled([st.loopPromise, st.renderTask?.promise, st.textPromise, st.linksPromise]).then(async () => {
+                st.want = undefined;
+                const task = cancelPageRender(st);
+                void Promise.allSettled([st.loopPromise, task?.promise, st.textPromise, st.linksPromise]).then(async () => {
                     (await st.pageLease)?.release();
                 }).catch(() => {});
             }
@@ -942,8 +868,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         // what the reader sees minus the chrome, and never inverted (that is a
         // CSS filter; the canvases hold the real page).
         async capture(maxSide) {
-            const el = scrollRef.current;
-            if (!el) return null;
+            const el = scrollRef.current, L = layoutRef.current;
+            if (!el || !L) return null;
+            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
+            const top = el.scrollTop, left = el.scrollLeft;
+            // Resume/zoom stand-ins may stay on screen, but are not current
+            // pixels for a tool. A later request can capture the finished view.
+            for (const i of visiblePageIndices()) {
+                const next: RenderTarget = { emphasis: preference, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
+                if (!satisfies(pageStatesRef.current.get(i)?.rendered, next)) return null;
+            }
             const view = el.getBoundingClientRect();
             if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
             const scale = Math.min(canvasDpr(), maxSide / Math.max(view.width, view.height));
@@ -988,7 +922,8 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
-            return png;
+            return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
+                && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
         async pdfText(pages) {
             const doc = docStateRef.current?.doc;
@@ -1007,21 +942,27 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const ds = docStateRef.current;
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
+            const gen = docGenRef.current;
             const lease = await session.acquirePage(pageNumber - 1, 'agent');
+            let canvas: HTMLCanvasElement | undefined;
             try {
                 const page = lease.page;
                 const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
-                const canvas = document.createElement('canvas');
+                canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.ceil(viewport.width));
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
                 await page.render({ canvas, canvasContext: ctx, viewport }).promise;
-                const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+                const output = canvas;
+                const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
                 canvas.width = 0;
                 canvas.height = 0;
-                return png;
-            } finally { lease.release(); }
+                return docGenRef.current === gen && docStateRef.current === ds ? png : null;
+            } finally {
+                if (canvas) { canvas.width = 0; canvas.height = 0; }
+                lease.release();
+            }
         },
     }), [filePath, visiblePageIndices, session]);
 
@@ -1133,93 +1074,77 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         st.busy = true;
         const gen = docGenRef.current;
         try {
-            while (st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
+            while (visibleRef.current && !st.failed && st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
                 const target = st.want;
-                const page = await getPage(i);
-                if (docGenRef.current !== gen || !st.wantRender) return;
-                const canvas = canvasElsRef.current[i];
-                if (!canvas) return;
-
-                const { rect } = target;
-                const vp = page.getViewport({ scale: target.scale });
-                const dpr = canvasDpr();
-                const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
-                const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
-
-                // Cold and warm paints use the same offscreen→blit route.
-                // Chromium antialiases a direct first paint differently from a
-                // blit (measured 145,932 differing channels after OFF), so mixing
-                // the routes cannot give an exact original-page restoration.
-                const work = document.createElement('canvas');
-                work.width = cw;
-                work.height = ch;
-                const ctx = work.getContext('2d');
-                if (!ctx) return;
-
-                const emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
-                // Metadata can arrive after a new toggle/zoom/eviction request.
-                if (docGenRef.current !== gen || !st.wantRender || st.want !== target) {
-                    emphasis?.dispose();
-                    if (work !== canvas) { work.width = 0; work.height = 0; }
-                    continue;
-                }
-                const task = page.render({
-                    operationsFilter: emphasis?.operationsFilter,
-                    canvas: work,
-                    canvasContext: ctx,
-                    viewport: vp,
-                    // Band rendering is a translate on top of the dpr scale: the
-                    // viewport stays the whole page, and the canvas catches the
-                    // part of it that starts at the band's corner.
-                    transform: rect
-                        ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
-                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined),
-                });
-                st.renderTask = task;
+                const current = () => docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
+                let work: HTMLCanvasElement | undefined;
+                let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
+                let ownedTask: RenderTask | undefined;
                 st.rendering = target;
                 try {
-                    await task.promise;
-                    const current = () => docGenRef.current === gen && !!st.wantRender && st.want === target;
+                    const page = await getPage(i);
                     if (!current()) continue;
-                    await emphasis.verify({ viewport: vp, transform: rect
+                    const canvas = canvasElsRef.current[i];
+                    if (!canvas) return;
+                    const { rect, dpr } = target;
+                    const vp = page.getViewport({ scale: target.scale });
+                    const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
+                    const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
+                    const transform = rect
                         ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
-                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined) },
-                        probe => { st.renderTask = probe; }, current, !!rect);
+                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined);
+
+                    // Cold/warm use the same offscreen→blit route: direct cold
+                    // paint differed by 145,932 channels after emphasis OFF.
+                    work = document.createElement('canvas');
+                    work.width = cw;
+                    work.height = ch;
+                    const ctx = work.getContext('2d');
+                    if (!ctx) throw new Error('Could not allocate a PDF render context');
+                    emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
                     if (!current()) continue;
-                    if (work !== canvas) {
-                        canvas.width = cw;
-                        canvas.height = ch;
-                        canvas.getContext('2d')?.drawImage(work, 0, 0);
-                    }
+                    const task = page.render({ operationsFilter: emphasis.operationsFilter,
+                        canvas: work, canvasContext: ctx, viewport: vp, transform });
+                    ownedTask = st.renderTask = task;
+                    await task.promise;
+                    if (st.renderTask === task) st.renderTask = undefined;
+                    if (!current()) continue;
+                    await emphasis.verify({ viewport: vp, transform }, probe => {
+                        ownedTask = st.renderTask = probe;
+                        if (!current()) cancelPageRender(st);
+                    }, current, !!rect);
+                    if (!current()) continue;
+                    const display = canvas.getContext('2d');
+                    if (!display) throw new Error('Could not allocate a PDF display context');
+                    canvas.width = cw;
+                    canvas.height = ch;
+                    display.drawImage(work, 0, 0);
                     placeCanvas(canvas, rect);
                     st.rendered = target;
                     canvas.dataset.nativeEmphasis = String(target.emphasis);
-                    if (emphasis) {
-                        canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
-                        nativePages.current.set(i, { ...emphasis.result });
-                        if (shownPageRef.current === i) showNativeNotice(i);
-                    }
+                    canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
+                    nativePages.current.set(i, { ...emphasis.result });
+                    if (shownPageRef.current === i) showNativeNotice(i);
                 } catch (err) {
-                    if (!(err instanceof pdfjs.RenderingCancelledException) && !(err instanceof DOMException && err.name === 'AbortError')) throw err;
+                    const cancelled = err instanceof pdfjs.RenderingCancelledException || (err instanceof DOMException && err.name === 'AbortError');
+                    if (!cancelled && current()) {
+                        st.failed = true;
+                        reportClassicPageRenderFailure(err, i);
+                    }
                 } finally {
                     emphasis?.dispose();
-                    st.renderTask = undefined;
-                    st.rendering = undefined;
-                    if (work !== canvas) {
-                        work.width = 0;
-                        work.height = 0;
-                    }
+                    if (st.renderTask === ownedTask) st.renderTask = undefined;
+                    if (st.rendering === target) st.rendering = undefined;
+                    if (work) { work.width = 0; work.height = 0; }
                 }
                 if (docGenRef.current !== gen) return;
             }
-            if (docGenRef.current !== gen || !st.wantRender) return;
+            if (docGenRef.current !== gen || !visibleRef.current || !st.wantRender) return;
             void ensureText(i);
             void ensureLinks(i);
-        } catch (err) {
-            console.error(`Could not render PDF page ${i + 1}:`, err);
         } finally {
             st.busy = false;
-            if (!st.wantRender && docGenRef.current === gen) {
+            if (!st.wantRender && !st.keepBitmap && docGenRef.current === gen) {
                 clearCanvas(i);
                 st.rendered = undefined;
             }
@@ -1229,16 +1154,22 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
         const el = scrollRef.current;
-        if (!L || !el) return;
+        if (!L || !el || !visibleRef.current) return;
         const st = getState(i);
-        st.want = { emphasis: emphasisRef.current, scale: L.scale, ...pageRegion(L, el, i) };
+        if (st.failed) return;
+        const dpr = canvasDpr();
+        const next: RenderTarget = { emphasis: emphasisRef.current, scale: L.scale, dpr, ...pageRegion(L, el, i, dpr) };
+        // Measured: every equivalent scroll ask replaced the identity, wasting
+        // finished work. Keep the entire immutable target while it still covers.
+        if (!st.want || !satisfies(st.want, next)) st.want = next;
         st.wantRender = true;
+        st.keepBitmap = false;
         // Back in the window — eligible to be released again once it leaves.
         st.cleaned = false;
         if (st.busy) {
             // Already rendering: if what it will produce no longer answers the
             // ask, cancel so the loop re-runs against the new one.
-            if (st.renderTask && !satisfies(st.rendering, st.want)) st.renderTask.cancel();
+            if (st.renderTask && !satisfies(st.rendering, next)) cancelPageRender(st);
             return;
         }
         if (satisfies(st.rendered, st.want)) {
@@ -1253,7 +1184,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const st = pageStatesRef.current.get(i);
         if (!st || (!st.wantRender && !st.rendered)) return;
         st.wantRender = false;
-        st.renderTask?.cancel();
+        st.want = undefined;
+        st.keepBitmap = false;
+        cancelPageRender(st);
         if (!st.busy) {
             clearCanvas(i);
             st.rendered = undefined;
@@ -1329,8 +1262,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const n = docStateRef.current?.dims.length ?? 0;
         const seen = onScreenRef.current;
         for (let i = 0; i < n; i++) {
-            if (seen && i >= seen.first && i <= seen.last) continue;
-            evictPage(i);
+            if (seen && i >= seen.first && i <= seen.last) {
+                const st = pageStatesRef.current.get(i);
+                if (st) {
+                    st.keepBitmap = true;
+                    st.wantRender = false;
+                    st.want = undefined;
+                    cancelPageRender(st);
+                }
+            } else evictPage(i);
         }
     }, [isVisible, evictPage]);
 
@@ -1339,7 +1279,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const updateWindow = useCallback(() => {
         const el = scrollRef.current;
         const L = layoutRef.current;
-        if (!el || !L || !docStateRef.current) return;
+        if (!el || !L || !docStateRef.current || !visibleRef.current) return;
         const n = L.pages.length;
         if (n === 0) return;
         const top = el.scrollTop;
@@ -1409,6 +1349,32 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         });
     }, [updateWindow]);
     useEffect(() => () => cancelAnimationFrame(scrollRafRef.current), []);
+
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        let dpr = canvasDpr();
+        let query: MediaQueryList;
+        const arm = () => {
+            query?.removeEventListener('change', densityChanged);
+            query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+            query.addEventListener('change', densityChanged);
+        };
+        const densityChanged = () => {
+            arm();
+            const next = canvasDpr();
+            if (next === dpr) return;
+            dpr = next;
+            if (visibleRef.current) scheduleWindowUpdate();
+        };
+        arm();
+        window.addEventListener('resize', densityChanged);
+        const ro = new ResizeObserver(densityChanged);
+        // Browser zoom can change device pixels without a CSS-width resize.
+        try { ro.observe(el, { box: 'device-pixel-content-box' }); }
+        catch { ro.observe(el); }
+        return () => { query.removeEventListener('change', densityChanged); window.removeEventListener('resize', densityChanged); ro.disconnect(); };
+    }, [scheduleWindowUpdate]);
 
     // Re-anchor whenever geometry changes (first layout, zoom, resize, reload):
     // put the remembered {page, offset} back under the viewport's top edge,

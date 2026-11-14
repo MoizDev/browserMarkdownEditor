@@ -12,6 +12,7 @@ import type { Attachment } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
+import { SECURITY_LIMITS } from '../security/limits';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { classifyClipboard, type ClipboardClassifierHost } from './classify';
 import type { ClipboardCopy } from './copy';
@@ -60,6 +61,10 @@ export interface BoardClipboardPasteHost {
     cooperate?(): Promise<void>;
 }
 function copyInput(input: ClipboardInput): ClipboardInput {
+    if (!input || !Array.isArray(input.files) || input.files.length > SECURITY_LIMITS.mediaBatch
+        || input.files.some(file => !file || !(file.blob instanceof Blob) || typeof file.name !== 'string'
+            || typeof file.directory !== 'boolean')
+        || input.privatePng !== null && !(input.privatePng instanceof Blob)) throw new TypeError('Invalid clipboard input');
     return Object.freeze({ html: input.html, text: input.text, svg: input.svg, uriList: input.uriList,
         files: Object.freeze(input.files.map(file => ({ name: file.name, directory: file.directory, blob: new Blob([file.blob], { type: file.blob.type }) }))),
         privatePng: input.privatePng ? new Blob([input.privatePng], { type: input.privatePng.type }) : null });

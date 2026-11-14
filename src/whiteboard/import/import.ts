@@ -8,13 +8,18 @@ import { admitImportedBoard, type ImportedBoard } from './admit';
 import { repairLegacyTree, type RootMapper } from './repair';
 import { ReportBuilder, type ImportReport } from './report';
 import { repairLegacySheets } from './sheets';
+import { createPagePreparation, type PageSource } from './pages';
+import { legacyWorldBounds, type LegacyGeometry, type LegacyTextLayout } from './worldBounds';
 import { readLegacyRecords, type LegacyRecordOptions } from './records/read';
 import type { ImportedMedia } from './records/media';
 import { readLegacyUi, readLegacyView } from './records/view';
 
-export interface LegacyImportOptions extends LegacyRecordOptions {
+export interface LegacyImportOptions extends Omit<LegacyRecordOptions, 'preparePages'> {
     readonly host: HostBlock;
     readonly repairRoot: RootMapper;
+    readonly pageSource?: PageSource;
+    readonly textLayout: LegacyTextLayout;
+    readonly geometry: LegacyGeometry;
 }
 export interface LegacyImportResult {
     readonly source: string;
@@ -31,7 +36,16 @@ export interface LegacyImportResult {
 export async function importLegacy(text: string, options: LegacyImportOptions): Promise<LegacyImportResult> {
     const report = new ReportBuilder();
     let draft: Awaited<ReturnType<typeof readLegacyRecords>> = null;
-    try { draft = await readLegacyRecords(text, options); }
+    try {
+        if (options.kind !== 'whiteboard' && options.pageSource?.kind !== options.kind) {
+            throw new Error('Paged import requires matching host geometry');
+        }
+        const preparePages: LegacyRecordOptions['preparePages'] = options.pageSource
+            ? createPagePreparation(options.pageSource, (nodes, sheets) => legacyWorldBounds(nodes,
+                new Set(sheets.map(sheet => sheet.id)), options.textLayout, options.geometry))
+            : undefined;
+        draft = await readLegacyRecords(text, { ...options, preparePages });
+    }
     catch (error) {
         options.signal?.throwIfAborted();
         options.assertCurrent();

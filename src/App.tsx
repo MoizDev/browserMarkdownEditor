@@ -1161,14 +1161,14 @@ export default function App() {
   // Seeded when a tab opens (below), because otherwise the first edit after
   // opening a note — the likeliest one to remove a picture — would have
   // nothing to compare against.
-  const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
+  const assetRefsRef = useRef<Map<string, { saved: Set<string> }>>(new Map());
   const boardBaselinesRef = useRef(new BoardSaveBaselines());
   const unsavedBoardContentRef = useRef(new Map<string, string>());
   const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
   const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
-    if (tracksAssets(file)) assetRefsRef.current.set(file.path, assetEmbeds(content));
+    if (tracksAssets(file)) assetRefsRef.current.set(file.path, { saved: assetEmbeds(content) });
     else if (!file.isHelp && isCanvasFile(file.name)) boardBaselinesRef.current.seed(file.path, content);
   }, []);
 
@@ -2150,20 +2150,12 @@ export default function App() {
       } catch { return 'failed'; }
     }
 
-    // Read AND handed over in one synchronous step, which is what makes the
-    // asset diff exact. Two things would otherwise race it: removeTab drops
-    // this entry the moment after it calls flushTab (so a closing tab's last
-    // save must capture first), and a second save landing while the first is
-    // still reconciling would read a baseline the first had yet to replace,
-    // and could retire a picture that save had just put back.
+    // Capture the record before a close can remove it. Queued writes share it
+    // and advance its saved set only after a write actually lands: a failed
+    // first write must not become the second write's asset-diff baseline.
     const boardBaseline = !isPdf && isCanvasFile(file.name) ? boardBaselinesRef.current.capture(path) : undefined;
-    const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
-    const embedsAfter = embedsBefore && assetEmbeds(snapshot);
-    const assetJob: ReconcileJob | undefined = embedsBefore && embedsAfter ? {
-      activation: activationAtCall,
-      path, parentHandle: file.parentHandle ?? null, text: snapshot, before: embedsBefore, after: embedsAfter,
-    } : undefined;
-    if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
+    const assetBaseline = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
+    const embedsAfter = assetBaseline && assetEmbeds(snapshot);
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
@@ -2184,9 +2176,6 @@ export default function App() {
         }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          // Nothing reached the disk, so the asset diff's baseline is still
-          // what was there before this save.
-          if (embedsBefore && assetRefsRef.current.get(path) === embedsAfter) assetRefsRef.current.set(path, embedsBefore);
           if (closing) await keepClosingEdits(rootAtCall, path, file.name, data);
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
@@ -2203,7 +2192,12 @@ export default function App() {
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
         requeueAssetsAffected(path);
-        if (assetJob) queueReconcile(assetJob);
+        if (assetBaseline && embedsAfter) {
+          const before = assetBaseline.saved;
+          assetBaseline.saved = embedsAfter;
+          queueReconcile({ activation: activationAtCall, path, parentHandle: file.parentHandle ?? null,
+            text: snapshot, before, after: embedsAfter });
+        }
         if (boardBaseline) queueReconcile({
           activation: activationAtCall,
           path, parentHandle: file.parentHandle ?? null, text: snapshot,

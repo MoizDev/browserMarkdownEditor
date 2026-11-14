@@ -188,7 +188,10 @@ export default defineConfig([
         {
           files: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
           dark: true,
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/usePdfPlatformPreview.ts'],
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
+          // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
+          // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
+          darkLazy: ['src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

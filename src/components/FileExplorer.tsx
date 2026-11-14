@@ -21,9 +21,9 @@ import {
 import { getActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import { collectFiles } from '../utils/tree';
 import { createSortCache, isTimeSort, sortTree, TREE_SORT_ORDERS, type TreeSortOrder } from '../utils/treeSort';
-import { getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
+import { areIndexTimesReady, getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
 import { readJSON, writeJSON } from '../utils/storage';
-import type { VaultIndexSession } from '../utils/vaultIndexSession';
+import type { SearchController } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import { orderListFor, type EntryOrder, type IconNode } from '../utils/entryStyle';
 
@@ -65,7 +65,7 @@ interface VisibleRow { node: FileTreeNode; depth: number; createRow?: boolean }
 interface FileExplorerProps {
     readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     rootHandle: FileSystemDirectoryHandle | null;
-    searchIndex: VaultIndexSession;
+    search: SearchController;
     fileTree: FileTreeNode[];
     onFileClick: (node: FileTreeNode) => void;
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
@@ -95,13 +95,12 @@ interface FileExplorerProps {
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
-    getOpenTabContent: (path: string) => string | null;
 }
 
 function FileExplorer({
     readSnapshot,
     rootHandle,
-    searchIndex,
+    search,
     fileTree,
     onFileClick,
     onCreateFile,
@@ -121,7 +120,6 @@ function FileExplorer({
     onRenameFile,
     onImportFiles,
     onOpenSearchResult,
-    getOpenTabContent,
 }: FileExplorerProps) {
     /* The name box at the vault ROOT. Driven by the same store the tree rows
        use, so the header's buttons can open it either here or inside a folder
@@ -172,6 +170,7 @@ function FileExplorer({
         subscribeFileTimes,
         useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
     );
+    const indexTimesReady = useSyncExternalStore(subscribeFileTimes, areIndexTimesReady);
     const customOrder = useSyncExternalStore(
         subscribeEntryStyles,
         useCallback(() => (reordering ? getEntryOrder() : NO_ORDER), [reordering]),
@@ -193,11 +192,11 @@ function FileExplorer({
        file on disk). Never per keystroke: saves stamp their own path instead.
        The cleanup discards a walk the tree or the order has since outdated. */
     useEffect(() => {
-        if (!isTimeSort(sortOrder)) return;
+        if (!isTimeSort(sortOrder) || indexTimesReady) return;
         let current = true;
         void statFileTimes(collectFiles(fileTree), () => current, readSnapshot);
         return () => { current = false; };
-    }, [fileTree, sortOrder, readSnapshot]);
+    }, [fileTree, sortOrder, readSnapshot, indexTimesReady]);
 
     // ── Expand all / Collapse all ───────────────────────────────────────────
     /** Every folder in the tree — the REAL ones, so a stale expandedPaths
@@ -776,8 +775,7 @@ function FileExplorer({
             {searchOpen ? (
                 <SearchPanel
                     fileTree={fileTree}
-                    cache={searchIndex}
-                    getOpenTabContent={getOpenTabContent}
+                    search={search}
                     onOpenResult={handleSearchResult}
                     onClose={onCloseSearch}
                 />

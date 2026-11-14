@@ -90,8 +90,20 @@ export class ContourClipper {
     contains(point: Vec2): boolean {
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
         let winding = 0;
-        for (const { curve } of this.curves) {
+        for (const { curve, straight } of this.curves) {
+            if (straight && orient2d(curve.p0, curve.p3, point) === 0
+                && point.x >= Math.min(curve.p0.x, curve.p3.x) && point.x <= Math.max(curve.p0.x, curve.p3.x)
+                && point.y >= Math.min(curve.p0.y, curve.p3.y) && point.y <= Math.max(curve.p0.y, curve.p3.y)) return true;
             const ys = controls(curve, p => p.y - point.y), knots = breaks(ys);
+            if (!straight) {
+                const xs = controls(curve, p => p.x - point.x);
+                const tolerance = 8 * Number.EPSILON * Math.max(Number.MIN_VALUE, Math.abs(point.x), Math.abs(point.y),
+                    ...[curve.p0, curve.p1, curve.p2, curve.p3].flatMap(p => [Math.abs(p.x), Math.abs(p.y)]));
+                if (ys.every(y => y === 0)) {
+                    const values = breaks(xs).map(t => scalar(xs, t));
+                    if (Math.min(...values) <= tolerance && Math.max(...values) >= -tolerance) return true;
+                } else if (roots(ys).some(t => Math.abs(scalar(xs, t)) <= tolerance)) return true;
+            }
             for (let i = 0; i + 1 < knots.length; i++) {
                 const a = knots[i], b = knots[i + 1], ya = scalar(ys, a), yb = scalar(ys, b);
                 if (!((ya <= 0 && yb > 0) || (yb <= 0 && ya > 0))) continue;

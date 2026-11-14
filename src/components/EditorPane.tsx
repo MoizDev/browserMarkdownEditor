@@ -15,6 +15,7 @@ import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
 import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import type { DocumentBufferStore } from '../utils/documentBuffers';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -70,8 +71,8 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         ...reading,
         identity,
         // Read once, with the binding: it is the state this document OPENED
-        // with, and re-reading it per render re-ran its validation and cloned
-        // the record for nothing.
+        // with, including its source schema and write-protection metadata.
+        // Re-reading per render would validate and clone it for nothing.
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
@@ -98,6 +99,8 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
 const CanvasPane = lazy(() => import('./CanvasPane'));
 
 interface EditorPaneProps {
+    contentOf(path: string): string | undefined;
+    documentBuffers: DocumentBufferStore;
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
@@ -136,11 +139,14 @@ interface EditorPaneProps {
     /** Path-explicit: several documents are editable at once, and a canvas's
      *  debounced save can land after its pane has gone away. */
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
+    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
+    onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
-    onFlushNow: (path: string, content: string) => void;
+    onFlushNow: (path: string, content: string) => Promise<void>;
+    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -307,7 +313,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -596,8 +602,6 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
         && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
-    const countTextRef = useRef('');
-    countTextRef.current = countable ? focusedTab?.content ?? '' : '';
     const wordCountRef = useRef<HTMLSpanElement>(null);
     const charCountRef = useRef<HTMLSpanElement>(null);
     useLayoutEffect(() => {
@@ -607,11 +611,11 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
         };
         focusWordCounts(countPath);
         const unsubscribe = subscribeWordCounts(write);
-        const text = countTextRef.current;
+        const text = countPath ? contentOf(countPath) ?? '' : '';
         const trimmed = text.trim();
         write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
         return () => { unsubscribe(); focusWordCounts(null); };
-    }, [countPath]);
+    }, [countPath, contentOf]);
 
     // ── Embedded images ────────────────────────────────────────────────────
     // Deleting one is the editor's only action that needs the app: it has to be
@@ -965,6 +969,8 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
                         tabSize={tabSize}
                         rainbowBrackets={rainbowBrackets}
                         stateCache={stateCache}
+                        contentOf={contentOf}
+                        documentBuffers={documentBuffers}
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
@@ -1111,11 +1117,16 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
                             mode={tab.mode}
                             content={tab.content}
                             onContentChange={onContentChange}
+                            onNativeCanvasReady={onNativeCanvasReady}
                             onFlushNow={onFlushNow}
+                            onPreparePrint={onPreparePdfPrint}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
                             isDirty={tab.dirty}
                             disk={tab.disk}
+                            pdfRebuild={tab.pdfRebuild}
+                            pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
+                            onAnnotationPreflight={onAnnotationPreflight}
                             onDiskAction={onDiskAction}
                         />
                     </React.Fragment>
@@ -1158,6 +1169,7 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
                         <CanvasPane
                             file={tab.file}
                             documentId={tab.id}
+                            representation={tab.representation}
                             isVisible={visible}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}
@@ -1166,6 +1178,7 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
                             registerKeyboardTarget={registerKeyboardTarget}
                             content={tab.content}
                             onContentChange={onContentChange}
+                            onNativeCanvasReady={onNativeCanvasReady}
                             onConfirm={onConfirm}
                             theme={theme}
                             disk={tab.disk}

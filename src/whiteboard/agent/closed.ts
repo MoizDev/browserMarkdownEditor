@@ -3,6 +3,7 @@ import type { ByteSource, NativeReadResult, ReadDraft } from '../format/readType
 import { SampleStore } from '../ink/samples';
 import type { BoardDoc, BoardKind } from '../model/doc';
 import type { SampleLease } from '../model/samples';
+import { listAgentSheets, type AgentGeometry, type ShapePage, type ShapeQuery } from './shapes';
 
 export interface ClosedBoard {
     readonly doc: BoardDoc;
@@ -60,4 +61,42 @@ export async function readClosedBoard(source: ByteSource, options: ClosedBoardOp
         dispose();
         throw error;
     }
+}
+
+export interface ClosedShapeOptions extends ClosedBoardOptions {
+    readonly query?: ShapeQuery;
+    /** App-owned monotonic generation of the exact disk baseline, not doc.rev. */
+    readonly diskRevision: number;
+    isCurrent(): boolean;
+    /** Same authoritative, offscreen-capable projection used by live sessions. */
+    project(doc: BoardDoc, samples: SampleStore): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
+}
+
+export async function readClosedShapePage(source: ByteSource, options: ClosedShapeOptions): Promise<ShapePage | null> {
+    if (options.kind === 'pdf-ink') throw new Error('Open the PDF in annotation mode to read its shapes');
+    const guard = () => {
+        if (options.signal?.aborted || !options.isCurrent()) throw new Error('Board read cancelled or superseded');
+    };
+    guard();
+    const read = await readClosedBoard(source, options);
+    if (read.format !== 'native') {
+        guard();
+        if (read.format === 'other') return null;
+        const { page, offset, limit, revision } = options.query ?? {};
+        if (!Number.isSafeInteger(options.diskRevision) || options.diskRevision < 0
+            || (page !== undefined && (!Number.isSafeInteger(page) || page < 1))
+            || (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0))
+            || (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200))
+            || (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0))) throw new RangeError('Invalid shape query');
+        return { shapes: [], total: 0, revision: options.diskRevision,
+            ...(revision !== undefined && revision !== options.diskRevision ? { revisionChanged: true as const } : {}) };
+    }
+    try {
+        guard();
+        const projection = await options.project(read.board.doc, read.board.samples);
+        try {
+            guard();
+            return listAgentSheets(read.board.doc, projection.geometry, options.query, options.diskRevision);
+        } finally { projection.dispose(); }
+    } finally { read.board.dispose(); }
 }

@@ -1,6 +1,7 @@
-import { AuthoringSamples } from '../ink/canonicalize'
+import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import type { PredictedPoint } from './prediction'
 
 export interface InkIdentity {
   readonly nodeId: string
@@ -8,8 +9,17 @@ export interface InkIdentity {
 }
 export interface DryInkIdentity extends InkIdentity { readonly nodeRevision: number }
 
+export interface InkPresentation {
+  readonly tool: 'pen' | 'highlighter'
+  readonly color: string
+  readonly width: number
+  readonly fairTol: number
+  readonly localToWorld: readonly [number, number, number, number, number, number]
+}
+
 export interface LiveInkContext {
   readonly identity: InkIdentity
+  readonly presentation: InkPresentation
   readonly builderOptions: SampleBuilderOptions
   readonly captureDeviceScale: number
   // Capture style, target sheet and local transform at down; implementations write
@@ -23,7 +33,8 @@ export interface LiveInkContext {
 
 export interface WetInkSnapshot {
   readonly identity: InkIdentity
-  readonly samples: SampleSequence
+  readonly presentation: InkPresentation
+  readonly curve: CurvePublication
   readonly dry: DryInkIdentity | null
 }
 
@@ -38,27 +49,32 @@ export class WetInkHandover {
   }
   forFrame(dryAvailable: (identity: DryInkIdentity) => boolean): readonly WetInkSnapshot[] {
     const visible: WetInkSnapshot[] = []
-    for (const [sequence, pending] of this.pending) {
-      if (pending.dry && dryAvailable(pending.dry)) this.pending.delete(sequence)
-      else visible.push(pending)
+    for (const pending of this.pending.values()) {
+      if (!pending.dry || !dryAvailable(pending.dry)) visible.push(pending)
     }
     return visible
+  }
+  // The compositor calls this only after the token-matched frame with both dry
+  // bands was actually presented; dropped or stale frames retain the fallback.
+  acknowledgePresented(identity: DryInkIdentity): void {
+    const pending = this.pending.get(identity.gestureSequence)
+    if (pending?.dry && pending.dry.nodeId === identity.nodeId && pending.dry.nodeRevision === identity.nodeRevision) this.pending.delete(identity.gestureSequence)
   }
 }
 
 export class LiveInk implements GestureOwner {
   readonly kind = 'ink' as const
   readonly pointerIds: ReadonlySet<number>
-  private readonly builder: AuthoringSamples
+  private readonly builder: LocalCurveBuilder
   private ended = false
   private last: RealSample | null = null
   private dirty = true
   private dry: DryInkIdentity | null = null
-  private snapshot: SampleSequence | null = null
+  private snapshot: CurvePublication | null = null
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
-    this.builder = new AuthoringSamples(context.builderOptions, context.captureDeviceScale)
+    this.builder = new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol)
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()
@@ -76,27 +92,47 @@ export class LiveInk implements GestureOwner {
   }
 
   // Called by the shared scheduler, not per input sample.
-  publish(): void {
-    if (!this.dirty || this.ended) return
-    this.snapshot = this.builder.snapshot()
-    this.builder.markPublished()
+  publish(predicted?: SampleSequence | null): void {
+    if ((!this.dirty && predicted === undefined) || this.ended) return
+    this.snapshot = this.builder.publish(predicted ?? undefined)
     this.dirty = false
-    this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: null })
+    this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: null })
+  }
+
+  suspend(): void { this.publish(null) }
+
+  publishPrediction(points: readonly PredictedPoint[]): void {
+    if (this.ended || !this.last) return
+    if (!points.length) { this.publish(null); return }
+    const last = this.last
+    const local = points.map(point => this.context.toLocal({ ...last, x: point.x, y: point.y, time: point.time }))
+    const predicted: SampleSequence = {
+      count: local.length, x: i => local[i].x, y: i => local[i].y,
+      pressure: () => undefined, segmentKind: () => 'freehand',
+    }
+    this.publish(predicted)
   }
 
   finish(reason: FinishReason): void {
     if (this.ended) return
     this.ended = true
     try {
-      if (this.dirty || !this.snapshot) this.snapshot = this.builder.snapshot()
-      this.dry = this.context.commit(this.builder.finish(), this.context.identity, reason === 'undo')
+      const finished = this.builder.finish()
+      this.snapshot = finished.publication
+      this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo')
       if (reason === 'undo') this.handover.clear(this.context.identity)
-      else this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: this.dry })
+      else this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: this.dry })
       this.context.invalidate()
     } catch (error) { this.context.error(error) }
   }
 
   cancel(): void { this.finish('os-cancel') }
+  discard(): void {
+    if (this.ended) return
+    this.ended = true
+    this.handover.clear(this.context.identity)
+    this.context.invalidate()
+  }
 
   private append(sample: RealSample, modifiers: Modifiers): void {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return

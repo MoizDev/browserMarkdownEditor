@@ -68,7 +68,7 @@ export interface ExtOp {
 type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
 export type Op = ContentOp | ExtOp | MediaFileRestore;
 
-export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host';
+export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert';
 export interface Transaction {
     readonly ops: readonly Op[];
     readonly origin: TransactionOrigin;
@@ -86,6 +86,8 @@ export interface AppliedLease { release(): void }
 export interface Applied {
     readonly forward: readonly Op[];
     readonly inverse: readonly Op[];
+    /** Index-aligned inverse groups; concatenating them in reverse yields inverse. */
+    readonly inverseGroups: readonly (readonly Op[])[];
     readonly touched: TouchedSet;
     readonly dirtying: boolean;
     readonly recorded: boolean;

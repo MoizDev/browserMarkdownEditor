@@ -107,6 +107,18 @@ names (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken tar
 `App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
 opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
+- **Search never executes an agent-supplied regex on the UI thread.** `vault_search` goes through
+  `context/vaultIndex/` (tree order, bounded text residency, open-buffer overlays) and runs its
+  cancellable, deadline-bounded matcher in a worker owned by the index worker. Its scope limits
+  payload reads and results, never membership or another query's cached text. The same activation-owned,
+  4 MiB/file and 128 MiB total source-byte budget serves the sidebar; admission follows full-tree
+  order, not IO completion order. Incomplete results say so before the rows; a dirty open buffer,
+  including an empty one, outranks disk text. The index may persist text in browser IndexedDB, never
+  in the vault, and a changed activation or file revision fences late reads and publications.
+- **`afterWrite` primes the vault index with the text and stat already written**, only for the vault
+  activation captured by the tool operation. A late write from a vault being left must never prime
+  the new vault's same-named path; a save must not trigger a full vault walk.
+
 ## How replies are shaped (brevity + teaching)
 
 Two layers, split by what can change mid-chat:

@@ -79,6 +79,12 @@ workspace cycles through all of it.
   A save reports "Saved" when its path is **visible** (any pane of the tab on screen), not merely
   focused.
 
+- **Recovery journal plumbing** lives in `recoveryJournal.ts` (IDB keyed by vault and random session
+  id), `recoveryJournalCoordinator.ts` (serialized checkpoints and revision-aware acknowledgement),
+  and `recoveryFunnel.ts` (one App-owned `recoveryEvent` seam for C-20). Payloads are kind-owned;
+  copy-only entries need a self-contained file. The Recover bar checks path and baseline and keeps
+  older-window records copy-only. **C-20 must connect change/written/release and session adapters**;
+  until it does, the journal cannot capture new edits.
 - **Every `flushTab` drains its registered canvas serializer before capturing `contentOf(path)`.**
   Close removes paths from layout immediately but keeps documents and PDF annotation canvases mounted
   until drain and write settle; failed saves restore the tab, and a reopen reattaches to its buffer.

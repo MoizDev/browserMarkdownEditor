@@ -1,10 +1,10 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
+import { allocateOrderKeys } from '../change/commands';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { SampleBuilder } from '../ink/samples';
 import { childrenOf } from '../model/doc';
 import { newNodeId, type NodeId } from '../model/ids';
 import { createConnector, createStroke, type ConnectorEnd, type Point } from '../model/nodes';
-import { keyBetween } from '../model/orderKey';
 import type { SampleLease } from '../model/samples';
 import { createPage, plainRichText, type CreateContext, type CreatedShape } from './create';
 import { AgentOpRefused } from './errors';
@@ -22,7 +22,8 @@ export function stageInkCreate(op: InkCreate, context: InkCreateContext): Create
     if (!doc.sheets.has(sheet)) throw new AgentOpRefused('sheet no longer exists');
     const target = createPage(context, op.page);
     const id = newNodeId(doc), siblings = childrenOf(doc, sheet);
-    const base = { id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page: target.page, ext: null };
+    const order = allocateOrderKeys(doc, builder, sheet, siblings.at(-1)?.id ?? null, null, 1)[0];
+    const base = { id, parent: sheet, order, page: target.page, ext: null };
     if (op.type === 'arrow') {
         const end = (value: typeof op.start): ConnectorEnd => {
             if ('x' in value) return { ...target.clamp(value), attach: null };

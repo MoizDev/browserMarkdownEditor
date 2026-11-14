@@ -12,7 +12,7 @@ import { readBasicShape } from './basic';
 import { readBinding, resolveBinding, type LegacyBinding } from './bindings';
 import { backdropRole, readShape, shapeBase, type LegacyShape } from './common';
 import { readLegacyEnvelope, type LegacyEnvelope, type LegacyObject } from './envelope';
-import { unknownShapeProperties } from './fields';
+import { unknownShapeFields, unknownShapeProperties } from './fields';
 import { readLabelledShape, type RichTextReader } from './labelled';
 import { readInlineAsset, type AdmitLegacyMedia, type ImportedMedia } from './media';
 import { readPictureShape } from './pictures';
@@ -25,12 +25,15 @@ export interface LegacyRecordOptions {
     readonly rich: RichTextReader;
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
+    readonly assertCurrent: () => void;
     // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
-    readonly preparePages: (shapes: readonly LegacyShape[], nodes: readonly Node[]) => Promise<(node: Node) => {
+    readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[],
+        paper: LegacyObject | null) => Promise<(node: Node) => {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
     }>;
 }
 export interface LegacyRecordDraft {
+    readonly kind: 'draft';
     readonly source: string;
     readonly envelope: LegacyEnvelope;
     readonly sheets: readonly Sheet[];
@@ -44,9 +47,9 @@ export interface LegacyRecordDraft {
 }
 
 // IMP-1/5: produces an ordered draft; loading/repair must not first deduplicate it into a Map.
-export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | null> {
+export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | { readonly kind: 'failure'; readonly report: ImportReport }> {
     const report = new ReportBuilder(), envelope = readLegacyEnvelope(text, report);
-    if (!envelope) return null;
+    if (!envelope) return { kind: 'failure', report: report.finish() };
     const sheets: Sheet[] = [], shapes: LegacyShape[] = [], bindings: LegacyBinding[] = [], assets: LegacyObject[] = [];
     const media: ImportedMedia[] = [], assetIds = new Map<string, MediaId>(), leases: SampleLease[] = [];
     const bookmarks = new Map<string, LegacyObject>();
@@ -84,6 +87,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             }
         } catch (error) {
             options.signal?.throwIfAborted();
+            options.assertCurrent();
             if (id) {
                 try { preserve(record, id, 'unreadable-record'); } catch { /* Original source remains available. */ }
             }
@@ -101,11 +105,14 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         try {
             if (!id) throw new Error('Asset has no identifier');
             if (backdropAssets.has(id) && !ordinaryAssets.has(id)) continue;
-            if (record.type === 'bookmark') { bookmarks.set(id, record); continue; }
+            if (record.type === 'bookmark') { bookmarks.set(id, record); preserve(record, id, 'bookmark-asset'); continue; }
             const imported = await readInlineAsset(record, options.admitMedia, options.signal);
+            options.assertCurrent();
             assetIds.set(id, imported.entry.id); media.push(imported);
+            if (!ordinaryAssets.has(id)) preserve({ assetId: id, media: imported.entry.id }, id, 'orphan-asset');
         } catch (error) {
             options.signal?.throwIfAborted();
+            options.assertCurrent();
             if (id) {
                 try { preserve(record, id, 'unreadable-asset'); } catch { /* Original source remains available. */ }
             }
@@ -124,14 +131,14 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         else ends.set(binding.terminal, binding);
     }
     const nodes: Node[] = [];
-    const roots = new Map<NodeId, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
+    const roots = new Map<Node, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
     for (const shape of shapes) {
         options.signal?.throwIfAborted();
         try {
             const role = backdropRole(shape, options.kind);
             if (role === 'backdrop') continue;
             if (role === 'ambiguous') report.repair(shape.id, 'Possible page backdrop retained as a picture');
-            const extras = unknownShapeProperties(shape);
+            const extras = [...unknownShapeFields(shape), ...unknownShapeProperties(shape).map(key => `props.${key}`)];
             if (extras.length) {
                 preserve(shape.source, shape.id, 'shape');
                 report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
@@ -178,28 +185,31 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape');
         }
     }
-    if (options.kind !== 'whiteboard') {
-        const pageForRoot = await options.preparePages(shapes, nodes);
+    const byId = new Map<NodeId, Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
+    if (options.kind !== 'whiteboard' && nodes.length) {
+        if (!options.preparePages) throw new Error('Paged import requires page geometry');
+        const pageForRoot = await options.preparePages(shapes, nodes, sheets, envelope.paper);
         options.signal?.throwIfAborted();
+        options.assertCurrent();
         for (const node of nodes) {
-            if (!sheetIds.has(node.parent as SheetId)) continue;
+            const parent = byId.get(node.parent as NodeId);
+            if (!sheetIds.has(node.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
             try {
                 const position = pageForRoot(node);
                 if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
-                if (!roots.has(node.id)) roots.set(node.id, position);
+                roots.set(node, position);
             } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page'); }
         }
     }
-    const byId = new Map<NodeId, Node>();
-    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     const mappedNodes = nodes.map(node => {
         let ancestor = node;
         for (let depth = 0; depth <= 64; depth++) {
-            const mapped = roots.get(ancestor.id);
+            const mapped = roots.get(ancestor);
             if (mapped) {
                 try {
                     const scaled = scaleImportedNode(node, mapped.scale);
-                    return node.id === ancestor.id ? { ...scaled, x: mapped.x, y: mapped.y, page: mapped.page } : scaled;
+                    return node === ancestor ? { ...scaled, x: mapped.x, y: mapped.y, page: mapped.page } : scaled;
                 } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Invalid page scale'); return node; }
             }
             const parent = byId.get(ancestor.parent as NodeId);
@@ -208,8 +218,9 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         }
         return node;
     });
+    options.assertCurrent();
     const result = report.finish();
-    return { source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
+    return { kind: 'draft', source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
         readOnly: result.unrepresentable.length > 0, converted: false };
     } catch (error) {
         for (const lease of leases) lease.release();

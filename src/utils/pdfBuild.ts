@@ -7,14 +7,16 @@
 // It lives apart from pdfAnnotation.ts for that reason alone — the two halves
 // are one feature.
 
-import { PDFDict, PDFDocument, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
+import { FileEmbedder, PDFDict, PDFDocument, PDFHexString, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
-import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
+import { NOTEBOOK_SOURCE_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
-import type { PageOverlay } from './pdfOverlay';
+import { isEmptyOverlay, type PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
+import { markEmbeddedFile, rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
+import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -151,7 +153,8 @@ export async function buildAnnotatedPdf(
     original: Uint8Array,
     snapshot: string,
     overlays: Array<PageOverlay | undefined> = [],
-): Promise<Uint8Array> {
+    outer?: Uint8Array,
+): Promise<{ bytes: Uint8Array; aliases: string[] }> {
     const refusal = pdfSnapshotRefusal(snapshot);
     if (refusal) throw new PdfBuildRefused(refusal);
     // No defensive copy of `original`, on two independent grounds:
@@ -174,23 +177,54 @@ export async function buildAnnotatedPdf(
 
     for (let i = 0; i < pages.length; i++) {
         const overlay = overlays[i];
+        if (isEmptyOverlay(overlay)) continue;
         if (!overlay) continue;
-
-        for (const layer of overlay.layers ?? [overlay]) {
-            // Keep sheet order, including a later sheet's bitmap over earlier ink.
-            if (layer.raster?.length) stampRaster(pages[i], await doc.embedPng(layer.raster.slice()));
-            if (layer.vector?.length) stampVector(pages[i], layer.vector);
+        const geometry = overlay.geometry;
+        if (!geometry || geometry.pageIndex !== i || !geometry.engine.startsWith('pdfjs/') ||
+            ![geometry.width, geometry.height, ...geometry.toUserSpace].every(Number.isFinite) ||
+            geometry.width <= 0 || geometry.height <= 0) {
+            throw new Error(`Missing or invalid display geometry for PDF page ${i + 1}.`);
         }
+        const [a, b, c, d, e, f] = geometry.toUserSpace;
+        if (a * d - b * c === 0) throw new Error(`Singular display geometry for PDF page ${i + 1}.`);
+
+        // The Form's bounding box clips the page-local display list. Both kinds
+        // of ink use the very same inverse viewport when the Form is placed.
+        const layers = overlay.layers ?? [overlay];
+        const identity: unknown[] = [];
+        for (const layer of layers) identity.push([layer.raster?.length ? await artifactHash(layer.raster) : '', layer.vector ?? []]);
+        const inkKey = await artifactHash(new TextEncoder().encode(JSON.stringify([
+            'ink-form-v2', geometry.width, geometry.height, identity,
+        ])));
+        const inkBytes = await immutableArtifact(`page:${inkKey}`, async () => {
+            const ink = await PDFDocument.create();
+            const inkPage = ink.addPage([geometry.width, geometry.height]);
+            for (const layer of layers) {
+                if (layer.raster?.length) stampRaster(inkPage, await ink.embedPng(layer.raster));
+                if (layer.vector?.length) stampVector(inkPage, layer.vector);
+            }
+            return ink.save(SAVE_WITHOUT_TICKS);
+        });
+        const [embedded] = await doc.embedPdf(inkBytes, [0]);
+        const page = pages[i];
+        // pdf-lib normalizes inherited resources in place. Fork both the outer
+        // dictionary and its mutable subdictionaries before adding the Form.
+        const resources = page.node.Resources()?.clone() ?? doc.context.obj({});
+        for (const name of ['Font', 'XObject', 'ExtGState']) {
+            const key = PDFName.of(name);
+            const entry = resources.lookup(key);
+            if (entry instanceof PDFDict) resources.set(key, entry.clone());
+        }
+        page.node.set(PDFName.of('Resources'), resources);
+        // Form space is bottom-up; the viewport inverse expects top-down.
+        page.pushOperators(pushGraphicsState(), concatTransformationMatrix(a, b, -c, -d,
+            c * geometry.height + e, d * geometry.height + f));
+        page.drawPage(embedded, { x: 0, y: 0, width: geometry.width, height: geometry.height });
+        page.pushOperators(popGraphicsState());
     }
 
-    doc.attach(original, ORIGINAL_ATTACHMENT, {
-        mimeType: 'application/pdf',
-        description: 'Unannotated source. Every save rebuilds from this, so strokes never compound.',
-    });
-    doc.attach(new TextEncoder().encode(snapshot), SNAPSHOT_ATTACHMENT, {
-        mimeType: 'application/json',
-        description: 'tldraw snapshot: the editable form of the annotations stamped on the pages.',
-    });
+    const outerDoc = outer ? await PDFDocument.load(outer, LOAD_WITHOUT_TICKS) : undefined;
+    const expected = await rebuildAttachmentTree(doc, outerDoc, original, new TextEncoder().encode(snapshot));
 
     // Flush deferred attachments/images BEFORE allocating the mark: pdf-lib
     // writes raw streams by object number, so our newest stream follows any
@@ -205,7 +239,9 @@ export async function buildAnnotatedPdf(
         LastModified: PDFString.fromDate(new Date()), Private: mark,
     }));
     doc.catalog.set(PDFName.of('PieceInfo'), pieces);
-    return sealPdfWriteMark(await doc.save(SAVE_WITHOUT_TICKS));
+    const result = await sealPdfWriteMark(await doc.save(SAVE_WITHOUT_TICKS));
+    await verifyAttachmentTree(result, expected);
+    return { bytes: result, aliases: expected.aliases };
 }
 
 /* ── Notebooks ──────────────────────────────────────────────────────────── */
@@ -277,10 +313,14 @@ export async function buildNotebookPdf(
         // is not embedded, because this file is an output and the notebook is
         // the original that stays put and keeps being edited. Annotating this
         // PDF follows the pointer back rather than forking a third file.
-        doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
+        const marker = 'local-vault-pdf/v1;role=notebook-source;format=notebook-source';
+        const ref = await FileEmbedder.for(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
             mimeType: 'application/json',
-            description: 'The notebook this PDF was exported from. Edit that, then export again.',
-        });
+            description: `${marker}\nThe notebook this PDF was exported from. Edit that, then export again.`,
+        }).embedIntoContext(doc.context);
+        markEmbeddedFile(doc, ref, marker);
+        doc.catalog.set(PDFName.of('Names'), doc.context.obj({ EmbeddedFiles: { Names: [PDFHexString.fromText(NOTEBOOK_SOURCE_ATTACHMENT), ref] } }));
+        doc.catalog.set(PDFName.of('AF'), doc.context.obj([ref]));
         // Said in the document properties too, where any PDF viewer will show
         // it — the attachment is for this app, this line is for a person.
         doc.setProducer(`Exported from ${source.path}`);

@@ -10,6 +10,7 @@ import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
 import { COMPOSITION_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
+import { Webgl2Timer } from './webgl2Timer';
 import { ArenaError, ResourceArena } from '../resourceArena';
 import type { ArenaEncoding, ArenaLeaseMemory, ArenaMemory, ArenaResourceKind, ResourceArenaBackend } from '../resourceArena';
 import type { MemoryAllocator } from '../memoryGovernor';
@@ -45,6 +46,10 @@ export interface Webgl2Services {
     recordUniformUpload?(bytes: number, elapsedMs: number): void;
     /** Age of the oldest genuinely unsignalled fence; the host supplies input-health evidence. */
     observeFenceAge?(oldestPendingMs: number): void;
+    /** Native GPU time only; disjoint samples are discarded, never replaced with CPU timing. */
+    observeGpuTiming?(p95Ms: number, samples: number, disjoint: boolean): void;
+    /** Native offscreen attachment incompleteness, distinct from unsupported features or loss. */
+    onFramebufferFailure?(): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
@@ -223,6 +228,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #services: Webgl2Services;
     readonly #arena: ResourceArena<Descriptors, Objects>;
     readonly #parallel: KHR_parallel_shader_compile | null;
+    readonly #timer: Webgl2Timer;
     readonly #sampleCounts = new Map<number, ReadonlySet<number>>();
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
@@ -312,6 +318,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#sampleCounts.set(format, new Set(samples instanceof Int32Array ? samples : []));
         }
         this.#parallel = gl.getExtension('KHR_parallel_shader_compile');
+        this.#timer = new Webgl2Timer(gl, services.observeGpuTiming);
         gl.drawingBufferColorSpace = RENDER_CONSTANTS.colorSpace;
         gl.unpackColorSpace = RENDER_CONSTANTS.colorSpace;
         const backend: ResourceArenaBackend<Descriptors, Objects> = {
@@ -633,7 +640,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+                () => this.#timer.clear(false), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
                 () => this.#arena.releaseAll(reason),
                 () => {
                     for (const handle of this.#handles) {
@@ -658,7 +665,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#work.abort();
         this.#cleanup([
             ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-            () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+            () => this.#timer.clear(false), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
             () => this.#arena.releaseAll('hidden'),
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
@@ -674,7 +681,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#pool.abandon(),
+                () => this.#timer.clear(true), () => this.#pool.abandon(),
                 ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
@@ -887,7 +894,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             attachment: value => target(this.#attachment(value.handle)),
             white: () => texture(this.#white!),
             uniforms: bytes => this.#frameUniforms(work, bytes),
-            uploadUniforms: () => this.#uploadUniforms(work),
+            uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
             quad: command => {
                 if (!this.#composition) throw new ArenaError('invalid-resource');
                 const program = this.#pin(work.encoding, this.#composition, 'pipeline');
@@ -897,11 +904,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 return () => this.#drawQuad(program, sampler, command);
             },
             acquireTarget: request => this.acquireTarget(request), releaseTarget: lease => this.releaseTarget(lease),
-            issue: () => this.#issue(work.encoding),
+            issue: () => { if (work.surface) this.#timer.end(); return this.#issue(work.encoding); },
             cancel: () => this.#cancelEncoding(work.encoding),
             finish: serial => {
                 if (work.finished) return;
                 work.finished = true;
+                if (work.surface && !work.signal.aborted) this.#timer.end();
                 if (work.slot) { work.slot.owner = null; work.slot.serial = serial ?? work.issued ?? 0; work.slot = null; }
                 this.#frames.delete(work.encoding);
             },
@@ -1406,11 +1414,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #collect(): void {
         if (this.#lost) return;
         this.#arena.collect();
+        this.#timer.poll();
         if (!this.#fences.size && this.#fenceAgeReported) {
             this.#fenceAgeReported = false;
             this.#services.observeFenceAge?.(0);
         }
-        if (!this.#fences.size && this.#arena.memory().retiring === 0) {
+        if (!this.#fences.size && !this.#timer.pending && this.#arena.memory().retiring === 0) {
             this.#pollCancel?.();
             this.#pollCancel = null;
             if (this.#disposed) { this.#gl = null; this.#canvas = null; }
@@ -1600,18 +1609,26 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, texture.width, texture.height);
                 gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, target.depthStencil);
             }
-            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new ArenaError('unsupported');
+            this.#assertFramebuffer();
             if (desc.samples === 4) {
                 const resolve = gl.createFramebuffer();
                 if (!resolve) throw new ArenaError('allocation');
                 target.resolveFramebuffer = resolve;
                 gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
                 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture.texture, 0);
-                if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new ArenaError('unsupported');
+                this.#assertFramebuffer();
             }
             return target;
         } catch (error) { if (!gl.isContextLost()) this.#deleteTarget(target); throw error; }
     }
+    #assertFramebuffer(): void {
+        const gl = this.#healthy();
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) return;
+        this.#healthy();
+        this.#services.onFramebufferFailure?.();
+        throw new ArenaError('unsupported');
+    }
+
     #compile(shader: ShaderModule): NativeProgram {
         const gl = this.#usable();
         const program = gl.createProgram();

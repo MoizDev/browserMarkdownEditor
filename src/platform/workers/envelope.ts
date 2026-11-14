@@ -30,6 +30,8 @@ export interface ContainedPort {
 export interface RequestOptions {
     priority: Priority;
     deadlineMs?: number;
+    /** Recycle only when a posted job reaches its deadline, not when waiting in the queue. */
+    terminateOnDeadline?: boolean;
     signal?: AbortSignal;
     transfer?: Transferable[];
     cpu?: 'governed' | 'light';
@@ -64,11 +66,13 @@ export interface WorkerSpec {
     onStart?(client: WorkerClient): Promise<void>;
     silenceMs?: Record<Priority, number>;
     absoluteMs?: number;
+    restartPolicy?: { delaysMs: readonly number[]; maxFailures: number; windowMs: number };
     disposeResult?(op: string, result: unknown): void;
     events?: readonly string[];
     eventLimit?: number;
     permits?: CpuPermits;
-    // Only the same-origin vault index opts in, on its tree operations.
+    // C5.5 permits read-only cloned file handles only for the same-origin vault
+    // index tree operations; contained ports still enforce the C5.2 allowlist.
     fileHandleOps?: readonly string[];
 }
 

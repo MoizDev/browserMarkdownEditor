@@ -18,11 +18,13 @@ serve({
             generation = gen;
             if (positions) {
                 for (let i = 0; i < ids.length; i++) {
-                    layout.x[i] = positions[i * 2]; layout.y[i] = positions[i * 2 + 1];
+                    const x = positions[i * 2], y = positions[i * 2 + 1];
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                    layout.x[i] = x; layout.y[i] = y;
                     layout.vx[i] = layout.vy[i] = 0;
                 }
-                layout.alpha = alpha ?? 1;
             }
+            layout.alpha = alpha ?? 1;
             steps = 0;
         },
         tick(value, context) {

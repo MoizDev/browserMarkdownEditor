@@ -84,6 +84,8 @@ export interface SurfaceCallbacks {
      * commits the current grant in the shared frame and checks the resulting drawing buffer.
      */
     onGpuReady(grant: GpuGrant): void;
+    /** A native context capability was unavailable; repeated attempts inform pressure policy. */
+    onCapabilityFailure?(): void;
     /**
      * Present through a DIFFERENT 2D canvas, retaining the input/overlay host. Detach a lost GL
      * canvas solely for restoration notification; never request another context type on it.
@@ -121,6 +123,8 @@ export interface SurfaceLease {
     updateToken(token: RenderToken): void;
     requestGpu(canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult>;
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
+    /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
+    failGpu(stamp: SurfaceStamp, generation: number, reason: 'creation-failed' | 'out-of-budget'): void;
     /** One fresh attempt after an outright failure/timeout, only on explicit user action or later show. */
     retry(): void;
     snapshot(): SurfaceSnapshot;

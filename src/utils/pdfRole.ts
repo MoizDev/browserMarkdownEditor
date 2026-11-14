@@ -33,6 +33,13 @@ export function canRotatePdfRole(role: PdfRole): boolean { return role.kind === 
 // The canvas parks this exact Uint8Array in pdfRenderCache. Refused roles never
 // own an original at all, and cannot manufacture a save capability by name.
 const writableSources = new WeakSet<Uint8Array>();
+const outerSources = new WeakMap<Uint8Array, Uint8Array>();
+export function rememberPdfOuter(role: PdfRole, outer: Uint8Array): void {
+    if (role.kind === 'annotated') outerSources.set(role.original, outer);
+}
+export function pdfOuterForSource(original: Uint8Array): Uint8Array | undefined {
+    return outerSources.get(original);
+}
 export function authorizePdfRole(role: PdfRole): void {
     if (isEditablePdfRole(role) && (role.kind === 'plain' || role.writeMark.kind !== 'foreign')) writableSources.add(role.original);
 }

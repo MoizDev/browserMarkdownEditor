@@ -128,6 +128,12 @@ class SurfaceBroker {
                 updateToken: token => this.updateToken(entry, token),
                 requestGpu: (canvas, stamp) => this.requestGpu(entry, canvas, stamp),
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
+                failGpu: (stamp, generation, reason) => {
+                    if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
+                    this.abandon(entry, 'creation-failed');
+                    entry.failed = reason;
+                    if (drawable(entry)) this.fallback(entry, reason);
+                },
                 retry: () => {
                     if (!this.current(entry) || entry.circuit.pinned || entry.reservation) return;
                     entry.failed = null;
@@ -335,6 +341,7 @@ class SurfaceBroker {
         const pending = Promise.resolve().then(async (): Promise<GpuRequestResult> => {
             if (!valid()) return { kind: 'stale' };
             let owner: BrokerGpuOwner;
+            let capabilityUnavailable = false;
             try {
                 if (!reservation.context) {
                     // A StrictMode cleanup can cancel before this microtask; that canvas was never used.
@@ -343,7 +350,7 @@ class SurfaceBroker {
                     // Limits/capability negotiation precedes any nonzero drawing-buffer allocation.
                     zeroCanvas(reservation.canvas);
                     reservation.context = reservation.canvas.getContext('webgl2', CONTEXT_ATTRIBUTES);
-                    if (!reservation.context) throw new Error('WebGL2 unavailable');
+                    if (!reservation.context) { capabilityUnavailable = true; throw new Error('WebGL2 unavailable'); }
                     if (!valid()) {
                         // A wrapped getContext may synchronously unmount; abandon could not see its result yet.
                         if (entry.reservation !== reservation) destroyContext(reservation.context);
@@ -357,6 +364,7 @@ class SurfaceBroker {
                 if (!valid()) return { kind: 'stale' };
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
+                if (capabilityUnavailable) entry.callbacks.onCapabilityFailure?.();
                 return this.fallback(entry, 'creation-failed');
             }
             if (!valid() || !drawable(entry)) {

@@ -6,6 +6,7 @@ import { add, interval } from './numeric';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { createAnisotropicSweepJob } from './anisotropicSweepJob';
+import { createClippedStrokeRegionWitnessJob } from './clippedStrokeRegionWitness';
 import { strokeSeparatedFromHull } from './strokeSupport';
 import { splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyClippedVisibility, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
@@ -52,6 +53,7 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: ExactCurve | undefined;
     let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, certificatePhase: 'inner' | 'outer' | 'exact' = 'inner', deferred: Pair | undefined;
     let anisotropicJob: ReturnType<typeof createAnisotropicSweepJob> | undefined;
+    let witness: ReturnType<typeof createClippedStrokeRegionWitnessJob> | undefined;
     const low = Math.max(0, threshold.lo), high = Math.max(0, threshold.hi), stack: Pair[] = [];
     const subdivide = (pair: Pair): boolean => {
         if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { uncertain = true; return true; }
@@ -73,6 +75,14 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped sweep work limit exhausted' });
+                if (witness) {
+                    const result = witness.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    witness.cancel(); witness = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit' });
+                    if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
+                    deferred = undefined; continue;
+                }
                 if (anisotropicJob) {
                     const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
@@ -129,6 +139,10 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
                         }
                         continue;
                     }
+                    if (pair.path.depth % 4 === 0 && pair.sweep.depth % 4 === 0) {
+                        deferred = pair; witness = createClippedStrokeRegionWitnessJob(pair.exactPath, query.localToSurface, options.strokeRadiusLocal,
+                            frames, exclusions, { kind: 'swept', endpoints: [pair.exactSweep[0], pair.exactSweep[1]], radius: query.radiusCss }); continue;
+                    }
                     if (!subdivide(pair)) return finish({ status: 'uncertain', reason: 'Clipped sweep node limit exhausted' });
                     continue;
                 }
@@ -159,6 +173,6 @@ export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[],
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); certificate = undefined; anisotropicJob = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); witness?.cancel(); certificate = undefined; anisotropicJob = undefined; witness = undefined; deferred = undefined; stack.length = 0; },
     };
 }

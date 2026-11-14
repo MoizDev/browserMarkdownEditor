@@ -6,6 +6,7 @@ import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { interval } from './numeric';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { classifyClippedVisibility } from './clippedPointPathJob';
+import { createClippedStrokeRegionWitnessJob } from './clippedStrokeRegionWitness';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, clipBoxStrictlyInside, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
@@ -58,7 +59,7 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
     const polygonVertices = query.points.map(exactPoint), low = Math.max(0, radius.lo), high = Math.max(0, radius.hi);
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
     let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, deferred: Work | undefined, edge = 0, phase: 'inner' | 'outer' | 'exact' = 'inner', edgeUncertain = false;
-    let inverseCurve: ExactCurve | undefined;
+    let inverseCurve: ExactCurve | undefined, witness: ReturnType<typeof createClippedStrokeRegionWitnessJob> | undefined;
     const startEdge = () => {
         const a = polygonVertices[edge], b = polygonVertices[(edge + 1) % polygonVertices.length];
         if (inverseDistance && inverseCurve) {
@@ -81,6 +82,14 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped polygon work limit exhausted' });
+                if (witness) {
+                    const result = witness.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    witness.cancel(); witness = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit' });
+                    if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
+                    deferred = undefined; continue;
+                }
                 if (certificate) {
                     const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
@@ -128,6 +137,10 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
                         inverseCurve = inverseDistance ? item.exact.map(inverseDistance.map) as unknown as ExactCurve : undefined;
                         certificate = startEdge(); continue;
                     }
+                    if (!query.containment && curve.depth % 4 === 0) {
+                        deferred = item; witness = createClippedStrokeRegionWitnessJob(item.exact, query.localToSurface, options.strokeRadiusLocal,
+                            frames, exclusions, { kind: 'polygon', points: query.points }); continue;
+                    }
                     if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
                     continue;
                 }
@@ -151,6 +164,6 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; inverseCurve = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); witness?.cancel(); certificate = undefined; witness = undefined; deferred = undefined; inverseCurve = undefined; stack.length = 0; },
     };
 }

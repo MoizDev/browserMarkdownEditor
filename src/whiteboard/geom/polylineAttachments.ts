@@ -10,6 +10,8 @@ import { connectorBody } from './connectors';
 import { bodyCrossings, pointAtLength } from './connectorPath';
 import type { AttachmentSurface } from './connectorTypes';
 import type { PathOp } from './path';
+import { preparePolylineGeometry } from './providers';
+import { prepareBoardAttachmentSurface } from '../render/attachmentSurfaces';
 
 /** H4 owns the persisted fields; this reader also accepts documents predating them. */
 type AttachedPolyline = Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
@@ -54,7 +56,7 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
     readonly tolerance: number; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>; readonly check: () => void;
 }): Promise<readonly Point[]> {
     options.check();
-    if (!Number.isFinite(options.tolerance) || options.tolerance <= 0) throw new RangeError('Invalid polyline attachment tolerance');
+    if (!Number.isFinite(options.tolerance) || options.tolerance <= 0 || options.tolerance / 2 === 0) throw new RangeError('Invalid polyline attachment tolerance');
     const entries = [node.startAttach ?? null, node.endAttach ?? null] as const;
     const localToWorld = matrix(doc, node.id), points = node.points.map(point => ({ ...point }));
     if (points.length < 2) throw new RangeError('Invalid attached polyline');
@@ -78,7 +80,7 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
         let point = world[index];
         if (!entry.exact) {
             const body = connectorBody(point, world[neighbour], 0, options.tolerance);
-            const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, options.tolerance, 65_536, options.cooperate, options.signal);
+            const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, options.tolerance / 2, 65_536, options.cooperate, options.signal);
             options.check(); const exit = crossings[0];
             if (exit && !exit.entering) point = pointAtLength(body, exit.distance);
         }
@@ -91,6 +93,13 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
 
 /** Resolve both bindings against one staged document and the renderer's actual attachment surfaces. */
 export async function resolvePolylineAttachments(node: AttachedPolyline, options: PolylineAttachmentOptions): Promise<ResolvedPolylineAttachments> {
+    return resolvePolylineAttachmentChain(node, options, new Set());
+}
+async function resolvePolylineAttachmentChain(node: AttachedPolyline, options: PolylineAttachmentOptions,
+    ancestors: ReadonlySet<NodeId>): Promise<ResolvedPolylineAttachments> {
+    if (ancestors.has(node.id)) throw new Error('Polyline attachment cycle cannot be resolved');
+    if (ancestors.size >= 64) throw new RangeError('Polyline attachment chain exceeds its depth limit');
+    const chain = new Set(ancestors); chain.add(node.id);
     const { runtime } = options, session = runtime.session, live = session.doc, doc = options.doc ?? live;
     const revision = doc.rev, liveRevision = live.rev, owner = session.owner, signal = options.signal ?? new AbortController().signal;
     const tolerance = options.toleranceWorld ?? 0.01;
@@ -109,8 +118,21 @@ export async function resolvePolylineAttachments(node: AttachedPolyline, options
         for (const id of targets) {
             const target = doc.nodes.get(id); if (!target) throw new Error(`Missing polyline attachment target: ${id}`);
             const geometry = await runtime.render.prepareForPick(target, signal, doc); check();
-            const surface = geometry.vector?.attachments;
-            if (!surface) throw new Error(`Polyline attachment target has no supported surface: ${id}`);
+            let vector = geometry.vector;
+            const targetLine = target.kind === 'polyline' ? target as AttachedPolyline : null;
+            if (targetLine && (targetLine.startAttach || targetLine.endAttach)) {
+                if (!vector) throw new Error(`Polyline attachment target geometry is unavailable: ${id}`);
+                const resolved = await resolvePolylineAttachmentChain(targetLine, { ...options, doc, signal, current }, chain);
+                try {
+                    check(); vector = preparePolylineGeometry({ ...targetLine, points: [...resolved.points] }, { key: vector.key,
+                        kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
+                } finally { resolved.release(); }
+            }
+            const surface = vector?.attachments ?? await prepareBoardAttachmentSurface(target, { vector, ink: geometry.ink, signal,
+                cooperate: options.cooperate, toleranceWorld: tolerance / 2 });
+            check(); if (!surface) throw new Error(`Polyline attachment target has no supported surface: ${id}`);
+            if ('boundaryErrorWorld' in surface && surface.boundaryErrorWorld !== 0)
+                throw new Error(`Polyline attachment target boundary is not exact: ${id}`);
             surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
                 localToWorld: matrix(doc, id), clips: polylineSurfaceClips(doc, target), revision });
         }

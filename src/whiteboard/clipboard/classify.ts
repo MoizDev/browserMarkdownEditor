@@ -21,13 +21,23 @@ function url(value: string, appOrigin: string): string | null {
     const result = checkContentUrl(trimmed, 'click', { appOrigin });
     return result.ok ? result.url : null;
 }
-function firstUri(list: string, appOrigin: string): string | null {
-    for (const line of list.split(/\r\n|\r|\n/)) {
-        const value = line.trim();
-        if (!value || value.startsWith('#')) continue;
-        return url(value, appOrigin);
+async function firstUriLine(list: string, signal: AbortSignal): Promise<string | null> {
+    if (list.length > SECURITY_LIMITS.clipboardHtmlBytes) throw new RangeError('Clipboard URI list is too large');
+    let start = 0;
+    for (let i = 0; i <= list.length; i++) {
+        if ((i & 65535) === 65535) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+        if (i !== list.length && list[i] !== '\r' && list[i] !== '\n') continue;
+        if (i - start > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard URI line is too large');
+        const value = list.slice(start, i).trim();
+        if (value && !value.startsWith('#')) return value;
+        if (list[i] === '\r' && list[i + 1] === '\n') i++;
+        start = i + 1;
     }
     return null;
+}
+async function firstUri(list: string, appOrigin: string, signal: AbortSignal): Promise<string | null> {
+    const value = await firstUriLine(list, signal);
+    return value ? url(value, appOrigin) : null;
 }
 function plain(value: string): ClipboardClassification {
     return { kind: 'text', text: value.replace(/\r\n?/g, '\n') };
@@ -40,7 +50,7 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     signal.throwIfAborted();
     if (intent === 'drop') {
         if (input.files.length) return { kind: 'files', files: input.files };
-        const dropped = input.uriList ? firstUri(input.uriList, host.appOrigin) : null;
+        const dropped = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
         if (dropped) return { kind: 'url', url: dropped };
         if (input.svg !== null) return { kind: 'svg', text: input.svg };
         if (input.html !== null) {
@@ -64,7 +74,12 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (plainOnly) {
         if (input.text) return plain(input.text);
         if (input.files.length) return { kind: 'files', files: input.files };
-        return input.text !== null ? plain(input.text) : { kind: 'empty' };
+        if (input.text !== null) return plain(input.text);
+        if (input.uriList) {
+            const first = await firstUriLine(input.uriList, signal);
+            if (first) return plain(first);
+        }
+        return { kind: 'empty' };
     }
     let markers: HtmlClipboardMarkers | null = null;
     if (input.html !== null) {
@@ -76,6 +91,8 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (input.privatePng) return { kind: 'private-png', blob: input.privatePng };
     if (input.files.length) return { kind: 'files', files: input.files };
     if (markers?.legacyPayload !== null && markers?.legacyPayload !== undefined) return { kind: 'legacy', envelope: markers.legacyPayload };
+    const uri = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
+    if (uri) return { kind: 'url', url: uri };
     if (input.text !== null) {
         const text = input.text;
         if (text.trimStart().startsWith('{') || text.trimStart().startsWith('[')) {

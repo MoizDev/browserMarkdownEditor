@@ -47,6 +47,8 @@ import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
+import { matchAgentSearch } from './agentMatcher/client';
+import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
     result: ToolResult;
@@ -62,10 +64,6 @@ const MAX_LIST_ENTRIES = 2000;
 const MAX_READ_LINE = 4000;
 /** vault_read of a PDF reads at most this many pages per call. */
 const MAX_PDF_PAGES_PER_READ = 50;
-/** Search: matches per file before moving on (one noisy file must not eat the budget). */
-const MAX_MATCHES_PER_FILE = 50;
-/** A search result line's text. */
-const MAX_MATCH_LINE = 300;
 /** Waiting on a pane's reporter (a render, a text extraction). */
 const REPORTER_TIMEOUT_MS = 20_000;
 
@@ -217,6 +215,7 @@ type Args = Record<string, unknown>;
 
 interface Ctx {
     host: VaultToolHost;
+    signal?: AbortSignal;
     /** Throws a ToolError unless the run's vault is still the open one. */
     ensureLive(): void;
     /** A normalized path argument, or a ToolError saying why not. */
@@ -225,7 +224,7 @@ interface Ctx {
     writablePath(value: unknown): string;
 }
 
-function makeCtx(host: VaultToolHost, run: { vaultToken: object | null }): Ctx {
+function makeCtx(host: VaultToolHost, run: { vaultToken: object | null; signal?: AbortSignal }): Ctx {
     const ensureLive = () => {
         if (!run.vaultToken || host.vaultToken() !== run.vaultToken) throw new ToolError(SWITCHED);
     };
@@ -236,6 +235,7 @@ function makeCtx(host: VaultToolHost, run: { vaultToken: object | null }): Ctx {
     };
     return {
         host,
+        signal: run.signal,
         ensureLive,
         path,
         writablePath(value) {
@@ -675,81 +675,50 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 const searchCache = createVaultTextCache();
 let searchCacheToken: object | null = null;
 
-function escapeRegExp(s: string): string {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function matchLine(line: string, re: RegExp): string {
-    const trimmed = line.trim();
-    if (trimmed.length <= MAX_MATCH_LINE) return trimmed;
-    re.lastIndex = 0;
-    const at = Math.max(0, (re.exec(line)?.index ?? 0) - 100);
-    return `${at > 0 ? '…' : ''}${line.slice(at, at + MAX_MATCH_LINE)}…`;
-}
-
 async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const query = String(a.query);
     const scope = a.path !== undefined ? ctx.path(a.path) : '';
     const maxResults = typeof a.maxResults === 'number' ? a.maxResults : 100;
-    const caseSensitive = a.caseSensitive === true;
-    let re: RegExp;
-    try {
-        re = new RegExp(a.regex === true ? query : escapeRegExp(query), caseSensitive ? '' : 'i');
-    } catch (err) {
-        throw new ToolError(err instanceof Error ? err.message : `invalid regular expression: ${String(err)}`);
-    }
-    if (scope) {
-        const kind = await ctx.host.entryKind(scope);
-        if (!kind) throw new ToolError(`"${scope}" does not exist.`);
-    }
-
     const token = ctx.host.vaultToken();
-    if (token !== searchCacheToken) { searchCache.clear(); searchCacheToken = token; }
-    const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
-    const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
-    // Drawings and notebooks are JSON on disk; indexing them would return
-    // snapshot internals as "matches" (SearchPanel excludes them the same way).
-    const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-    const index = await searchCache.sync(textFiles);
-    ctx.ensureLive();
-
-    const out: string[] = [];
-    let count = 0;
-    let fileCount = 0;
-    let stopped = false;
-    const textPaths = new Set(textFiles.map(f => f.path));
-    for (const file of files) {
-        if (count >= maxResults) { stopped = true; break; }
-        let hitHere = false;
-        if (re.test(file.name)) { out.push(`${file.path} (file name matches)`); count++; hitHere = true; }
-        if (!textPaths.has(file.path)) { if (hitHere) fileCount++; continue; }
-        const text = ctx.host.openBuffer(file.path) ?? index.get(file.path);
-        if (text !== undefined) {
-            const lines = text.split('\n');
-            let inFile = 0;
-            // Line by line (like grep): bounds what one pathological pattern can
-            // cost to one line at a time.
-            for (let i = 0; i < lines.length; i++) {
-                if (!re.test(lines[i])) continue;
-                if (count >= maxResults) { stopped = true; break; }
-                if (inFile >= MAX_MATCHES_PER_FILE) { out.push(`${file.path}: …more matches in this file (search it alone with path to see them)`); break; }
-                out.push(`${file.path}:${i + 1}: ${matchLine(lines[i], re)}`);
-                count++;
-                inFile++;
-                hitHere = true;
+    let textFileCount = 0;
+    let answer: MatchAnswer;
+    try {
+        answer = await matchAgentSearch({ query, regex: a.regex === true, caseSensitive: a.caseSensitive === true, maxResults }, async () => {
+            if (scope) {
+                const kind = await ctx.host.entryKind(scope);
+                if (!kind) throw new ToolError(`"${scope}" does not exist.`);
             }
-        }
-        if (hitHere) fileCount++;
-        if (stopped) break;
+            if (token !== searchCacheToken) { searchCache.clear(); searchCacheToken = token; }
+            const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
+            const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
+            // Keep scope/cache admission here; the disposable worker receives no file handles.
+            const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
+            const index = await searchCache.sync(textFiles);
+            ctx.ensureLive();
+            textFileCount = textFiles.length;
+            const textPaths = new Set(textFiles.map(f => f.path));
+            return (function* () {
+                for (const file of files) yield {
+                    path: file.path, name: file.name,
+                    text: textPaths.has(file.path) ? ctx.host.openBuffer(file.path) ?? index.get(file.path) : undefined,
+                };
+            })();
+        }, { signal: ctx.signal, vaultToken: token, isCurrent: () => ctx.host.vaultToken() === token });
+    } catch (err) {
+        if (err instanceof Error && err.name === 'SyntaxError') throw new ToolError(err.message);
+        throw err;
     }
-
+    const { out, count, fileCount, stopped, incomplete } = answer;
     const where = scope ? ` in "${scope}"` : '';
-    if (!out.length) {
-        return ok(`No matches for ${JSON.stringify(query)}${where}. (Searched ${textFiles.length} text files and every file name; EPUB/PDF text, drawings and notebooks are not searched — read those with vault_read.)`);
+    if (!out.length && !incomplete) {
+        return ok(`No matches for ${JSON.stringify(query)}${where}. (Searched ${textFileCount} text files and every file name; EPUB/PDF text, drawings and notebooks are not searched — read those with vault_read.)`);
     }
     const summary = `${count} match${count === 1 ? '' : 'es'} in ${fileCount} file${fileCount === 1 ? '' : 's'} for ${JSON.stringify(query)}${where} (format: path:line: text)`;
     if (stopped) out.push(`…[stopped at maxResults=${maxResults}; narrow the query, pass path to search one folder, or raise maxResults (≤ 500)]`);
-    return ok([summary, ...out].join('\n'));
+    // Measured: 295 acknowledged matches filled the 60k text cap and clipped a trailing timeout.
+    // Even query text is unbounded, so status must precede the summary as well as the rows.
+    const status = incomplete ? [`…[incomplete:true; ${answer.reason}]`] : [];
+    return ok([...status, summary, ...out].join('\n'));
 }
 
 /* ───────────────────────── text edits ───────────────────────── */
@@ -1029,7 +998,7 @@ export async function executeTool(
     name: string,
     args: Record<string, unknown>,
     host: VaultToolHost,
-    run: { vaultToken: object | null },
+    run: { vaultToken: object | null; signal?: AbortSignal },
 ): Promise<ToolExecution> {
     const def = TOOL_DEFS.get(name);
     if (!def) return fail(`unknown tool "${name}". Available: ${VAULT_TOOLS.map(t => t.name).join(', ')}.`);

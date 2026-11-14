@@ -242,24 +242,31 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
             chars += length; blockLength += length;
             if (chars + blocks.length > FORMAT_LIMITS.textChars) fail('Text exceeds one million UTF-16 units', run[0], true);
             const markFields = run[1] ? await fieldMap(run[1], cooperate) : undefined;
-            const hasUnknownMarks = markFields ? hasExtras(markFields, MARKS) : false;
-            unknown ||= hasUnknownMarks;
             const marks: Record<string, unknown> = {};
+            // text.md §4.3 on load: an explicit false mark is the absence of the mark, an invalid link is
+            // dropped to plain text (formatting only), and a known mark holding anything else is kept in x
+            // verbatim rather than refusing the board. Structure that cannot be read stays read-only.
+            const malformedMarks = new Set<string>();
             if (markFields) {
                 for (const key of MARKS) {
                     const value = markFields.get(key);
                     if (!value) continue;
                     if (key === 'x') marks.x = cooperate ? await value.rawIncremental(cooperate) : value.raw();
-                    else if (key === 'link') marks.link = url(value);
-                    else {
-                        if (value.kind !== 'boolean' || value.value() !== true) fail('Present rich marks must be true', value);
-                        marks[key] = true;
-                    }
+                    else if (key === 'link') {
+                        try { marks.link = url(value); } catch (error) {
+                            if (!(error instanceof JsonReadError)) throw error;
+                            repaired = true;
+                        }
+                    } else if (value.kind === 'boolean' && value.value() === true) marks[key] = true;
+                    else if (value.kind === 'boolean' && value.value() === false) repaired = true;
+                    else { malformedMarks.add(key); repaired = true; }
                 }
+                const hasUnknownMarks = hasExtras(markFields, MARKS) || malformedMarks.size > 0;
+                unknown ||= hasUnknownMarks;
                 if (hasUnknownMarks) {
                     const entries: string[] = [];
                     for (const [key, value] of markFields) {
-                        if (!MARKS.includes(key)) entries.push(`${JSON.stringify(key)}:${cooperate ? await value.rawIncremental(cooperate) : value.raw()}`);
+                        if (!MARKS.includes(key) || malformedMarks.has(key)) entries.push(`${JSON.stringify(key)}:${cooperate ? await value.rawIncremental(cooperate) : value.raw()}`);
                     }
                     const previous = marks.x;
                     const rawText = previous === undefined ? `{${entries.join(',')}}` : `{"previous":${previous},"unknown":{${entries.join(',')}}}`;

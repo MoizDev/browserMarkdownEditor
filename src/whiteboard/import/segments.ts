@@ -11,7 +11,13 @@ function half(bits: number): number {
     return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
 }
 
-export function decodeLegacySegment(segment: LegacySegment): readonly LegacyPoint[] {
+export interface LegacySegmentPoints { readonly points: readonly LegacyPoint[]; readonly dropped: number }
+
+// Plan document-model §9.2 (non-finite stroke points): every delta is relative to the point before it,
+// so one non-finite value poisons all later points of its channel (Infinity + finite stays Infinity,
+// NaN stays NaN). The valid prefix is therefore all that can be placed; the tail is dropped and counted.
+// A negative pressure is a different class (native E-FMT-21, import.md D-10) and still refuses.
+export function decodeLegacySegment(segment: LegacySegment): LegacySegmentPoints {
     const dim = segment.dim ?? 3;
     if ((dim !== 2 && dim !== 3) || (segment.type !== 'free' && segment.type !== 'straight')) {
         throw new Error('Unsupported stroke segment');
@@ -28,19 +34,22 @@ export function decodeLegacySegment(segment: LegacySegment): readonly LegacyPoin
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const values = Array.from({ length: dim }, (_, i) => view.getFloat32(i * 4, true));
+    const total = 1 + (bytes.length - firstBytes) / deltaBytes;
     const points: LegacyPoint[] = [];
-    const add = () => {
+    // Returns false at the first non-finite point; the caller stops there.
+    const add = (): boolean => {
         const [x, y] = values;
         const pressure = dim === 3 ? values[2] : 0.5;
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(pressure) || pressure < 0) {
-            throw new Error('Invalid stroke coordinate or pressure');
-        }
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(pressure)) return false;
+        if (pressure < 0) throw new Error('Invalid stroke coordinate or pressure');
         points.push({ x, y, pressure });
+        return true;
     };
-    add();
-    for (let offset = firstBytes; offset < bytes.length; offset += deltaBytes) {
-        for (let i = 0; i < dim; i++) values[i] += half(view.getUint16(offset + 2 * i, true));
-        add();
+    if (add()) {
+        for (let offset = firstBytes; offset < bytes.length; offset += deltaBytes) {
+            for (let i = 0; i < dim; i++) values[i] += half(view.getUint16(offset + 2 * i, true));
+            if (!add()) break;
+        }
     }
-    return points;
+    return { points, dropped: total - points.length };
 }

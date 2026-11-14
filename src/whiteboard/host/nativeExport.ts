@@ -45,19 +45,22 @@ export interface NativeExportOptions {
 }
 
 export interface NativeExportJob {
-    readonly bounds: Readonly<Rect>;
-    readonly topmostRoot: NodeId | null;
     png(signal: AbortSignal): Promise<Blob>;
     svg(signal: AbortSignal): Promise<Blob>;
     filename(extension: 'png' | 'svg'): string;
     release(): void;
 }
 
+export interface NativePreparedExportJob extends NativeExportJob {
+    readonly bounds: Readonly<Rect>;
+    readonly topmostRoot: NodeId | null;
+}
+
 let serial = 0;
 const stale = () => new DOMException('Board export ended', 'AbortError');
 
 /** Scene, selection and media are pinned before the first asynchronous boundary. */
-export async function prepareNativeExport(options: NativeExportOptions): Promise<NativeExportJob> {
+export async function prepareNativeExport(options: NativeExportOptions): Promise<NativePreparedExportJob> {
     const { runtime, signal, route, theme, transparent, boardName, maxSide } = options;
     const region = options.region ? { ...options.region } : undefined;
     if (region && (![region.x, region.y, region.width, region.height, region.x + region.width, region.y + region.height].every(Number.isFinite)

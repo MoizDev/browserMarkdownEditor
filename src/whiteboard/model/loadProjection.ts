@@ -7,6 +7,8 @@ import { createLoadedBoardDoc } from './loadDocument';
 import { recountLoadMedia } from './loadMediaCounts';
 import type { LoadProjection, LoadRepairDraft, LoadSampleWire, RehydratedLoad } from './loadTypes';
 import type { NodeRecord } from './nodes';
+import type { NodeId, SheetId } from './ids';
+import type { MediaId } from './media';
 import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
 import { validateLoadedNode, validateLoadedRootIncremental } from './validate';
 
@@ -129,6 +131,22 @@ export async function rehydrateLoad(projection: LoadProjection,
         const doc = await createLoadedBoardDoc(input, cooperate, signal);
         const root = await validateLoadedRootIncremental(doc, cooperate, signal);
         if (!root.ok) throw new TypeError(root.reason);
+        const preservedKeys = new Set<string>();
+        let sourceWork = 0;
+        for (const record of doc.preserved.records) {
+            if ((sourceWork++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            preservedKeys.add(JSON.stringify([record.type, record.id]));
+        }
+        for (const source of p.sources) {
+            if ((sourceWork++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if (!source || typeof source !== 'object') throw new TypeError('Invalid projected source');
+            if ((source.category === 'node' && (typeof source.id !== 'string' || !doc.nodes.has(source.id as NodeId)))
+                || (source.category === 'sheet' && (typeof source.id !== 'string' || !doc.sheets.has(source.id as SheetId)))
+                || (source.category === 'media' && (typeof source.id !== 'string' || !doc.media.has(source.id as MediaId)))
+                || (source.category === 'opaque' && (typeof source.id !== 'string' || !preservedKeys.has(JSON.stringify([source.type, source.id]))))) {
+                throw new TypeError('Projected source does not name an admitted record');
+            }
+        }
         let ordinal = 0;
         for (const node of nodes) {
             if ((ordinal & 255) === 0) { cancelled(signal); await cooperate?.(); }

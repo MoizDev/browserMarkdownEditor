@@ -197,6 +197,14 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 assertPdfPrintAllowed(tiledPdfCapabilities(source.document.poolDocument.info));
             };
             checkPolicy();
+            if (!tiled) {
+                // Classic has no native permission record: its pdf.js session reads the /P flags of these same bytes.
+                // Original and Annotate each hold their own session, so ask the one the user is looking at.
+                const classic = mode === 'edit' ? (source ? loadedSource?.session : undefined) : session;
+                const caps = classic ? await classic.capabilities().catch(() => null) : null;
+                if (printEpoch.current !== epoch) return;
+                assertPdfPrintAllowed(caps ?? { print: 'unknown' as const });
+            }
             const result = await onPreparePrint(file.path);
             if (printEpoch.current !== epoch) return;
             checkPolicy();
@@ -246,8 +254,10 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (!isVisible || !isFocused) return;
         const key = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
+            // Focus on the body is the pane's own keyboard owner: a click on the canvas leaves nothing focused.
+            const paneOwns = !target || target === document.body || target === document.documentElement || !!root.current?.contains(target);
             if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p' ||
-                !target || !root.current?.contains(target) || target.closest('input, textarea, [contenteditable="true"], [role="dialog"]')) return;
+                !paneOwns || target?.closest('input, textarea, [contenteditable="true"], [role="dialog"]')) return;
             event.preventDefault(); event.stopPropagation();
             setPrint(value => value === 'closed' ? 'confirm' : value);
         };

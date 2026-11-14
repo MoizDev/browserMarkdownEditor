@@ -3,9 +3,9 @@ import { boardWorker } from '../workers/client'
 import type { BoardJobIdentity } from '../workers/protocol'
 import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
-import { paintItemDisplay } from './displayList'
+import { paintItemDisplay, wrapTextDisplay } from './displayList'
 import type { ExportImage } from './displayList'
-import { createExportTextResolver } from './textResolver'
+import { createStreamingExportTextResolver } from './textStreamResolver'
 
 function transferBytes(item: PageDisplayItem): number {
   if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
@@ -37,7 +37,7 @@ export async function streamSvg(
   signal.throwIfAborted()
   const identity: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const streamId = crypto.randomUUID(), client = boardWorker('export')
-  const text = createExportTextResolver(source, signal)
+  const text = createStreamingExportTextResolver(source, signal)
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
     && candidate.session === identity.session && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   const opts = { priority: 0 as const, signal }
@@ -76,7 +76,15 @@ export async function streamSvg(
       const items: PageDisplayItem[] = []
       for (const item of chunk) {
         signal.throwIfAborted()
-        items.push(await paintItemDisplay(item, scale, image, signal, text))
+        if (item.kind === 'text') {
+          await send(items)
+          items.length = 0
+          for await (const part of text(item, scale, signal)) {
+            signal.throwIfAborted()
+            await send([wrapTextDisplay(item, [part])])
+            if (!source.isCurrent()) throw new Error('Paint capture stale')
+          }
+        } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0

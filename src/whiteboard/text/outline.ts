@@ -3,6 +3,8 @@ import type { WorkerContext } from '../../platform/workers';
 import { BoardFonts } from './fonts';
 import type { PaintRect } from './paint';
 import type { OutlineWorkerRequest } from './outlineTypes';
+import { handleOutlineStream, isOutlineStreamRequest } from './outlineStream';
+import type { OutlineStreamReply } from './outlineStream';
 import { rasterTextFragment } from './outlineRaster';
 import { clearOutlineGlyphCaches, shapeTextFragment } from './outlineShape';
 import { validOutlineRequest } from './outlineValidation';
@@ -56,7 +58,8 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
 }
 
 /** The existing worker protocol collects one text node; streaming consumers can retain only one item. */
-export async function textOutline(payload: unknown, context: WorkerContext): Promise<PageDisplayItem[]> {
+export async function textOutline(payload: unknown, context: WorkerContext): Promise<PageDisplayItem[] | OutlineStreamReply> {
+    if (isOutlineStreamRequest(payload)) return handleOutlineStream(payload, context, streamTextOutline);
     const items: PageDisplayItem[] = [];
     for await (const item of streamTextOutline(payload, context)) items.push(item);
     return items;

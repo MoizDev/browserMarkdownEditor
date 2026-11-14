@@ -231,7 +231,15 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         subscribe: channel.subscribe.bind(channel),
         hasPendingEdits: pendingState,
         onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
-        checkpoint() { guard(); try { scheduler.flushNow(); return capture(); } finally { notifyPending(); } },
+        checkpoint() {
+            if (disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
+            if (recovering) throw new ApplyFailed('read-only', 'Recovery is in progress');
+            // Capturing committed content is not an edit: native acquisition needs
+            // its R0 checkpoint while the temporary admission seal is still set.
+            // Read-only capture must not try to finish an uncommitted user gesture.
+            try { if (!readonlyReason()) scheduler.flushNow(); return capture(); }
+            finally { notifyPending(); }
+        },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
             // A first format conversion can write admitted revision zero without a model edit.

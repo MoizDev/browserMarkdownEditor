@@ -3,7 +3,7 @@ import type { EditableTextRequest } from './bindingTypes';
 
 // The text-size table is the plan's default host metric; zoom never changes layout.
 const TEXT_SIZE = { s: 18, m: 24, l: 36, xl: 44 } as const;
-const LABEL_SIZE = { s: 18, m: 22, l: 26, xl: 32 } as const;
+const CONNECTOR_LABEL_SIZE = { s: 18, m: 20, l: 24, xl: 28 } as const;
 const zero = { top: 0, right: 0, bottom: 0, left: 0 } as const;
 
 /** Resolve the same host constraints for normal paint, edit overlay, and growY. */
@@ -19,7 +19,7 @@ export const editableTextRequest: EditableTextRequest = (node, text, options) =>
     if (node.kind === 'connector') {
         if (!Number.isFinite(options.connectorLength) || options.connectorLength! < 0) throw new RangeError('Connector label needs its path length');
         return { text, revision, fontEpoch, width: Math.max(64, options.connectorLength! / 2),
-            style: { font: node.font, size: LABEL_SIZE[node.size] * node.labelScale,
+            style: { font: node.font, size: CONNECTOR_LABEL_SIZE[node.size] * node.labelScale,
                 ink: { swatch: node.labelColor, role: 'label' }, align: 'middle', verticalAlign: 'middle',
                 padding: zero, minHeight: 0, overflow: 'grapheme' } };
     }

@@ -3,6 +3,7 @@ import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
 import { paintItemDisplay } from './displayList'
 import type { ExportImage, ExportText } from './displayList'
+import { createExportTextResolver } from './textResolver'
 
 /** One immutable source per physical page. Never publish a partial list: the caller holds
  * the source's revision/media leases until the resulting page has been handed to the writer. */
@@ -14,6 +15,7 @@ export async function streamPageDisplayList(
     throw new RangeError('Invalid export page')
   }
   const chunk: PaintItem[] = [], items: PageDisplayItem[] = []
+  const outlineText = text ?? createExportTextResolver(source, signal)
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   try {
     let complete = false
@@ -24,7 +26,7 @@ export async function streamPageDisplayList(
       complete = state === 'complete'
       for (const item of chunk) {
         signal.throwIfAborted()
-        items.push(await paintItemDisplay(item, scale, image, signal, text))
+        items.push(await paintItemDisplay(item, scale, image, signal, outlineText))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0

@@ -22,13 +22,21 @@ interface ViewBinding {
     readonly theme: () => 'light' | 'dark';
     readonly notice: (message: string) => void;
 }
-interface ClipboardService {
-    attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void): () => void;
+export interface NativeClipboardBinding {
+    readonly controller: ReturnType<typeof createNativeClipboardController>;
+    readonly commands: ReturnType<typeof createNativeClipboardCommands>;
+    openMenu(event: MouseEvent): void;
+    focus(): void;
+    detach(): void;
 }
-const services = new WeakMap<BoardRuntime, ClipboardService>();
+export interface NativeClipboardService {
+    attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
+        inputHandled?: boolean): NativeClipboardBinding;
+}
+const services = new WeakMap<BoardRuntime, NativeClipboardService>();
 let serial = 0;
 
-function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identity: NativeCanvasIdentity): ClipboardService {
+export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identity: NativeCanvasIdentity): NativeClipboardService {
     const existing = services.get(runtime);
     if (existing) return existing;
     const token = Object.freeze({ documentId: identity.documentId, session: identity.session,
@@ -93,8 +101,8 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
                 link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); },
         });
     } catch (error) { ingestor.dispose(); cache.close(); throw error; }
-    const service: ClipboardService = {
-        attach(surface, lease, theme, notice) {
+    const service: NativeClipboardService = {
+        attach(surface, lease, theme, notice, inputHandled = false) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let pointer: { x: number; y: number } | null = null;
             const surfacePoint = (x: number, y: number) => {
@@ -152,17 +160,23 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
                 ] });
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
-            surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('paste', paste);
-            surface.addEventListener('keydown', keydown); surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop);
-            surface.addEventListener('contextmenu', menu);
-            return () => {
+            surface.addEventListener('copy', copy); surface.addEventListener('cut', cut);
+            if (!inputHandled) {
+                surface.addEventListener('paste', paste); surface.addEventListener('keydown', keydown);
+                surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
+            }
+            let detached = false;
+            return { controller, commands, openMenu: menu, focus, detach() {
+                if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 controller.retire(() => controllers.delete(controller));
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);
-                surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut); surface.removeEventListener('paste', paste);
-                surface.removeEventListener('keydown', keydown); surface.removeEventListener('dragover', dragover); surface.removeEventListener('drop', drop);
-                surface.removeEventListener('contextmenu', menu);
-            };
+                surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut);
+                if (!inputHandled) {
+                    surface.removeEventListener('paste', paste); surface.removeEventListener('keydown', keydown);
+                    surface.removeEventListener('dragover', dragover); surface.removeEventListener('drop', drop); surface.removeEventListener('contextmenu', menu);
+                }
+            } };
         },
     };
     try {
@@ -182,7 +196,7 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
 /** Only event listeners and camera belong to a pane; the command service belongs to the document. */
 export function useNativeClipboard(lease: NativeViewLease, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     theme: () => 'light' | 'dark', notice: (message: string) => void): ViewerViewHandle {
-    const [state, setState] = useState<{ runtime: BoardRuntime; service: ClipboardService } | null>(null);
+    const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
     const service = state?.runtime === lease.runtime ? state.service : null;
     useEffect(() => {
         try { setState({ runtime: lease.runtime, service: documentClipboard(lease.runtime, host, identity) }); }
@@ -191,7 +205,7 @@ export function useNativeClipboard(lease: NativeViewLease, host: NativeCanvasHos
     return useMemo(() => ({ ...lease.view, attachInput(surface: HTMLElement, overlay: HTMLElement) {
         const detach = lease.view.attachInput(surface, overlay);
         if (!service) return detach;
-        try { const stop = service.attach(surface, lease, theme, notice); return () => { stop(); detach(); }; }
+        try { const binding = service.attach(surface, lease, theme, notice); return () => { binding.detach(); detach(); }; }
         catch (error) { detach(); throw error; }
     } }), [lease, service, theme, notice]);
 }

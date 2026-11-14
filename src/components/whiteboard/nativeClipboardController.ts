@@ -51,7 +51,7 @@ export interface NativeClipboardControllerOptions {
 export function createNativeClipboardController(options: NativeClipboardControllerOptions) {
     const { runtime, identity, host } = options, session = runtime.session, doc = session.doc;
     let disposed = false, pending = 0, retired: (() => void) | undefined;
-    const lifetime = new AbortController();
+    const lifetime = new AbortController(), jobs = new Set<AbortController>();
     const releaseRetired = () => { if (retired && pending === 0) { const done = retired; retired = undefined; disposed = true; lifetime.abort(); done(); } };
     const current = () => {
         const admitted = host.identity(identity.documentId);
@@ -83,6 +83,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
         duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob> },
         imageRead?: Promise<ClipboardInput | null>) => {
         const controller = new AbortController();
+        jobs.add(controller);
         const stop = runtime.selection.subscribe(() => {
             if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) controller.abort();
         });
@@ -185,7 +186,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             if (classified.kind !== 'empty') throw new Error(`Clipboard ${classified.kind} conversion is not yet available`);
             options.notice('The clipboard has no supported board content.');
         }, { signal, deadlineMs: 120_000 });
-        return work.finally(() => { stop(); controller.abort(); pending--; releaseRetired(); });
+        return work.finally(() => { stop(); jobs.delete(controller); controller.abort(); pending--; releaseRetired(); });
     };
     const report = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
     const pasteEvent = (event: ClipboardEvent) => {
@@ -230,6 +231,18 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 if (blob) media.set(entry.id, blob);
             }
             return execute(null, target, 'duplicate', { snapshot, media });
+        },
+        importFiles(files: readonly File[], point: ClipboardPoint): Promise<void> {
+            if (!files.length) return Promise.resolve();
+            const target = targetNow(point);
+            const input: ClipboardInput = { html: null, text: null, svg: null, uriList: null, privatePng: null,
+                files: files.map(file => ({ blob: file, name: file.name, directory: false })) };
+            return execute(Promise.resolve(input), target, 'drop');
+        },
+        cancelPending() {
+            const cancelled = jobs.size > 0;
+            for (const job of jobs) job.abort();
+            return cancelled;
         },
         dragover: acceptsBoardDrag,
         drop(event: DragEvent) {

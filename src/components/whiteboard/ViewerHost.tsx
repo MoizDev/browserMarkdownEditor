@@ -1,16 +1,20 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/usePlatformPane';
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
+import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
+import type { RenderToken } from '../../platform/render/types';
 import './viewerHost.css';
 
 /** The owner keeps the document/session alive across graph view, hidden tabs
  * and pane moves; this host owns only the attached view. */
 export interface ViewerViewHandle {
     readonly accessibility: BoardAccessibilitySource;
+    readonly sourceToken?: RenderToken;
     subscribe(listener: () => void): () => void;
     setView(view: { visible: boolean; focused: boolean; theme: 'light' | 'dark'; inverted: boolean }): void;
     /** The view installs mode-appropriate input on the interaction root. */
     attachInput(interaction: HTMLElement, overlay: HTMLElement): () => void;
+    attachPlatform?(pane: PlatformPane | null): void;
 }
 export interface ViewerHostProps<T extends object> {
     readonly name: string;
@@ -47,7 +51,8 @@ export default function ViewerHost<T extends object>({
         interactionRef.current = element;
         setInteraction(element);
     }, []);
-    const pane = usePlatformPane({ host: surface, isVisible, isFocused, vaultEpoch, documentId, layers, services: platform });
+    const onPane = useCallback((attached: PlatformPane | null) => view.attachPlatform?.(attached), [view]);
+    const pane = usePlatformPane({ host: surface, isVisible, isFocused, vaultEpoch, documentId, layers, services: platform, onPane, sourceToken: view.sourceToken });
 
     useLayoutEffect(() => {
         viewState.current = { visible: isVisible, focused: isFocused, theme, inverted };

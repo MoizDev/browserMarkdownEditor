@@ -35,6 +35,8 @@ export interface PdfPoolDocument {
     readonly source: 'outer' | 'original';
     readonly info: Readonly<DocInfo>;
     readonly closed: boolean;
+    /** Host-validated exact geometry already acquired; never triggers native work. */
+    peekGeometry(page: number): Readonly<PageGeometry> | undefined;
     /** Exact transforms are acquired on demand; document extents alone are layout estimates. */
     resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>>;
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
@@ -55,6 +57,8 @@ export interface PdfPoolDocument {
     /** Highest-priority live waiter wins, including already queued/running extraction. */
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     setVisible(visible: boolean): void;
+    /** Explicitly clear failures for this lease's document without replacing its source. */
+    retry(): Promise<void>;
     close(): Promise<void>;
 }
 
@@ -65,6 +69,8 @@ export interface PdfWriterSession {
     close(): Promise<void>;
 }
 export interface PdfPool {
+    /** Identity of the trusted, opened render engine and its display geometry schema. */
+    readonly geometryEngine: Readonly<WriterOperations['writer.stageAnnotated']['result']['geometryEngine']>;
     open(options: PdfOpenOptions): Promise<PdfPoolDocument>;
     writer(options?: { signal?: AbortSignal }): Promise<PdfWriterSession>;
     stats(): Promise<readonly PdfWorkerStats[]>;

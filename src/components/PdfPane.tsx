@@ -30,7 +30,8 @@ import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
 import { pdfNativeEmphasisAvailability } from '../utils/pdfNativeEmphasis';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import { readPdfSessionRoute } from '../utils/pdfSessionRoute';
+import { choosePdfSessionRoute, readPdfSessionRoute, subscribePdfSessionRoute } from '../utils/pdfSessionRoute';
+import { assertPdfPrintAllowed, PDF_PRINT_UNKNOWN, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
@@ -49,6 +50,7 @@ export interface PdfPaneProps {
     /** Native ink attaches to the same App-owned session as its reader. */
     attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     reading?: PdfReadingBinding;
+    nativeCanvasHost?: import('../types/nativeCanvas').NativeCanvasHost;
     file: ActiveFile;
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
@@ -137,12 +139,15 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
-    const pdfRoute = reading ? (appSession ? readPdfSessionRoute(appSession) : undefined) : 'classic';
+    const pdfRoute = useSyncExternalStore(subscribePdfSessionRoute,
+        () => reading ? (appSession ? readPdfSessionRoute(appSession) : undefined) : 'classic', () => undefined);
     const tiled = pdfRoute === 'tiled';
     const [tiledSource, setTiledSource] = useState<PdfTiledTextSurfaceProps['source'] | null>(null);
     const currentTiledSource = tiledSource && appSession && tiledSource.session.token.vaultEpoch === reading?.identity.vaultEpoch &&
         tiledSource.session.token.documentId === documentId && tiledSource.session.token.session === appSession.serial &&
         tiledSource.session.token.bytesGeneration === appSession.bytesGeneration ? tiledSource : null;
+    const printOwner = useRef({ tiled, source: currentTiledSource, identity: reading?.identity });
+    printOwner.current = { tiled, source: currentTiledSource, identity: reading?.identity };
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
@@ -169,11 +174,27 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         printPending.current = epoch;
         setPrint('preparing'); setPrintError('');
         try {
+            const source = tiled ? currentTiledSource : null, identity = reading?.identity;
+            const checkPolicy = () => {
+                const live = printOwner.current;
+                if (live.tiled !== tiled) throw new Error('The PDF viewer changed. Prepare it again before printing.');
+                if (!tiled) return;
+                const current = live.identity;
+                if (!source || !identity || !live.tiled || live.source !== source || !current ||
+                    current.vaultId !== identity.vaultId || current.vaultEpoch !== identity.vaultEpoch ||
+                    current.documentId !== identity.documentId || current.byteGeneration !== identity.byteGeneration ||
+                    !source.session.isCurrent() || source.document.poolDocument.closed) throw new Error(PDF_PRINT_UNKNOWN);
+                assertPdfPrintAllowed(tiledPdfCapabilities(source.document.poolDocument.info));
+            };
+            checkPolicy();
             const result = await onPreparePrint(file.path);
             if (printEpoch.current !== epoch) return;
+            checkPolicy();
             if (!result.valid()) throw new Error('The document changed while preparing to print.');
             const url = URL.createObjectURL(new Blob([result.bytes.slice().buffer], { type: 'application/pdf' }));
-            printReady.current = { url, valid: result.valid, validate: result.validate };
+            printReady.current = { url,
+                valid: () => { try { checkPolicy(); return result.valid(); } catch { return false; } },
+                validate: async () => { try { checkPolicy(); const valid = await result.validate(); checkPolicy(); return valid; } catch { return false; } } };
             printExpiry.current = window.setTimeout(() => {
                 if (printReady.current?.url !== url) return;
                 ++printEpoch.current; printPopup.current?.close(); printPopup.current = null;
@@ -233,6 +254,15 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const binding = useRef(reading);
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
+    const openClassic = useCallback(() => {
+        const current = binding.current?.identity, expected = reading?.identity;
+        const live = getSessionIdentity(documentId);
+        if (!appSession || !expected || !current || live?.serial !== appSession.serial ||
+            live.bytesGeneration !== appSession.bytesGeneration || current.documentId !== documentId ||
+            current.documentId !== expected.documentId || current.vaultId !== expected.vaultId ||
+            current.vaultEpoch !== expected.vaultEpoch || current.byteGeneration !== expected.byteGeneration) return;
+        choosePdfSessionRoute(appSession, 'classic');
+    }, [appSession, documentId, reading?.identity]);
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
     const [tiledVersion, setTiledVersion] = useState<DiskVersion>();
     const tiledNotify = useCallback((message: string) => binding.current?.onNotify(message), []);
@@ -837,12 +867,19 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                             publishLocation(cause);
                         }} onTextQuality={setTextQuality} />
                 </Suspense>
-            ) : <div className="pdf-pane-message">Opening extracted text…</div> : (
+            ) : (
+                <Suspense fallback={<div className="pdf-pane-message">Opening extracted text…</div>}>
+                    <PdfTiledSurface sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
+                        sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
+                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
+                        onSource={setTiledSource} notify={tiledNotify} openClassic={openClassic} />
+                </Suspense>
+            ) : (
                 <Suspense fallback={<div className="pdf-pane-message">Loading PDF…</div>}>
                     <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
-                        onSource={setTiledSource} notify={tiledNotify} />
+                        onSource={setTiledSource} notify={tiledNotify} openClassic={openClassic} />
                 </Suspense>
             );
         } else if (!session) {

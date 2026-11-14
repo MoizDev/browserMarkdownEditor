@@ -149,6 +149,8 @@ export interface BackendDoc {
     openEmphasisClone?(): BackendDoc;
     /** Only a disposable clone may mutate objects. Ordinary documents throw NotSupported. */
     emphasisStroked?(request: RenderRequest, objectIndexes: Int32Array, strokeEm: number): RenderJob;
+    /** Current native page handles, excluding any separately owned clone. */
+    residentPages(): number;
     releasePage(index: number): void;
     close(): void;
 }

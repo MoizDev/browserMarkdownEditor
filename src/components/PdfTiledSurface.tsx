@@ -12,11 +12,14 @@ interface Props {
     filePath: string;
     visible: boolean;
     focused: boolean;
+    /** Open the shared source without mounting the Original compositor. */
+    sourceOnly?: boolean;
     sourceHash?: string;
     findMemory: PdfFindMemory;
     searchVault(query: string): void;
     rotate(delta: number, page?: number, picture?: PdfRotationPicture): void;
     openText(page?: number): void;
+    openClassic(): void;
     onSource(source: PdfTiledSource): void;
     notify(message: string): void;
 }
@@ -28,7 +31,7 @@ export default function PdfTiledSurface(props: Props) {
     const identity = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(reading.identity.documentId), () => undefined);
     const [loaded, setLoaded] = useState<{ key: string; source: PdfTiledSource } | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<{ key: string; message: string } | null>(null);
     const [retry, setRetry] = useState(0);
     const [passwords, setPasswords] = useState<typeof import('../pdf/session/passwords') | null>(null);
     const key = identity ? `${reading.identity.vaultEpoch}:${reading.identity.documentId}:${identity.serial}:${identity.bytesGeneration}` : '';
@@ -40,14 +43,22 @@ export default function PdfTiledSurface(props: Props) {
             if (!controller.signal.aborted) setPasswords(store);
             const factory = await ensurePdfTiledSourceFactory();
             controller.signal.throwIfAborted();
+            if (retry > 0 && identity) {
+                const { retryPdfPool } = await import('../pdf/session/startup');
+                await retryPdfPool({ vaultEpoch: reading.identity.vaultEpoch, documentId: reading.identity.documentId,
+                    bytesGeneration: identity.bytesGeneration, session: identity.serial });
+                controller.signal.throwIfAborted();
+            }
             return factory.open(reading, controller.signal);
         }).then(value => {
-            if (!controller.signal.aborted) { setLoaded({ key, source: value }); setError(null); }
+            if (!controller.signal.aborted && value.session.isCurrent() && value.session.token.vaultEpoch === reading.identity.vaultEpoch &&
+                value.session.token.documentId === reading.identity.documentId && value.session.token.session === identity?.serial &&
+                value.session.token.bytesGeneration === identity.bytesGeneration) { setLoaded({ key, source: value }); setError(null); }
         }, failure => {
-            if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'PDF could not be opened.');
+            if (!controller.signal.aborted) setError({ key, message: failure instanceof Error ? failure.message : 'PDF could not be opened.' });
         });
         return () => controller.abort();
-    }, [reading, key, retry]);
+    }, [reading, identity, key, retry]);
     useEffect(() => {
         if (!key) return;
         let disposed = false;
@@ -60,14 +71,16 @@ export default function PdfTiledSurface(props: Props) {
         });
         return () => { disposed = true; release?.(); };
     }, [key, reading.identity.documentId, props.visible, props.focused]);
-    useEffect(() => { if (source) onSource(source); }, [onSource, source]);
-    const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} /> : null;
-    if (error && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error}
-        <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button></div></>;
-    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">Loading PDF…</div></>;
+    useEffect(() => { if (source?.session.isCurrent()) onSource(source); }, [onSource, source]);
+    const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} visible={props.visible && props.focused} /> : null;
+    if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
+        <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
+        <button className="pdf-pane-action" onClick={props.openClassic}>Open in Classic</button></div></>;
+    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
+    if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
         mirror={source.mirror} capturer={source.capturer} selectionState={source.selection}
         filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={props.sourceHash}
         findMemory={props.findMemory} onSearchVault={props.searchVault} onRotate={props.rotate}
-        onOpenTextView={props.openText} onNotice={props.notify} />;
+        onOpenTextView={props.openText} onNotice={props.notify} onOpenClassic={props.openClassic} />;
 }

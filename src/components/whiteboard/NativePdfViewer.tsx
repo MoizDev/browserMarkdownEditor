@@ -167,15 +167,15 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
         inverted={inverted} setInverted={setInverted} cover={cover} reason={reason} readOnly />;
 }
 
-function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, editingChrome }: {
+function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, editingChrome, detach }: {
     props: NativePdfViewerProps; lease: NativeViewLease; viewer: NativeViewLease['view']; onFocus(): void; register(focus: () => void): () => void;
-    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; readOnly: boolean; editingChrome?: ReactNode;
+    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; readOnly: boolean; editingChrome?: ReactNode; detach?: boolean;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const pages = lease.runtime.session.doc.host.kind === 'pdf-ink' ? lease.runtime.session.doc.host.pages.length : 0;
     return <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-        <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
+        {!detach && <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readOnly={readOnly} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
@@ -188,7 +188,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
                 <span>{Math.round(navigation.zoom * 100)}%</span>
                 <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
                 <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
-            </div></>} />
+            </div></>} />}
         {cover && <div className="native-pdf-updating" role={reason ? 'alert' : 'status'} style={{ position: 'absolute', inset: 0,
             zIndex: 10, display: 'grid', placeItems: 'center', background: props.theme === 'dark' ? '#181818' : '#fff',
             color: props.theme === 'dark' ? '#fff' : '#111' }}>{reason ?? 'Updating PDF view…'}</div>}
@@ -252,7 +252,7 @@ function PdfEditingAttached({ props, context, updating }: { props: NativePdfView
         setInverted: context.setInverted, zoom: navigation.zoom });
     return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
         inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
-        readOnly={!context.editable} editingChrome={chrome} />;
+        readOnly={!context.editable} editingChrome={chrome} detach={!paired} />;
 }
 
 export default function NativePdfViewer(props: NativePdfViewerProps) {

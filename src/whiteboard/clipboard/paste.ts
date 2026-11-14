@@ -15,7 +15,7 @@ import type { JobContext } from '../security/admission';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { classifyClipboard, type ClipboardClassifierHost } from './classify';
 import type { ClipboardCopy } from './copy';
-import { convertExcalidrawShapes, finalizeExcalidrawDraft, type ExcalidrawBindingRequest, type FinalExcalidrawDraft } from './excalidraw';
+import type { ExcalidrawBindingRequest, FinalExcalidrawDraft } from './excalidraw';
 import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
 import { pasteClipboardHtmlInJob } from './htmlPaste';
 import { insertNativeClipboard } from './insertNative';
@@ -112,6 +112,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                     identity, memory: host.memory, isCurrent: current, signal: context.signal }); check();
                 external = { kind: 'legacy', decoded: legacy };
             } else {
+                const { convertExcalidrawShapes, finalizeExcalidrawDraft } = await import('./excalidraw'); check();
                 wire = await readExcalidrawClipboard({ bytes: new Blob([classification.text], { type: 'application/json' }),
                     identity, memory: host.memory, isCurrent: current, signal: context.signal });
                 check();

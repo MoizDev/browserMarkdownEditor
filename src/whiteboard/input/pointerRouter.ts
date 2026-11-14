@@ -1,4 +1,5 @@
 import { PointerAcquisition, type MappingHistory, type PointerSink } from './pointer'
+import { PenContactTransitions } from './penTransitions'
 import { InputRouter } from './router'
 import type { FinishReason, InputToken, Modifiers, RealSample, Tool } from './tool'
 
@@ -13,6 +14,8 @@ export interface PointerRouterOptions<Context> {
   claim(): boolean
   releaseClaim(): void
   sampleChanged?(sample: RealSample): void
+  penTransitions?(sample: RealSample): boolean
+  settled?(signal: AbortSignal): Promise<void>
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<Context> | null
   ended(reason: FinishReason): void
   hover?(event: PointerEvent): void
@@ -25,6 +28,7 @@ export interface PointerRouterOptions<Context> {
 // This seam owns pointer-up ordering and routes interruption exactly once.
 export class PointerRouter<Context> {
   private readonly acquisition: PointerAcquisition
+  private pen: PenContactTransitions | null = null
   private pointerId: number | null = null
   private disposed = false
   constructor(private readonly options: PointerRouterOptions<Context>) {
@@ -37,26 +41,60 @@ export class PointerRouter<Context> {
           const route = options.resolve(sample, modifiers, event)
           if (!route || !options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
           this.pointerId = sample.pointerId
+          const owner = options.router.activeOwner
+          if (sample.source === 'pen' && options.penTransitions?.(sample) && options.settled
+            && (owner?.kind === 'ink' || owner?.kind === 'erase')) {
+            let transition: PenContactTransitions
+            transition = new PenContactTransitions(sample.pointerId, owner.kind === 'erase' ? 'eraser' : 'ink', {
+              current: () => options.current() && this.pen === transition && this.pointerId === sample.pointerId,
+              owner: () => options.router.activeOwner,
+              finish: reason => options.router.finish(options.token, sample.pointerId, reason),
+              interrupt: reason => options.router.interrupt(options.token, reason),
+              update: (samples, keys) => options.router.update(options.token, sample.pointerId, samples, keys),
+              begin: (point, keys, source) => {
+                const next = options.resolve(point, keys, source)
+                return !!next && options.router.begin(options.token, next.tool, point, keys, next.context)
+              },
+              settled: signal => options.settled!(signal),
+              ended: reason => {
+                if (this.pen !== transition) return
+                this.pen = null; this.pointerId = null
+                try { options.releaseClaim() } finally { options.ended(reason) }
+              },
+              error: error => options.error?.(error, sample.pointerId),
+            })
+            this.pen = transition
+          }
           return true
         } catch (error) { options.releaseClaim(); throw error }
       },
-      move: (id, samples, modifiers) => { if (options.current()) { if (samples.length) options.sampleChanged?.(samples[samples.length - 1]); options.router.update(options.token, id, samples, modifiers) } },
+      move: (id, samples, modifiers, event) => {
+        if (!options.current()) return
+        if (samples.length) options.sampleChanged?.(samples[samples.length - 1])
+        if (this.pen?.pointerId === id) this.pen.move(samples, modifiers, event)
+        else options.router.update(options.token, id, samples, modifiers)
+      },
       up: (id, samples, modifiers) => {
         if (this.pointerId !== id) return
         if (!options.current()) {
+          if (this.pen?.pointerId === id) { this.pen.stop('os-cancel'); return }
           this.pointerId = null
           try { options.router.interrupt(options.token, 'os-cancel') } finally { options.releaseClaim(); options.ended('os-cancel') }
           return
         }
         if (samples.length) options.sampleChanged?.(samples[samples.length - 1])
+        if (this.pen?.pointerId === id) { this.pen.end(samples, modifiers, 'up'); return }
         options.router.update(options.token, id, samples, modifiers)
         this.pointerId = null
         try { options.router.finish(options.token, id, 'up') } finally { options.releaseClaim(); options.ended('up') }
       },
       cancel: (id, reason) => {
         if (this.pointerId !== id) return
-        this.pointerId = null
         const end = reason === 'capture-lost' ? 'capture-lost' : 'os-cancel'
+        if (this.pen?.pointerId === id) {
+          this.pen.end([], { shift: false, alt: false, accel: false, control: false }, end); return
+        }
+        this.pointerId = null
         try { options.router.interrupt(options.token, 'os-cancel') } finally { options.releaseClaim(); options.ended(end) }
       },
       hover: event => options.hover?.(event),
@@ -74,6 +112,7 @@ export class PointerRouter<Context> {
     if (this.options.router.discardPreview(this.options.token)) { this.pointerId = null; this.options.releaseClaim(); this.options.ended('os-cancel') }
   }
   interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
+    if (this.pen) return this.pen.stop(reason)
     const ended = this.options.router.interrupt(this.options.token, reason)
     if (ended) { this.pointerId = null; this.options.releaseClaim(); this.options.ended(reason) }
     return ended

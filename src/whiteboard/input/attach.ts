@@ -153,6 +153,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
+    penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
+    settled: signal => session.enqueueAfterGesture(signal, () => undefined),
     hover: services.hover,
     claim, releaseClaim,
     resolve(sample, modifiers, event) {
@@ -161,7 +163,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       activeSource = sample.source
       const choice = start.active
       completeTool = false
-      if (sample.source === 'pen' && (event.button === 5 || (event.buttons & 32) !== 0)) {
+      if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
         return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
       }
       if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }

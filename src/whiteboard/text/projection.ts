@@ -10,7 +10,6 @@ interface ProjectionIndex {
     readonly starts: readonly number[];
     readonly lengths: readonly number[];
     readonly length: number;
-    plain?: string;
 }
 const indexes = new WeakMap<RichText, ProjectionIndex>();
 const blockLengths = new WeakMap<Block, number>();
@@ -66,6 +65,5 @@ export function projectionSlice(text: RichText, from: number, to: number): strin
     return pieces.join('');
 }
 export function projectionText(text: RichText): string {
-    const index = indexFor(text);
-    return index.plain ??= text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+    return text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
 }

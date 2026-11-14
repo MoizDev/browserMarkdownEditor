@@ -4,6 +4,8 @@ import type { MediaId, MediaMime } from '../model/media';
 import type { InspectedMedia } from './ingest';
 import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
+import { createSvgAdmissionProfile } from './svgProfile';
+import { svgFrameFactory } from './svgFrameHost';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
 // port deliberately cannot fall back to a detached parser in the vault origin.
@@ -69,10 +71,10 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     signal.throwIfAborted();
     if (sniffMedia(prefix) === 'image/svg+xml') {
         if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
-        if (!options.svg) throw new Error('SVG decoding is unavailable');
+        const svg = options.svg ?? createSvgAdmissionProfile(svgFrameFactory);
         await worker.request<boolean>('svgPreflight', { blob }, { priority: 1, deadlineMs: 5000, signal });
         signal.throwIfAborted();
-        const size = await options.svg.header(blob, signal);
+        const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
         signal.throwIfAborted();
         if (!validSize(size.width, size.height)) throw new RangeError('Invalid SVG dimensions');
         const id = await worker.request<MediaId>('hash', { blob }, { priority: 1, deadlineMs: 10000, signal });
@@ -86,7 +88,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             } catch {
                 await worker.recycle('SVG worker probe failed', { lazy: true }).catch(() => undefined);
                 signal.throwIfAborted();
-                await options.svg.probe(typed, signal);
+                await svg.probe(typed, signal);
             }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();

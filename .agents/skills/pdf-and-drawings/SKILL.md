@@ -22,7 +22,9 @@ as live tldraw shapes.
   The inventory is read-only and independent of the classic renderer. `plain` (no attachments of ours: the file's own bytes are the pristine original) and `annotated`
   (the supported legacy pair, `original.pdf` + a valid `tldraw-snapshot.json`) are the only EDITABLE
   roles; `notebookExport`, `unreadable`, `ambiguous` and `newer` open Annotate read-only with
-  `pdfRoleNotice`'s text in the outer view. An `original.pdf` alone does NOT make a file ours. The
+  `pdfRoleNotice`'s text in the outer view. A role-passing snapshot is also loaded into an isolated
+  legacy store before the editor mounts; a library rejection or render error revokes its exact source
+  and replaces the editor with a read-only notice, never a blank saveable canvas. An `original.pdf` alone does NOT make a file ours. The
   first save of a `plain` PDF is what adds the attachments. Only `plain` may be rotated
   (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's

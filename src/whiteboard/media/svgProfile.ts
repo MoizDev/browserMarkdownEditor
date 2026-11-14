@@ -1,10 +1,12 @@
 import type { SvgAdmissionProfile } from './inspect';
 import type { BoardJobIdentity } from '../workers/protocol';
+import type { MediaRasterGeometry } from './mips';
 
 // SEC-W2 supplies the opaque sandbox, fixed bootstrap, chunked channel and
 // exact-hash CSP. Separate profiles prevent XML parsing from gaining blob loads.
 export interface SvgContainedFrame {
-    request(operation: 'header' | 'probe', blob: Blob, signal: AbortSignal, size?: { readonly width: number; readonly height: number }): Promise<unknown>;
+    request(operation: 'header' | 'probe' | 'raster', blob: Blob, signal: AbortSignal,
+        size?: { readonly width: number; readonly height: number; readonly raster?: MediaRasterGeometry }): Promise<unknown>;
     dispose(): void;
 }
 export interface SvgFrameFactory {
@@ -40,4 +42,25 @@ export function createSvgAdmissionProfile(frames: SvgFrameFactory, identity: Boa
             if (result !== true) throw new Error('This picture could not be read');
         },
     };
+}
+
+export async function rasterSvgInProfile(frames: SvgFrameFactory, blob: Blob, width: number, height: number,
+    raster: MediaRasterGeometry, identity: BoardJobIdentity, isCurrent: (identity: BoardJobIdentity) => boolean,
+    signal: AbortSignal): Promise<ImageBitmap> {
+    signal.throwIfAborted();
+    if (!isCurrent(identity)) throw new DOMException('Stale SVG job', 'AbortError');
+    const frame = await frames.open('svg-image', signal, identity);
+    let result: unknown;
+    try {
+        result = await frame.request('raster', blob, signal, { width, height, raster });
+        if (!(result instanceof ImageBitmap)) throw new Error('Invalid SVG raster reply');
+        if (!isCurrent(identity) || signal.aborted || result.width !== raster.width || result.height !== raster.height) {
+            result.close(); result = undefined;
+            throw new DOMException('Stale SVG raster', 'AbortError');
+        }
+        return result;
+    } catch (error) {
+        if (result instanceof ImageBitmap) result.close();
+        throw error;
+    } finally { frame.dispose(); }
 }

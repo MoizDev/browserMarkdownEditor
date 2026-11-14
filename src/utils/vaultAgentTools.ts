@@ -1044,6 +1044,10 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const changed = r.created.length + r.updated.length + r.deleted.length;
     const lines = [`${changed ? 'Applied to' : 'Nothing was applied to'} ${path}${changed ? ' as one undo step' : ''}: created ${r.created.length}, updated ${r.updated.length}, deleted ${r.deleted.length}.`];
     if (r.created.length) lines.push(`created ids (in op order): ${r.created.join(', ')}`);
+    if (r.updatedShapes?.length) {
+        lines.push('updated geometry (read after applying):', ...r.updatedShapes.map(shape =>
+            `- ${shape.id}: x=${shape.x}, y=${shape.y}, w=${shape.w}, h=${shape.h}${shape.page === undefined ? '' : `, page=${shape.page}`}${shape.rotation === undefined ? '' : `, rotation=${shape.rotation}`}`));
+    }
     if (r.errors.length) lines.push('problems:', ...r.errors.map(e => `- ${e}`));
     if (!changed) return { result: textResult(`Error: ${lines.join('\n')}`, true) };
     return ok(lines.join('\n'), {

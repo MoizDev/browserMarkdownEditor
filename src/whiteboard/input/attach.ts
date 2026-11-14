@@ -14,6 +14,7 @@ import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
 import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
+import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 
 export type BoardInputMode = 'edit' | 'view'
 export type Detach = () => void
@@ -28,7 +29,7 @@ export interface BoardInputView {
   readonly wet: BoardWetLayer
   readonly token: InputToken
   readonly mappings: MappingHistory
-  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void }
+  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void }
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
   readonly predictionMapping: () => PredictionMapping
@@ -48,6 +49,10 @@ export interface BoardInputServices {
   ink(tool: 'pen' | 'highlighter', sample: RealSample): Omit<SessionInkServices, 'session' | 'tool' | 'clearRedoAtDown'>
   resolveTool(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null
   zoomBrush(): ZoomBrushContext
+  keyboardCursorInitial?(): Point
+  keyboardCursorVisible?(point: Point): Point
+  resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
+  keyboardNavigation?(): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void

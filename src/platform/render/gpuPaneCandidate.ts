@@ -25,6 +25,7 @@ export interface GpuPaneCandidateOptions {
     onReady(pane: QualifiedGpuPane): void;
     onEvict(): void;
     inputHealthy(): boolean;
+    frameInterval(): number | null;
 }
 
 interface Generation {
@@ -58,6 +59,10 @@ export class GpuPaneCandidate {
                 governor: this.options.runtime.governor, scheduler: this.options.runtime.scheduler, now,
                 onFailure: code => this.failure(preparation.generation, code),
                 onFenceAge: age => this.options.runtime.observeFence(this.options.paneId, age, this.options.inputHealthy()),
+                onGpuTiming: (p95, samples, disjoint) => {
+                    const interval = this.options.frameInterval();
+                    if (interval !== null) this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint);
+                },
                 evict: this.options.onEvict });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false };

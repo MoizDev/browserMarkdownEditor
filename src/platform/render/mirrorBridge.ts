@@ -26,7 +26,8 @@ export interface MirrorVersionBridge<T extends object> {
  * to mirror-retiring. This is not a cross-session lease transfer or a new current-version cache.
  */
 export function createMirrorVersionBridge<T extends object>(options: MirrorVersionBridgeOptions<T>): MirrorVersionBridge<T> | null {
-    const from = options.from;
+    const from: MirrorView = { ...options.from, token: { ...options.from.token },
+        view: { camera: { ...options.from.view.camera }, viewport: { ...options.from.view.viewport } } };
     const to = { ...options.toToken };
     if (from.token.vaultEpoch !== to.vaultEpoch || from.token.documentId !== to.documentId ||
         from.geometryDigest !== options.geometryDigest || !options.toSourceRole) return null;
@@ -58,7 +59,8 @@ export function createMirrorVersionBridge<T extends object>(options: MirrorVersi
                 return null;
             }
             const current = options.currentTarget();
-            if (!current || renderTokenKey(current) !== targetKey || renderTokenKey(view.token) !== targetKey ||
+            if (current && renderTokenKey(current) !== targetKey) { release(); return null; }
+            if (!current || renderTokenKey(view.token) !== targetKey ||
                 view.sourceRole !== options.toSourceRole || view.geometryDigest !== options.geometryDigest ||
                 view.colourVersion !== from.colourVersion) return null;
             return { entries, staleVersion: true, sharp: false };

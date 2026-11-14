@@ -1,6 +1,7 @@
 import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
 import { cpuGovernor } from './governor';
+import { workerStopped } from './lifecycle';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
 const clients = new Map<string, Client>();
@@ -148,6 +149,9 @@ class Client implements WorkerClient {
                 for (const job of this.pending.values()) {
                     if (job.phase !== 'queued' || (this.state !== 'ready' && job.bootstrap !== connection.generation)) continue;
                     if (this.expired(job)) continue;
+                    // Bound outstanding background dispatch, including cancelled work awaiting its
+                    // late reply. Interactive work must never wait behind this bound.
+                    if (job.options.priority !== 0 && connection.sent.size >= 256) continue;
                     try {
                         if (!job.admitted && !job.permit) {
                             if (job.options.cpu === 'light') job.admitted = true;
@@ -287,7 +291,10 @@ class Client implements WorkerClient {
                 if (contained) placement.port.close();
                 placement.terminate();
             };
-            if (this.generation !== generation || this.state !== 'starting') { terminate(); return; }
+            if (this.generation !== generation || this.state !== 'starting') {
+                try { terminate(); } finally { workerStopped(endpoint); }
+                return;
+            }
             const connection: Connection = {
                 generation, endpoint, terminate, alive: contained ? () => placement.alive() : undefined,
                 detach: () => {
@@ -360,6 +367,7 @@ class Client implements WorkerClient {
             if (data.ok) this.discard(job.op, data.result);
         } else if (data.ok) this.settle(job, undefined, data.result);
         else this.settle(job, new WorkerHostError(data.error.name, data.error.message));
+        this.pump();
         this.syncClock();
     }
 
@@ -438,6 +446,7 @@ class Client implements WorkerClient {
         for (const job of connection.sent.values()) if (job.options.key !== undefined) keyed.add(`${job.op}\0${job.options.key}`);
         for (const key of keyed) this.poison.set(key, (this.poison.get(key) ?? 0) + 1);
         const posted = [...connection.sent.values()];
+        this.state = 'recycling';
         this.disconnect();
         for (const job of posted) {
             const poisoned = job.options.key !== undefined && (this.poison.get(`${job.op}\0${job.options.key}`) ?? 0) >= 2;
@@ -465,6 +474,7 @@ class Client implements WorkerClient {
         if (!connection) return;
         connection.detach();
         try { connection.terminate(); } catch { /* A removed contained frame may already be gone. */ }
+        workerStopped(connection.endpoint);
         connection.sent.clear();
     }
 

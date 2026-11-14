@@ -79,7 +79,8 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const compare = <T extends CharRange>(before: readonly T[], after: readonly T[], value: (item: T) => string) => {
         const old = new Map<string, CharRange>();
         for (const item of before) {
-            const range = { from: tr.changes.mapPos(item.from, 1), to: tr.changes.mapPos(item.to, -1) };
+            const from = tr.changes.mapPos(item.from, 1);
+            const range = { from, to: Math.max(from, tr.changes.mapPos(item.to, -1)) };
             old.set(`${range.from}:${range.to}:${value(item)}`, range);
         }
         for (const item of after) {

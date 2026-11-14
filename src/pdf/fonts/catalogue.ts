@@ -24,25 +24,70 @@ export const PDF_FONT_CATALOGUE: Readonly<Record<PdfFontId, Readonly<{ path: str
         [id, Object.freeze({ path: `pdf-fonts/${file}`, bytes, sha256 })])) as Record<PdfFontId, { path: string; bytes: number; sha256: string }>,
 );
 
+type Region = 'jp' | 'kr' | 'sc' | 'tc' | 'hk';
+
+// Exact, bounded family aliases only; these select a regional fallback, not an
+// assertion that it reproduces the requested font or covers every character.
+const REGIONAL_FAMILIES: Readonly<Record<string, Region | 'zh'>> = Object.freeze(Object.fromEntries([
+    ...['notosansjp', 'notosanscjkjp', 'notoserifjp', 'notoserifcjkjp', 'sourcehansansjp', 'msgothic', 'mspgothic', 'msmincho', 'mspmincho',
+        'meiryo', 'meiryoui', 'yugothic', 'yumincho', 'hiraginokakugothic', 'hiraginokakugothicpro',
+        'hiraginokakugothicpron', 'hiraginomincho', 'hiraginominchopro', 'hiraginominchopron',
+        'heiseikakugo', 'heiseikakugow5', 'heiseimin', 'heiseiminw3', 'kozukagothic', 'kozukagothicpro', 'kozukamincho', 'kozukaminchopro', 'kozminproregular',
+        'kozgoproregular', '小塚ゴシック', '小塚明朝', 'ＭＳゴシック', 'ＭＳ明朝'].map(name => [name, 'jp']),
+    ...['notosanskr', 'notosanscjkkr', 'notoserifkr', 'notoserifcjkkr', 'sourcehansanskr', 'malgungothic', 'batang', 'batangche', 'dotum',
+        'dotumche', 'gulim', 'gulimche', 'gungsuh', 'gungsuhche', '바탕', '돋움', '굴림', '맑은고딕'].map(name => [name, 'kr']),
+    ...['notosanssc', 'notosanscjksc', 'notoserifsc', 'notoserifcjksc', 'sourcehansanssc', 'sourcehansanscn', 'simsun', 'nsimsun', 'simhei', 'yahei', 'stsong', 'stheiti', 'fangsong',
+        'fangsonggb2312', 'kaiti', 'kaitigb2312', 'microsoftyahei', 'microsoftyaheiui', '宋体', '新宋体',
+        '黑体', '仿宋', '楷体', '微软雅黑'].map(name => [name, 'sc']),
+    ...['notosanstc', 'notosanscjktc', 'notoseriftc', 'notoserifcjktc', 'sourcehansanstc', 'sourcehansanstw', 'mingliu', 'pmingliu', 'mingliuextb', 'pmingliuextb', 'jhenghei',
+        'microsoftjhenghei', 'microsoftjhengheiui', 'dfkai-sb', '新細明體', '細明體', '微軟正黑體', '標楷體'].map(name => [name.replace(/[-_ ]/g, ''), 'tc']),
+    ...['notosanshk', 'notosanscjkhk', 'notoserifhk', 'notoserifcjkhk', 'sourcehansanshk', 'microsoftjhengheihk'].map(name => [name, 'hk']),
+    ...['notosanscjk', 'notoserifcjk', 'sourcehansans', 'chinesesans', 'chineseserif'].map(name => [name, 'zh']),
+].map(([name, region]) => [name.toLowerCase(), region])) as Record<string, Region | 'zh'>);
+
+function languageRegion(language: string | undefined): Region | undefined {
+    if (!language || !/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i.test(language)) return undefined;
+    const parts = language.toLowerCase().split('-');
+    if (parts[0] === 'ja') return 'jp';
+    if (parts[0] === 'ko') return 'kr';
+    if (parts[0] !== 'zh') return undefined;
+    const end = parts.findIndex((part, index) => index > 0 && part.length === 1);
+    const tags = parts.slice(1, end < 0 ? undefined : end);
+    if (tags.includes('hk')) return 'hk';
+    if (tags.includes('tw') || tags.includes('hant')) return 'tc';
+    return 'sc';
+}
+
 /** null means PDFium's built-in Base-14 face or an unsupported charset, not a network URL. */
 export function resolvePdfFont(spec: FontSpec, language?: string): PdfFontId | null {
     if (typeof spec.family !== 'string' || !spec.family.length || spec.family.length > 128 ||
         !Number.isFinite(spec.weight) || spec.weight < 1 || spec.weight > 1000 || typeof spec.italic !== 'boolean' ||
         (spec.charset !== undefined && (!Number.isInteger(spec.charset) || spec.charset < 0 || spec.charset > 255)) ||
         (language !== undefined && (typeof language !== 'string' || language.length > 64))) return null;
-    if (/^(?:Helvetica(?:-(?:Bold|Oblique|BoldOblique))?|Times-(?:Roman|Bold|Italic|BoldItalic)|Courier(?:-(?:Bold|Oblique|BoldOblique))?|Symbol|ZapfDingbats)$/i.test(spec.family)) return null;
+    const family = spec.family.trim().replace(/^[A-Z]{6}\+/, '');
+    if (!family) return null;
+    if (/^(?:Helvetica(?:-(?:Bold|Oblique|BoldOblique))?|Times-(?:Roman|Bold|Italic|BoldItalic)|Courier(?:-(?:Bold|Oblique|BoldOblique))?|Symbol|ZapfDingbats)$/i.test(family)) return null;
     const bold = spec.weight >= 600;
-    let region: 'jp' | 'kr' | 'sc' | 'tc' | 'hk' | undefined;
+    const sans: PdfFontId = bold ? (spec.italic ? 'sans-bold-italic' : 'sans-bold') : (spec.italic ? 'sans-italic' : 'sans-regular');
+    let region: Region | undefined;
     switch (spec.charset) {
         case 128: region = 'jp'; break; // SHIFTJIS_CHARSET
         case 129: case 130: region = 'kr'; break;
         case 134: region = 'sc'; break;
         case 136: region = 'tc'; break;
-        case undefined: case 0: case 1: case 2: case 161: case 162: case 163: case 186: case 204: case 238: break;
+        case undefined: case 0: case 1: break;
+        case 2: case 161: case 162: case 163: case 186: case 204: case 238: return sans;
         default: return null;
     }
-    const hk = /^(?:noto sans (?:cjk )?hk|notosans(?:cjk)?hk|microsoft jhenghei hk)$/i.test(spec.family.trim()) || /^zh-hk(?:-|$)/i.test(language ?? '');
-    if (hk && (!region || region === 'tc')) region = 'hk';
+    const familyKey = family.toLowerCase().replace(/[-_ ]/g, '');
+    const familyRegion = Object.hasOwn(REGIONAL_FAMILIES, familyKey) ? REGIONAL_FAMILIES[familyKey] : undefined;
+    const languageHint = languageRegion(language);
+    // Big5 covers both Traditional-Chinese regional fonts; HK is the one
+    // specific compatible refinement. A conflicting JP/KR/SC hint cannot override it.
+    if (region === 'tc' && (familyRegion === 'hk' || languageHint === 'hk' && familyRegion !== 'tc')) region = 'hk';
+    if (!region) region = familyRegion === 'zh'
+        ? languageHint === 'hk' || languageHint === 'tc' ? languageHint : 'sc'
+        : familyRegion ?? languageHint;
     if (region) return `${region}-${bold ? 'bold' : 'regular'}`;
-    return bold ? (spec.italic ? 'sans-bold-italic' : 'sans-bold') : (spec.italic ? 'sans-italic' : 'sans-regular');
+    return sans;
 }

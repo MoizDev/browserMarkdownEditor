@@ -1,6 +1,7 @@
 import type { Rect } from '../../platform/types';
 import type { Font, Swatch } from '../model/styles';
 import type { RichText } from './richText';
+import type { FontKey } from './fonts';
 
 /** All geometry is in block-local world units before the node transform, y down. */
 export interface InkRef {
@@ -15,6 +16,9 @@ export interface PaintRect {
     readonly ink: InkRef;
 }
 export interface Face {
+    /** Exact upstream face and whether this paint used that face or its fallback. */
+    readonly key: FontKey;
+    readonly loaded: boolean;
     /** Canvas font at the 64px reference size, including fallback families. */
     readonly css: string;
     readonly size: number;

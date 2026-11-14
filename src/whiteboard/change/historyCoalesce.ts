@@ -28,7 +28,7 @@ function mergeSplices(first: HistoryOperation, last: HistoryOperation): HistoryO
     try {
         const relativeFrom = b.from - previous.from, relativeTo = b.to - previous.from;
         if (relativeFrom < 0 || relativeTo > textLength(previous.insert)) return;
-        const next = spliceRichText(previous.insert, relativeFrom, relativeTo, b.insert, b.wholeBlocks).text;
+        const next = spliceRichText(previous.insert, relativeFrom, relativeTo, b.insert, b.wholeBlocks === true || b.replaceBlocks === true).text;
         const forward: Op = { t: 'splice', id: a.id, key: a.key, from: original.from,
             to: original.from + textLength(original.insert), insert: next, wholeBlocks: true };
         const inverse: Op = { ...original, to: previous.to };
@@ -59,12 +59,27 @@ export class OperationCoalescer {
     }
 }
 
-function owner(op: Op): NodeId | undefined {
+export function operationOwner(op: Op): NodeId | undefined {
     if (op.t === 'create') return op.node.id;
     if (op.t === 'delete' || op.t === 'set' || op.t === 'splice') return op.id;
     if (op.t === 'ext' && op.target === 'node') return op.id as NodeId | undefined;
     return undefined;
 }
+/** Check references in both directions before removing any caller-owned history. */
+export function mentionsNode(operation: HistoryOperation, id: NodeId): boolean {
+    const pending: unknown[] = [operation.forward, ...operation.inverse], seen = new Set<object>();
+    while (pending.length) {
+        const value = pending.pop();
+        if (typeof value === 'string' && value.includes(id)) return true;
+        if (!value || typeof value !== 'object' || seen.has(value)) continue;
+        seen.add(value);
+        if (value instanceof Map) for (const [key, item] of value) pending.push(key, item);
+        else if (Array.isArray(value)) for (const item of value) pending.push(item);
+        else for (const item of Object.values(value)) pending.push(item);
+    }
+    return false;
+}
+
 /** Remove a created-and-deleted node only if no surviving operation refers to it. */
 export function cancelTransientNodes(entries: readonly HistoryOperation[]): HistoryOperation[] {
     const created = new Set<NodeId>(), deleted = new Set<NodeId>();
@@ -76,7 +91,7 @@ export function cancelTransientNodes(entries: readonly HistoryOperation[]): Hist
     if (!candidates.size) return [...entries];
     const blocked = new Set<NodeId>();
     for (const operation of entries) {
-        const target = owner(operation.forward), pending: unknown[] = [operation.forward, ...operation.inverse];
+        const target = operationOwner(operation.forward), pending: unknown[] = [operation.forward, ...operation.inverse];
         const seen = new Set<object>();
         while (pending.length) {
             const value = pending.pop();
@@ -90,5 +105,5 @@ export function cancelTransientNodes(entries: readonly HistoryOperation[]): Hist
             }
         }
     }
-    return entries.filter(entry => { const id = owner(entry.forward); return id === undefined || !candidates.has(id) || blocked.has(id); });
+    return entries.filter(entry => { const id = operationOwner(entry.forward); return id === undefined || !candidates.has(id) || blocked.has(id); });
 }

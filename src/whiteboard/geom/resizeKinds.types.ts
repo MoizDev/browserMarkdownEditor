@@ -1,0 +1,25 @@
+import type { Op } from '../change/ops';
+import type { ClipNode, ConnectorNode, EmbedNode, FigureNode, FrameNode, GroupNode, LinkcardNode, Node } from '../model/nodes';
+
+export interface KindResizeFactors {
+    readonly x: number;
+    readonly y: number;
+    /** Crossing direction when an extent is exactly zero. */
+    readonly zeroSignX: -1 | 1;
+    readonly zeroSignY: -1 | 1;
+    readonly handle: 'side' | 'corner';
+    readonly scope: 'single' | 'multi';
+}
+export interface KindResizeContext {
+    /** Text layout and growth are computed before the transaction is applied. */
+    layoutFigure(node: Readonly<FigureNode>, width: number, height: number): Readonly<{ h: number; growY: number }>;
+    /** Connectors retain binding semantics; their provider resolves both ends once. */
+    resizeConnector(node: Readonly<ConnectorNode>, factors: KindResizeFactors): readonly Op[];
+    /** Group content is planned recursively exactly once, never by persisting a group scale. */
+    resizeGroup(node: Readonly<GroupNode>, factors: KindResizeFactors): readonly Op[];
+    /** Frame resizing compensates children to keep their world poses stable. */
+    resizeFrame(node: Readonly<FrameNode>, width: number, height: number, factors: KindResizeFactors): readonly Op[];
+    /** Media policies own aspect and reflection representation. */
+    resizeMedia(node: Readonly<ClipNode | LinkcardNode | EmbedNode>, factors: KindResizeFactors): readonly Op[];
+}
+export type KindResizePlanner = (node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext) => readonly Op[];

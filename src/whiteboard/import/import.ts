@@ -70,6 +70,8 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
     let savedView: SavedView | undefined;
     if (!draft) {
         if (report.finish().unrepresentable.length === 0) report.refuse(null, 'Not a drawing this app can read');
+    } else if (draft.kind === 'failure') {
+        report.include(draft.report);
     } else {
         report.include(draft.report); leases = draft.leases; media = draft.media;
         try {

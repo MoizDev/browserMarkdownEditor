@@ -10,12 +10,16 @@ import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
+import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import type { createBoardRenderServices } from '../render/services';
 import { TransformGesture } from '../tools/transform';
 import { translationDriver } from '../tools/transformDrivers';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
+import { createBoardAttachmentResolver } from './attachments';
+import { createShapeHandles } from './shapeHandles';
+import { createStickyHandles } from './stickyHandles';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -23,13 +27,14 @@ export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
-    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit'>;
+    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
     readonly preview: { showOps(ops: readonly Op[]): void; clear(): void };
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
+    readonly editSticky: (id: NodeId) => void | Promise<void>;
     onError(error: unknown): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
@@ -58,6 +63,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return had;
     };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
+    const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
+    const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
+        show: ops => options.preview.showOps(ops), clear: () => options.preview.clear(),
+        resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
+    const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, edit: options.editSticky, error: report });
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -154,6 +166,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        shapeHandles.write(frame); stickyHandles.write(frame);
         if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -174,7 +187,30 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
         }
     };
-    return { select, eraser, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
+    const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
+        if (!mutable()) return null;
+        const surface = toSurface(sample), coarse = sample.source === 'touch';
+        const shapeHit = shapeHandles.hit(surface, coarse);
+        if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
+        const direction = stickyHandles.hit(surface, coarse); if (!direction) return null;
+        const release = session.beginGesture(), pointerIds = new Set([sample.pointerId]), down = surface;
+        let ended = false, cancelled = false, cleaned = false, unregister: (() => void) | undefined;
+        const cleanup = () => { if (cleaned) return; cleaned = true; unregister?.(); unregister = undefined; release(); };
+        const cancel = () => { if (cancelled) return; cancelled = true; ended = true; stickyHandles.hide(); cleanup(); };
+        try { unregister = registerPending(cancel); } catch (error) { release(); throw error; }
+        return { kind: 'node-edit', pointerIds,
+            update(samples) { for (const next of samples) if (pointerIds.has(next.pointerId)) {
+                const point = toSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
+            } },
+            finish(reason) {
+                if (ended || cancelled) return; ended = true;
+                if (reason !== 'up' || !mutable()) { cancel(); return; }
+                void stickyHandles.activate(direction, false).finally(cleanup);
+            },
+            cancel,
+        };
+    };
+    return { select, eraser, beginHandle, writeOverlays, cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
     };
 }

@@ -256,7 +256,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   for (const [other, contacts] of sharedPenMode.contacts) if (other !== owner)
     for (const id of contacts.values()) touch.penDown(id, false)
   const broadcastPen = (id: number, down: boolean, direct: boolean, time: number) => {
-    for (const listener of sharedPenMode.contactListeners) listener(id, down, direct, time)
+    for (const listener of sharedPenMode.contactListeners) {
+      try { listener(id, down, direct, time) } catch (error) { try { services.error(error) } catch { /* Other panes must still receive the contact. */ } }
+    }
   }
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })

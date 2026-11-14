@@ -229,12 +229,18 @@ export class PaneCapturer {
             if (owner?.withCapturePass) {
                 try {
                     await this.prepare(request, snapshot, 'gpu', active);
-                    return await this.drawGpu(request, layers, owner, active);
+                    // Preparation can yield while the user begins input or the pane changes
+                    // generations. Never submit to an owner no longer selected for capture.
+                    const current = this.options.tryGpu?.(snapshot);
+                    if (current?.withCapturePass && current.resources === owner.resources) {
+                        return await this.drawGpu(request, layers, current, active);
+                    }
                 } catch (error) {
                     active.check();
-                    // Retry this SAME retained revision once. A GPU budget refusal also
-                    // uses the default CPU route; neither path asks the broker for a slot.
-                    if (!hasCode(error, 'lost') && !hasCode(error, 'out-of-budget')) throw error;
+                    // Hide can abort the device's view jobs without aborting this session
+                    // capture. active.check() above distinguishes a caller/session abort.
+                    // Retry the SAME retained revision on 2D, never a new context.
+                    if (!hasCode(error, 'lost') && !hasCode(error, 'aborted') && !hasCode(error, 'out-of-budget')) throw error;
                 }
             }
             await this.prepare(request, snapshot, '2d', active);

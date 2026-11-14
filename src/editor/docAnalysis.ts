@@ -3,47 +3,35 @@ import type { EditorState, Transaction } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import type { Tree } from '@lezer/common';
 import { scanAllLines, updateLineScans } from './analysisLines';
-import type { LineScans } from './analysisLines';
+import type { LineMatch, LineScans } from './analysisLines';
 import { acceptedMath, filterInlineMath, pairMathTokens, updateBlockPairs } from './analysisMath';
-import type { BlockPair, InlineMath } from './analysisMath';
+import type { BlockPair } from './analysisMath';
 import { mergeAnalysisRanges, treeDelta } from './analysisTree';
 import { scanObjects, updateObjects } from './analysisObjects';
-import type { ObjectScans } from './analysisObjects';
 import { codeRangesForTree } from '../utils/mathRegions';
-import type { MathRegion } from '../utils/mathRegions';
+import { overlapsRange } from '../utils/rangeSearch';
 import type { CharRange } from '../utils/rangeSearch';
 
-export interface AnalysisDelta {
-    forRev: number;
-    changed: CharRange[];
-    treeChanged: CharRange[];
-}
-
-export interface DocAnalysis {
-    rev: number;
-    treeLength: number;
-    tree: Tree;
-    codeRanges: CharRange[];
-    mathRegions: MathRegion[];
-    mathEnds: number[];
-    lines: LineScans;
-    blockPairs: BlockPair[];
-    inlineRaw: InlineMath[];
-    objects: ObjectScans;
-    delta: AnalysisDelta | null;
-}
+import type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
+export type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
 
 function makeAnalysis(state: EditorState, tree: Tree, rev: number, codeRanges: CharRange[],
     lines: LineScans, blockPairs: BlockPair[], delta: AnalysisDelta | null,
     update?: { previous: DocAnalysis; transaction: Transaction }): DocAnalysis {
     const inlineRaw = filterInlineMath(lines.inline, codeRanges, blockPairs);
     const mathRegions = acceptedMath(blockPairs, inlineRaw);
+    const outside = (item: LineMatch) => !overlapsRange(codeRanges, item.from, item.to)
+        && !overlapsRange(mathRegions, item.from, item.to);
+    const dollarRuns = lines.dollars.map(item => ({ ...item, accepted: (item.to - item.from) % 2 === 0
+        && state.sliceDoc(Math.max(0, item.from - 1), item.from) !== '\\' && outside(item) }));
+    const highlights = lines.highlights.map(item => ({ ...item, accepted: outside(item) }));
+    const wikilinks = lines.wikilinks.map(item => ({ ...item, accepted: item.groups[0] !== '!' && outside(item) }));
     const objects = update
         ? updateObjects(update.previous.objects, update.transaction.startState.doc, state.doc,
             update.transaction.changes, lines.embedOpeners, codeRanges, mathRegions)
         : scanObjects(state.doc, codeRanges, mathRegions);
-    return { rev, treeLength: tree.length, tree, codeRanges, mathRegions, mathEnds: mathRegions.map(region => region.to), lines, blockPairs,
-        inlineRaw, objects, delta };
+    return { rev, treeLength: tree.length, tree, codeRanges, mathRegions, mathEnds: mathRegions.map(region => region.to), lines,
+        dollarRuns, highlights, wikilinks, blockPairs, inlineRaw, objects, delta };
 }
 
 export function analyzeDocFull(state: EditorState): DocAnalysis {
@@ -81,7 +69,7 @@ function updateCodeRanges(previous: readonly CharRange[], tree: Tree, tr: Transa
 function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const state = tr.state, tree = syntaxTree(state);
     if (!tr.docChanged && tree === previous.tree) return previous;
-    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc);
+    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc, tr.startState.doc);
     const codeRanges = updateCodeRanges(previous.codeRanges, tree, tr, treeChanged);
     const lines = tr.docChanged ? updateLineScans(previous.lines, tr.changes, tr.startState.doc, state.doc) : previous.lines;
     const pairs = updateBlockPairs(previous.blockPairs, tr.startState.doc, state.doc, tr.changes, lines.mathTokens, codeRanges);
@@ -91,7 +79,8 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const compare = <T extends CharRange>(before: readonly T[], after: readonly T[], value: (item: T) => string) => {
         const old = new Map<string, CharRange>();
         for (const item of before) {
-            const range = { from: tr.changes.mapPos(item.from, 1), to: tr.changes.mapPos(item.to, -1) };
+            const from = tr.changes.mapPos(item.from, 1);
+            const range = { from, to: Math.max(from, tr.changes.mapPos(item.to, -1)) };
             old.set(`${range.from}:${range.to}:${value(item)}`, range);
         }
         for (const item of after) {
@@ -102,9 +91,9 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     };
     compare(previous.codeRanges, result.codeRanges, () => '');
     compare(previous.mathRegions, result.mathRegions, item => `${item.block}:${item.latex}`);
-    compare(previous.lines.dollars, lines.dollars, item => item.groups.join('\0'));
-    compare(previous.lines.highlights, lines.highlights, item => item.groups.join('\0'));
-    compare(previous.lines.wikilinks, lines.wikilinks, item => item.groups.join('\0'));
+    compare(previous.dollarRuns ?? [], result.dollarRuns ?? [], item => `${item.accepted}:${item.groups.join('\0')}`);
+    compare(previous.highlights ?? [], result.highlights ?? [], item => `${item.accepted}:${item.groups.join('\0')}`);
+    compare(previous.wikilinks ?? [], result.wikilinks ?? [], item => `${item.accepted}:${item.groups.join('\0')}`);
     compare(previous.objects.embeds, result.objects.embeds, item => `${item.accepted}:${item.filename}:${item.width}`);
     compare(previous.objects.tables, result.objects.tables, item => `${item.accepted}`);
     result.delta = { forRev: rev, changed: mergeAnalysisRanges(dirty), treeChanged };

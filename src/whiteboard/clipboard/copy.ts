@@ -9,6 +9,8 @@ export interface CachedClipboard {
     readonly encoded: string;
     readonly plain: string;
     readonly cacheOnly: boolean;
+    /** Source bytes remain behind their original session-owned media leases. */
+    readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
 export interface ClipboardCopyHost {
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
@@ -23,12 +25,13 @@ function release(held: HeldSnapshot): void {
     if (--held.count !== 0) return;
     for (const lease of held.snapshot.leases) lease.release();
 }
+// Copy cache belongs to the window, not a pane; a vault switch must not invalidate its retained source.
+let windowWritten: { held: HeldSnapshot; envelope: ClipboardEnvelope; readMedia: ClipboardCopyHost['readMedia']; controller: AbortController } | null = null;
 
 /** One session-wide copy cache. A cache hit requires the immutable exact envelope,
  * not just the nonce; a cache-only marker additionally requires exact plain text. */
 export class ClipboardCopy {
     private candidate: Candidate | null = null;
-    private written: { held: HeldSnapshot; envelope: ClipboardEnvelope } | null = null;
     private disposed = false;
     constructor(private readonly host: ClipboardCopyHost) {}
 
@@ -57,9 +60,9 @@ export class ClipboardCopy {
     }
 
     match(encoded: string, plain: string): CachedClipboard | null {
-        const entry = this.written;
-        if (!entry || entry.envelope.encoded !== encoded || (entry.envelope.cacheOnly && entry.envelope.plain !== plain)) return null;
-        return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly };
+        const entry = windowWritten;
+        if (this.disposed || !entry || entry.envelope.encoded !== encoded || (entry.envelope.cacheOnly && entry.envelope.plain !== plain)) return null;
+        return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly, readMedia: entry.readMedia };
     }
 
     /** The event path captures the current selection synchronously; it never waits for a warm cache. */
@@ -162,14 +165,27 @@ export class ClipboardCopy {
         if (this.disposed) return;
         this.disposed = true;
         this.dropCandidate();
-        if (this.written) release(this.written.held);
-        this.written = null;
+
     }
 
     private remember(held: HeldSnapshot, envelope: ClipboardEnvelope): void {
         held.count++;
-        if (this.written) release(this.written.held);
-        this.written = { held, envelope };
+        if (windowWritten) { windowWritten.controller.abort(); release(windowWritten.held); }
+        const controller = new AbortController(), blobs = new Map<MediaId, Blob>(), read = this.host.readMedia.bind(this.host);
+        const entry = { held, envelope, controller, readMedia: async (id: MediaId, signal: AbortSignal) => {
+            signal.throwIfAborted();
+            return blobs.get(id) ?? await read(id, signal);
+        } };
+        windowWritten = entry;
+        // Retain Blob references while the source is alive; no decoded pixels or whole-batch byte copies.
+        void (async () => {
+            for (const media of held.snapshot.media) {
+                if (controller.signal.aborted || windowWritten !== entry) break;
+                const blob = await read(media.id, controller.signal);
+                if (controller.signal.aborted || windowWritten !== entry) break;
+                if (blob) blobs.set(media.id, new Blob([blob], { type: blob.type }));
+            }
+        })().catch(() => undefined);
     }
     private dropCandidate(): void {
         if (!this.candidate) return;

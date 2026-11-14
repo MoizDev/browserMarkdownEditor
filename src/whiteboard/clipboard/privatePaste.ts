@@ -62,7 +62,11 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
         const placement = planBoardClipboardPlacement({ receivingBoardId: options.receivingBoardId, target, source: acquisition.payload,
             containsFrame, doc, cameraZoom: options.cameraZoom, intent: options.intent });
         const media = await prepareBoardClipboardMediaInJob({ runtime, acquisition, memory: options.memory, signal: context.signal,
-            current: () => current(identity), readBlob: options.readBlob, storeMedia: options.storeMedia, cooperate: options.cooperate }, context);
+            current: () => current(identity), readBlob: async (entry, signal) => {
+                let cached: Blob | null = null;
+                if (match?.readMedia) { try { cached = await match.readMedia(entry.id, signal); } catch { check(); } }
+                check(); return cached ?? options.readBlob(entry, signal);
+            }, storeMedia: options.storeMedia, cooperate: options.cooperate }, context);
         try {
             check();
             const owned = acquisition; acquisition = undefined;

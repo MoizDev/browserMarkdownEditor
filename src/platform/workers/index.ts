@@ -1,4 +1,5 @@
 export { createWorkerClient } from './client';
+export { cpuGovernor } from './governor';
 export { WorkerHostError } from './envelope';
 export { serve } from './serve';
 export type { WorkerContext, ServeEndpoint, ServeSpec } from './serve';

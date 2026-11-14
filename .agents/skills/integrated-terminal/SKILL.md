@@ -159,7 +159,7 @@ every shell is a child of **`vaultagent-pty`**: ~380 lines of libc C, its own La
   while focus is inside (non-mac). `macOptionIsMeta: false`. Links open on ⌘/Ctrl-click (http/https).
 - **Context menu:** the app's own (`openContextMenu`), raised only when the program has not enabled mouse
   tracking or Shift is held.
-- **Fonts:** Settings (`utils/terminalSettings.ts`, import-free store, clamped, Reset to Defaults) →
+- **Fonts:** Settings (`utils/terminalSettings.ts`, lightweight store, clamped, Reset to Defaults) →
   `terminal.fontHint` candidates probed with `new FontFace(…, 'local("<name>")').load()` (PostScript names
   work) → none; never blocks open > ~1.5 s, swaps later (re-set `fontFamily`, `clearTextureAtlas`, refit).
   The bundled **Symbols Nerd Font Mono** (`public/fonts/`, upstream notices beside it; mixed MIT / CC BY 4.0

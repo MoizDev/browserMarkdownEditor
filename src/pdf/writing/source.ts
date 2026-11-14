@@ -25,7 +25,7 @@ export async function validateWriterSource(source: WriterSource, cooperate: () =
         source.pristine.size < 1 || source.outer.size < 1 || source.pristine.size >= 0x80000000 || source.outer.size >= 0x80000000) {
         throw new PdfEngineError('ResourceLimit', 'PDF source exceeds the supported byte range');
     }
-    if (!HASH.test(source.pristineFingerprint) || !HASH.test(source.outerFingerprint)) throw new PdfEngineError('InvalidPdf', 'Invalid source fingerprint');
+    if (!HASH.test(source.pristineFingerprint) || !HASH.test(source.outerFingerprint) || typeof source.formatId !== 'string' || !source.formatId || source.formatId.length > 128) throw new PdfEngineError('InvalidPdf', 'Invalid source fingerprint or format');
     let key;
     try { key = parsePdfDocKey(source.docKey); } catch { throw new PdfEngineError('InvalidPdf', 'Invalid writer document key'); }
     if (!source.token || source.token.vaultEpoch !== key.vaultEpoch || source.token.documentId !== key.documentId ||

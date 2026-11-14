@@ -4,6 +4,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason } from '../../platform/render/types';
 import { DenseTileJob, type DenseTileBitmap } from './densePaintAdapter';
 import type { PaintBand } from './material';
+import type { Blend } from './colour';
 import { inkCoverageChunks, type PaintFrame, type PaintImageItem, type PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { chooseTileScale } from './tileHierarchy';
@@ -13,7 +14,7 @@ import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BITMAP_BYTES = 516 * 516 * 4, BLOCK = 65_536;
-type Command = { band: PaintBand; first: number; end: number; direct: boolean };
+type Command = { band: PaintBand; first: number; end: number; direct: boolean; blend: Blend };
 type Plan = {
     source: PaintFrame; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
     bounds: PaintBoundsCache;
@@ -32,8 +33,8 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
     for (const id of live) if (!plan.live?.has(id)) return false;
     return true;
 };
-const directItem = (item: PaintItem, live?: ReadonlySet<string>) => live?.has(item.nodeId)
-    || (item.kind === 'image' ? item.blend : item.material.blend) !== 'normal';
+const blendOf = (item: PaintItem): Blend => item.kind === 'image' ? item.blend : item.material.blend;
+const directItem = (item: PaintItem, live?: ReadonlySet<string>) => !!live?.has(item.nodeId);
 
 /** A private ordered-interval replay. Neither its first tile nor one finished band is a frame.
  * Source pins remain the caller's; retainedFrames includes aborted native image acquisitions. */
@@ -128,19 +129,22 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.index === items.length) {
             if (p.run < p.index) {
                 if (!reserveEntry(p)) return;
-                p.commands.push({ band: p.band, first: p.run, end: p.index, direct: false }); p.run = p.index; return;
+                p.commands.push({ band: p.band, first: p.run, end: p.index, direct: false, blend: blendOf(items[p.run]) }); p.run = p.index; return;
             }
             if (p.band === 'underlay') { p.band = 'content'; p.run = p.index = 0; }
             else p.phase = 'raster';
             return;
         }
-        if (!directItem(items[p.index], p.live)) { p.index++; return; }
-        if (p.run < p.index) {
+        // Multiply composes associatively in (premultiplied RGB + transparency, transparency),
+        // so only contiguous multiply paints may share a transparent tile and one backdrop multiply.
+        const item = items[p.index], direct = directItem(item, p.live);
+        if (p.run < p.index && (direct || blendOf(items[p.run]) !== blendOf(item))) {
             if (!reserveEntry(p)) return;
-            p.commands.push({ band: p.band, first: p.run, end: p.index, direct: false }); p.run = p.index; return;
+            p.commands.push({ band: p.band, first: p.run, end: p.index, direct: false, blend: blendOf(items[p.run]) }); p.run = p.index; return;
         }
+        if (!direct) { p.index++; return; }
         if (!reserveEntry(p)) return;
-        p.commands.push({ band: p.band, first: p.index, end: p.index + 1, direct: true });
+        p.commands.push({ band: p.band, first: p.index, end: p.index + 1, direct: true, blend: blendOf(item) });
         p.direct[p.band].push(items[p.index]); p.run = ++p.index;
     };
     const raster = (p: Plan, view: ViewState, budget: FrameBudget): void => {
@@ -149,7 +153,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (command.direct) { p.outputs[command.band].push(items[command.first]); p.command++; return; }
         const side = EDGE / p.scale;
         const rect: Rect = { x: p.tileX * side, y: p.tileY * side, width: side, height: side };
-        p.tile ??= new DenseTileJob(p.resources, host, report, p.source, items, rect, p.scale, command, p.bounds);
+        p.tile ??= new DenseTileJob(p.resources, host, report, p.source, items, rect, p.scale, command, p.bounds, command.blend);
         p.tile.prepare(view, budget);
         if (!p.tile.isEmpty) {
             if (!p.tile.isComplete) return;
@@ -158,7 +162,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const key = `dense/${++serial}`;
             const image: PaintImageItem = { kind: 'image', key, geometryKey: key, imageKey: key, nodeId: key,
                 localToWorld: [1, 0, 0, 1, 0, 0], clips: [], rect: bitmap.rect,
-                sourceRect: { x: 2, y: 2, width: EDGE, height: EDGE }, opacity: 1, blend: 'normal', inverted: false, retainedTile: true };
+                sourceRect: { x: 2, y: 2, width: EDGE, height: EDGE }, opacity: 1, blend: command.blend, inverted: false, retainedTile: true };
             p.bitmaps.set(key, bitmap); p.outputs[command.band].push(image);
         }
         p.tile = null;
@@ -235,7 +239,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 ctx.save();
                 try {
                     ctx.resetTransform(); ctx.beginPath(); ctx.rect(x, y, x1 - x, y1 - y); ctx.clip();
-                    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+                    ctx.globalAlpha = 1; ctx.globalCompositeOperation = item.blend === 'multiply' ? 'multiply' : 'source-over'; ctx.filter = 'none';
                     ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
                 } finally { ctx.restore(); }
             }

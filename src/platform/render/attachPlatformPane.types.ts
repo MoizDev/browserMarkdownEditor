@@ -80,6 +80,8 @@ export interface PlatformPaneOptions<T extends object> {
 export type AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => PlatformPane;
 
 export interface PlatformPane {
+    /** Actual live source/view/device fence; not evidence that any pixels were presented. */
+    currentFrameToken(): FrameToken | null;
     setVisible(visible: boolean): void;
     setFocused(focused: boolean): void;
     observeSize(): void;

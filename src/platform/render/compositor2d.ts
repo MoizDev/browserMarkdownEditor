@@ -2,7 +2,7 @@ import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
 import type { ColourGroup2d } from './colourGroup2d';
-import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
+import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
 import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
@@ -466,6 +466,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
     page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }
+    paneTransform(view: ViewState, frameId: number) {
+        if (!this.scene || !this.budget || this.budget.frameId !== frameId || this.budget.cameraEpoch !== this.scene.view.epoch
+            || !sameToken(this.options.currentToken(), this.budget.token)) return null;
+        return paneCssTransform(view, this.scene.view, this.scene.metrics);
+    }
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void { paintWorldScope(ctx, view, paint); }
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void { paintPageScope(ctx, this.page(view, index), paint); }
 

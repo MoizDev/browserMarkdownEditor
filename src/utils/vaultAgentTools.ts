@@ -539,7 +539,9 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
         const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, open in a pane (live)`,
             `${result.total} shape${result.total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`,
             notebook ? COORDS_PAGED : COORDS_DRAWING];
-        return { head, lines: shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result') };
+        const lines = shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result');
+        if (result.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
+        return { head, lines };
     }
     if (ctx.host.canvasShapePage) {
         const result = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
@@ -551,7 +553,9 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
             const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, read from the board session`,
                 `${result.total} shape${result.total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`,
                 notebook ? COORDS_PAGED : COORDS_DRAWING];
-            return { head, lines: shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result') };
+            const lines = shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result');
+            if (result.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
+            return { head, lines };
         }
     }
     assertSupportedCanvasFormat(path);
@@ -1000,7 +1004,9 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         const result = view.canvas.shapePage?.({ page });
         const shapes = result?.shapes ?? view.canvas.shapes(page), total = result?.total ?? shapes.length;
         const head = [`path: ${path}`, `PDF annotations (live)`, `${total} shape${total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`, COORDS_PAGED];
-        return ok([...head, '', ...shapeLines(shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to see one page at a time')].join('\n'));
+        const lines = shapeLines(shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to see one page at a time');
+        if (result?.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
+        return ok([...head, '', ...lines].join('\n'));
     }
     const { head, lines } = await canvasShapesFromAnywhere(ctx, path, page);
     return ok([...head, '', ...lines].join('\n'));

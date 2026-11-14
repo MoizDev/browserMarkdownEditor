@@ -28,6 +28,7 @@ import { createShapeHandles } from './shapeHandles';
 import { createStickyHandles } from './stickyHandles';
 import { createSelectionHandles } from './selectionHandles';
 import { createBoardSelectionNavigation } from './selectionNavigation';
+import type { BoardPreview } from './preview';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -43,7 +44,7 @@ export interface BoardSelectServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
-    readonly preview: { showOps(ops: readonly Op[]): void; clear(): void };
+    readonly preview: Pick<BoardPreview, 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
@@ -86,8 +87,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         sampleToSurface: options.sampleToSurface, invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
-        show: ops => options.preview.showOps(ops), clear: () => options.preview.clear(),
-        resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
+        show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+        armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+        clear: () => options.preview.clear(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, edit: options.editSticky, error: report });
     const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
@@ -168,8 +170,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
                 zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
                 hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
-                show: ops => options.preview.showOps(ops), guides: setGuides,
-                clear() { setGuides([]); options.preview.clear(); }, error: report,
+                show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+                guides: setGuides, clear() { setGuides([]); options.preview.clear(); }, error: report,
             });
         },
         onError: report,
@@ -312,7 +315,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             const hit = selectionHandles.hit(surface, coarse); if (!hit) return null;
             const ids = [...runtime.selection.getSnapshot().selected], host = {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
-                show: (ops: readonly Op[]) => options.preview.showOps(ops), clear: () => options.preview.clear(), error: report,
+                show: (ops: readonly Op[]) => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+                clear: () => options.preview.clear(), error: report,
             };
             if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
                 { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);

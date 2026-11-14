@@ -10,6 +10,10 @@ export interface AsyncTransformGestureHost {
     registerPending(cancel: () => void): () => void;
     current(): boolean;
     show(ops: readonly Op[]): void;
+    waitUntilReady(signal: AbortSignal): Promise<void>;
+    armCommit(): void;
+    finishCommit(): void;
+    cancelCommit(): void;
     guides?(guides: readonly BoardSnapGuide[]): void;
     clear(): void;
     error(error: unknown): void;
@@ -64,8 +68,18 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
             const value = await plan.preview(sample, modifiers, request.signal);
             if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
             if (!this.host.current()) { this.cancel('invalidated'); return; }
-            if (commit) { plan.commit(value); this.cleanup(); }
-            else { plan.display?.(value); this.host.show(value.ops); }
+            if (commit) {
+                if (value.ops.length) {
+                    this.host.show(value.ops);
+                    await this.host.waitUntilReady(request.signal);
+                    if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
+                    if (!this.host.current()) { this.cancel('invalidated'); return; }
+                    this.host.armCommit();
+                    try { plan.commit(value); this.host.finishCommit(); }
+                    catch (error) { this.host.cancelCommit(); throw error; }
+                } else plan.commit(value);
+                this.cleanup();
+            } else { plan.display?.(value); this.host.show(value.ops); }
         } catch (error) {
             if (!request.signal.aborted && !this.controller.signal.aborted && generation === this.generation) {
                 try { this.host.error(error); } finally { this.cancel('invalidated'); }

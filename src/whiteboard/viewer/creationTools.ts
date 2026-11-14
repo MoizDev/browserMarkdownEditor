@@ -13,7 +13,6 @@ import type { BoardRuntime } from '../host/runtime';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
 import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
 import { polylineHandleGesture } from '../input/polylineHandles';
-import type { Op } from '../change/ops';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { newNodeId, type NodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
@@ -23,6 +22,7 @@ import type { FigureShape } from '../model/styles';
 import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import type { AttachmentRequest } from './attachments';
+import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
 export interface BoardCreationContext {
@@ -33,7 +33,7 @@ export interface BoardCreationContext {
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     registerPending(cancel: () => void): () => void;
     readonly figure?: FigureShape;
-    readonly preview: { show(nodes: readonly Node[]): void; showOps(ops: readonly Op[]): void; clear(): void };
+    readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
     readonly alwaysSnap?: () => boolean;
     current(): boolean;
@@ -260,8 +260,12 @@ class CreationGesture implements GestureOwner {
             const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
             try {
                 if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+                this.context.preview.show([node]);
+                await this.context.preview.waitUntilReady(signal);
+                if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
                 const builder = runtime.session.begin('tool', `Create ${this.context.kind}`);
                 try {
+                    this.context.preview.armCommit();
                     if (growth) builder.push(growth);
                     builder.push({ t: 'create', node });
                     if (adopted.length) {
@@ -271,8 +275,8 @@ class CreationGesture implements GestureOwner {
                             reparentNode(doc, builder, child, node.id, render.changeGeometry, keys[i]);
                         }
                     }
-                    const applied = builder.commit(); applied.release();
-                } catch (error) { builder.abort(); throw error; }
+                    const applied = builder.commit(); applied.release(); this.context.preview.finishCommit();
+                } catch (error) { builder.abort(); this.context.preview.cancelCommit(); throw error; }
                 runtime.selection.replace([node.id]);
                 if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id);
             } finally { lease?.release(); }
@@ -297,7 +301,9 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
                 // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
                 return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,
                     current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
-                    show: ops => context.preview.showOps(ops), clear: () => context.preview.clear(), error: context.onError });
+                    show: ops => context.preview.showOps(ops), waitUntilReady: context.preview.waitUntilReady,
+                    armCommit: context.preview.armCommit, finishCommit: context.preview.finishCommit, cancelCommit: context.preview.cancelCommit,
+                    clear: () => context.preview.clear(), error: context.onError });
             }
         }
         return new CreationGesture(sample, modifiers, context);

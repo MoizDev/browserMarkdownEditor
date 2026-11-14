@@ -17,6 +17,10 @@ export interface ConnectorEndHandleOptions {
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly armCommit: () => void;
+    readonly finishCommit: () => void;
+    readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -73,7 +77,10 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             const finalDoc = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             if (commit) {
-                const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release();
+                options.show(ops); await options.waitUntilReady(localRequest.signal); check();
+                options.armCommit();
+                try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release(); options.finishCommit(); }
+                catch (error) { options.cancelCommit(); throw error; }
                 ended = true; controller.abort(); cleanup();
             } else options.show(ops);
         } catch (error) {

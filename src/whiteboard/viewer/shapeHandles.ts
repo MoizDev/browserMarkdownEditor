@@ -35,6 +35,10 @@ export interface ShapeHandleOptions {
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
     readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly armCommit: () => void;
+    readonly finishCommit: () => void;
+    readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly resolveAttachment: (point: Vec2, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly error: (error: unknown) => void;
@@ -122,7 +126,9 @@ export function createShapeHandles(options: ShapeHandleOptions) {
         begin(hit: ShapeHandleHit, sample: RealSample, modifiers: Modifiers): GestureOwner | null {
             if (!current() || !selected) return null;
             const common = { runtime, id: selected, current, hold: options.hold, registerPending: options.registerPending,
-                show: options.show, clear: options.clear, error: options.error, cooperate: options.cooperate };
+                show: options.show, waitUntilReady: options.waitUntilReady, armCommit: options.armCommit,
+                finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
+                clear: options.clear, error: options.error, cooperate: options.cooperate };
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint' });
             if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,

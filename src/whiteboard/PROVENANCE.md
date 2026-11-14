@@ -41,6 +41,7 @@ third-party code included (normally "none") · date.
 | `model/textLimits.ts` | lane w-c | V-11, H-2 | text §4; document-model §9 | Design/rulings; shared one-million UTF-16 and hundred-thousand block caps | none | 2026-11-13 |
 | `model/loadTypes.ts` | w-d | W-C5, M-11 | document-model §§9.1–9.3; threading §2 | Types-only ordered repair draft, inert projection, sample wire and rehydration lease ownership; no tldraw source/package | none | 2026-11-13 |
 | `model/rawMedia.ts` | lane w-c, w-d | M-3/9, R-W25/30/37; THR-3 | document-model §9.3; preserved-media rulings | Independent escaped-string/key scan; 64-hex runs plus first/last candidates in longer runs, bounded ring and per-raw dedup; w-d added resumable scan and carrier iteration with unchanged visitor semantics; no upstream read or registry | none | 2026-11-13 |
+| `model/repairGraph.ts` | lane w-c | DM-4, V-1/2/3, RV-22 | document-model §§9.2–9.3 | Design only; ordered duplicate/parent/cycle/depth/order repair, opaque preservation and cooperative admission; no upstream source | none | 2026-11-13 |
 | `model/doc.ts` | lane w-c | M-1/3/4/6/8/10, C2.2, RV-22, R-W17/18/19/20/21/23/25/30 | document-model §§1/3/5/6/8/9.3/10; native-format §6 | Design/rulings; live/preserved reference indices; private strict opaque-descendant counts with public boolean query, no file field or exposed map; no tldraw source | none | 2026-11-13 |
 | `model/applyOnly.ts` | lane w-c | M-1/4/5/6/8/10, H-1/2/3, RV-8/22, R-W18/19/21/23/25/26 | document-model §§5/6/8/10; change-and-history §2 | Design/rulings; prepared edits, atomic media file/ext replacement, raw/count/revision writes and private O(depth) strict opaque ancestry counts; zero counts deleted | none | 2026-11-13 |
 | `change/ops.ts` | lane w-c | H-1/2/3/4/6, M-11, RV-8, R-W19/21/23/26/40 | change-and-history §§2–3; document-model §8 | Design/rulings; policies/capabilities, inverse forms and history-exempt always-dirty media set-file with explicit rollback-only ext restoration | none | 2026-11-13 |
@@ -240,6 +241,7 @@ third-party code included (normally "none") · date.
 | `text/edit/bindingTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Session, shared layout, composition paint and pane-view binding contract | none | 2026-11-13 |
 | `text/edit/managerTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Pane-owned editing manager, text tool creation, select/enter/type and lifecycle contracts | none | 2026-11-13 |
 | `text/edit/manager.ts` | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane-owned text editing entry and session-history creation; no tldraw source | none | 2026-11-13 |
+| `input/attach.ts`, `input/keyboard.ts` (text entry seam) | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane's existing input router and keyboard owner; selection-to-edit and double-click bridge | none | 2026-11-13 |
 | `text/edit/binding.ts` | lane w-n | T-4, T-5 | text §§5–6 | W-i's edit session and rich adapter, shared history/layout, IME overlay and pane transforms; frame name as plain text | none | 2026-11-13 |
 | `text/edit/growth.ts` | lane w-n | T-2, T-5 | text §6 | Original local prediction of rich edits, shared layout measurement, and same-transaction text/figure/sticky size updates | none | 2026-11-13 |
 | `text/layoutWorkerHandler.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform shared-worker protocol; w-d coordinated parse-worker integration | none | 2026-11-13 |
@@ -280,6 +282,7 @@ third-party code included (normally "none") · date.
 | `geom/resizePlacement.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected bounds-centre mapping through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
 | `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.7 | Design; shared resize, rotation and per-kind reflection command services | none | 2026-11-13 |
+| `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
 | `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-009/015 | geometry §6.7 | Design; ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transaction builders | none | 2026-11-13 |
 | `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
 | `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |

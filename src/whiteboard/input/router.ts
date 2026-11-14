@@ -6,7 +6,7 @@ export class InputRouter<Context> {
   private owner: GestureOwner | null = null
 
   attach(token: InputToken): void {
-    if (this.token && !sameInputToken(this.token, token)) this.finishCurrent('flush')
+    if (this.token && !sameInputToken(this.token, token)) this.interrupt(this.token, 'flush')
     this.token = { ...token }
   }
 
@@ -16,7 +16,7 @@ export class InputRouter<Context> {
 
   detach(token: InputToken): void {
     if (!this.isCurrent(token)) return
-    this.finishCurrent('flush')
+    this.interrupt(token, 'flush')
     this.token = null
   }
 
@@ -43,6 +43,18 @@ export class InputRouter<Context> {
     const owner = this.owner
     this.owner = null
     owner.cancel(reason)
+  }
+
+  // Undo/escape seal ink but discard reversible previews. The owner implements
+  // the atomic finish-and-undo transaction for an ink undo.
+  interrupt(token: InputToken, reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
+    if (!this.isCurrent(token) || !this.owner) return false
+    const owner = this.owner
+    this.owner = null
+    if (owner.kind === 'ink') owner.finish(reason)
+    else if (reason === 'flush' && (owner.kind === 'pan' || owner.kind === 'pinch' || owner.kind === 'zoom-brush' || owner.kind === 'laser')) owner.finish(reason)
+    else owner.cancel(reason === 'undo' ? 'undo' : reason === 'escape' ? 'escape' : 'invalidated')
+    return true
   }
 
   get activeOwner(): GestureOwner | null { return this.owner }

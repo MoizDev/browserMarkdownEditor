@@ -1623,7 +1623,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         for (const name of names) {
             try {
                 const file = await (await dir.getFileHandle(name)).getFile();
-                if (await hashBytes(await file.arrayBuffer()) === request.hash) return { name, blob: file as Blob };
+                if (await fingerprintSnapshot(file, request.signal) === request.hash) return { name, blob: file as Blob };
             } catch (error) {
                 if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
             }
@@ -1651,7 +1651,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
             await boardAssetGuard(request, activation);
             if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
-            if (await hashBytes(await request.blob.arrayBuffer()) !== request.hash) throw new Error('Board media hash mismatch');
+            if (await fingerprintSnapshot(request.blob, request.signal) !== request.hash) throw new Error('Board media hash mismatch');
             await boardAssetGuard(request, activation);
             const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
             const existing = await findBoardAsset(dir, request);
@@ -1670,7 +1670,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 } catch (error) { await write.abort().catch(() => {}); throw error; }
                 const prepared = await temporary.getFile();
                 tempVersion = prepared;
-                if (await hashBytes(await prepared.arrayBuffer()) !== request.hash) throw new Error('Board media staging failed');
+                if (await fingerprintSnapshot(prepared, request.signal) !== request.hash) throw new Error('Board media staging failed');
                 const name = await freeEntryName(dir, `${request.hash}.${request.extension}`);
                 await boardAssetGuard(request, activation);
                 const target = await dir.getFileHandle(name, { create: true });
@@ -1689,7 +1689,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     const current = await dir.getFileHandle(temporaryName);
                     const file = await current.getFile();
                     if (await current.isSameEntry(temporary) && file.lastModified === tempVersion.lastModified && file.size === tempVersion.size
-                        && await hashBytes(await file.arrayBuffer()) === await hashBytes(await tempVersion.arrayBuffer())) {
+                        && await fingerprintSnapshot(file) === await fingerprintSnapshot(tempVersion)) {
                         await dir.removeEntry(temporaryName);
                     }
                 } catch { /* a failed cleanup leaves recoverable staging bytes */ }

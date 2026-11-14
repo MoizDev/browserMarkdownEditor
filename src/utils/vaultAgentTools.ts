@@ -975,6 +975,7 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const ops = a.ops as CanvasOp[];
     const view = await liveCanvas(ctx, path);
     ctx.ensureLive();
+    if (ctx.signal?.aborted) throw new ToolError('Canvas edit cancelled. Nothing was applied.');
     let r: CanvasApplyResult;
     try {
         r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {

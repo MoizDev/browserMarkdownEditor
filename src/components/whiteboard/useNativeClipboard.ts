@@ -56,8 +56,15 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
         if (!source || !current()) throw new Error('The PDF ink source is unavailable');
         return source;
     };
-    const readMedia = async (entry: MediaEntry, signal: AbortSignal) => identity.kind === 'pdfInk'
-        ? pdfSource().readMedia(entry.id, signal) : (await ports.read(entry, signal))?.blob ?? null;
+    const readMedia = async (entry: MediaEntry, signal: AbortSignal) => {
+        signal.throwIfAborted();
+        if (identity.kind !== 'pdfInk') return (await ports.read(entry, signal))?.blob ?? null;
+        const source = pdfSource();
+        const blob = runtime.media.get(entry.id) ?? await source.readMedia(entry.id, signal);
+        signal.throwIfAborted();
+        if (!current() || pdfSource() !== source) throw new DOMException('PDF media source changed', 'AbortError');
+        return blob;
+    };
     const storeMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal) => {
         if (identity.kind === 'pdfInk') return Promise.reject(new Error('PDF media cannot be changed in this view'));
         return ports.restore(entry, blob, signal);

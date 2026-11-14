@@ -1,5 +1,8 @@
-import type { Rect } from '../../platform/types';
+import type { Affine, Rect } from '../../platform/types';
 import type { ClipNode, EmbedNode, FigureNode, FrameNode, LinkcardNode, PictureNode, StickyNode, TextNode } from '../model/nodes';
+import type { InkCoverage } from '../ink/outline';
+import { InkPickJob } from '../ink/pick';
+import type { InkPickQuery } from '../ink/pick';
 import type { Fill } from '../model/styles';
 import type { TextLayoutRequest, TextPaint } from '../text/paint';
 import { cubicBounds } from './bounds';
@@ -97,6 +100,27 @@ function pathBounds(ops: readonly PathOp[]): Rect | null {
 }
 function expand(rect: Rect, radius: number): Rect {
     return { x: rect.x - radius, y: rect.y - radius, width: rect.width + 2 * radius, height: rect.height + 2 * radius };
+}
+
+export interface InkGeometry {
+    readonly key: string;
+    readonly boxLocal: Rect;
+    readonly inkBoundsLocal: Rect;
+    readonly selectBoundsLocal: Rect;
+    readonly coverage: InkCoverage;
+    pickJob(localToSurface: Affine, query: InkPickQuery, dpr: number): InkPickJob;
+}
+
+/** Keep long ink coverage leased and let its own resumable picker enforce R-13. */
+export function prepareInkGeometry(key: string, coverage: InkCoverage): InkGeometry {
+    const rect = (r: Readonly<{ x: number; y: number; w: number; h: number }>): Rect =>
+        ({ x: r.x, y: r.y, width: r.w, height: r.h });
+    const ink = rect(coverage.boundsLocal), centre = rect(coverage.centrelineBoundsLocal), box = rect(coverage.geometry.boundsLocal);
+    if (![ink.x, ink.y, ink.width, ink.height, centre.x, centre.y, centre.width, centre.height,
+        box.x, box.y, box.width, box.height].every(Number.isFinite)
+        || ink.width < 0 || ink.height < 0 || centre.width < 0 || centre.height < 0 || box.width < 0 || box.height < 0) throw new RangeError('Invalid ink coverage bounds');
+    return { key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: union(ink, centre), coverage,
+        pickJob(localToSurface, query, dpr) { return new InkPickJob(coverage, localToSurface, query, dpr); } };
 }
 
 export interface TextGeometryOptions {

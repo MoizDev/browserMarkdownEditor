@@ -57,8 +57,9 @@ function predictionSamples(g: CurveGeometry): SampleSequence {
 }
 export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer {
     let handover: WetInkHandover | null = null, disposed = false, generation = 0, dirty = false, denied = false;
-    let owner: LayerHost | null = null, work: Work | null = null, reserved = 0;
+    let owner: LayerHost | null = null, work: Work | null = null, reserved = 0, lastPrepareFrame: number | null = null;
     const hosts = new Set<LayerHost>(), prepared = new Map<number, Prepared>(), callbacks = new Set<() => void>();
+    const hostLayers = new Map<LayerHost, Layer>();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not escape the scheduler */ } };
     const invalidate = () => { if (disposed) return; dirty = true; generation++; denied = false; options.invalidate(); for (const host of hosts) host.invalidate('wet-ink'); };
     const release = (lease: ByteLease) => { owner!.allocator.cpu.release(lease); reserved -= lease.bytes; };
@@ -148,7 +149,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         work = null; return true;
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
-        if (disposed || !owner || !options.current() || denied) return;
+        if (disposed || !owner || !options.current() || lastPrepareFrame === budget.frameId) return;
+        lastPrepareFrame = budget.frameId;
+        // A denied reservation waits for a genuine scheduler wake, not another polling frame.
+        denied = false;
         try {
             for (const item of handover?.forFrame(() => false) ?? []) {
                 if (item.dry && !options.exists(item.dry)) handover?.clear(item.identity);
@@ -211,12 +215,21 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 releaseGpu(reason) { if (reason === 'hidden' || reason === 'pressure') clear(); },
                 memory() { return { gpuBytes: 0, cpuBytes: host === owner ? reserved : 0 }; },
                 needsFrame() { return !ended && !disposed && !denied && (dirty || !!work); },
-                dispose() { if (ended) return; ended = true; if (owner === host) { clear(); owner = null; } hosts.delete(host); owner ??= hosts.values().next().value ?? null; },
+                dispose() { if (ended) return; ended = true; if (owner === host) { clear(); owner = null; } hosts.delete(host); hostLayers.delete(host); owner ??= hosts.values().next().value ?? null; },
             };
+            hostLayers.set(host, layer);
             return layer;
         },
         revision: () => generation,
-        cpuWorkingSet: () => ({ mandatoryBytes: reserved, prefetchBytes: 0 }),
+        cpuWorkingSet: layer => {
+            if (!owner || hostLayers.get(owner) !== layer) return { mandatoryBytes: 0, prefetchBytes: 0 };
+            const snapshots = handover?.forFrame(() => false) ?? [];
+            const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
+            // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
+            // allocation before prepare, including a replacement while old wet pixels stay live.
+            const extra = pending ? (work ? (work.temp ? 0 : TEMP_BYTES) + PATH_BLOCK : TEMP_BYTES + PATH_BLOCK) : 0;
+            return { mandatoryBytes: reserved + extra, prefetchBytes: 0 };
+        },
         critical: () => (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: () => {

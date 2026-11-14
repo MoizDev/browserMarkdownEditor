@@ -4,6 +4,9 @@ import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, T
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
 import { setPdfRenderData } from '../utils/pdfRenderCache';
+import { revokePdfSource } from '../utils/pdfRole';
+import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
+import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
@@ -180,11 +183,10 @@ async function drawBlob(ctx: CanvasRenderingContext2D, source: Blob, w: number, 
 function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: CanvasUiState } {
     if (!content.trim()) return {};
     try {
-        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: CanvasUiState };
+        const { ui, ...snapshot } = JSON.parse(content.trim()) as TLEditorSnapshot & { ui?: CanvasUiState };
         return { snapshot: 'document' in snapshot ? snapshot as TLEditorSnapshot : undefined, ui };
     } catch (err) {
-        console.error('Could not parse PDF annotations (leaving the file untouched):', err);
-        return {};
+        throw new Error('The PDF annotations could not be loaded without losing content.', { cause: err });
     }
 }
 
@@ -196,7 +198,18 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    const sniff = useMemo(() => sniffCanvas(props.snapshot, 'pdf'), [props.snapshot]);
+    const reason = canvasReadOnlyReason(sniff);
+    useEffect(() => {
+        // P-09 owns attachment precedence. This is the final loaded-snapshot
+        // guard: no editor, pending serializer or rebuild capability survives it.
+        if (reason) revokePdfSource(props.original);
+    }, [reason, props.original]);
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyPdfAnnotateCanvas {...props} />;
+}
+
+function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);

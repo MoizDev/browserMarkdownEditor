@@ -2,6 +2,7 @@ import { CameraController, cameraForPagedPosition, fitWidthZ, freeConstraint, pa
 import type { CameraAnchor, ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { Viewport } from '../../platform/types';
 import { flushCanvasViewPositions, readCanvasViewPos, readNativeDrawingViewPos, writeCanvasViewPos, writeNativeDrawingViewPos } from '../../utils/canvasViewState';
+import { flushPdfViewPositions, readPdfViewPos, writePdfViewPos } from '../../utils/pdfViewState';
 import { subscribeDocumentViewRetarget } from '../../utils/documentViewRetarget';
 import { boardPageStack } from '../model/pages';
 import type { BoardRuntime } from './runtime';
@@ -19,9 +20,8 @@ export function createBoardViewCamera(options: {
 }) {
     const { runtime, limits, insets } = options;
     const doc = runtime.session.doc;
-    if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook') throw new Error('A drawing or notebook camera is required');
     let stack = boardPageStack(doc.host);
-    if (doc.kind === 'notebook' && !stack) throw new Error('Notebook page layout is unavailable');
+    if (doc.kind !== 'whiteboard' && !stack) throw new Error('Paged canvas layout is unavailable');
     const path = options.currentPath();
     const drawing = doc.kind === 'whiteboard' && path ? readNativeDrawingViewPos(path, id => {
         const mapped = options.mapLegacyPage?.(id);
@@ -30,8 +30,10 @@ export function createBoardViewCamera(options: {
     const sheet = drawing && [...doc.sheets.values()].find(value => value.id === drawing.pageId);
     if (sheet) runtime.selection.setSheet(sheet.id);
     const remembered = doc.kind === 'notebook' && path ? readCanvasViewPos(path) : undefined;
+    const pdfPosition = doc.kind === 'pdf-ink' && path ? readPdfViewPos(path) : undefined;
     let pending = remembered?.kind === 'notebook' ? { page: remembered.page, offset: remembered.offset, zoom: remembered.zoom ?? 1 }
-        : doc.kind === 'notebook' ? { page: 0, offset: 0, zoom: 1 } : undefined;
+        : pdfPosition ? { page: pdfPosition.page, offset: pdfPosition.offset, zoom: pdfPosition.zoom ?? 1 }
+        : doc.kind !== 'whiteboard' ? { page: 0, offset: 0, zoom: 1 } : undefined;
     const initialCamera = drawing && sheet ? { x: drawing.x, y: drawing.y, z: drawing.z } : { x: 0, y: 0, z: 1 };
     const camera = new CameraController(initialCamera, options.initialViewport,
         stack ? pagedConstraint(stack, limits, insets) : freeConstraint(limits));
@@ -47,7 +49,11 @@ export function createBoardViewCamera(options: {
     const flush = () => {
         if (timer !== undefined) clearTimeout(timer);
         timer = undefined;
-        if (dirty) { dirty = false; flushCanvasViewPositions(); }
+        if (dirty) {
+            dirty = false;
+            if (doc.kind === 'pdf-ink') flushPdfViewPositions();
+            else flushCanvasViewPositions();
+        }
     };
     const changed = () => {
         if (disposed) return;
@@ -62,7 +68,8 @@ export function createBoardViewCamera(options: {
                 } else if (stack) {
                     const position = pagedPosition(camera.camera, camera.viewport, stack, insets);
                     if (!position) return;
-                    writeCanvasViewPos(currentPath, { kind: 'notebook', ...position }, false);
+                    if (doc.kind === 'pdf-ink') writePdfViewPos(currentPath, position, false);
+                    else writeCanvasViewPos(currentPath, { kind: 'notebook', ...position }, false);
                 }
                 dirty = true;
                 if (timer !== undefined) clearTimeout(timer);
@@ -72,7 +79,7 @@ export function createBoardViewCamera(options: {
         } catch (error) { options.onError(error); }
     };
     const refreshLayout = () => {
-        if (disposed || doc.kind !== 'notebook') return;
+        if (disposed || doc.kind === 'whiteboard') return;
         try {
             const next = boardPageStack(doc.host);
             if (!next || next === stack) return;

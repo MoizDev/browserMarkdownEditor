@@ -50,11 +50,12 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 
 ## Architecture: what every change must respect
 
-- **The four layers, and what may not cross between them.** `src/context/` is the only code that
-  touches the File System Access API. `src/editor/` is CodeMirror land and is **React-free**, reached
-  through facets and plain callbacks, never by importing a component or a hook. `src/components/` is
-  React; `src/utils/` is pure or DOM-light. An import crossing those lines is the change to rethink.
-  `shared/` is pure data and types both the app and `helper/` (a Bun program) import.
+- **The four layers, and what may not cross between them.** `src/context/` is the only code that touches
+  the File System Access API; its index worker (`vaultIndex/reader.ts`) only READS handles
+  `vaultIndex/client.ts` sends it; writes stay in `FileSystemContext`. `src/editor/` is CodeMirror land
+  and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
+  hook. `src/components/` is React; `src/utils/` is pure or DOM-light. An import crossing those lines is
+  the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
   unreferenced asset is *retired* into it and returns if the reference does, an unasked-for overwrite
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
@@ -99,16 +100,15 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   never a string) and `mermaidWidget`'s `renderInto` (mermaid's `securityLevel: 'strict'` DOMPurify pass).
   This origin holds the vault's handle — and, through the terminal, a shell. Do not open a third.
 - **Anything that walks the whole vault goes through a `(lastModified, size)`-validated cache**
-  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`), never `Promise.all`
-  over the vault. **A CACHE HIT IS NOT FREE** — it costs a `getFile()` round trip PER NOTE — so a save
-  never walks: it primes the cache (`primeLinks`) and revalidates nothing (`vault-filesystem`).
+  (`utils/graph.ts`, `utils/vaultSearch.ts`) and a bounded pool (`utils/pool.ts`; ONE `Limiter` across
+  the tree walk's whole recursion), never `Promise.all`, and nothing the reader waits for queues behind
+  it (the first graph build runs `onIdle`). **A CACHE HIT IS NOT FREE** — a `getFile()` round trip PER
+  NOTE — so a save never walks: it primes the cache (`primeLinks`) and revalidates nothing.
 - **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
   that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
   page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
 - **Third-party CDNs are not a dependency of drawing a line.** tldraw fetches fonts, icons and
   translations from `cdn.tldraw.com` unless given `assetUrls` (37 requests per board). Serve them here.
-- **Nothing the reader is waiting for may queue behind an index** — the first graph build runs `onIdle`,
-  and the tree walk is bounded-concurrent across the whole recursion (one `Limiter`, not one per level).
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,

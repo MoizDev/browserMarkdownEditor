@@ -1,9 +1,10 @@
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from '../host/runtime';
 import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type ClipboardEnvelope } from './encode';
 import type { CopySnapshot } from './snapshot';
 
-interface HeldSnapshot { readonly snapshot: CopySnapshot; count: number }
+interface HeldSnapshot { readonly snapshot: CopySnapshot; readonly memory: { release(): void }; count: number }
 interface Candidate { readonly held: HeldSnapshot; envelope: ClipboardEnvelope; readonly controller: AbortController }
 export interface CachedClipboard {
     readonly snapshot: CopySnapshot;
@@ -14,6 +15,8 @@ export interface CachedClipboard {
     readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
 export interface ClipboardCopyHost {
+    readonly runtime: BoardRuntime;
+    readonly memory: MemoryAllocator;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;
     /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
@@ -22,9 +25,28 @@ export interface ClipboardCopyHost {
     notice(message: string): void;
 }
 
+function hold(snapshot: CopySnapshot, memory: MemoryAllocator): HeldSnapshot {
+    const records = snapshot.payload.records.reduce((sum, line) => sum + line.length, 0);
+    const media = snapshot.media.reduce((sum, item) => sum + item.bytes, 0);
+    let text = 0, blocks = 0, runs = 0;
+    for (const item of snapshot.textItems) for (const block of item.text.blocks) {
+        blocks++;
+        for (const run of block.runs) { runs++; text += run.text.length; }
+    }
+    // Over-limit records become a small marker, but the real text rendition still needs DOM and serialization memory.
+    const portable = records <= 48 * 1024 * 1024;
+    const bytes = Math.max(64 * 1024, (portable ? records * 8 : 0) + text * 8
+        + snapshot.textItems.length * 512 + blocks * 384 + runs * 256 + (portable && media <= 32 * 1024 * 1024 ? media * 6 : 0));
+    let reservation: ReturnType<MemoryAllocator['reserve']>;
+    try { reservation = memory.reserve(bytes); }
+    catch (error) { for (const lease of snapshot.leases) lease.release(); throw error; }
+    if (!reservation) { for (const lease of snapshot.leases) lease.release(); throw new Error('Clipboard exceeds available memory'); }
+    const retained = reservation;
+    return { snapshot, memory: { release: () => memory.release(retained) }, count: 1 };
+}
 function release(held: HeldSnapshot): void {
     if (--held.count !== 0) return;
-    for (const lease of held.snapshot.leases) lease.release();
+    try { for (const lease of held.snapshot.leases) lease.release(); } finally { held.memory.release(); }
 }
 // Copy cache belongs to the window, not a pane; a vault switch must not invalidate its retained source.
 let windowWritten: { held: HeldSnapshot; envelope: ClipboardEnvelope; readMedia: ClipboardCopyHost['readMedia']; controller: AbortController } | null = null;
@@ -40,22 +62,24 @@ export class ClipboardCopy {
         if (this.disposed) throw new Error('Clipboard cache is closed');
         this.dropCandidate();
         if (!snapshot) return;
-        const held: HeldSnapshot = { snapshot, count: 1 };
+        const held = hold(snapshot, this.host.memory);
         const controller = new AbortController();
         let envelope: ClipboardEnvelope;
         try { envelope = encodeClipboardNow(snapshot, new Map()); }
         catch (error) { release(held); throw error; }
         const candidate: Candidate = { held, controller, envelope };
         this.candidate = candidate;
-        void prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), controller.signal).then(inline => {
-            controller.signal.throwIfAborted();
-            if (this.candidate !== candidate) return;
+        void this.host.runtime.jobs.run(async context => {
+            const inline = snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) > 48 * 1024 * 1024
+                ? new Map<MediaId, string>() : await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal);
+            context.assertCurrent();
+            if (this.candidate !== candidate || !this.host.isCurrent(snapshot)) return;
             const next = encodeClipboardNow(snapshot, inline);
             candidate.envelope = next;
-            return compressClipboard(snapshot, next, controller.signal).then(compressed => {
-                if (this.candidate === candidate && !controller.signal.aborted) candidate.envelope = compressed;
-            });
-        }).catch(() => {
+            const compressed = await compressClipboard(snapshot, next, context.signal);
+            context.assertCurrent();
+            if (this.candidate === candidate && this.host.isCurrent(snapshot)) candidate.envelope = compressed;
+        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => {
             // Copy still has the synchronous native records; missing bytes are resolved by hash on paste.
         });
     }
@@ -98,13 +122,13 @@ export class ClipboardCopy {
     }
 
     /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
-    async copyMenuFresh(runtime: BoardRuntime, capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
+    async copyMenuFresh(capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
         if (this.disposed) throw new Error('Clipboard cache is closed');
-        const controller = new AbortController(), session = runtime.session;
+        const runtime = this.host.runtime, controller = new AbortController(), session = runtime.session;
         let held: HeldSnapshot | undefined, finished = false;
         const prepared = runtime.jobs.run(async context => {
             const snapshot = await capture(context.signal);
-            const owner: HeldSnapshot = { snapshot, count: 1 };
+            const owner = hold(snapshot, this.host.memory);
             if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
             held = owner;
             context.assertCurrent();
@@ -112,7 +136,11 @@ export class ClipboardCopy {
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
             const commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
             let inline: ReadonlyMap<MediaId, string> = new Map();
-            try { inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal); }
+            try {
+                if (snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) <= 48 * 1024 * 1024) {
+                    inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal);
+                }
+            }
             catch { context.assertCurrent(); }
             context.assertCurrent();
             if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
@@ -191,14 +219,16 @@ export class ClipboardCopy {
         } };
         windowWritten = entry;
         // Retain Blob references while the source is alive; no decoded pixels or whole-batch byte copies.
-        void (async () => {
+        void this.host.runtime.jobs.run(async context => {
             for (const media of held.snapshot.media) {
-                if (controller.signal.aborted || windowWritten !== entry) break;
-                const blob = await read(media.id, controller.signal);
-                if (controller.signal.aborted || windowWritten !== entry) break;
+                context.assertCurrent();
+                if (windowWritten !== entry) break;
+                const blob = await read(media.id, context.signal);
+                context.assertCurrent();
+                if (windowWritten !== entry) break;
                 if (blob) blobs.set(media.id, new Blob([blob], { type: blob.type }));
             }
-        })().catch(() => undefined);
+        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => undefined);
     }
     private dropCandidate(): void {
         if (!this.candidate) return;

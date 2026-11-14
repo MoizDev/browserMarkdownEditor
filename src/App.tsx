@@ -2401,6 +2401,7 @@ export default function App() {
           + `${paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError' && !isCurrent()) return;
       console.error('Could not export the notebook:', err);
       notify(err instanceof DOMException && err.name === 'TypeMismatchError'
         ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);

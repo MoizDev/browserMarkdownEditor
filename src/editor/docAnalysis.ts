@@ -95,7 +95,6 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc, tr.startState.doc);
     const codeRanges = updateCodeRanges(previous.codeRanges, tree, tr, treeChanged);
     const lines = tr.docChanged ? updateLineScans(previous.lines, tr.changes, tr.startState.doc, state.doc) : previous.lines;
-    const pairs = updateBlockPairs(previous.blockPairs, tr.startState.doc, state.doc, tr.changes, lines.mathTokens, codeRanges);
     const rev = previous.rev + 1;
     const invalidated: CharRange[] = [];
     const difference = <T extends CharRange>(oldItems: readonly T[], newItems: readonly T[], keyOf: (item: T) => string) => {
@@ -111,6 +110,8 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
         invalidated.push(...old.values());
     };
     difference(previous.codeRanges, codeRanges, () => '');
+    const pairs = updateBlockPairs(previous.blockPairs, tr.startState.doc, state.doc, tr.changes,
+        lines.mathTokens, codeRanges, mergeAnalysisRanges(invalidated));
     difference(previous.blockPairs, pairs, item => `${item.accepted}:${item.latex}`);
     const inlineRaw = updateInlineMath(lines.inline, previous.inlineRaw, tr.changes, codeRanges, pairs,
         mergeAnalysisRanges(invalidated));

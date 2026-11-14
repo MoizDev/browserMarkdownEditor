@@ -22,7 +22,7 @@ export interface ClosedBoardOptions {
     readonly pdfPages?: readonly (readonly [number, number])[];
     readonly signal?: AbortSignal;
     /** C5 repairs/validates the ordered draft before constructing its indexed doc. */
-    admit(draft: ReadDraft, samples: SampleStore): BoardDoc;
+    admit(draft: ReadDraft, samples: SampleStore): BoardDoc | Promise<BoardDoc>;
 }
 
 // F-AGENT-001/WB-D11: the host selects this only when there is no live session.
@@ -54,7 +54,7 @@ export async function readClosedBoard(source: ByteSource, options: ClosedBoardOp
         // Once native is detected, an incomplete or unadmittable draft is not a
         // legacy file. In particular, no fallback parser may overwrite its bytes.
         if (!result.draft || !result.complete) throw new Error(result.issues[0]?.reason ?? 'Native board could not be read completely');
-        const doc = options.admit(result.draft, samples);
+        const doc = await options.admit(result.draft, samples);
         if (options.signal?.aborted) throw new Error('Board read cancelled');
         return { format: 'native', board: { doc, samples, readOnly: result.readOnly, issues: result.issues, dispose } };
     } catch (error) {

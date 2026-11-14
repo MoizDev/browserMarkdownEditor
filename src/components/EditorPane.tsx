@@ -140,6 +140,7 @@ interface EditorPaneProps {
      *  debounced save can land after its pane has gone away. */
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
     onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;

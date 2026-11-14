@@ -191,7 +191,7 @@ export default defineConfig([
           // PdfTiledView is itself a lazy switch target; its engine imports must
           // stay behind that boundary rather than moving into PdfPane/App.
           // These hooks are reached only through the lazy PdfTiledView chunk.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts'],
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           darkLazy: ['src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts'],

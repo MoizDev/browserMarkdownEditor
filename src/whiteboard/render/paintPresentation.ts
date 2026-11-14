@@ -7,4 +7,6 @@ export interface ViewerPaintPresentation {
     readonly frameId: number;
     readonly token: FrameToken;
     readonly omittedNodeIds: ReadonlySet<string> | null;
+    /** Retains the actual raw source frame, not its omission/ink presentation wrapper. */
+    retain(): () => void;
 }

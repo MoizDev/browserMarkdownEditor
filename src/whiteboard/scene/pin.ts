@@ -4,6 +4,7 @@ import type { NodeId } from '../model/ids';
 import { createLoadedBoardDoc } from '../model/loadDocument';
 import { boardPageStack } from '../model/pages';
 import type { PaintNode, PaintNodeSource } from '../render/paintStream';
+import type { Rect } from '../../platform/types';
 import type { ScenePaintNodeStream } from '../render/scenePaintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import { BoundsQuality, validBox } from './bounds';
@@ -93,7 +94,7 @@ export function createSceneSnapshot(options: {
     const copyRequest = (request: ScenePaintRequest): ScenePaintRequest => Object.freeze({ ...request,
         ...(request.world ? { world: Object.freeze({ ...request.world }) } : {}),
         ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}) });
-    const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController): ScenePaintNodeStream => {
+    const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined): ScenePaintNodeStream => {
         let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
         const close = (): Promise<void> => {
             if (closePromise) return closePromise;
@@ -114,6 +115,8 @@ export function createSceneSnapshot(options: {
         if (signal.aborted) abort();
         return {
             token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
+            sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld,
+            isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),
             async next() {
                 if (closePromise) throw cancelled();
                 signal.throwIfAborted();
@@ -194,7 +197,7 @@ export function createSceneSnapshot(options: {
             const work = track((async () => {
                 const doc = paintDocument();
                 const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(pinnedRequest));
-                const stream = wrapStream(source, combined, local);
+                const stream = wrapStream(source, combined, local, pinnedRequest.world);
                 try {
                     check(); combined.throwIfAborted();
                     if (source.sceneRevision !== revision || !sameToken(source.token, token) || source.sourceDoc !== doc) {

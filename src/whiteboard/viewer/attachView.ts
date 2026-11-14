@@ -176,10 +176,16 @@ export const attachView: AttachView = options => {
         lastSensitive = sensitive;
         const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
-        void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {
-            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) { pin.release(); return; }
-            frames.request({ source, release: () => pin.release() });
+        // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
+        const open = pin.paintStream;
+        if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
+        void open.call(pin, { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+            ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(stream => {
+            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
+                void stream.release().catch(report).finally(() => pin.release());
+                return;
+            }
+            frames.requestStream({ stream, release: () => pin.release() });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }

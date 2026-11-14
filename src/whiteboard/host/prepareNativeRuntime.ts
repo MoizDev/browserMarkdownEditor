@@ -235,7 +235,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         readOnlyReason: () => readOnlyReason() ?? options.readOnlyReason ?? null,
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: render.bounds, retainNode: render.retainNode, realize: render.realize,
-                            preparePaint: render.preparePaint, subscribeInvalidation: render.subscribeInvalidation },
+                            preparePaint: render.preparePaint, preparePaintStream: render.preparePaintStream, subscribeInvalidation: render.subscribeInvalidation },
                     }, builds: { pinMedia } });
                     transferred = true;
                     releaseCreators();

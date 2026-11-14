@@ -2,6 +2,7 @@ import type { OpenTab, EditorMode } from '../types';
 import type { DocumentRepresentation, LoadedDocumentKind, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import { isCanvasFile,isCodeFile,isDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
 import { isTextFile } from './vaultSearch';
+import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 export function classifyRequestedKind(name:string,isHelp=false):LoadedDocumentKind {
  if(isHelp||isMarkdownFile(name))return 'markdown';
  if(isEpubFile(name))return 'epub';if(isPdfFile(name))return 'pdf';
@@ -14,6 +15,25 @@ export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFi
 export function representationFor(name:string,isHelp=false,generation=0,unavailable=false):DocumentRepresentation {
  const loadedKind=classifyRequestedKind(name,isHelp),binary=loadedKind==='epub'||loadedKind==='pdf'||loadedKind==='unsupported';
  return {generation,loadedKind,status:unavailable?'unavailable':'ready',bufferKind:binary?'unavailable':'text',contentWritable:!unavailable&&!binary&&!isHelp};
+}
+// Every App tab transition passes here, including restore, disk reload and
+// retarget. Guarding just the pane would still let a clean Cmd+S replace bytes.
+export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[]): OpenTab[] {
+ if (next === previous) return next;
+ const byId = new Map(previous.map(tab => [tab.id, tab]));
+ return next.map(tab => {
+  const r = tab.representation;
+  if (r.loadedKind !== 'drawing' && r.loadedKind !== 'notebook') return tab;
+  const before = byId.get(tab.id);
+  // Other documents' keystrokes and this tab's dirty/selection changes must
+  // not lex an unchanged multi-megabyte canvas again.
+  const unchanged = before && before.content === tab.content && before.file.name === tab.file.name
+   && before.representation.loadedKind === r.loadedKind && before.representation.status === 'ready'
+   && before.representation.bufferKind === 'text' && !before.readError;
+  const writable = r.status === 'ready' && r.bufferKind === 'text' && !tab.readError && !tab.file.isHelp
+   && (unchanged ? before.representation.contentWritable : !canvasReadOnlyReason(sniffCanvas(tab.content, tab.file.name)));
+  return r.contentWritable === writable ? tab : {...tab, representation: {...r, contentWritable: writable}};
+ });
 }
 export function canReadTabText(tab:OpenTab):boolean{return !tab.readError&&tab.representation?.status==='ready'&&tab.representation.bufferKind==='text'}
 export function canUpdateTabContent(tab:OpenTab,source:'user'|'disk'|'annotation'='user'):boolean {

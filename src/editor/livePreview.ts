@@ -8,7 +8,7 @@ import type { EditorState, Extension, Range, Transaction } from '@codemirror/sta
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
 import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
-import { containsRange, firstRangeEndingAfter, overlapsRange } from './rangeSearch';
+import { containsRange, firstRangeEndingAfter, overlapsRange } from '../utils/rangeSearch';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';

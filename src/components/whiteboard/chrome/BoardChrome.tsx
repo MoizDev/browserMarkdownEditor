@@ -6,6 +6,8 @@ import { ConnectedPenPanel, type ConnectedPenPanelProps } from './ConnectedPenPa
 import './chrome.css';
 
 export interface BoardChromeProps extends BoardHeaderProps {
+    readonly locale: string;
+    readonly direction: 'ltr' | 'rtl';
     readonly selectedTool: ToolChoice;
     readonly lastFigure: string;
     readonly toolLabel: (key: ToolLabel) => string;
@@ -20,11 +22,11 @@ export interface BoardChromeProps extends BoardHeaderProps {
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
-export function BoardChrome({ selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
+export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, focusMode, selectTool, zoomControls, penPanel, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     if (focusMode) return null;
-    return <div className="board-chrome-overlay">
+    return <div className="board-chrome-overlay" lang={locale} dir={direction}>
         <BoardHeader {...header} />
         {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
         <div className="board-chrome-bottom">

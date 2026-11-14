@@ -26,7 +26,13 @@
 }
 
 .board-chrome-zoom {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 40%;
+}
+
+.board-chrome-zoom .board-chrome-tool-row {
+    overflow-x: auto;
 }
 
 .board-chrome-pen {

@@ -26,6 +26,7 @@ import { createBoardCameraCommands } from './cameraCommands';
 import { createSelectionCommandDriver } from './selectionCommands';
 import { createStyleShortcuts } from './styleShortcuts';
 import { createBackToContent } from './backToContent';
+import { createKeyboardContext, type KeyboardContextRequest } from './keyboardContext';
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
@@ -63,6 +64,7 @@ export interface BoardSelectServicesOptions {
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
     toggleWhiteboardTheme?(): void;
+    openKeyboardContextMenu?(request: KeyboardContextRequest): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
 export function createBoardSelectServices(options: BoardSelectServicesOptions) {
@@ -501,6 +503,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         current, changed: options.cameraChanged, error: report });
     const backToContent = createBackToContent({ runtime, overlay: options.overlay, surface: options.surface, current,
         activate: () => { cameraCommands.run('camera.backToContent'); }, error: report });
+    const keyboardContext = options.openKeyboardContextMenu ? createKeyboardContext({ runtime, camera: options.cameraController,
+        surface: options.surface, current, open: options.openKeyboardContextMenu, error: report }) : null;
+    const keyboardContextMenu = (surface: Vec2, world: Vec2) => keyboardContext?.request(surface, world) ?? false;
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });
     const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
@@ -517,8 +522,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

@@ -26,9 +26,9 @@ export interface DocAnalysis {
     mathRegions: MathRegion[];
     mathEnds: number[];
     lines: LineScans;
-    dollarRuns?: FilteredLineMatch[];
-    highlights?: FilteredLineMatch[];
-    wikilinks?: FilteredLineMatch[];
+    dollarRuns: FilteredLineMatch[];
+    highlights: FilteredLineMatch[];
+    wikilinks: FilteredLineMatch[];
     blockPairs: BlockPair[];
     inlineRaw: InlineMath[];
     objects: ObjectScans;

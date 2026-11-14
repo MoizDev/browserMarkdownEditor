@@ -39,7 +39,7 @@ export async function createNativePdfEditingLease(options: {
     if (!current()) throw new DOMException('PDF source changed', 'AbortError');
     const backdrop = await source.createBackdrop({ readOnly: false, isVisible: options.isVisible, isFocused: options.isFocused,
         emphasisEnabled: options.emphasisEnabled, signal, onError: options.onError,
-        onUpdating(value) { if (current()) options.onUpdating(value); } });
+        onUpdating(value) { if (!signal.aborted && current()) options.onUpdating(value); } });
     let transferred = false;
     try {
         signal.throwIfAborted();

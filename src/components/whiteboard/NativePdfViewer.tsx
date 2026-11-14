@@ -25,6 +25,19 @@ export interface NativePdfViewerSource {
     readMedia: PdfMediaReader;
 }
 
+async function waitWhilePdfRebinding(sourceState: NativePdfViewerSource, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (sourceState.getSnapshot().status !== 'rebinding') return;
+    await new Promise<void>((resolve, reject) => {
+        let stop = () => {};
+        const finish = () => { stop(); signal.removeEventListener('abort', cancel); resolve(); };
+        const cancel = () => { stop(); signal.removeEventListener('abort', cancel); reject(signal.reason); };
+        stop = sourceState.subscribe(() => { if (sourceState.getSnapshot().status !== 'rebinding') finish(); });
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel(); else if (sourceState.getSnapshot().status !== 'rebinding') finish();
+    });
+}
+
 export interface NativePdfViewerProps {
     readonly board: ViewOptions['board'];
     readonly adapter: HostedBoardAdapter<ViewOptions['board']>;
@@ -70,19 +83,8 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
         const abort = new AbortController();
         setLoading(true); setError(null);
         void (async () => {
-            const waitForSource = async () => {
-                if (sourceState.getSnapshot().status !== 'rebinding') return;
-                await new Promise<void>((resolve, reject) => {
-                    let stop = () => {};
-                    const finish = () => { stop(); abort.signal.removeEventListener('abort', cancel); resolve(); };
-                    const cancel = () => { stop(); abort.signal.removeEventListener('abort', cancel); reject(abort.signal.reason); };
-                    stop = sourceState.subscribe(() => { if (sourceState.getSnapshot().status !== 'rebinding') finish(); });
-                    abort.signal.addEventListener('abort', cancel, { once: true });
-                    if (abort.signal.aborted) cancel(); else if (sourceState.getSnapshot().status !== 'rebinding') finish();
-                });
-            };
             while (alive) {
-                await waitForSource();
+                await waitWhilePdfRebinding(sourceState, abort.signal);
                 if (!alive || abort.signal.aborted) return;
                 const state = sourceState.getSnapshot();
                 if (state.status !== 'ready') { report(new Error(state.reason ?? 'The PDF source is unavailable.')); return; }
@@ -197,14 +199,27 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [updating, setUpdating] = useState(false);
-    const createLease = useCallback((editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
-        const value = latest.current;
-        return createNativePdfEditingLease({ board: value.board, host: value.host, identity: value.identity,
-            sourceState: value.sourceState, editing, signal, limits: value.zoomLimits, insets: value.insets,
-            parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: false },
-            isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
-            emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
-            onError: value.onError, onNotice: notice });
+    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
+        while (true) {
+            const value = latest.current;
+            await waitWhilePdfRebinding(value.sourceState, signal);
+            signal.throwIfAborted();
+            const before = value.sourceState.getSnapshot();
+            if (before.status !== 'ready') throw new Error(before.reason ?? 'The PDF source is unavailable.');
+            try {
+                return await createNativePdfEditingLease({ board: value.board, host: value.host, identity: value.identity,
+                    sourceState: value.sourceState, editing, signal, limits: value.zoomLimits, insets: value.insets,
+                    parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: false },
+                    isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
+                    emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
+                    onError: value.onError, onNotice: notice });
+            } catch (error) {
+                signal.throwIfAborted();
+                const after = value.sourceState.getSnapshot();
+                if (after.status === 'rebinding' || after.source !== before.source) continue;
+                throw error;
+            }
+        }
     }, []);
     const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={latest.current}
         context={context} updating={updating} />, [updating]);

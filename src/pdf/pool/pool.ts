@@ -1,9 +1,9 @@
 import { createWorkerClient } from '../../platform/workers/client';
-import type { Priority, WorkerClient } from '../../platform/workers/envelope';
+import type { ContainedPort, Priority, WorkerClient } from '../../platform/workers/envelope';
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
-import { PDF_ENGINE_PROTOCOL, pdfDocKey } from '../worker/protocol';
-import type { PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
+import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey } from '../worker/protocol';
+import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
 import type { PdfDocumentOp, PdfOpenOptions, PdfPageBitmapOptions, PdfPool, PdfPoolDocument, PdfRequestOptions, PdfWriterSession, WithoutDocKey } from './types';
@@ -23,6 +23,42 @@ const abortError = () => new DOMException('PDF request cancelled', 'AbortError')
 const deadlineError = () => new DOMException('PDF request deadline expired', 'TimeoutError');
 const pageKey = (key: string, page: number) => `${key}\0${page}`;
 let poolSerial = 0;
+
+type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled(): Promise<void> };
+
+/** The broker supplies a direct worker port and trusted init metadata, never a same-origin fallback (C5.4). */
+function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writer', id: number): WorkerClient {
+    let port: BootstrapPort | null = null;
+    return createWorkerClient({ name, protocol: PDF_ENGINE_PROTOCOL,
+        spawn: async () => {
+            const spawned = await options.broker.spawn(role, id);
+            const candidate = spawned as Partial<BootstrapPort>;
+            if (!candidate.engine || typeof candidate.compiled !== 'function' || candidate.engine.role !== role ||
+                candidate.engine.protocol !== PDF_ENGINE_PROTOCOL || candidate.engine.roleVersion !== PDF_ENGINE_ROLE_VERSION) {
+                spawned.terminate();
+                throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
+            }
+            port = spawned as BootstrapPort;
+            return port;
+        },
+        onStart: async client => {
+            const current = port;
+            if (!current) throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
+            const info = await client.request<PdfResult<'engine.init'>>('engine.init', current.engine,
+                { priority: 0, cpu: 'light', deadlineMs: 10_000, terminateOnDeadline: true });
+            if (!info || info.buildId !== current.engine.buildId || info.artifactSha256 !== current.engine.artifactSha256 ||
+                !Number.isFinite(info.heapBytes) || info.heapBytes < 0 || !Array.isArray(info.features)) {
+                throw new PdfEngineError('EngineBroken', 'The contained PDF engine did not match its trusted build');
+            }
+            await current.compiled();
+        },
+        absoluteMs: role === 'writer' ? 120_000 : 60_000,
+        silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
+        restartPolicy: role === 'writer' ? { delaysMs: [0], maxFailures: 1, windowMs: 60_000 } :
+            { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
+        events: role === 'render' ? ['font.needed', 'page.geometry', 'dying'] : [],
+    });
+}
 
 function validInfo(value: unknown): value is DocInfo {
     if (!value || typeof value !== 'object') return false;
@@ -80,11 +116,7 @@ class Pool implements PdfPool {
     }
     private slot(): Slot {
         const id = ++this.nextSlot;
-        const client = createWorkerClient({ name: `pdf-render-${this.serial}-${id}`, protocol: PDF_ENGINE_PROTOCOL,
-            spawn: () => this.options.broker.spawn('render', id), absoluteMs: 60_000,
-            silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
-            restartPolicy: { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
-            events: ['font.needed', 'page.geometry', 'dying'] });
+        const client = pdfClient(this.options, `pdf-render-${this.serial}-${id}`, 'render', id);
         const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now() };
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
@@ -314,10 +346,7 @@ class Pool implements PdfPool {
     async writer(options: { signal?: AbortSignal } = {}): Promise<PdfWriterSession> {
         if (this.disposed || options.signal?.aborted) throw abortError();
         const id = ++this.nextSlot;
-        const client = createWorkerClient({ name: `pdf-writer-${this.serial}-${id}`, protocol: PDF_ENGINE_PROTOCOL,
-            spawn: () => this.options.broker.spawn('writer', id), absoluteMs: 120_000,
-            silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
-            restartPolicy: { delaysMs: [0], maxFailures: 1, windowMs: 60_000 } });
+        const client = pdfClient(this.options, `pdf-writer-${this.serial}-${id}`, 'writer', id);
         this.writers.add(client);
         let closed = false;
         const close = async () => { if (closed) return; closed = true; options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); };

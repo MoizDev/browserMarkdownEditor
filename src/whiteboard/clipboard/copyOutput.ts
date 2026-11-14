@@ -32,18 +32,20 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
 }
 /** Capture is the real export port; promises are installed while user activation is live. */
 export async function copyBoardPng(capture: (signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
-    pixelsPerWorldUnit = 2): Promise<void> {
-    signal.throwIfAborted();
-    const image = capture(signal).then(blob => { signal.throwIfAborted(); return new Blob([blob], { type: 'image/png' }); });
-    const privateImage = image.then(blob => pngWithClipboardDensity(blob, pixelsPerWorldUnit, signal));
+    current: () => boolean, pixelsPerWorldUnit = 2): Promise<void> {
+    const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
+    check();
+    const image = capture(signal).then(blob => { check(); return new Blob([blob], { type: 'image/png' }); });
+    const privateImage = image.then(async blob => { const output = await pngWithClipboardDensity(blob, pixelsPerWorldUnit, signal); check(); return output; });
     // Some browsers reject the custom type synchronously before consuming either promise.
     void privateImage.catch(() => undefined);
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]);
-    signal.throwIfAborted();
+    check();
 }
 /** The caller supplies the real escaped/exported SVG; the clipboard holds plain text only. */
 export function copyBoardSvg(svg: string): Promise<void> { return navigator.clipboard.writeText(svg); }
 /** Copy-as-JSON is an array of the native record-line strings, not an array of parsed objects. */
-export function copyBoardJson(snapshot: CopySnapshot): Promise<void> {
+export function copyBoardJson(snapshot: CopySnapshot, current: () => boolean): Promise<void> {
+    if (!current()) return Promise.reject(new DOMException('Clipboard capture became stale', 'AbortError'));
     return navigator.clipboard.writeText(JSON.stringify(snapshot.payload.records));
 }

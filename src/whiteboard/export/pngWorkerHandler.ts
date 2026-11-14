@@ -32,7 +32,8 @@ export async function pngStart(args: unknown, context: WorkerContext): Promise<B
     }
   }
   try {
-    return await encodePng(input.width, input.height, rows(), { clipboard: input.clipboard, pixelsPerWorldUnit: input.pixelsPerWorldUnit })
+    return await encodePng(input.width, input.height, rows(), { clipboard: input.clipboard,
+      pixelsPerWorldUnit: input.pixelsPerWorldUnit, signal: context.signal })
   } finally { streams.delete(input.streamId) }
 }
 

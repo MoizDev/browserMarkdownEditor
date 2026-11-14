@@ -1,3 +1,5 @@
+import type { Modifiers } from './tool'
+
 export interface KeyBinding {
   readonly id: string
   readonly group: string
@@ -111,6 +113,7 @@ export interface KeyboardActions {
   readonly modalOpen: () => boolean
   readonly editing: () => boolean
   run(id: string, event: KeyboardEvent): boolean
+  modifierChanged?(modifiers: Modifiers): void
   clearLatches(): void
 }
 
@@ -123,6 +126,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   const keydown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return
+    actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
     const accel = mac ? event.metaKey : event.ctrlKey
     const otherAccel = mac ? event.ctrlKey : event.metaKey
     if (otherAccel) return
@@ -131,7 +135,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (actions.run('escape', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
-    if (!actions.enabled()) return
     if (!accel && !event.altKey && (event.key === ' ' || key === 'z')) {
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }
       return
@@ -142,9 +145,13 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code] : key
     const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
     if (!binding || (event.repeat && !binding.repeat)) return
+    if (!actions.enabled() && !(['view', 'accessibility'].includes(binding.group) || binding.id === 'tool.select' || binding.id === 'tool.hand' || binding.id.startsWith('select.') || binding.id.startsWith('preferences.'))) return
     if (actions.run(binding.id, event)) { event.preventDefault(); event.stopPropagation() }
   }
   const keyup = (event: KeyboardEvent): void => {
+    if (actions.visible() && !actions.modalOpen() && !actions.editing() && root.contains(document.activeElement)) {
+      actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
+    }
     if (event.key === ' ' || event.code === 'Space') actions.run('pan.release', event)
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)
   }

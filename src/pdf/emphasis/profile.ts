@@ -4,6 +4,24 @@ export const EMPHASIS_STROKE_EM = 0.035 as const;
 export const EMPHASIS_PROBE_PROFILE = 'page-probe-v1' as const;
 export const EMPHASIS_MAX_PROBE_PIXELS = 1_048_576;
 
+export interface EmphasisVerdictIdentity {
+    docKey: string;
+    page: number;
+    locale: string;
+    engineBuild: string;
+    assetsRevision: string;
+    geometryRevision: string;
+    renderProfile: string;
+    backgroundProfile: string;
+}
+
+/** JSON tuple encoding keeps independent fields unambiguous, including arbitrary doc keys. */
+export function emphasisVerdictKey(identity: EmphasisVerdictIdentity): string {
+    return JSON.stringify([identity.docKey, identity.page, EMPHASIS_ALGORITHM, EMPHASIS_REVISION,
+        identity.locale, EMPHASIS_STROKE_EM, identity.engineBuild, identity.assetsRevision,
+        identity.geometryRevision, identity.renderProfile, identity.backgroundProfile, EMPHASIS_PROBE_PROFILE]);
+}
+
 /** Fixed, whole-page proof geometry; independent of zoom, DPR and preference. */
 export function emphasisProbeGeometry(width: number, height: number, maxPixels: number, maxEdge: number): {
     scale: number; width: number; height: number;

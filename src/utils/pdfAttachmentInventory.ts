@@ -5,6 +5,7 @@ import type { PDFObject } from 'pdf-lib';
 import { BOARD_ATTACHMENT, NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, PDF_APP_MARKER_NAMESPACE, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 import { compatibleLegacySnapshot, PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT } from './pdfRole';
 import type { PdfRole, PdfRoleFailure } from './pdfRole';
+import { checkPdfWriteMark } from './pdfWriteMark';
 
 interface Entry { id: string; names: Set<string>; description: string; spec: PDFDict }
 const key = PDFName.of;
@@ -134,7 +135,8 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
             const pristine = await PDFDocument.load(original, { parseSpeed: Infinity, updateMetadata: false });
             if (!pristine.getPageCount()) return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id);
         } catch { return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id); }
-        return { kind: 'annotated', generation, alreadyAnnotated: true, original, snapshot, notebookSource: null };
+        return { kind: 'annotated', generation, alreadyAnnotated: true, original, snapshot, notebookSource: null,
+            writeMark: await checkPdfWriteMark(bytes) };
     } catch (error) {
         return unreadable('attachment inventory', error instanceof Error && error.message.includes('encrypted') ? 'encrypted' : 'corrupt');
     }

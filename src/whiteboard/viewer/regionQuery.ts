@@ -5,6 +5,7 @@ import { compose, inverse } from '../geom/affine';
 import type { PathPickOptions } from '../geom/pick';
 import { createSweptPathJob } from '../geom/sweptPathJob';
 import { createClippedSweptPathJob } from '../geom/clippedSweptPathJob';
+import { createClippedFilledSweepJob } from '../geom/clippedFilledSweepJob';
 import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
@@ -208,17 +209,33 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                             }
                         } finally { job.cancel(); }
                     };
+                    const clippedPart = async (path: readonly PathOp[], region: Extract<RegionQuery, { kind: 'swept' }>, fill: boolean, strokeRadiusLocal: number) => {
+                        const job = createClippedFilledSweepJob(path, region, { frames: frameClips, fill, strokeRadiusLocal });
+                        try {
+                            for (;;) {
+                                check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                if (value.status === 'pending') { await cooperate(); continue; }
+                                if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                return value.status === 'hit';
+                            }
+                        } finally { job.cancel(); }
+                    };
                     const parts: boolean[] = [];
                     for (const head of connector.heads) {
-                        parts.push(await pathHit([head], worldQuery, { ...pathOptions,
-                            ...(head[head.length - 1]?.op === 'Z' ? { interiorPaths: [head] } : {}) }));
+                        const closed = head[head.length - 1]?.op === 'Z';
+                        parts.push(partialFrame && worldQuery.kind === 'swept'
+                            ? await clippedPart(head, worldQuery, closed, node.width / 2)
+                            : await pathHit([head], worldQuery, { ...pathOptions, ...(closed ? { interiorPaths: [head] } : {}) }));
                     }
                     if (connector.label) {
                         const box = connector.label.paint.box, labelQuery = { ...localQuery, localToSurface: compose(worldToCss, connector.label.localToWorld) } as RegionQuery;
-                        parts.push(await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [rectPath(0, 0, box.w, box.h)] }));
+                        const labelPath = rectPath(0, 0, box.w, box.h);
+                        parts.push(partialFrame && labelQuery.kind === 'swept' ? await clippedPart(labelPath, labelQuery, true, 0)
+                            : await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [labelPath] }));
                     }
                     const containment = query.kind === 'polygon' && query.containment, otherHit = parts.some(Boolean);
-                    if (!containment && otherHit && !partialFrame) hit = true;
+                    const partsCertified = partialFrame && worldQuery.kind === 'swept';
+                    if (!containment && otherHit && (!partialFrame || partsCertified)) hit = true;
                     else {
                         let body = false;
                         if (node.dash !== 'none' && connector.body.length) {
@@ -239,8 +256,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                             }
                             parts.push(body);
                         }
-                        if (!containment && !body && otherHit && partialFrame) throw new BoardRegionUncertain('Frame-clipped connector head requires a visible witness');
-                        hit = containment ? parts.length > 0 && parts.every(Boolean) : body || (!partialFrame && otherHit);
+                        if (!containment && !body && otherHit && partialFrame && !partsCertified) throw new BoardRegionUncertain('Frame-clipped connector head requires a visible witness');
+                        hit = containment ? parts.length > 0 && parts.every(Boolean) : body || ((!partialFrame || partsCertified) && otherHit);
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();

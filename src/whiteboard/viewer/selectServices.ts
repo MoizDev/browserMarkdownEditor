@@ -58,6 +58,8 @@ export interface BoardSelectServicesOptions {
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
+    /** The view's own editable gate. A read-only or non-editable view refuses document commands; navigation, camera and picking stay live. */
+    canMutateView(): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
     readonly alwaysSnap?: () => boolean;
@@ -78,7 +80,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     let guides: readonly BoardSnapGuide[] = [];
     let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
     const current = () => !disposed && options.current(token);
-    const mutable = () => current() && !session.isReadOnly;
+    const mutable = () => current() && options.canMutateView() && !session.isReadOnly;
+    // A refused document command is consumed, not declined: a declined key falls through to the host's global route, which can promote a document change.
+    const viewRefused = () => current() && !mutable();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
     const requestFrame = () => {
         if (disposed || scheduled) return;
@@ -250,7 +254,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const factor = command === 'scale.enlarge' ? 1.1 : command === 'scale.shrink' ? 1 / 1.1 : null;
         if (!(command in angles) && !flip && !stretch && factor === null) return false;
         const selection = runtime.selection.getSnapshot();
-        if (!mutable() || !selection.selected.length) return false;
+        if (!mutable()) return viewRefused();
+        if (!selection.selected.length) return false;
         const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
         // Keyboard transforms share the nudge queue so no two preflights race the same revision.
         nudgeTail = nudgeTail.catch(() => {}).then(async () => {
@@ -502,14 +507,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         surface: options.surface, current, open: options.openKeyboardContextMenu, error: report }) : null;
     const keyboardContextMenu = (surface: Vec2, world: Vec2) => keyboardContext?.request(surface, world) ?? false;
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
-        registerPending, error: report, keptLocked: options.onKeptLocked });
+        canMutateView: options.canMutateView, registerPending, error: report, keptLocked: options.onKeptLocked });
     const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
-        hit: (point, signal) => options.point.hit(point, 'mouse', signal), current, registerPending, error: report,
-        toggleWhiteboardTheme: options.toggleWhiteboardTheme });
+        hit: (point, signal) => options.point.hit(point, 'mouse', signal), current, canMutateView: options.canMutateView,
+        registerPending, error: report, toggleWhiteboardTheme: options.toggleWhiteboardTheme });
     const command = (id: string): boolean => {
         if (cameraCommands.run(id) || selectionCommands.run(id) || styleShortcuts.run(id)) return true;
-        if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true);
-        if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false);
+        if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true) || viewRefused();
+        if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false) || viewRefused();
         return navigate(id) || transform(id);
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.

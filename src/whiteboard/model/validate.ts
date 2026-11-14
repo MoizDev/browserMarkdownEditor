@@ -1,7 +1,7 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
 import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
 import type { RichText } from '../text/richText';
-import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from './doc';
+import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
 import { MEDIA_MIMES, type MediaId } from './media';
 import type { Node, NodeKind } from './nodes';
@@ -455,14 +455,6 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
     }
 }
 
-function containsOpaque(doc: BoardDoc, id: NodeId, depth = 0): boolean {
-    const node = doc.nodes.get(id);
-    if (node?.kind === 'opaque') return true;
-    if (depth >= 64) return false;
-    const children = childrenOf(doc, id);
-    for (let i = 0; i < children.length; i++) if (containsOpaque(doc, children[i].id, depth + 1)) return true;
-    return false;
-}
 function finalNode(context: ValidationContext, node: Node, index: number): ValidationResult {
     const doc = context.doc;
     const parent = parentCheck(doc, node.parent, node.id, index);
@@ -472,7 +464,7 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
         if (node.page !== -1) return refuse('V-7', index, node.id, 'Whiteboard/nested nodes must have page -1');
     } else if (!integer(node.page, 0)) return refuse('V-7', index, node.id, 'Paged root node requires a non-negative page index');
     // V-6's preserved-opaque exception follows document-model §9.3/RV-22.
-    if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !containsOpaque(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
+    if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !hasOpaqueDescendant(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
     // V-10 waits for paired samples/pressure writes, just as V-7 waits for
     // parent/page. A staged mismatch is allowed; an unencodable stroke is not.
     if (node.kind === 'stroke') {

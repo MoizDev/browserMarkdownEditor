@@ -411,6 +411,16 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
+export interface BoardAssetAccess {
+  root: FileSystemDirectoryHandle;
+  parent: FileSystemDirectoryHandle;
+  owner: FileSystemFileHandle;
+  hash: string;
+  preferredName?: string | null;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+}
+
 export interface VaultHandleIO {
   file: (handle: FileSystemFileHandle) => Promise<File>;
   fileIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemFileHandle>;
@@ -427,6 +437,7 @@ export interface FileSystemContextValue {
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
   /** Synchronous ownership token; A→B→A has three distinct activations. */
   getVaultActivation: () => number;
+  registerBeforeRootChange: (callback: () => Promise<void>) => () => void;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
@@ -476,12 +487,17 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
+  /** Board media are content-addressed but retain their actual collision-free leaf name. */
+  readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
   restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
+  /** Regrant only the activation that raised an index permission problem. */
+  requestIndexPermission: (root: FileSystemDirectoryHandle, activation: number) => Promise<boolean>;
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
    *  source. Resolves after close to its collision-free physical basename;

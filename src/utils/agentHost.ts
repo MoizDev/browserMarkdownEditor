@@ -48,6 +48,7 @@ export interface AgentHostDeps {
     handleIO: import('../types').VaultHandleIO;
     ensureVaultId: import('../types').FileSystemContextValue['ensureVaultId'];
     root: FileSystemDirectoryHandle | null;
+    searchIndex: import('./vaultIndexSession').VaultIndexSession;
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -56,6 +57,7 @@ export interface AgentHostDeps {
     stateCache: Map<string, EditorState>;
     readFile(handle: FileSystemFileHandle): Promise<string>;
     readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
+    statFile: import('../types').FileSystemContextValue['statFile'];
     writeFileVersioned: import('../types').FileSystemContextValue['writeFileVersioned'];
     readFileBytes(handle: FileSystemFileHandle): Promise<Uint8Array>;
     writeFile(handle: FileSystemFileHandle, content: string): Promise<void>;
@@ -66,7 +68,7 @@ export interface AgentHostDeps {
     updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
      *  open: file time, asset reconcile, graph, search epoch. */
-    afterWrite(file: ActiveFile, before: string, after: string): void;
+    afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
     renameEntry(node: FileTreeNode, newName: string): Promise<boolean>;
     moveEntry(node: FileTreeNode, target: FileSystemDirectoryHandle, targetPath: string): Promise<boolean>;
     /** Confirm-free trash (App.trashEntry). */
@@ -208,8 +210,12 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
-        vaultToken: () => getDeps().root,
-        readSnapshot: handle => getDeps().handleIO.file(handle),
+        vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchIndex : null; },
+        async searchTextIndex(files, paths) {
+            const index = getDeps().searchIndex;
+            await index.ensurePaths(files, paths);
+            return index.snapshot();
+        },
 
         getFileTree: () => getDeps().fileTree,
 
@@ -310,13 +316,15 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (getDeps().root !== deps.root) return {ok:false,reason:'error',message:'The vault changed.'};
             if (read.text !== expected) return { ok: false, reason: 'stale' };
             const next = applyToText(expected, changes);
+            let written: import('./diskVersion').DiskStat;
             try {
                 const result=await deps.writeFileVersioned(found.handle,next,read.version);
                 if(result.status!=='written')return {ok:false,reason:'stale'};
+                written = result.version;
             } catch {
                 return { ok: false, reason: 'error', message: 'The file could not be written.' };
             }
-            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next);
+            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next, written);
             return { ok: true };
         },
 
@@ -337,7 +345,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 const handle = await deps.createFile(parent, name);
                 if (content) {
                     await deps.writeFile(handle, content);
-                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content);
+                    let version: import('./diskVersion').DiskStat | undefined;
+                    try { version = await deps.statFile(handle) ?? undefined; } catch { /* The write succeeded; retry indexing later. */ }
+                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content, version);
                 }
                 return { ok: true };
             } catch (err) {
@@ -416,6 +426,11 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             return result === 'busy'
                 ? { ok: false, reason: 'busy', message: 'Another deletion is still running; try again in a moment.' }
                 : { ok: false, reason: 'error', message: 'Nothing was moved; something inside may be in use.' };
+        },
+
+        canvasWritable(path) {
+            const tab = openTabAt(getDeps(), path);
+            return !!tab && !tab.readError && tab.representation.status === 'ready' && !tab.representation.emergencyReadOnly;
         },
 
         async openCanvasForAgent(path) {

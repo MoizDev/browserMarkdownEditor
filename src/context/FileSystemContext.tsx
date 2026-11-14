@@ -1,5 +1,6 @@
 import { decodeDocumentText } from '../utils/diskVersion';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import { beginForegroundRead } from './vaultIndex/foreground';
 import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
@@ -24,7 +25,7 @@ import {
 import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
     FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
-    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess,
 } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
@@ -793,6 +794,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
     const vaultActivationRef = useRef(0);
     const getVaultActivation = useCallback(() => vaultActivationRef.current, []);
+    const requestIndexPermission = useCallback(async (root: FileSystemDirectoryHandle, activation: number) => {
+        if (rootHandleRef.current !== root || vaultActivationRef.current !== activation) return false;
+        try {
+            const permission = await root.requestPermission({ mode: 'readwrite' });
+            return permission === 'granted' && rootHandleRef.current === root && vaultActivationRef.current === activation;
+        } catch { return false; }
+    }, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
         // A→B→A is not the original activation, even if a handle is reused.
         if (rootHandleRef.current !== handle) vaultActivationRef.current++;
@@ -886,6 +894,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * here, at the one funnel all three raisers pass through, not in any of them.
      */
     const switchInFlightRef = useRef(false);
+    const beforeRootChangeRef = useRef<(() => Promise<void>) | null>(null);
+    const registerBeforeRootChange = useCallback((callback: () => Promise<void>) => {
+        beforeRootChangeRef.current = callback;
+        return () => { if (beforeRootChangeRef.current === callback) beforeRootChangeRef.current = null; };
+    }, []);
 
     /**
      * True when `handle` names the folder that is already open, whatever object
@@ -1107,7 +1120,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const tree = await loadTree(handle);
             if (!tree) return 'error';
 
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);
@@ -1220,7 +1236,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // The three setters are synchronous and in one task, so React
             // batches them into a single render: `rootHandle` and `fileTree`
             // cannot be observed describing different vaults.
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);
@@ -1593,6 +1612,112 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // while the reader waited for a pasted image to land. Same trap, same
         // answer as App.writeEntryStyles.
     }), [rootHandle, withMutation]);
+
+    // Serializing puts prevents two in-app imports from choosing the same free
+    // name. File System Access has no exclusive create, so another process can
+    // still race the final name check; never deliberately replace a squatter.
+    const boardAssetQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const boardAssetGuard = useCallback(async (request: BoardAssetAccess, activation: number) => {
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+        if (!/^[a-f0-9]{64}$/.test(request.hash)) throw new Error('Invalid board media hash');
+        if (await request.root.resolve(request.parent) === null) throw new Error('Board folder is outside the vault');
+        const owner = await request.parent.getFileHandle(request.owner.name);
+        if (!await owner.isSameEntry(request.owner)) throw new Error('Board file changed');
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+    }, []);
+    const findBoardAsset = useCallback(async (dir: FileSystemDirectoryHandle, request: BoardAssetAccess) => {
+        const names: string[] = [];
+        for await (const [name, handle] of dir.entries()) {
+            request.signal.throwIfAborted();
+            if (handle.kind === 'file' && name.startsWith(`${request.hash}.`)) names.push(name);
+        }
+        const preferred = request.preferredName;
+        if (preferred && preferred !== '.' && preferred !== '..' && !/[\\/\0]/.test(preferred) && !names.includes(preferred)) names.push(preferred);
+        for (const name of names) {
+            try {
+                const file = await (await dir.getFileHandle(name)).getFile();
+                if (file.size <= 10 * 1024 * 1024 && await fingerprintSnapshot(file, request.signal) === request.hash) return { name, blob: file as Blob };
+            } catch (error) {
+                if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
+            }
+        }
+        return null;
+    }, []);
+    const readBoardAsset = useCallback(async (request: BoardAssetAccess) => {
+        const activation = vaultActivationRef.current;
+        await boardAssetGuard(request, activation);
+        let dir: FileSystemDirectoryHandle;
+        try { dir = await request.parent.getDirectoryHandle(ASSETS_DIR); }
+        catch (error) {
+            if (error instanceof DOMException && error.name === 'NotFoundError') {
+                await boardAssetGuard(request, activation);
+                return null;
+            }
+            throw error;
+        }
+        const found = await findBoardAsset(dir, request);
+        await boardAssetGuard(request, activation);
+        return found;
+    }, [boardAssetGuard, findBoardAsset]);
+    const putBoardAsset = useCallback((request: BoardAssetAccess & { extension: string; blob: Blob }) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardAssetGuard(request, activation);
+            if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
+            if (request.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
+            if (await fingerprintSnapshot(request.blob, request.signal) !== request.hash) throw new Error('Board media hash mismatch');
+            await boardAssetGuard(request, activation);
+            const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
+            const existing = await findBoardAsset(dir, request);
+            await boardAssetGuard(request, activation);
+            if (existing) return existing.name;
+            const temporaryName = await freeEntryName(dir, `.incoming-${crypto.randomUUID()}`);
+            await boardAssetGuard(request, activation);
+            const temporary = await dir.getFileHandle(temporaryName, { create: true });
+            let tempVersion = await temporary.getFile();
+            try {
+                const write = await temporary.createWritable();
+                try {
+                    await write.write(request.blob);
+                    await boardAssetGuard(request, activation);
+                    await write.close();
+                } catch (error) { await write.abort().catch(() => {}); throw error; }
+                const prepared = await temporary.getFile();
+                tempVersion = prepared;
+                if (await fingerprintSnapshot(prepared, request.signal) !== request.hash) throw new Error('Board media staging failed');
+                const name = await freeEntryName(dir, `${request.hash}.${request.extension}`);
+                await boardAssetGuard(request, activation);
+                const target = await dir.getFileHandle(name, { create: true });
+                const output = await target.createWritable();
+                try {
+                    await output.write(prepared);
+                    await boardAssetGuard(request, activation);
+                    await output.close();
+                } catch (error) { await output.abort().catch(() => {}); throw error; }
+                await boardAssetGuard(request, activation);
+                return name;
+            } finally {
+                // Only remove the temp we created, never a name another actor
+                // replaced while the write was in flight.
+                try {
+                    const current = await dir.getFileHandle(temporaryName);
+                    const file = await current.getFile();
+                    if (await current.isSameEntry(temporary) && file.lastModified === tempVersion.lastModified && file.size === tempVersion.size
+                        && await fingerprintSnapshot(file) === await fingerprintSnapshot(tempVersion)) {
+                        await dir.removeEntry(temporaryName);
+                    }
+                } catch { /* a failed cleanup leaves recoverable staging bytes */ }
+            }
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, findBoardAsset, withMutation]);
 
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
@@ -2117,18 +2242,24 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      *  over the RAW bytes (CRLF and all) — hashing the normalized text would make
      *  a text document and a PDF disagree about what "unchanged" means. */
     const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        const version = await versionOfSnapshot(file, buf);
-        return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            const version = await versionOfSnapshot(file, buf);
+            return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        } finally { endRead(); }
     }, []);
 
     const readFileSnapshot = useCallback(async (handle: FileSystemFileHandle, signal?: AbortSignal): Promise<ReadOnlyFileSnapshot> => {
         signal?.throwIfAborted();
         let blob: File;
-        try { blob = await handle.getFile(); } catch (error) {
-            if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
-            blob = await handle.getFile();
-        }
+        const endRead = beginForegroundRead();
+        try {
+            try { blob = await handle.getFile(); } catch (error) {
+                if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
+                blob = await handle.getFile();
+            }
+        } finally { endRead(); }
         signal?.throwIfAborted();
         const lifetime = new AbortController();
         const abort = () => lifetime.abort();
@@ -2153,8 +2284,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        } finally { endRead(); }
     }, []);
 
     /**
@@ -2531,10 +2665,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
        and PdfPane, both memoized precisely so they do not re-render while the
        reader types, re-rendered anyway. */
     const value: FileSystemContextValue = useMemo(() => ({
+        requestIndexPermission,
         handleIO,
         ensureVaultId,
         rootHandle,
         getVaultActivation,
+        registerBeforeRootChange,
         resolveVaultDir,
         resolveVaultFile,
         vaultDirExists,
@@ -2589,9 +2725,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     }), [
         rootHandle,
+        requestIndexPermission,
         getVaultActivation,
+        registerBeforeRootChange,
         fileTree,
         isLoading,
         previousVault,
@@ -2635,6 +2775,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     ]);
 
     return (

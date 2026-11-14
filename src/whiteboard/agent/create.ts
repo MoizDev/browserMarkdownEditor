@@ -41,7 +41,7 @@ export function createPage(context: CreateContext, requested: number | undefined
     return { page, notes, clamp(point) {
         const x = Math.max(0, Math.min(rect.width, point.x));
         const y = Math.max(0, Math.min(rect.height, point.y));
-        if (x !== point.x || y !== point.y) notes.push('position clamped to page');
+        if ((x !== point.x || y !== point.y) && !notes.length) notes.push('position clamped to page');
         return { x, y };
     } };
 }
@@ -72,7 +72,12 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
         case 'geo': {
             const point = target.clamp(op);
             const rotation = ((((op.rotation ?? 0) % 360) + 360) % 360) * Math.PI / 180;
-            node = createFigure({ ...base, ...point, rotation, shape: op.geo as FigureShape, w: op.w, h: op.h, growY: 0,
+            // Agent positions name the unrotated top-left; the model rotates its
+            // local origin, so translate the origin to keep the centre fixed.
+            const c = Math.cos(rotation), s = Math.sin(rotation);
+            const x = point.x + (op.w - c * op.w + s * op.h) / 2;
+            const y = point.y + (op.h - s * op.w - c * op.h) / 2;
+            node = createFigure({ ...base, x, y, rotation, shape: op.geo as FigureShape, w: op.w, h: op.h, growY: 0,
                 color: op.color ?? 'black', labelColor: 'black', fill: op.fill ?? 'none', dash: op.dash ?? 'solid',
                 size: op.size ?? 'm', font: 'draw', align: 'middle', valign: 'middle',
                 label: op.text ? plainRichText(op.text) : null,

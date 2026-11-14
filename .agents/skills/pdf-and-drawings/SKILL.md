@@ -576,6 +576,9 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
 `src/context/**` only, so a component and a helper cannot share a file.
 
+- **Shared user preferences are app-owned** (`utils/boardPreferences.ts`, registered/mirrored as
+  `bme.whiteboard.preferences`); `boardLegacyUser.ts` bridges the public current-user signal for all
+  three legacy panes. Paper projects the scheme to light without writing that projection back.
 - **The pen is PER FILE, and per open editor.** `penStyle` keys on the live `Editor` in a WeakMap,
   not one app-wide value, because a split shows two canvases at once and each answers to its own
   file. `canvasPen`'s `CanvasUiState` (`toolId` + `stylesForNextShape` + `penScale`) is the one shape
@@ -645,7 +648,9 @@ that lengthens that debounce owes a matching flush: unmount, `flushPending` **an
 
 Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
 synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
-flushes. PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
+flushes. All three require the owning `OpenTab.id` for the pending-work coordinator; never derive it
+from a path or an optional reader binding. A PDF drain repeats if ink arrived during overlay export.
+PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
 leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
 its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
 slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is

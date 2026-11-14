@@ -11,12 +11,13 @@ export interface PdfInkRebindOptions {
     readonly admittedIdentity: NativeCanvasIdentity;
     readonly initialSource: PdfEditableInkSource;
     readonly sources: ReturnType<typeof createPdfInkSourceOwner>;
-    readonly writtenContext: ReturnType<typeof createPdfInkBuildCapture>['writtenContext'];
     readonly rebind: typeof rebindPdfInkSource;
     onError(error: unknown): void;
     /** Must revoke authoritative write policy while preserving the live session and undo. */
     onReadOnly(reason: string): void;
 }
+
+export type PdfInkWrittenContext = ReturnType<ReturnType<typeof createPdfInkBuildCapture>['writtenContext']>;
 
 export interface PdfInkRebindSnapshot {
     readonly source: PdfEditableInkSource;
@@ -55,17 +56,16 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
     return {
         getSnapshot: () => snapshot,
         subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        afterWritten(revision: number, value: unknown): Promise<void> {
+        afterWritten(revision: number, context: PdfInkWrittenContext): Promise<void> {
             const attempt = ++serial;
             pending?.abort();
-            let context: ReturnType<PdfInkRebindOptions['writtenContext']>, target: NativeCanvasIdentity;
+            let target: NativeCanvasIdentity;
             try {
-                context = options.writtenContext(revision, value);
                 const outer = host.outerIdentity(documentId);
                 if (!outer || !liveOwner() || outer.kind !== 'pdfInk' || outer.documentId !== documentId ||
                     outer.session !== admittedIdentity.session || outer.vaultActivation !== admittedIdentity.vaultActivation ||
-                    !host.isCurrent(outer) || context.revision !== revision ||
-                    context.source.token.documentId !== documentId || context.source.token.session !== admittedIdentity.session ||
+                    !host.isCurrent(outer) || context.revision !== revision || !Number.isSafeInteger(revision) || revision < 0 ||
+                    !/^[0-9a-f]{32}$/.test(context.writeId) || context.source.token.documentId !== documentId || context.source.token.session !== admittedIdentity.session ||
                     context.source.token.vaultEpoch !== admittedIdentity.vaultActivation ||
                     context.source.token.bytesGeneration > outer.bytesGeneration ||
                     context.source.pristineFingerprint !== initialSource.source.pristineFingerprint) throw stale();

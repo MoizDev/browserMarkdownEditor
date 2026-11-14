@@ -93,6 +93,59 @@ export async function attributeCanvases(snapshot, prepared, origin) {
     for (const canvas of snapshot.canvases) canvases.push({ ...canvas, attribution: await roleAt(canvas.stack) });
     return { ...snapshot, canvases };
 }
+export async function waitForCanvasIdle(page, prepared, origin, timeoutMs = 30000) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+        const snapshot = await attributeCanvases(await page.evaluate(() => window.__d1Outside.snapshot()), prepared, origin);
+        const ids = snapshot.canvases.filter(canvas => ['work', 'probe'].includes(canvas.attribution.role)).map(canvas => canvas.id);
+        const quiet = await page.evaluate(ids => new Promise(resolve => {
+            const start = window.__d1Outside.activity();
+            let frames = 0;
+            const frame = () => {
+                const current = window.__d1Outside.activity();
+                if (current.nextCanvas !== start.nextCanvas) { resolve(false); return; }
+                const busy = current.canvases.some(canvas => ids.includes(canvas.id) && canvas.width * canvas.height > 0);
+                if (busy) { resolve(false); return; }
+                if (++frames === 3) { resolve(true); return; }
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        }), ids);
+        if (quiet) return snapshot;
+        // Browser state, not a fixed warm-up delay: a new allocation forces a
+        // new map attribution before another three-frame quiescence attempt.
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    }
+    const snapshot = await attributeCanvases(await page.evaluate(() => window.__d1Outside.snapshot()), prepared, origin);
+    const bytes = snapshot.canvases.filter(canvas => ['work', 'probe'].includes(canvas.attribution.role)).reduce((n, canvas) => n + canvas.width * canvas.height * 4, 0);
+    const error = new Error(`Render/probe canvases did not quiesce: ${bytes} backing bytes remain`);
+    error.name = 'CanvasIdleTimeout';
+    throw error;
+}
+export async function publicGeometry(page, index = 0) {
+    return page.evaluate(index => {
+        const box = document.querySelectorAll('.pdf-viewer-page')[index], canvas = box?.querySelector('canvas'), scroll = document.querySelector('.pdf-viewer-scroll');
+        if (!box || !canvas || !scroll) throw new Error('Reader geometry is absent');
+        const p = box.getBoundingClientRect(), c = canvas.getBoundingClientRect(), v = scroll.getBoundingClientRect();
+        const x = Math.max(0, v.left + scroll.clientLeft - p.left), y = Math.max(0, v.top + scroll.clientTop - p.top);
+        return { page: { width: p.width, height: p.height }, canvas: { x: c.left - p.left, y: c.top - p.top, w: c.width, h: c.height },
+            need: { x, y, w: Math.max(0, Math.min(p.width, x + scroll.clientWidth) - x), h: Math.max(0, Math.min(p.height, y + scroll.clientHeight) - y) },
+            band: Boolean(canvas.style.width), dpr: devicePixelRatio, scrollTop: scroll.scrollTop, scrollLeft: scroll.scrollLeft,
+            zoom: document.querySelector('.pdf-viewer-zoom [aria-label="Reset zoom"]')?.textContent };
+    }, index);
+}
+export function observedTrigger({ page, canvas: rect, need }) {
+    // Public painted-band bounds plus the visible intersection recover the
+    // half-margin contract, independently of the app's target/predicate module.
+    const left = rect.x <= 0.5 ? rect.x : (rect.x + need.x) / 2;
+    const top = rect.y <= 0.5 ? rect.y : (rect.y + need.y) / 2;
+    const right = rect.x + rect.w >= page.width - 0.5 ? rect.x + rect.w : (rect.x + rect.w + need.x + need.w) / 2;
+    const bottom = rect.y + rect.h >= page.height - 0.5 ? rect.y + rect.h : (rect.y + rect.h + need.y + need.h) / 2;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+}
+export function covers(rect, need) {
+    return need.x >= rect.x - 0.5 && need.y >= rect.y - 0.5 && need.x + need.w <= rect.x + rect.w + 0.5 && need.y + need.h <= rect.y + rect.h + 0.5;
+}
 export async function canvasFingerprint(page, index = 0) {
     return page.evaluate(async index => {
         const box = document.querySelectorAll('.pdf-viewer-page')[index], canvas = box?.querySelector('canvas');

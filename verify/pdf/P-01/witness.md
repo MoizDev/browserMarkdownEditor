@@ -1,7 +1,22 @@
-# P-01a — first pre-fix witness (not package acceptance)
+# P-01 — existing pre-fix diagnostics (not package acceptance)
 
-No lane `src/` file has been changed. This is the first D1-G2 equivalent-request witness;
-G2's transition matrix, G3, the logic mutants and the product fix are still pending.
+## Disposition under the owner's charter §0
+
+Review proof is deferred. This existing diagnostic infrastructure is preserved, but no additional
+hold/mutant variants or identity re-runs are a merge prerequisite. P-01 is now one package: an
+unheld real-scroll reproduction, the product fix, static gates and one real-app sanity run.
+
+The extended G3 diagnostic reached the expected split after an observed three-frame canvas-idle
+boundary: whole→band, band→whole and inside-trigger failed with one expected versus two observed
+work canvases; outside-trigger and band zoom-out passed. Earlier extra-blit/backing failures were
+premature sampling during warm-up, not established product cleanup defects. Corrected evidence:
+`W/scratch/p-a/P-01/witness-g3-settled/latest-report.json`.
+
+A fresh-context image check (`witness-g3-ref-inside`) did not establish byte equality: geometry and
+dark-pixel count796505 matched, RGBA SHA256 did not. No tolerance was added and no equivalence is
+claimed. The cause is undiagnosed; its proof investigation is deferred.
+
+No lane `src/` file had been changed when these diagnostics were recorded.
 
 ## Real-app failure
 
@@ -67,7 +82,7 @@ L build -- node verify/pdf/P-01/prepare.mjs --base d53ae0a \
   --source "$SCRATCH/source-old-holds" --scratch "$SCRATCH/old-holds" \
   --variant holds --toolbox "$TOOLBOX/verify/lib"
 L run -- node verify/pdf/P-01/G2.mjs --prepared "$SCRATCH/old-holds/prepared.json" \
-  --fixture "$SCRATCH/fixtures-a/dense-one-page.pdf" --scratch "$SCRATCH/witness-all" \
+  --reference "$SCRATCH/old-holds/prepared.json" --fixture "$SCRATCH/fixtures-a/dense-one-page.pdf" --scratch "$SCRATCH/witness-all" \
   --toolbox "$TOOLBOX/verify/lib" --phase all --port 6384
 ```
 
@@ -78,9 +93,8 @@ private cache/output and hidden maps; those maps are attribution data, not appli
 
 ## Open obligations
 
-Before P-01a is offered: complete the pre-fix G2 transition/G3 compatibility witnesses and gate
-rules, then implement the product fix and demonstrate the applicable logic-mutant rejections. P-01b is density G4 plus G1's functional coverage;
-its timed form follows v-c's calibration/window method. A managed drawing-root count is a Canvas API
+Full G2 transition coverage, G3 byte-reference diagnosis, logic-mutant rejection and the timed corpus
+are deferred review work, not current merge conditions. A managed drawing-root count is a Canvas API
 state observation, not private RenderTask/worker-heap introspection; no timing or physical GPU-memory
-claim is made. D2 supplies the visible error UI; P-01 only supplies bounded stopping and one named
+claim is made. D2 supplies the visible error UI; P-01 supplies bounded stopping and one named
 reporting callsite until `recordClassicRenderFailure(session.health, error, i)` can be wired.

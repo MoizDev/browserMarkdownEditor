@@ -45,8 +45,12 @@ export async function installPdfObservations(context) {
             const original = proto[method];
             proto[method] = function (...args) {
                 const result = original.apply(this, args), id = canvasId(this.canvas), entry = canvases.get(id);
+                const previousDepth = entry.depth;
                 entry.depth = Math.max(0, entry.depth + (method === 'save' ? 1 : -1));
-                log(method, { id, live: live() });
+                // Only root boundaries can change the live drawing-root count.
+                // Recording every glyph's nested save copied the whole canvas
+                // table thousands of times without adding an observation.
+                if (previousDepth === 0 || entry.depth === 0) log(method, { id, live: live() });
                 return result;
             };
         }
@@ -105,6 +109,7 @@ export async function installPdfObservations(context) {
             },
             releaseForCleanup() { if (plan && !plan.released) { plan.released = true; plan.release?.(); } },
             mark() { return sequence; },
+            activity() { return { nextCanvas, canvases: live() }; },
             snapshot() {
                 return { sequence, hold: plan ? { phase: plan.phase, page: plan.page, arrivals: plan.arrivals, released: plan.released } : null,
                     canvases: [...canvases.values()].map(({ canvas, ...entry }) => ({ ...entry, width: canvas.width, height: canvas.height, connected: canvas.isConnected, page: pageOf(canvas) })),

@@ -1,0 +1,120 @@
+import { copyText, CLIPBOARD_WRITE_BLOCKED } from '../../utils/clipboard';
+import { COPY_TOO_LARGE, MAX_COPY_UTF16_UNITS, copySelection, normalizeForClipboard } from '../text/copy';
+import { selectionRange } from '../text/selection';
+import type { PdfSelection } from '../text/selection';
+
+export interface PdfTextCopyHost {
+    selection(): PdfSelection | null;
+    pageCount(): number;
+    cachedText(page: number): string | undefined;
+    /** Active copy is priority 1, not background indexing. */
+    text(page: number, signal: AbortSignal): Promise<string>;
+    notice(message: string): void;
+}
+export interface PdfTextCopyBinding {
+    copy(): Promise<void>;
+    /** Call on selection, docKey or visibility change. */
+    cancel(): void;
+    dispose(): void;
+}
+const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+// Clipboard writes are app-global, so two PDF panes cannot race completion.
+let latestCopy = 0, writes = 0, writeTail: Promise<void> = Promise.resolve();
+function writeLatest(text: string, ticket: number, valid: () => boolean): Promise<boolean | undefined> {
+    writes++;
+    const run = writeTail.then(async () => ticket === latestCopy && valid() ? copyText(text) : undefined);
+    writeTail = run.then(() => {}, () => {}).finally(() => { writes--; });
+    return run;
+}
+function sameSelection(a: PdfSelection, b: PdfSelection | null): boolean {
+    return !!b && a.docKey === b.docKey && a.wholeDocument === b.wholeDocument && a.granularity === b.granularity &&
+        a.anchor.page === b.anchor.page && a.anchor.offset === b.anchor.offset && a.anchor.affinity === b.anchor.affinity &&
+        a.focus.page === b.focus.page && a.focus.offset === b.focus.offset && a.focus.affinity === b.focus.affinity;
+}
+function snapshot(value: PdfSelection): PdfSelection { return { ...value, anchor: { ...value.anchor }, focus: { ...value.focus } }; }
+
+/** Extends the tiled pane's copy event; it installs no competing Select All handler. */
+export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): PdfTextCopyBinding {
+    let pending: AbortController | null = null, disposed = false, localEpoch = 0;
+    const cancel = () => { ++localEpoch; pending?.abort(); pending = null; host.notice(''); };
+    const initial = (selection: PdfSelection) => {
+        const count = host.pageCount(), pages = new Map<number, string>(), range = selectionRange(selection);
+        const first = selection.wholeDocument ? 0 : Math.max(0, Math.min(count - 1, range.start.page));
+        const last = selection.wholeDocument ? count - 1 : Math.max(first, Math.min(count - 1, range.end.page));
+        for (let page = first; page <= last; page++) {
+            const text = host.cachedText(page);
+            if (text !== undefined) pages.set(page, text);
+        }
+        return { count, pages, first, last, range };
+    };
+    const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number) => {
+        cancel();
+        const controller = new AbortController(), epoch = localEpoch; pending = controller;
+        const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && sameSelection(selection, host.selection()) && host.pageCount() === state.count;
+        const parts: string[] = [];
+        let units = 0, normalizedUnits = 0;
+        try {
+            for (let page = state.first; page <= state.last; page++) {
+                if (!valid()) return;
+                host.notice(`Copying ${page - state.first + 1} of ${state.last - state.first + 1} pages…`);
+                const text = state.pages.get(page) ?? await host.text(page, controller.signal);
+                if (!valid()) return;
+                const from = !selection.wholeDocument && page === state.first ? Math.max(0, Math.min(text.length, state.range.start.offset)) : 0;
+                const to = !selection.wholeDocument && page === state.last ? Math.max(from, Math.min(text.length, state.range.end.offset)) : text.length;
+                units += to - from + (page > state.first ? 1 : 0);
+                if (units > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
+                if (page > state.first) { parts.push('\n'); normalizedUnits++; }
+                // Clipboard normalization is code-point local; never split a surrogate pair.
+                for (let offset = from; offset < to;) {
+                    let end = Math.min(to, offset + 4096);
+                    if (end < to && /[\uD800-\uDBFF]/u.test(text[end - 1]) && /[\uDC00-\uDFFF]/u.test(text[end])) end--;
+                    const part = normalizeForClipboard(text.slice(offset, end));
+                    normalizedUnits += part.length;
+                    if (normalizedUnits > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
+                    parts.push(part); offset = end;
+                    if (!valid()) return;
+                    await yieldTask();
+                }
+            }
+            if (!valid()) return;
+            const result = parts.join('');
+            if (result.length > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
+            const copied = await writeLatest(result, ticket, valid);
+            if (valid() && copied !== undefined) host.notice(copied ? '' : CLIPBOARD_WRITE_BLOCKED);
+        } catch (error) {
+            if (valid()) host.notice(`Could not copy PDF text: ${error instanceof Error ? error.message : String(error)}`);
+        } finally { if (pending === controller) pending = null; }
+    };
+    const copy = async () => {
+        const current = host.selection();
+        if (!current || disposed) return;
+        const selection = snapshot(current), state = initial(selection), ticket = ++latestCopy;
+        const result = copySelection(selection, state.count, state.pages);
+        if (result.kind === 'too-large') { cancel(); host.notice(result.message); return; }
+        if (result.kind === 'ready') {
+            cancel();
+            const epoch = localEpoch;
+            const copied = await writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
+            if (copied === false) host.notice(CLIPBOARD_WRITE_BLOCKED);
+            return;
+        }
+        await gather(selection, state, ticket);
+    };
+    const onCopy = (event: ClipboardEvent) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+        const current = host.selection();
+        if (!current) return;
+        const selection = snapshot(current), state = initial(selection), result = copySelection(selection, state.count, state.pages), ticket = ++latestCopy;
+        event.preventDefault();
+        if (result.kind === 'ready' && event.clipboardData) {
+            cancel(); event.clipboardData.setData('text/plain', result.text);
+            // If an older permission-gated write is already in flight, restore
+            // this newer native copy after it settles, never in reverse order.
+            if (writes) void writeLatest(result.text, ticket, () => true);
+        } else if (result.kind === 'too-large') { cancel(); host.notice(result.message); }
+        else void gather(selection, state, ticket);
+    };
+    element.addEventListener('copy', onCopy);
+    return { copy, cancel, dispose() { disposed = true; cancel(); element.removeEventListener('copy', onCopy); } };
+}

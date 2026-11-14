@@ -80,7 +80,7 @@ function checkResult(info: InspectedMedia): void {
 }
 
 function box(info: InspectedMedia, density?: number): { w: number; h: number } {
-    const scale = Math.min(density === undefined ? 1 : 1 / density, 5000 / Math.max(info.width, info.height));
+    const scale = density === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / density;
     return { w: info.width * scale, h: info.height * scale };
 }
 

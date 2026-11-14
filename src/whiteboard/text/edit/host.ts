@@ -97,7 +97,11 @@ export class EditHost {
             this.element = textarea;
             this.listen(textarea, 'input', () => this.onFallbackInput(textarea));
             this.listen(textarea, 'compositionstart', () => this.startComposition());
-            this.listen(textarea, 'compositionend', () => this.endComposition());
+            this.listen(textarea, 'compositionend', () => {
+                this.pending = difference(this.compositionBase ?? this.window, textarea.value,
+                    { anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd });
+                this.endComposition();
+            });
             this.listen(textarea, 'select', () => callbacks.selection({ anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd }));
         }
         this.element.className = 'wb-edit-host';

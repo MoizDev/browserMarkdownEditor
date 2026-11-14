@@ -15,6 +15,8 @@ export interface SerializerPrime {
     /** Parsed-reader positions at open; after a write, use the worker's opaque index Blob. */
     readonly lines?: readonly BaselineLine[];
     readonly index?: Blob;
+    /** Canonical load repairs/defaults at the baseline revision; never document edits. */
+    readonly overrides?: readonly SerializerChange[];
 }
 export interface SerializerChange {
     readonly identity: RecordIdentity;

@@ -107,7 +107,6 @@ export interface OpenTab {
    */
   id: string;
   file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
-  content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab
   dirty: boolean;          // has unsaved edits since the last disk write
   /**
@@ -117,9 +116,8 @@ export interface OpenTab {
    * the path survives in the stored session: skipping it once used to drop it
    * from the vault's saved tabs for good (issue #8).
    *
-   * While it is set, `content` is '' and is NOT the file's text. Nothing may
-   * write it, search it, diff it for assets, or build an editor or canvas from
-   * it — ⌘S force-flushes the focused tab, and would put '' over the note.
+   * While it is set, the buffer is not the file's text. Nothing may write it,
+   * search it, diff it for assets, or build an editor or canvas from it.
    *
    * Session-only, like `id`: the stored session records only paths.
    */
@@ -543,10 +541,10 @@ export interface FileSystemContextValue {
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
-  writeConflictCopy: (filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
   /** Re-create a file deleted outside the app (and any missing parent folders)
    *  only if nothing is at `filePath` now. */
-  recreateFile: (filePath: string, data: string | Uint8Array) => Promise<
+  recreateFile: (filePath: string, data: string | Uint8Array | Blob) => Promise<
     { status: 'written'; version: DiskVersion; handle: FileSystemFileHandle } | { status: 'exists' }>;
   /** A fresh handle for a vault path, resolved from the root; null if missing. */
   resolveFileHandle: (filePath: string) => Promise<FileSystemFileHandle | null>;

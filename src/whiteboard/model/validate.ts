@@ -1,6 +1,7 @@
 import { normalizePaper, PAPER_SIZES, type NotebookPaper } from '../../utils/paper';
 import type { Op, TouchedSet, TransactionOrigin } from '../change/ops';
 import type { RichText } from '../text/richText';
+import { SECURITY_LIMITS } from '../security/limits';
 import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
 import { isSafeMediaFile, MEDIA_MIMES, type MediaId } from './media';
@@ -336,13 +337,14 @@ function paper(value: unknown): boolean {
     return value.size === normalized.size && value.orientation === normalized.orientation && value.ruling === normalized.ruling
         && value.spacing === normalized.spacing && value.margin === normalized.margin && value.pageCount === normalized.pageCount;
 }
-function mediaEntry(value: unknown): boolean {
+function mediaEntryCore(value: unknown): value is Record<string, unknown> {
     return object(value) && closed(value, KEYS.media)
         && typeof value.id === 'string' && MEDIA_HASH.test(value.id) && known(value.mime, MEDIA_MIMES)
         && integer(value.bytes, 0) && number(value.w, 1, 1_000_000) && number(value.h, 1, 1_000_000)
         && (value.mime.startsWith('video/') ? number(value.duration, 0) : value.duration === null)
-        && boolean(value.animated) && string(value.name, 10000) && (value.file === null || string(value.file)) && extension(value.ext);
+        && boolean(value.animated) && string(value.name, 10000) && (value.file === null || string(value.file));
 }
+function mediaEntry(value: unknown): boolean { return mediaEntryCore(value) && extension(value.ext); }
 function sheetName(value: unknown): boolean { return string(value, 200) && NON_WHITESPACE.test(value); }
 
 // H-3: context.doc is the staged live read-side, after earlier ops, before this op.
@@ -496,15 +498,123 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
     }
     return OK;
 }
+// Load admission validates the root separately from runtime ops. Native major 1
+// is the editable format; raw lexemes remain reader-owned and are never parsed here.
+function* rootExtension(value: unknown): Generator<void, boolean> {
+    if (value === null) return true;
+    if (!object(value) || !closed(value, KEYS.extension) || !(value.fields instanceof Map) || !(value.raw instanceof Map)) return false;
+    for (const map of [value.fields, value.raw]) for (const [key, entry] of map) {
+        yield;
+        if (typeof key !== 'string' || typeof entry !== 'string') return false;
+    }
+    return true;
+}
+function* loadedRootSteps(doc: BoardDoc): Generator<void, ValidationResult> {
+    const bad = (reason: string, code: ValidationCode = 'schema') => refuse(code, -1, null, reason);
+    try {
+        const host: unknown = doc.host;
+        if (!object(host) || !known(doc.kind, ['whiteboard', 'notebook', 'pdf-ink']) || host.kind !== doc.kind) return bad('Host kind does not match board');
+        if (host.kind === 'whiteboard') {
+            if (!closed(host, ['kind'])) return bad('Invalid whiteboard host');
+        } else if (host.kind === 'notebook') {
+            if (!closed(host, ['kind', 'paper', 'ext']) || !paper(host.paper) || !(yield* rootExtension(host.ext))) return bad('Invalid notebook host');
+        } else {
+            if (!closed(host, ['kind', 'pdf', 'pages', 'ext']) || typeof host.pdf !== 'string'
+                || !(yield* rootExtension(host.ext)) || !Array.isArray(host.pages) || !host.pages.length
+                || host.pages.length > 65_536) return bad('Invalid PDF host'); // FORMAT_LIMITS.pdfPages
+            for (const page of host.pages) {
+                yield;
+                if (!Array.isArray(page) || page.length !== 2 || !number(page[0], Number.MIN_VALUE, 14_400)
+                    || !number(page[1], Number.MIN_VALUE, 14_400)) return bad('Invalid PDF page dimensions'); // FORMAT_LIMITS.pdfPageSize
+            }
+        }
+        if (!(doc.sheets instanceof Map) || !(doc.nodes instanceof Map) || doc.sheets.size < 1
+            || doc.sheets.size > SECURITY_LIMITS.sheets || !Array.isArray(doc.sheetOrder)
+            || doc.sheetOrder.length !== doc.sheets.size) return bad('Invalid sheet table');
+        const orders = new Set<string>(), orderedIds = new Set<string>();
+        for (const [key, sheet] of doc.sheets) {
+            yield;
+            if (!object(sheet) || !closed(sheet, KEYS.sheet) || !id(sheet.id) || key !== sheet.id
+                || doc.nodes.has(sheet.id) || !sheetName(sheet.name) || !(yield* rootExtension(sheet.ext))) return bad('Invalid sheet identity or metadata', 'V-1');
+            if (typeof sheet.order !== 'string' || !isValidKey(sheet.order) || orders.has(sheet.order)) return bad('Invalid or duplicate sheet order', 'V-3');
+            orders.add(sheet.order);
+        }
+        for (const sheet of doc.sheetOrder) {
+            yield;
+            if (!sheet || doc.sheets.get(sheet.id) !== sheet || orderedIds.has(sheet.id)) return bad('Invalid ordered sheet table');
+            orderedIds.add(sheet.id);
+        }
+        if (!(doc.media instanceof Map)) return bad('Invalid media table', 'V-9');
+        for (const [key, entry] of doc.media) {
+            yield;
+            if (!mediaEntryCore(entry) || !(yield* rootExtension(entry.ext)) || key !== entry.id) return bad('Invalid media entry', 'V-9');
+        }
+        const ui: unknown = doc.ui, view: unknown = doc.view;
+        if (!object(ui) || !closed(ui, ['tool', 'next', 'penWidth', 'ext']) || !known(ui.tool, TOOLS)
+            || !nextStyles(ui.next) || !number(ui.penWidth, 0.36, 10.5) || !(yield* rootExtension(ui.ext))) return bad('Invalid UI state');
+        if (!object(view) || !closed(view, ['grid', 'focusMode', 'toolLock', 'transparent', 'debugMode', 'ext'])
+            || !boolean(view.grid) || !boolean(view.focusMode) || !boolean(view.toolLock)
+            || !boolean(view.transparent) || !boolean(view.debugMode) || !(yield* rootExtension(view.ext))) return bad('Invalid view state');
+        const preserved: unknown = doc.preserved;
+        if (!object(preserved) || !closed(preserved, ['version', 'fields', 'records', 'end'])
+            || !Array.isArray(preserved.version) || preserved.version.length !== 2 || preserved.version[0] !== 1
+            || !integer(preserved.version[1], 0) || !(preserved.fields instanceof Map)
+            || !Array.isArray(preserved.records) || !(yield* rootExtension(preserved.end))) return bad('Invalid preserved data');
+        for (const [key, value] of preserved.fields) { yield; rawEntry(value, key); }
+        for (const record of preserved.records) {
+            yield;
+            if (!object(record) || !closed(record, ['type', 'id', 'raw']) || !string(record.type)
+                || !id(record.id) || typeof record.raw !== 'string') return bad('Invalid preserved record');
+        }
+        if (!(doc.preservedMediaRefs instanceof Map)) return bad('Invalid preserved media references', 'V-9');
+        for (const [key, count] of doc.preservedMediaRefs) {
+            yield;
+            if (typeof key !== 'string' || !MEDIA_HASH.test(key) || !integer(count, 1)) return bad('Invalid preserved media reference', 'V-9');
+        }
+        return OK;
+    } catch { return bad('Malformed loaded board'); }
+}
+
+export function validateLoadedRoot(doc: BoardDoc): ValidationResult {
+    const steps = loadedRootSteps(doc);
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+
+export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: () => Promise<void>,
+    signal?: AbortSignal): Promise<ValidationResult> {
+    const check = () => { if (signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError'); };
+    const steps = loadedRootSteps(doc);
+    let count = 0, started = performance.now();
+    check();
+    for (;;) {
+        const step = steps.next();
+        if (step.done) { check(); return step.value; }
+        if (++count >= 256 || performance.now() - started >= 3) {
+            check();
+            await cooperate?.();
+            check();
+            count = 0; started = performance.now();
+        }
+    }
+}
+
 /** Admission checks a repaired, indexed record without pretending it is a new
  * create op (which would reject its already-present id and opaque records). */
 export function validateLoadedNode(context: ValidationContext, node: Node, index: number): ValidationResult {
     try {
-        if (node.kind === 'opaque') return finalNode(context, node, index);
+        if (!object(node) || !id(node.id)) return refuse('V-1', index, null, 'Loaded node requires a valid id');
+        if (!kind(node.kind)) return refuse('V-5', index, node.id, 'Unknown node kind');
+        const specific: readonly string[] = FIELDS[node.kind];
+        for (const key in node) if (!Object.hasOwn(node, key) || (key !== 'id' && key !== 'kind' && key !== 'ext'
+            && !(COMMON as readonly string[]).includes(key) && !specific.includes(key))) return refuse('schema', index, node.id, 'Unknown node property');
         if (!extension(node.ext)) return refuse('schema', index, node.id, 'Invalid preservation metadata');
         for (const key of COMMON) {
             const result = field(context, node.kind, node.id, key, Reflect.get(node, key), index);
             if (!result.ok) return result;
+        }
+        if (node.kind === 'opaque') {
+            if (node.locked !== true || typeof node.raw !== 'string') return refuse('schema', index, node.id, 'Invalid opaque node');
+            return finalNode(context, node, index);
         }
         for (const key of FIELDS[node.kind]) {
             const result = field(context, node.kind, node.id, key, Reflect.get(node, key), index);

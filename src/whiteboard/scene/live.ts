@@ -50,27 +50,32 @@ export class LiveSceneView {
         return new SpatialQuery(output).begin(source, options.request, visitor);
     }
     spatialCursor(options: SceneQueryOptions): SpatialCursor {
-        const scene = this.scene, query = this.query(options);
-        let position = 0;
+        const scene = this.scene, query = this.query(options), epoch = this.epochValue, indexEpoch = scene.index.epoch;
+        let position = 0, stale = false;
+        const current = () => scene === this.scene && scene.revision === this.doc.rev && this.epochValue === epoch && scene.index.epoch === indexEpoch;
         return {
             resume: (budget, visit) => {
                 if (!Number.isSafeInteger(budget.maxVisits) || budget.maxVisits <= 0 || !Number.isFinite(budget.deadline)) throw new RangeError('Invalid cursor budget');
+                if (stale) return 'stale';
                 let remaining = budget.maxVisits;
-                while (remaining > 0 && performance.now() < budget.deadline && query.status === 'pending') { query.step(1); remaining--; }
-                if (query.status !== 'complete') return query.status;
-                const result = query.result;
-                while (remaining > 0 && position < result.length && performance.now() < budget.deadline) {
-                    if (scene !== this.scene || scene.revision !== this.doc.rev) return 'stale';
-                    const slot = result.slots[position], generation = result.generations[position++];
-                    if (scene.index.alive(slot) && scene.index.generation(slot) === generation) {
+                while (remaining > 0 && performance.now() < budget.deadline) {
+                    if (!current()) { stale = true; query.cancel(); return 'stale'; }
+                    if (query.status === 'stale' || query.status === 'cancelled') return query.status;
+                    // Unordered results may stream as discovered; ordered requests must finish
+                    // their sort before exposure so progressive erasing never changes z semantics.
+                    const output = query.output;
+                    if (position < output.length && (!options.request.order || query.status === 'complete')) {
+                        const slot = output.slots[position], generation = output.generations[position++];
+                        if (!scene.index.alive(slot) || scene.index.generation(slot) !== generation) { stale = true; query.cancel(); return 'stale'; }
                         const i = slot * 6, world = scene.columns.world;
                         const matrix: Affine = [world[i], world[i + 1], world[i + 2], world[i + 3], world[i + 4], world[i + 5]];
                         const ref: SpatialRef = { slot, generation, localToWorld: matrix }; visit(ref);
-                        if (scene !== this.scene || scene.revision !== this.doc.rev) return 'stale';
-                    }
-                    remaining--;
+                        if (!current()) { stale = true; query.cancel(); return 'stale'; }
+                        remaining--;
+                    } else if (query.status === 'complete') return 'complete';
+                    else { query.step(1); remaining--; }
                 }
-                return position === result.length ? 'complete' : 'pending';
+                return query.status === 'complete' && position === query.output.length ? 'complete' : 'pending';
             },
             cancel: () => query.cancel(),
         };

@@ -41,6 +41,8 @@ export interface DocumentBuffer extends BufferRevision {
     readonly source: ContentSource;
     /** Text authority only; false does not prohibit binary-aware saving. */
     readonly readable: boolean;
+    /** Synchronous authority for writing the accepted source, independent of text access. */
+    readonly flushable: boolean;
     readonly flat?: { readonly revision: number; readonly text: string };
 }
 
@@ -65,9 +67,12 @@ export interface DocumentBufferStore {
     /** Loaded representation controls text access, independently of save permission. */
     setReadable(documentId: string, readable: boolean): void;
 
+    /** Change write authority without changing the source or content revision. */
+    setFlushable(documentId: string, flushable: boolean): void;
+
     /** Each accepted report increments App's revision and drops the old flatten.
      *  fromDisk also marks that revision saved. App rejects a stale source owner before reporting. */
-    report(documentId: string, source: ContentSource, fromDisk?: boolean): Readonly<DocumentBuffer> | undefined;
+    report(documentId: string, source: ContentSource, fromDisk?: boolean, flushable?: boolean): Readonly<DocumentBuffer> | undefined;
 
     /** Acknowledges only a captured, existing revision; an old write never cleans a newer edit.
      *  Returns true only when savedRevision advances, not whether the disk write succeeded. */
@@ -161,7 +166,7 @@ export function createDocumentBuffers(
             if (existing) return existing;
             return publish(documentId, {
                 owner: Object.freeze({ documentId, session: 0 }),
-                source, revision: 0, savedRevision: 0, readable,
+                source, revision: 0, savedRevision: 0, readable, flushable: false,
             });
         },
         get: documentId => buffers.get(documentId),
@@ -178,7 +183,11 @@ export function createDocumentBuffers(
             const buffer = buffers.get(documentId);
             if (buffer && buffer.readable !== readable) publish(documentId, { ...buffer, readable });
         },
-        report(documentId, source, fromDisk = false) {
+        setFlushable(documentId, flushable) {
+            const buffer = buffers.get(documentId);
+            if (buffer && buffer.flushable !== flushable) publish(documentId, { ...buffer, flushable });
+        },
+        report(documentId, source, fromDisk = false, flushable) {
             const buffer = buffers.get(documentId);
             if (!buffer) return undefined;
             snapshots.delete(documentId);
@@ -187,7 +196,7 @@ export function createDocumentBuffers(
             return publish(documentId, {
                 owner: buffer.owner, source, revision,
                 savedRevision: fromDisk ? revision : buffer.savedRevision,
-                readable: buffer.readable,
+                readable: buffer.readable, flushable: fromDisk ? false : flushable ?? buffer.flushable,
             });
         },
         markSaved(documentId, revision) {

@@ -26,13 +26,30 @@ export class RecordChanges {
     constructor(revision: number, initial: Iterable<RecordVersion>) {
         if (!Number.isSafeInteger(revision) || revision < 0) throw new RangeError('Invalid initial session revision');
         this.revision = revision;
+        for (const item of initial) this.insertInitial(item);
+    }
+    private insertInitial(item: RecordVersion): void {
+        const key = recordKey(item.identity);
+        if (this.versions.has(key)) throw new Error('Duplicate record identity in serializer baseline');
+        const next = this.digest.replace(item.identity, null, item.revision);
+        if (!next.ok) throw new Error(next.error.reason);
+        this.versions.set(key, item.revision);
+    }
+    static async from(revision: number, initial: Iterable<RecordVersion>, cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<RecordChanges> {
+        signal?.throwIfAborted();
+        const records = new RecordChanges(revision, []);
+        let count = 0, started = performance.now();
         for (const item of initial) {
-            const key = recordKey(item.identity);
-            if (this.versions.has(key)) throw new Error('Duplicate record identity in serializer baseline');
-            const next = this.digest.replace(item.identity, null, item.revision);
-            if (!next.ok) throw new Error(next.error.reason);
-            this.versions.set(key, item.revision);
+            if (count >= 256 || performance.now() - started >= 3) {
+                signal?.throwIfAborted();
+                await cooperate?.();
+                signal?.throwIfAborted();
+                count = 0; started = performance.now();
+            }
+            records.insertInitial(item); count++;
         }
+        signal?.throwIfAborted();
+        return records;
     }
     integrity(): RecordIntegrity { return this.digest.snapshot(); }
 

@@ -71,6 +71,12 @@ export function createSceneSnapshot(options: {
             if (released || !records.get(id)) return null;
             return options.bounds?.get(id) ?? { revision, quality: BoundsQuality.Pending, ink: null, selectable: null };
         },
+        async readDocument(signal) {
+            check(); signal?.throwIfAborted();
+            const doc = await waitFor(document(), signal);
+            check(); signal?.throwIfAborted();
+            return doc;
+        },
         async paintSource(request, signal) {
             check();
             if (signal?.aborted) throw signal.reason ?? cancelled();

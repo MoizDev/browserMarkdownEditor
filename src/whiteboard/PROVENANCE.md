@@ -224,7 +224,7 @@ third-party code included (normally "none") · date.
 | `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004; SEC-4 | media §1; threading §2; security §6 | Platform worker contract and browser bitmap API; no tldraw source | none | 2026-11-13 |
 | `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | SEC-W1 budgets; platform worker and memory allocator contracts; isolated SVG profile injection | none | 2026-11-13 |
 | `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | SEC-W1 budgets and shared session job authority; board model/apply contracts | none | 2026-11-13 |
-| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session ownership, history and clipboard lifetime requirements | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session-owned bytes, history/clipboard holders and collision-safe file location ledger | none | 2026-11-13 |
 | `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Worker XML preflight; isolated XML, nested inline data and pixel accounting | none | 2026-11-13 |
 | `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |

@@ -88,7 +88,7 @@ class Pool implements PdfPool {
         const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now() };
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
-            const event = value as { docKey?: string; geometry?: DocInfo['pages'][number] }, doc = event.docKey && this.docs.get(event.docKey);
+            const event = value as { docKey?: string; geometry?: DocInfo['pages'][number] }, doc = event.docKey ? this.docs.get(event.docKey) : undefined;
             const page = event.geometry;
             if (!doc?.info || !page || !Number.isSafeInteger(page.index) || page.index < 0 || page.index >= doc.info.pageCount ||
                 !(page.width > 0 && page.height > 0) || !Array.isArray(page.toUserSpace) || page.toUserSpace.length !== 6 || !page.toUserSpace.every(Number.isFinite)) return;
@@ -376,7 +376,12 @@ class Lease implements PdfPoolDocument {
     thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap> {
         const geometry = this.geometry(page);
         if (!Number.isFinite(maxSidePx) || maxSidePx <= 0) return Promise.reject(new RangeError('Invalid PDF thumbnail size'));
-        return this.renderPage(page, maxSidePx / Math.max(geometry.width, geometry.height), { ...options, priority: 3, maxPixels: Math.ceil(maxSidePx) ** 2 });
+        const scale = maxSidePx / Math.max(geometry.width, geometry.height), maxPixels = Math.ceil(maxSidePx) ** 2;
+        if (options.variant === 'emphasis') {
+            if (!options.emphasis) return Promise.reject(new RangeError('Missing PDF emphasis profile'));
+            return this.renderPage(page, scale, { ...options, variant: 'emphasis', emphasis: options.emphasis, priority: 3, maxPixels });
+        }
+        return this.renderPage(page, scale, { ...options, variant: 'plain', emphasis: undefined, priority: 3, maxPixels });
     }
     links(page: number, options: PdfRequestOptions) { return this.request('page.links', { page }, options); }
     outline(options: PdfRequestOptions) { return this.request('doc.outline', {}, options); }

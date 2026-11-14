@@ -46,6 +46,7 @@ export interface PdfPaneProps {
      * tldraw instance, and unmounting it is also what flushes strokes).
      */
     isVisible: boolean;
+    retainClosing?: boolean;
     /**
      * Whether this is the FOCUSED pane, which is a narrower thing than being on
      * screen once tabs can hold several documents: two PDFs may be visible side
@@ -117,7 +118,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const findVault = reading?.identity.vaultId, findEpoch = reading?.identity.vaultEpoch, findDocument = reading?.identity.documentId;
@@ -564,7 +565,7 @@ function PdfPane({ documentId, reading, file, isVisible, isFocused, slotIndex, s
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
-            body = isVisible ? (
+            body = (isVisible || retainClosing) ? (
                 <Suspense fallback={<div className="pdf-pane-message">Loading annotation tools…</div>}>
                     <PdfAnnotateCanvas
                         key={file.path}

@@ -1,10 +1,6 @@
-// `.tldraw` and `.notebook` render as legacy canvases; `.drawing` is reserved
-// for native whiteboards and must never fall through to a text editor.
-//
-// Deliberately separate from vaultSearch's isTextFile(): canvases ARE
-// text on disk (they're JSON), so they must keep flowing through the
-// normal readFile/writeFile/autosave path. They just must not be *shown* as
-// text, nor content-indexed by search.
+// `.tldraw` and `.notebook` can contain legacy text canvases; `.drawing` is
+// reserved for native whiteboards and must never be decoded as a text buffer.
+// Canvas documents are not prose and must not be content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
 export const NATIVE_DRAWING_EXT = '.drawing';
@@ -26,7 +22,7 @@ export function isNotebookFile(name: string): boolean {
     return name.toLowerCase().endsWith(NOTEBOOK_EXT);
 }
 
-/** Canvas document, including native files this build cannot yet render. */
+/** Canvas document, including native binary whiteboards. */
 export function isCanvasFile(name: string): boolean {
     return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
 }

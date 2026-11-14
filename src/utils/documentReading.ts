@@ -1,7 +1,7 @@
 import type { OpenTab, EditorMode } from '../types';
 import type { ContentSource } from './documentBuffers';
 import type { DocumentRepresentation, LoadedDocumentKind, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
-import { isCanvasFile,isCodeFile,isDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
+import { isCanvasFile,isCodeFile,isDrawingFile,isNativeDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
 import { isTextFile } from './vaultSearch';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 import { routeEngines, type CanvasEngineKind } from './engineRouting';
@@ -14,14 +14,14 @@ export function withNativeCanvasPolicy(representation:DocumentRepresentation,kin
 export function classifyRequestedKind(name:string,isHelp=false):LoadedDocumentKind {
  if(isHelp||isMarkdownFile(name))return 'markdown';
  if(isEpubFile(name))return 'epub';if(isPdfFile(name))return 'pdf';
- if(isDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
+ if(isDrawingFile(name)||isNativeDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
  // Native canvases must not inherit text write authority in the guard build.
  if(isCanvasFile(name))return 'unsupported';
  if(isTexFile(name))return 'tex';if(isCodeFile(name))return 'code';return isTextFile(name)?'text':'unsupported';
 }
-export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFile(name)||isEpubFile(name)}
+export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFile(name)||isEpubFile(name)||isNativeDrawingFile(name)}
 export function representationFor(name:string,isHelp=false,generation=0,unavailable=false):DocumentRepresentation {
- const loadedKind=classifyRequestedKind(name,isHelp),binary=loadedKind==='epub'||loadedKind==='pdf'||loadedKind==='unsupported';
+ const loadedKind=classifyRequestedKind(name,isHelp),binary=loadedKind==='epub'||loadedKind==='pdf'||loadedKind==='unsupported'||isNativeDrawingFile(name);
  return {generation,loadedKind,status:unavailable?'unavailable':'ready',bufferKind:binary?'unavailable':'text',contentWritable:!unavailable&&!binary&&!isHelp};
 }
 // Every App tab transition passes here, including restore, disk reload and

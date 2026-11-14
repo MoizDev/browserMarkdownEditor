@@ -8,6 +8,7 @@ import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 import type { PdfRole } from './pdfRole';
+import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 
 let worker: Worker | null = null;
 let nextId = 1;
@@ -30,7 +31,7 @@ function getWorker(): Worker {
     if (worker) return worker;
     worker = new Worker(new URL('./pdfBuild.worker.ts', import.meta.url), { type: 'module' });
     worker.onmessage = (e: MessageEvent<PdfBuildResponse>) => {
-        const { id, bytes, error, role } = e.data;
+        const { id, bytes, error, role, refusal } = e.data;
         const inspection = rolePending.get(id);
         if (inspection) {
             clearTimeout(inspection.timer);
@@ -42,7 +43,8 @@ function getWorker(): Worker {
         const entry = pending.get(id);
         if (!entry) return;
         pending.delete(id);
-        if (error !== undefined || !bytes) entry.reject(new Error(error ?? 'Missing PDF build response'));
+        if (refusal) entry.reject(new PdfBuildRefused(refusal));
+        else if (error !== undefined || !bytes) entry.reject(new Error(error ?? 'Missing PDF build response'));
         else entry.resolve(bytes);
     };
     worker.onerror = (e) => {
@@ -79,6 +81,8 @@ export function buildAnnotatedPdfAsync(
     snapshot: string,
     overlays: Array<PageOverlay | undefined>,
 ): Promise<Uint8Array> {
+    const refusal = pdfSnapshotRefusal(snapshot);
+    if (refusal) return Promise.reject(new PdfBuildRefused(refusal));
     return dispatch(id => ({ kind: 'annotate', id, original, snapshot, overlays }));
 }
 

@@ -18,7 +18,8 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
 - A layer never owns an rAF loop. Call `host.invalidate(reason)` on input or ready async data and
   `host.wakeAt(deadline)` for real delayed work, cancel with `wakeAt(null)`. `needsFrame()` is false
   while merely waiting on a worker. The app-wide scheduler coalesces visible panes and sleeps when
-  idle (design §7.1).
+  idle (design §7.1). Import `cpuEntry` from the lazy pane route to register the 2D factory before
+  attaching; registration itself allocates nothing.
 - `releaseGpu(reason)` is the only GPU teardown route; it is idempotent and does not destroy CPU
   document truth, undo or session-owned mirrors. Only the pane lifecycle calls it and final
   `dispose()`; a compositor never disposes borrowed layers. On hide, synchronously release all GPU
@@ -46,9 +47,17 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   gutters and a device-pixel destination for either backend. `host.paintWorld` and `host.paintPage`
   install the common transform and page clip for 2D; start from the supplied device-identity context
   (C4.2–C4.3, design §4.1).
+- `encode` and `submit` can return null: do not acknowledge presentation or advance overlays without
+  a complete current frame. Requeue budget/deadline deferrals and null submit; a worker or other
+  external wait instead wakes on completion or a real deadline, never by polling frames.
 - Compose page, committed ink and live stroke as one document-colour group; invert that group once,
   not each translucent element. Chrome/selection remains outside it. Capture/export bypasses view
   inversion (C2.5, design §4.2).
+- Pressure is app-wide: allocation refusal and device trouble trim before reducing `q`; recovery
+  waits for sustained low usage and no gesture. Never bypass a denied reservation. Report worker
+  owned/WASM byte estimates (not real JS heap or bytes already leased) with
+  `reportWorkerMemory(worker, bytes)`; `releaseWorkerMemory(worker)` on stop/crash/recycle.
+  Both are lazy render exports, keyed by the actual worker incarnation and charged to CPU.
 
 ## Boundaries
 
@@ -58,5 +67,7 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   telemetry seam; never import terminal/xterm to count it. Capture must not import the PDF writer
   (design §16.4, import rules).
 - The broker alone allocates/recovers pane contexts; reserve the terminal slot even when closed.
+  Five visible panes share one governor and scheduler: a sixth context request falls back to 2D,
+  never evicts a visible neighbour; insufficient shared memory lowers resolution, never blanks.
   Respect app visibility separately from focus and window suspension. Rendering and mirror updates
   must be lease/token checked so a late old pane cannot overwrite a replacement (design §3.3).

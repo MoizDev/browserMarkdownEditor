@@ -13,6 +13,7 @@ export interface JsonSpan {
     readonly depth: number;
     readonly source: string;
     text(): string;
+    textIncremental(cooperate: () => Promise<void>): Promise<string>;
     string(limit: number): string;
     stringIncremental(limit: number, cooperate: () => Promise<void>): Promise<string>;
     stringLength(limit: number): number;
@@ -204,6 +205,15 @@ class Span implements JsonSpan {
     }
     get source(): string { return this.reader.source; }
     text(): string { return tokenText(this.source, this.start, this.end); }
+    async textIncremental(cooperate: () => Promise<void>): Promise<string> {
+        if (this.source.length <= 16_384 || this.end - this.start >= this.source.length / 4) return this.source.slice(this.start, this.end);
+        const parts: string[] = [];
+        for (let index = this.start; index < this.end; index += 4096) {
+            parts.push(this.source.slice(index, Math.min(index + 4096, this.end)));
+            await cooperate();
+        }
+        return parts.join('');
+    }
     stringLength(limit: number): number {
         if (this.kind !== 'string') return error('syntax', 'Expected a string', this.start);
         this.reader.quoted(this.start, limit);

@@ -1,16 +1,18 @@
 import { pageAt } from '../../platform/render/pageStack';
 import type { CameraController } from '../../platform/render/camera';
 import { transformBox } from '../geom/bounds';
+import { allocateOrderKeys, isLocked, reparentNode } from '../change/commands';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
+import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
-import { isSheetParent } from '../model/doc';
+import { hasOpaqueDescendant, isSheetParent } from '../model/doc';
 import { createAddedBoardDoc } from '../model/overlayDoc';
-import { newNodeId, type ParentId } from '../model/ids';
+import { newNodeId, type NodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
 import { keyBetween } from '../model/orderKey';
 import { boardPageStack, pageOrigin } from '../model/pages';
@@ -126,6 +128,42 @@ class CreationGesture implements GestureOwner {
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
         void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
     }
+    private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
+        const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;
+        const scene = runtime.scene ?? await runtime.ready;
+        if (!this.valid() || !scene.ready || scene.revision !== this.revision) throw new DOMException('Frame containment source changed', 'AbortError');
+        const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), transform = [c, s, -s, c, pose.x, pose.y] as const;
+        const back = inverse(transform, 1e12); if (!back) throw new RangeError('Frame transform is not invertible');
+        const box = new Float64Array(4); transformBox(box, 0, [0, 0, node.w, node.h], 0, transform);
+        const cursor = scene.spatialCursor({ sheetId: runtime.selection.getSnapshot().sheet, purpose: 'selectable',
+            request: { kind: 'box', box: [box[0], box[1], box[2], box[3]] } });
+        const candidates = new Set<NodeId>();
+        try {
+            for (;;) {
+                signal.throwIfAborted(); if (!this.valid()) throw new DOMException('Frame creation changed', 'AbortError');
+                const status = cursor.resume({ deadline: performance.now() + 3, maxVisits: 256 }, ref => {
+                    const resolved = scene.resolveSpatial(ref); if (!resolved) throw new DOMException('Frame candidate expired', 'AbortError');
+                    let item = doc.nodes.get(resolved.id);
+                    for (let depth = 0; item && item.parent !== node.parent && depth < 64; depth++) item = doc.nodes.get(item.parent as NodeId);
+                    if (item && item.parent === node.parent && item.kind !== 'opaque' && !isLocked(doc, item) && !hasOpaqueDescendant(doc, item.id)) candidates.add(item.id);
+                });
+                if (status === 'complete') break;
+                if (status !== 'pending') throw new DOMException('Frame containment query expired', 'AbortError');
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+            }
+        } finally { cursor.cancel(); }
+        if (!candidates.size) return [];
+        const scope = await acquireBoardGeometryScope(runtime, candidates, { signal, current: () => this.valid() });
+        try {
+            const inside = new Set<NodeId>();
+            for (const id of candidates) {
+                const b = await scope.boundsInSpace(id, back);
+                if (!this.valid()) throw new DOMException('Frame containment source changed', 'AbortError');
+                if (b[0] >= 0 && b[1] >= 0 && b[2] <= node.w && b[3] <= node.h) inside.add(id);
+            }
+            return (doc.children.get(node.parent) ?? []).filter(child => inside.has(child.id)).map(child => child.id);
+        } finally { scope.release(); }
+    }
     private async commit(): Promise<void> {
         let node = this.node();
         const { render, runtime } = this.context, signal = this.controller.signal;
@@ -151,8 +189,25 @@ class CreationGesture implements GestureOwner {
             const bounds = new Float64Array(4);
             transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
             const growth = notebookGrowthOp(doc, Math.max(bounds[3], logical.y + logical.height));
-            const applied = runtime.session.apply({ origin: 'tool', label: `Create ${this.context.kind}`, ops: [...growth ? [growth] : [], { t: 'create', node }] });
-            applied.release(); runtime.selection.replace([node.id]);
+            const adopted = node.kind === 'frame' ? await this.enclosedFrameChildren(node, pose) : [];
+            const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
+            try {
+                if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+                const builder = runtime.session.begin('tool', `Create ${this.context.kind}`);
+                try {
+                    if (growth) builder.push(growth);
+                    builder.push({ t: 'create', node });
+                    if (adopted.length) {
+                        const keys = allocateOrderKeys(doc, builder, node.id, null, null, adopted.length);
+                        for (let i = 0; i < adopted.length; i++) {
+                            const child = doc.nodes.get(adopted[i]); if (!child) throw new Error('Frame content disappeared');
+                            reparentNode(doc, builder, child, node.id, render.changeGeometry, keys[i]);
+                        }
+                    }
+                    const applied = builder.commit(); applied.release();
+                } catch (error) { builder.abort(); throw error; }
+                runtime.selection.replace([node.id]);
+            } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
     }

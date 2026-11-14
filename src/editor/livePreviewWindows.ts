@@ -91,7 +91,7 @@ export function planPreviewWindows(tr: Transaction, analysis: DocAnalysis, edit:
             }
         } });
         for (const items of [analysis.mathRegions, analysis.lines.highlights, analysis.lines.wikilinks]) {
-            candidates(items, ranges, item => { if (overlaps(before, item.from, item.to) !== overlaps(after, item.from, item.to)) dirty.push(item); });
+            candidates<CharRange>(items, ranges, item => { if (overlaps(before, item.from, item.to) !== overlaps(after, item.from, item.to)) dirty.push(item); });
         }
         const objectCandidates = [...touched, { from: before.main.from, to: before.main.to + 1 }, { from: after.main.from, to: after.main.to + 1 }];
         candidates(analysis.objects.embeds, objectCandidates, item => {
@@ -111,7 +111,7 @@ export function planPreviewWindows(tr: Transaction, analysis: DocAnalysis, edit:
             }
         } });
         for (const items of [analysis.mathRegions, analysis.objects.embeds, analysis.objects.tables]) {
-            candidates(items, [{ from, to: to + 1 }], item => { from = Math.min(from, item.from); to = Math.max(to, item.to); });
+            candidates<CharRange>(items, [{ from, to: to + 1 }], item => { from = Math.min(from, item.from); to = Math.max(to, item.to); });
         }
         const start = doc.lineAt(from), end = doc.lineAt(to);
         widened.push({ from: start.from, to: end.number < doc.lines ? doc.line(end.number + 1).from : doc.length + 1 });

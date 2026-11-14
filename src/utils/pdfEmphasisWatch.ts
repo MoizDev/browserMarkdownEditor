@@ -5,7 +5,7 @@ import { getPdfEmphasisPlan } from './pdfEmphasisPlanCache';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import type { PdfEmphasisIdentity } from './pdfEmphasisIdentity';
 
-function afterPaint(signal: AbortSignal): Promise<void> {
+export function afterPdfPaint(signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const cancel = () => {
@@ -42,7 +42,7 @@ export function watchPdfEmphasis(session: PdfDocumentSession, identity: PdfEmpha
         unsubscribe = session.emphasisVerdicts.subscribe(key, notify);
         notify();
         release = session.emphasisVerdicts.ensureVerdict(key, async signal => {
-            await afterPaint(signal);
+            await afterPdfPaint(signal);
             const lease = await session.acquireRender(index, signal);
             try { return await probeClassicPdfEmphasis(lease.page, signal, getPdfEmphasisPlan(lease.page, classicEmphasisPlanKey(key)),
                 key.locale || undefined, classicEmphasisPlanKey(key), work => session.health.guard(work), () => session.health.assertComplete(index)); }

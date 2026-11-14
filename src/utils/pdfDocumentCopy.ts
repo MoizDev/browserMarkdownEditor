@@ -12,19 +12,23 @@ export async function copyPdfDocumentText(reader: Pick<PdfTextReader, 'getPageCo
         signal.throwIfAborted();
         notice(`Copying ${total} pages…`);
         const parts: string[] = [], encoder = new TextEncoder();
-        let bytes = 0, warnings = 0, deadline = performance.now() + 4;
+        let bytes = 0, warnings = 0, previousEndsInLF = false, deadline = performance.now() + 4;
         for (let index = 0; index < total; index++) {
             const page = await reader.findEngine.pageText(index, signal);
             signal.throwIfAborted();
             // LF boundaries cannot compose glyphs across pages. Normalize per
             // page so the byte cap is enforced before allocating the joined text.
             const text = normalize(page.text);
-            bytes += encoder.encode(text).byteLength + (index ? 1 : 0);
+            // Original's observed cross-page copy has one LF at the boundary;
+            // the page stream may already supply that LF as its final EOL.
+            const separator = index && !previousEndsInLF ? '\n' : '';
+            bytes += encoder.encode(text).byteLength + separator.length;
             if (bytes > MAX_COPY_BYTES) {
                 notice('PDF text exceeds the 16 MiB copy limit. Select a smaller passage to copy.');
                 return;
             }
-            parts.push(text);
+            parts.push(separator, text);
+            previousEndsInLF = text.endsWith('\n');
             if (page.quality !== 'available') warnings++;
             if (performance.now() >= deadline) {
                 notice(`Copying ${total} pages… (${index + 1}/${total})`);
@@ -33,7 +37,7 @@ export async function copyPdfDocumentText(reader: Pick<PdfTextReader, 'getPageCo
             }
         }
         signal.throwIfAborted();
-        const copied = await copyText(parts.join('\n'));
+        const copied = await copyText(parts.join(''));
         signal.throwIfAborted();
         notice(copied ? `Copied text from ${total} pages.${warnings ? ' Some pages have no text or text-order/extraction warnings.' : ''}`
             : `${CLIPBOARD_WRITE_BLOCKED} For a smaller passage, select it first.`);

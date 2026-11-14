@@ -85,8 +85,20 @@ export async function encodePng(
           return
         }
         if (count >= height || next.value.length !== width * 4) throw new RangeError('Invalid PNG row')
+        const pixels = next.value
+        let rawScore = 0
+        let subScore = 0
+        for (let i = 0; i < pixels.length; i++) {
+          const raw = pixels[i]
+          const sub = (raw - (i >= 4 ? pixels[i - 4] : 0)) & 255
+          rawScore += Math.min(raw, 256 - raw)
+          subScore += Math.min(sub, 256 - sub)
+        }
         const row = new Uint8Array(1 + width * 4)
-        row.set(next.value, 1)
+        if (subScore < rawScore) {
+          row[0] = 1
+          for (let i = 0; i < pixels.length; i++) row[i + 1] = pixels[i] - (i >= 4 ? pixels[i - 4] : 0)
+        } else row.set(pixels, 1)
         count++
         controller.enqueue(row)
       } catch (error) {

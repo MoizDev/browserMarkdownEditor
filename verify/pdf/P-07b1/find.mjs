@@ -105,6 +105,23 @@ try {
         await input.fill(probe.query);
         await page.waitForFunction(() => document.querySelector('.pdf-find-bar [role="status"]')?.textContent === '1 of 1', undefined, { timeout: 120000 });
         await page.waitForFunction(number => document.querySelector('.pdf-viewer-page-input')?.value === String(number), probe.pages[0]);
+        // Search completion and the approximate page jump can precede both
+        // TextLayer completion and the offscreen-canvas blit. Wait for the
+        // actual user-visible result, not the unrelated status update.
+        try {
+            await page.waitForFunction(({ query, number }) => {
+                const ranges = [...(CSS.highlights.get('pdf-find-current') ?? [])];
+                if (ranges.length !== 1 || ranges[0].toString() !== query) return false;
+                const row = ranges[0].startContainer.parentElement?.closest('.pdf-viewer-page');
+                const r = ranges[0].getBoundingClientRect(), box = document.querySelector('.pdf-viewer-scroll').getBoundingClientRect();
+                return [...document.querySelectorAll('.pdf-viewer-page')].indexOf(row) + 1 === number && row?.querySelector('canvas')?.width > 0 &&
+                    r.width > 0 && r.height > 0 && r.top >= box.top && r.bottom <= box.bottom && r.left >= box.left && r.right <= box.right;
+            }, { query: probe.query, number: probe.pages[0] }, { timeout: 30000 });
+        } catch (error) {
+            result.pendingReveal = await page.evaluate(() => ({ ranges: [...(CSS.highlights.get('pdf-find-current') ?? [])].map(range => ({ text: range.toString(), rect: range.getBoundingClientRect().toJSON() })),
+                box: document.querySelector('.pdf-viewer-scroll').getBoundingClientRect().toJSON(), canvasWidths: [...document.querySelectorAll('.pdf-viewer-page canvas')].flatMap((canvas, index) => canvas.width ? [{ page: index + 1, width: canvas.width }] : []) }));
+            throw error;
+        }
         const current = await page.evaluate(() => {
             const ranges = [...(CSS.highlights.get('pdf-find-current') ?? [])], box = document.querySelector('.pdf-viewer-scroll').getBoundingClientRect();
             return ranges.map(range => { const r = range.getBoundingClientRect(); return { text: range.toString(), page: [...document.querySelectorAll('.pdf-viewer-page')].indexOf(range.startContainer.parentElement.closest('.pdf-viewer-page')) + 1,

@@ -368,7 +368,7 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
-    pickDirectory,
+    pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
     openLinkedVault,
@@ -832,6 +832,17 @@ export default function App() {
   const notify = useCallback((message: string) => {
     void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
+
+  // Context reports the failure; only App owns the notice, including before a
+  // vault is open. Keep the legacy string result for the welcome/menu callers.
+  const pickDirectory = useCallback(async () => {
+    const result = await pickDirectoryFromFileSystem();
+    if (typeof result === 'object') {
+      notify(result.message);
+      return 'error' as const;
+    }
+    return result;
+  }, [notify, pickDirectoryFromFileSystem]);
 
   // The same voice, given to the editor subsystem: a refused clipboard read
   // inside a table cell is the only thing that uses it today. ONE call, at the
@@ -4616,6 +4627,24 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   }, []);
 
+  // The welcome screen can report a refused open too; returning before the
+  // workspace's host used to hide the app notice on exactly that path.
+  const dialogHost = dialog && (
+    <ConfirmDialog
+      questionId={dialog.id ?? 0}
+      title={dialog.title}
+      confirmLabel={dialog.confirmLabel}
+      danger={dialog.danger}
+      input={dialog.input}
+      altLabel={dialog.altLabel}
+      onAlt={dialog.onAlt}
+      onConfirm={dialog.onConfirm}
+      onCancel={dialog.onCancel}
+    >
+      {dialog.body}
+    </ConfirmDialog>
+  );
+
   // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
@@ -4664,6 +4693,7 @@ export default function App() {
             )}
           </div>
         </div>
+        {dialogHost}
       </div>
     );
   }
@@ -4865,21 +4895,7 @@ export default function App() {
       {/* Last, so it sits over the settings panel as well as the workspace —
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
-      {dialog && (
-        <ConfirmDialog
-          questionId={dialog.id ?? 0}
-          title={dialog.title}
-          confirmLabel={dialog.confirmLabel}
-          danger={dialog.danger}
-          input={dialog.input}
-          altLabel={dialog.altLabel}
-          onAlt={dialog.onAlt}
-          onConfirm={dialog.onConfirm}
-          onCancel={dialog.onCancel}
-        >
-          {dialog.body}
-        </ConfirmDialog>
-      )}
+      {dialogHost}
     </div>
   );
 }

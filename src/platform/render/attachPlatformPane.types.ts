@@ -1,5 +1,5 @@
-import type { Camera, ViewState } from '../types';
-import type { CompositorAppearance, CompositorBackend, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
+import type { Camera, Rect, ViewState } from '../types';
+import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
 import type { PageStack } from './pageStack';
 import type { ScheduledFrame } from './scheduler';
@@ -61,5 +61,6 @@ export interface PlatformPane {
     observeSize(): void;
     setLayers(layers: readonly PlatformLayerDefinition[]): void;
     invalidate(reason: string): void;
+    captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     dispose(): void;
 }

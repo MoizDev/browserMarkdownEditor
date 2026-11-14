@@ -90,6 +90,7 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const inspection: PdfInkInspection = await outer.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
         if (inspection.kind === 'read-only') {
+            if (inspection.reason === 'inspection-failed') return await readOnly(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`);
             if (inspection.reason !== 'notebook-source') return await readOnly(inspection.reason === 'unsafe-policy'
                 ? 'The PDF write safety could not be established; annotation is read-only.' : `PDF ink is read-only: ${inspection.reason}.`);
             const outerFingerprint = await chunkedBlobSha256(options.outer, guard);
@@ -136,6 +137,9 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         // from the inspected pristine bytes, not merely from an equal-length snapshot.
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
+        if (originalInspection.kind === 'read-only' && originalInspection.reason === 'inspection-failed') {
+            return await readOnly(`Pristine PDF ink inspection failed (${originalInspection.phase}; ${originalInspection.errorClass}).`);
+        }
         if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' || originalInspection.outerFingerprint !== pristineHash ||
             originalInspection.pristineFingerprint !== pristineHash) {
             return await readOnly('The retained pristine PDF does not match the inspected source.');

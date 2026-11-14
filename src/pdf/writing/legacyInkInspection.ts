@@ -21,6 +21,8 @@ export async function inspectLegacyPdfInk(blob: Blob, cooperate: () => Promise<v
     await cooperate();
     const role = await inspectPdfRole(bytes, 'legacy-inspection');
     await cooperate();
+    if (role.writeSafety?.kind !== 'safe') return { kind: 'read-only', reason: role.writeSafety?.kind === 'signed' ? 'signed' :
+        role.writeSafety?.kind === 'encrypted' ? 'encrypted' : 'unsupported' };
     if (role.kind === 'plain' || role.kind === 'notebookExport') return { kind: 'not-legacy' };
     if (role.kind === 'ambiguous') return { kind: 'read-only', reason: 'ambiguous' };
     if (role.kind === 'newer') return { kind: 'read-only', reason: 'unsupported' };
@@ -31,5 +33,5 @@ export async function inspectLegacyPdfInk(blob: Blob, cooperate: () => Promise<v
     const pristineFingerprint = await fingerprint(role.original, cooperate);
     await cooperate();
     return { kind: 'legacy', pristine: new Blob([new Uint8Array(role.original)], { type: 'application/pdf' }), pristineFingerprint,
-        outerFingerprint, snapshot: new Blob([snapshot], { type: 'application/json' }), writeMark: role.writeMark };
+        outerFingerprint, snapshot: new Blob([snapshot], { type: 'application/json' }), writeMark: role.writeMark, writeSafety: { ...role.writeSafety } };
 }

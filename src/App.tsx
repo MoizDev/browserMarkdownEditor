@@ -359,6 +359,7 @@ export default function App() {
     rootHandle,
     handleIO,
     ensureVaultId,
+    registerBeforeRootChange,
     fileTree,
     isLoading,
     previousVault,
@@ -430,6 +431,9 @@ export default function App() {
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
   const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [closingDocumentIds, setClosingDocumentIds] = useState<ReadonlySet<string>>(() => new Set());
+  const closingRef = useRef(new Set<string>());
+  const reopenedClosingRef = useRef(new Set<string>());
   // How those documents are arranged on screen: a row of panes — columns, all
   // drawn at once — each holding its own ordered tabs and showing one of them
   // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
@@ -1157,14 +1161,14 @@ export default function App() {
   // Seeded when a tab opens (below), because otherwise the first edit after
   // opening a note — the likeliest one to remove a picture — would have
   // nothing to compare against.
-  const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
+  const assetRefsRef = useRef<Map<string, { saved: Set<string> }>>(new Map());
   const boardBaselinesRef = useRef(new BoardSaveBaselines());
   const unsavedBoardContentRef = useRef(new Map<string, string>());
   const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
   const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
-    if (tracksAssets(file)) assetRefsRef.current.set(file.path, assetEmbeds(content));
+    if (tracksAssets(file)) assetRefsRef.current.set(file.path, { saved: assetEmbeds(content) });
     else if (!file.isHelp && isCanvasFile(file.name)) boardBaselinesRef.current.seed(file.path, content);
   }, []);
 
@@ -1310,15 +1314,27 @@ export default function App() {
 
     try {
       const treeAtStart = assetProofTreeRef.current;
+      const under = folder ? `${folder}/` : '';
+      const treeFiles = collectFiles(treeAtStart);
       const boards: Array<{ path: string; handle?: FileSystemFileHandle }> = [];
+      const diskBoardPaths = new Set<string>();
       for await (const [name, handle] of handleIO.entries(dir)) {
-        if (handle.kind === 'file' && isCanvasFile(name)) boards.push({ path: joinVaultPath(folder, name), handle: handle as FileSystemFileHandle });
+        if (handle.kind === 'file' && isCanvasFile(name)) {
+          const boardPath = joinVaultPath(folder, name);
+          diskBoardPaths.add(boardPath);
+          boards.push({ path: boardPath, handle: handle as FileSystemFileHandle });
+        }
+      }
+      // Descendant notes can resolve an ancestor's assets. A board of any
+      // unknown format there must therefore keep the ancestor's pictures too.
+      for (const file of treeFiles) {
+        if (file.path.startsWith(under) && isCanvasFile(file.name) && !boards.some(board => board.path === file.path)) boards.push({ path: file.path, handle: file.handle });
       }
       for (const tab of tabsRef.current) {
-        if (isCanvasFile(tab.file.name) && parentVaultPath(tab.file.path) === folder && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
+        if (isCanvasFile(tab.file.name) && tab.file.path.startsWith(under) && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
       }
       for (const boardPath of unsavedBoardContentRef.current.keys()) {
-        if (parentVaultPath(boardPath) === folder && !boards.some(board => board.path === boardPath)) boards.push({ path: boardPath });
+        if (boardPath.startsWith(under) && !boards.some(board => board.path === boardPath)) boards.push({ path: boardPath });
       }
       const assetNames = boards.length || job.board ? await assetNamesIn(dir) : new Set<string>();
       if (!attached()) return 'skipped-detached';
@@ -1381,14 +1397,15 @@ export default function App() {
       };
       const own = proofTabs.find(tab => tab.file.path === path);
       const ownText = own ? (canReadTabText(own) ? proofContents.get(path) ?? own.content : null) : job.text;
-      const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(treeAtStart).filter(f =>
+      const candidates = treeFiles.filter(f =>
         f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
       ];
-      const notes = [async () => ownText, ...neighbours.map(note => async () => {
+      // The saved note may have replaced an embed with a plain link; its
+      // newer unsaved buffer also counts, but must not erase that disk proof.
+      const notes = [async () => job.text, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
         if (open) return canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null;
         if (isCanvasFile(note.name)) {
@@ -1432,6 +1449,11 @@ export default function App() {
       });
       if (decision.blocked.note.size || decision.blocked.board.size) return abandon();
       for (const name of decision.retire) {
+        const currentBoards = new Set<string>();
+        for await (const [entry, handle] of handleIO.entries(dir)) {
+          if (handle.kind === 'file' && isCanvasFile(entry)) currentBoards.add(joinVaultPath(folder, entry));
+        }
+        if (currentBoards.size !== diskBoardPaths.size || [...currentBoards].some(boardPath => !diskBoardPaths.has(boardPath))) return abandon();
         const hashed = hashedVersions.get(name);
         for (const version of hashed ? [...closedVersions, hashed] : closedVersions) {
           const current = await handleIO.file(version.handle).catch(() => null);
@@ -1542,7 +1564,10 @@ export default function App() {
       // fronts its tab, wherever in the row that column happens to be.
       const open = tabsRef.current.find(t => t.file.path === node.path);
       if (open) {
-        setLayout(l => focusTab(l, node.path));
+        if (closingRef.current.has(open.id)) {
+          reopenedClosingRef.current.add(open.id);
+          setLayout(l => openTabIn(l, node.path));
+        } else setLayout(l => focusTab(l, node.path));
         // Clicking a note whose tab could not be read is asking for it again.
         // Awaited, so a caller that acts on the opened document next (a search
         // result's reveal) lands on the remounted, readable pane rather than
@@ -2037,12 +2062,12 @@ export default function App() {
     } catch (err) {
       console.error('Could not keep the unsaved edits of a closing document:', path, err);
       notifyRef.current(`Could not keep the unsaved edits to “${name}”: ${describeReadError(err)}`);
+      throw err;
     }
   }, []);
 
-  // Write one tab's buffered content to its OWN handle. The tab is captured
-  // synchronously (before the await), so this is safe to fire right before the
-  // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
+  // Drain a tab's serializer, then write the latest funnel buffer to its OWN handle.
+  // Closing callers keep the tab and its canvas alive until this settles.
   //
   // Every write is VERSIONED: it lands only if the file is still what this
   // document last read or wrote (FileSystemContext.writeFileVersioned). A file
@@ -2054,26 +2079,29 @@ export default function App() {
   // vault switch passes the one being left, since by then the context already
   // names the next one.
   const flushTab = useCallback(async (
-    path: string | null, force = false, contentOverride?: string, closing = false,
+    path: string | null, force = false, closing = false,
     vaultRoot?: FileSystemDirectoryHandle | null,
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
+    const initial = tabsRef.current.find(t => t.file.path === path);
+    if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
+    try { await drain(initial.id); } catch (error) {
+      console.error('Could not serialize pending document:', error);
+      return 'failed';
+    }
+    const tab = tabsRef.current.find(t => t.id === initial.id && t.file.path === path);
+    if (!tab) return 'skipped';
     clearSaveTimer(path);
-
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (!tab || tab.file.isHelp || !tab.file.handle) return 'skipped';
     // A tab restored without its text (OpenTab.readError) has an empty buffer
     // that is NOT the file: ⌘S forces a flush of the focused tab, and writing
     // that '' would erase a note the app merely failed to read.
     const pendingRevision = pendingRevisionsRef.current.get(tab.id);
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
-    if (!canFlushTab(tab) && !((contentOverride !== undefined || pending) && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    if (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
-    // contentOverride exists for callers who have fresher content than the tab
-    // does: setTabs is async, so a caller that just produced new content would
-    // otherwise race with React and write the previous buffer.
-    const snapshot = contentOverride ?? contentOf(path) ?? tab.content;
+    // A drain reports into the synchronous funnel before React commits its tab.
+    const snapshot = contentOf(path) ?? tab.content;
     if (isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
     const revision = pendingRevision?.revision ?? 0;
     const existingWrite = pendingWritesRef.current.get(tab.id);
@@ -2091,16 +2119,12 @@ export default function App() {
     // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk is a
     // real PDF, rebuilt from the pristine original + the overlays the canvas
     // parked for us. No render data yet means the canvas has not reported a
-    // change — which is also every PDF only ever read. Read synchronously: a
-    // close drops it right after calling this.
+    // change — which is also every PDF only ever read.
     const pdfData = isPdf ? getPdfRenderData(path) : undefined;
     if (isPdf && (!pdfData || !canRebuildAnnotatedPdf(pdfData.original))) return 'skipped';
-    // Captured now too: a vault switch clears every baseline right after its
-    // flushes, and this write still has to be checked against this one.
+    // Capture the baseline and PDF seed with the drained revision.
     const baselineAtCall = getBaseline(id);
-    // And a PDF's fingerprint — started here if this is the first thing to
-    // need one, since a close drops it right after this call and the write must
-    // still wait for it.
+    // A PDF's fingerprint starts here if this is the first write to need one.
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
@@ -2112,27 +2136,21 @@ export default function App() {
     // going away keeps its text beside it rather than taking it along.
     if (held) {
       if (!closing) return 'skipped';
-      const data = isPdf
-        ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
-        : snapshot;
-      await keepClosingEdits(rootAtCall, path, file.name, data);
-      return held === 'conflict' ? 'changed' : 'deleted';
+      try {
+        const data = isPdf
+          ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
+          : snapshot;
+        await keepClosingEdits(rootAtCall, path, file.name, data);
+        return held === 'conflict' ? 'changed' : 'deleted';
+      } catch { return 'failed'; }
     }
 
-    // Read AND handed over in one synchronous step, which is what makes the
-    // asset diff exact. Two things would otherwise race it: removeTab drops
-    // this entry the moment after it calls flushTab (so a closing tab's last
-    // save must capture first), and a second save landing while the first is
-    // still reconciling would read a baseline the first had yet to replace,
-    // and could retire a picture that save had just put back.
+    // Capture the record after the drain and before a close can remove it.
+    // Queued writes share it and advance its saved set only after a write
+    // lands: a failed first write must not become the second's baseline.
     const boardBaseline = !isPdf && isCanvasFile(file.name) ? boardBaselinesRef.current.capture(path) : undefined;
-    const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
-    const embedsAfter = embedsBefore && assetEmbeds(snapshot);
-    const assetJob: ReconcileJob | undefined = embedsBefore && embedsAfter ? {
-      activation: activationAtCall,
-      path, parentHandle: file.parentHandle ?? null, text: snapshot, before: embedsBefore, after: embedsAfter,
-    } : undefined;
-    if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
+    const assetBaseline = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
+    const embedsAfter = assetBaseline && assetEmbeds(snapshot);
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
@@ -2153,9 +2171,6 @@ export default function App() {
         }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          // Nothing reached the disk, so the asset diff's baseline is still
-          // what was there before this save.
-          if (embedsBefore && assetRefsRef.current.get(path) === embedsAfter) assetRefsRef.current.set(path, embedsBefore);
           if (closing) await keepClosingEdits(rootAtCall, path, file.name, data);
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
@@ -2172,7 +2187,12 @@ export default function App() {
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
         requeueAssetsAffected(path);
-        if (assetJob) queueReconcile(assetJob);
+        if (assetBaseline && embedsAfter) {
+          const before = assetBaseline.saved;
+          assetBaseline.saved = embedsAfter;
+          queueReconcile({ activation: activationAtCall, path, parentHandle: file.parentHandle ?? null,
+            text: snapshot, before, after: embedsAfter });
+        }
         if (boardBaseline) queueReconcile({
           activation: activationAtCall,
           path, parentHandle: file.parentHandle ?? null, text: snapshot,
@@ -2305,7 +2325,7 @@ export default function App() {
     latestContentRef.current.set(path, content);
     reportRevision(target.id);
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
-    await flushTab(path, true, content);
+    await flushTab(path, true);
   }, [flushTab, reportRevision]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
@@ -2443,16 +2463,13 @@ export default function App() {
 
   /** Everything that has to happen for ONE document to stop being open, short
    *  of the two state updates (which differ per caller). */
-  const releaseTab = useCallback((path: string, flush: boolean) => {
-    // flushTab captures the tab synchronously, clears the timer, and no-ops for
-    // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
-    // `closing`: a last write its file can no longer take keeps the text beside it.
-    if (flush) flushTab(path, false, undefined, true); else clearSaveTimer(path);
-    // The document's disk state goes with it — after the flush above, which
-    // captured its baseline synchronously.
+  const releaseTab = useCallback((path: string) => {
+    // Callers drain and save before releasing, or explicitly discard the tab.
+    clearSaveTimer(path);
+    // The document's disk state goes with it.
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
-      if (!flush) { pendingRevisionsRef.current.delete(doc.id); syncExitGuard(); }
+      pendingRevisionsRef.current.delete(doc.id); syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
@@ -2462,8 +2479,7 @@ export default function App() {
       diskStateRef.current.delete(doc.id);
     }
     latestContentRef.current.delete(path);
-    // Safe to drop now: flushTab reads the render data synchronously, before its
-    // first await, so a flush already in flight has what it needs.
+    // A successful closing flush has already captured the render data.
     clearPdfRenderData(path);
     // A notebook's exporter closes over its editor; dropping it is what stops a
     // closed notebook pinning that editor for the rest of the session.
@@ -2473,7 +2489,7 @@ export default function App() {
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
     if (!flush) unsavedBoardContentRef.current.delete(path);
-  }, [clearSaveTimer, flushTab, syncExitGuard]);
+  }, [clearSaveTimer, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -2499,22 +2515,28 @@ export default function App() {
   // `keep`: the overwrite was NOT the reader's doing (a `mv` noticed on disk), so
   // the buffer's unsaved edits are flushed as a closing document's — its file
   // now holds other bytes, so they land beside it as a `(conflict)` copy.
-  const releaseOverwritten = useCallback((path: string, movedFrom: string, keep = false) => {
+  const releaseOverwritten = useCallback(async (path: string, movedFrom: string, keep = false) => {
     if (path === movedFrom) return;
     if (!tabsRef.current.some(t => t.file.path === path)) return;
-    releaseTab(path, keep);                        // in-app: no flush, the bytes are gone
+    if (keep) {
+      const result = await flushTab(path, false, true);
+      const tab = tabsRef.current.find(t => t.file.path === path);
+      const revision = tab && pendingRevisionsRef.current.get(tab.id);
+      if (result === 'failed' || (result === 'skipped' && revision && revision.revision > revision.saved)) throw new Error('Could not preserve the overwritten document.');
+    }
+    releaseTab(path);
     // Its tab goes too. renamePath would drop it as it re-points the moved
     // document, but only when the moved one is open — and closing it here is
     // also what fronts a NEIGHBOUR of the tab that vanished rather than
     // whichever tab happens to be leftmost in the column.
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
-  }, [releaseTab]);
+  }, [releaseTab, flushTab]);
 
   /** Close one document. Its tab goes; the column goes with it only if that was
    *  the column's last tab (see utils/tabPanes.ts closePath). */
-  const removeTab = useCallback((path: string, flush: boolean) => {
-    releaseTab(path, flush);
+  const removeTab = useCallback((path: string) => {
+    releaseTab(path);
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab]);
@@ -2541,12 +2563,51 @@ export default function App() {
     closedPathsRef.current = stack.slice(-CLOSED_TAB_MEMORY);
   }, []);
 
+  const closeDocuments = useCallback((paths: readonly string[], hide: () => void) => {
+    const docs = paths.flatMap(path => {
+      const tab = tabsRef.current.find(t => t.file.path === path);
+      return tab && !closingRef.current.has(tab.id) ? [tab] : [];
+    });
+    if (!docs.length) return;
+    const root = rootHandleRef.current;
+    for (const tab of docs) closingRef.current.add(tab.id);
+    setClosingDocumentIds(new Set(closingRef.current));
+    rememberClosed(docs.map(tab => tab.file.path));
+    hide();
+    for (const tab of docs) void (async () => {
+      const path = tab.file.path;
+      try {
+        await getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.().catch(() => {});
+        const result = await flushTab(path);
+        const revision = pendingRevisionsRef.current.get(tab.id);
+        const pending = !!revision && revision.revision > revision.saved;
+        if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
+        if (result === 'failed' || result === 'changed' || result === 'deleted' || pending) {
+          setLayout(l => openTabIn(l, path));
+          notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
+          return;
+        }
+        // Reopening while the save was in flight reuses this very document.
+        if (reopenedClosingRef.current.has(tab.id)) return;
+        releaseTab(path);
+        setTabs(prev => prev.filter(t => t.id !== tab.id));
+      } catch (error) {
+        console.error('Could not close document:', error);
+        if (rootHandleRef.current === root && tabsRef.current.some(t => t.id === tab.id)) {
+          setLayout(l => openTabIn(l, path));
+          notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
+        }
+      } finally {
+        closingRef.current.delete(tab.id);
+        reopenedClosingRef.current.delete(tab.id);
+        setClosingDocumentIds(new Set(closingRef.current));
+      }
+    })();
+  }, [flushTab, releaseTab, rememberClosed]);
+
   const closeTab = useCallback((path: string) => {
-    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
-    const close=()=>{if(rootHandleRef.current!==root||!tabsRef.current.some(t=>t.id===tab?.id&&t.representation.generation===tab.representation.generation))return;rememberClosed([path]);removeTab(path,true)};
-    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
-    if(checkpoint)return checkpoint.catch(()=>{}).then(close);else close();
-  }, [removeTab, rememberClosed]);
+    closeDocuments([path], () => setLayout(l => closePath(l, path)));
+  }, [closeDocuments]);
 
   /**
    * Put the last closed document back (⌥⇧T), through the same opener a click in
@@ -2561,7 +2622,9 @@ export default function App() {
     for (;;) {
       const path = closedPathsRef.current.pop();
       if (path === undefined) return;
-      if (tabsRef.current.some(t => t.file.path === path)) continue;
+      const held = tabsRef.current.find(t => t.file.path === path);
+      if (held && closingRef.current.has(held.id)) { reopenedClosingRef.current.add(held.id); setLayout(l => openTabIn(l, path)); return path; }
+      if (held) continue;
       const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
       if (!node) continue;
       if (await handleFileClick(node)) return path;
@@ -2624,7 +2687,7 @@ export default function App() {
       // the tab and removes the old entry, and must not close a note that
       // merely moved.
       if (isNotFound(err) && current.file.handle === tab.file.handle) {
-        removeTab(current.file.path, false);
+        removeTab(current.file.path);
         void tell({
           title: 'That note is gone',
           confirmLabel: 'OK',
@@ -2648,8 +2711,7 @@ export default function App() {
    * Close a whole column — every document in it. What the pane header's
    * ⋯ menu means by *Close this pane*; a tab's own × closes just that one.
    *
-   * Every tab is FLUSHED on the way out (`releaseTab(path, true)`), so closing
-   * a five-tab column cannot lose the four the reader was not looking at.
+   * Every tab is drained and saved before release, including hidden tabs.
    * Read through `layoutRef` rather than `layout` so this keeps its identity
    * for the app's life: it is baked into a pane's chrome, which outlives the
    * render that raised the menu.
@@ -2657,13 +2719,8 @@ export default function App() {
   const closePaneAndTabs = useCallback((paneId: string) => {
     const pane = paneById(layoutRef.current, paneId);
     if (!pane) return;
-    for (const path of pane.paths) releaseTab(path, true);
-    // ⌥⇧T brings the column back one tab at a time, rightmost first.
-    rememberClosed(pane.paths);
-    const closed = new Set(pane.paths);
-    setLayout(l => closePaneIn(l, paneId));
-    setTabs(prev => prev.filter(t => !closed.has(t.file.path)));
-  }, [releaseTab, rememberClosed]);
+    closeDocuments(pane.paths, () => setLayout(l => closePaneIn(l, paneId)));
+  }, [closeDocuments]);
 
   /** A click on a tab: its column takes focus and fronts it. Path-explicit AND
    *  pane-explicit — two columns may hold tabs with the same name, and the id
@@ -2805,6 +2862,29 @@ export default function App() {
   //
   // Only fires on a REAL switch: the null → vault assignment at startup must not
   // clear the tabs the restore pass below is about to bring back.
+  useEffect(() => registerBeforeRootChange(async () => {
+    const activation = getVaultActivation();
+    for (;;) {
+      const docs = [...tabsRef.current];
+      const results = await Promise.all(docs.map(tab => flushTab(tab.file.path)));
+      if (getVaultActivation() !== activation) throw new Error('The vault changed while saving.');
+      if (results.some(result => result === 'failed' || result === 'changed' || result === 'deleted')) {
+        throw new Error('A document could not be saved; the vault was not switched.');
+      }
+      const pending = docs.some(tab => {
+        const revision = pendingRevisionsRef.current.get(tab.id);
+        return !!revision && revision.revision > revision.saved;
+      });
+      if (!pending && !anyPending()) return;
+      if (results.some((result, i) => {
+        const revision = pendingRevisionsRef.current.get(docs[i].id);
+        return result === 'skipped' && !!revision && revision.revision > revision.saved;
+      })) {
+        throw new Error('A document cannot be saved; the vault was not switched.');
+      }
+    }
+  }), [registerBeforeRootChange, getVaultActivation, flushTab]);
+
   const prevRootRef = useRef<FileSystemDirectoryHandle | null>(null);
   useEffect(() => {
     const previous = prevRootRef.current;
@@ -2812,22 +2892,20 @@ export default function App() {
     if (!previous || previous === rootHandle) return;
 
     for (const tab of tabsRef.current) {
-      flushTab(tab.file.path, false, undefined, true, previous); // no-ops unless dirty; captures synchronously
       clearPdfRenderData(tab.file.path);
       clearNotebookRenderData(tab.file.path);
     }
     // Every registered pane belongs to the vault being left.
     flushReaderViewState(); flushPdfTextViewState();
     clearViews();
-    // So does every open document's disk baseline and standoff (the flushes
-    // above captured theirs synchronously).
+    // So does every open document's disk baseline and standoff; the pre-commit
+    // hook has finished their writes.
     clearBaselines();
     pdfSeedsRef.current.clear();
     pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
     latestContentRef.current.clear();
-    // Those flushes captured what they needed synchronously (see flushTab); the
-    // paths themselves index the vault being left.
+    // These paths index the vault being left.
     assetRefsRef.current.clear();
     boardBaselinesRef.current.clear();
     unsavedBoardContentRef.current.clear();
@@ -3580,9 +3658,12 @@ export default function App() {
       // note happened to fall in an arbitrary `entries()` order. Flushed rather
       // than merely cancelled: the copy then carries the reader's last words,
       // which is what a trash folder is for.
-      await Promise.all(tabsRef.current
-        .filter(t => doomed(t.file.path))
-        .map(t => flushTab(t.file.path, false, undefined, true)));
+      const doomedTabs = tabsRef.current.filter(t => doomed(t.file.path));
+      const saved = await Promise.all(doomedTabs.map(t => flushTab(t.file.path, false, true)));
+      if (saved.some((result, i) => {
+        const revision = pendingRevisionsRef.current.get(doomedTabs[i].id);
+        return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+      })) return false;
       // …and let the asset reconciles those saves queued run to completion, so
       // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
       // copyDirRecursive is walking one of them.
@@ -3621,7 +3702,7 @@ export default function App() {
       // Closed WITHOUT flushing — that already happened above, and their handles
       // are gone now.
       for (const tab of tabsRef.current) {
-        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
+        if (doomed(tab.file.path)) removeTab(tab.file.path);
       }
       return true;
     });
@@ -3777,7 +3858,12 @@ export default function App() {
             // Write out what is still in the save debounce, so the copy that
             // gets displaced into `.Garbage` carries the reader's last words
             // rather than the disk's — handleTrash's reason, and its ordering.
-            await Promise.all(tabsRef.current.filter(doomed).map(t => flushTab(t.file.path, false, undefined, true)));
+            const displacedTabs = tabsRef.current.filter(doomed);
+            const saved = await Promise.all(displacedTabs.map(t => flushTab(t.file.path, false, true)));
+            if (saved.some((result, i) => {
+              const revision = pendingRevisionsRef.current.get(displacedTabs[i].id);
+              return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+            })) return { status: 'error' as const };
             // …and re-drain the reconcile queue: the question above took real
             // time, and a retire can have queued a picture move into the very
             // `.Garbage/.Assets` a retired put-back is about to read.
@@ -3793,7 +3879,7 @@ export default function App() {
             // file's text). releaseOverwritten's hazard exactly. Closed WITHOUT
             // flushing — that already happened above, before the copy.
             if (replaced.status === 'ok') {
-              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
+              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path);
               // A document a restore pass is still bringing back from there has
               // been displaced just the same (issue #9); tabsRef cannot reach it.
               const pending = pendingFor(rootHandleRef.current);
@@ -4017,7 +4103,7 @@ export default function App() {
     const open = new Set(tabsRef.current.map(t => t.file.path));
     for (const source of sources) {
       const dest = to(source);
-      if (open.has(dest)) releaseOverwritten(dest, source, fromDisk);
+      if (open.has(dest)) await releaseOverwritten(dest, source, fromDisk);
     }
 
     for (const { from, to: dest, doc } of moving) {
@@ -4068,7 +4154,7 @@ export default function App() {
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         // A destination opened during retargeting must not share this path or
         // lose its new edits. Closing preservation uses its own loaded kind.
-        if (tabsRef.current.some(t => t.file.path === dest)) releaseOverwritten(dest, from, true);
+        if (tabsRef.current.some(t => t.file.path === dest)) await releaseOverwritten(dest, from, true);
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
@@ -4520,7 +4606,7 @@ export default function App() {
     const graphAtCall = indexGraphRef.current;
     const searchWriteRevision = ++searchWriteRevisionRef.current;
     if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
-      if (action === 'close') removeTab(path, false);
+      if (action === 'close') removeTab(path);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
       return;
     }
@@ -4546,7 +4632,7 @@ export default function App() {
           confirmLabel: 'Close',
           danger: true,
         })) return;
-        removeTab(path, false);
+        removeTab(path);
         return;
       }
 
@@ -4630,7 +4716,7 @@ export default function App() {
       const copy = await writeConflictCopy(path, disk.bytes);
       setBaseline(id, disk.version);
       setDiskState(id, null);
-      const outcome = await flushTab(path, true, contentOf(path));
+      const outcome = await flushTab(path, true);
       if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
       else announce(`The version on disk was kept as “${shortName(copy)}”.`);
     } catch (err) {
@@ -5108,6 +5194,7 @@ export default function App() {
           </Suspense>
         ) : (
           <EditorPane
+            closingDocumentIds={closingDocumentIds}
             reading={readerIntegration}
             tabs={tabs}
             layout={layout}

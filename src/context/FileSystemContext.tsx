@@ -1113,8 +1113,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const tree = await loadTree(handle);
             if (!tree) return 'error';
 
-            if (rootHandleRef.current) await beforeRootChangeRef.current?.();
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);
@@ -1227,8 +1229,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // The three setters are synchronous and in one task, so React
             // batches them into a single render: `rootHandle` and `fileTree`
             // cannot be observed describing different vaults.
-            if (rootHandleRef.current) await beforeRootChangeRef.current?.();
+            const previousRoot = rootHandleRef.current;
             await set(IDB_KEY, handle);
+            try { if (previousRoot) await beforeRootChangeRef.current?.(); }
+            catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
             commitRoot(handle);
             commitTree(tree, handle);

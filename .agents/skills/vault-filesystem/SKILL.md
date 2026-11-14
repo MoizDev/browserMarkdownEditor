@@ -321,15 +321,13 @@ should spell `'.Assets'`.**
   and `restoreAsset` require a guard, checked before copying and immediately before source removal.
   A copy finishing after cancellation may leave both copies; it must not delete either source or
   revoke another activation's blob. Reference proofs also validate the edit/tree revision and open
-  readable buffers; undecided drops retry only on a later actual save, never a per-keystroke scan.
+  readable buffers; blocked folders retry on vault change, a later save or renewed access, never on a
+  timer or a per-keystroke scan.
 - **The diff is taken against the last SAVED text, not per keystroke** (`assetRefsRef`, seeded when a
-  tab opens). Until a removal reaches the disk it isn't one; the 1s save debounce doubles as the undo
-  grace period; and it is one regex pass per second instead of one per character. `flushTab` reads
-  the baseline and replaces it **in one synchronous step, before the write**, then hands both sets to
-  the async reconcile. Two things race that hand-over otherwise: `removeTab` drops the entry the
-  moment after it calls `flushTab` (so a closing tab's last save has to capture first — it does,
-  being synchronous up to the write), and a second save landing mid-reconcile would read a baseline
-  the first had yet to replace and could retire a picture that save had just put back.
+  tab opens). Until a removal reaches disk it isn't one, and the 1s debounce doubles as an undo grace
+  period. `flushTab` captures the shared baseline record before a close can drop it; serialized writes
+  advance the record and enqueue their diff only after a successful write. A failed write leaves it
+  unchanged, so a later successful save still retires or restores the picture it changed.
 - **Nothing is taken away while a neighbour still shows it.** The set consulted is the folder's own
   notes **and its whole subtree**, with open tabs read from their *buffers* so an unsaved reference
   counts. The subtree is not optional: the legacy walk above means a note in any descendant folder
@@ -422,7 +420,7 @@ raising the setting later still has history to show.
   No picker: the handle is already in hand, so one would only ask the user to find the folder they
   just right-clicked. It records the vault, so the way back is the vault menu. App does no flushing
   or tab-closing of its own — setting `rootHandle` is the switch, and the vault-switch effect already
-  flushes every open tab before emptying the workspace. It **holds an in-flight ref** covering the
+  drains and saves every open tab before the provider commits the new root, then empties the workspace. It **holds an in-flight ref** covering the
   switch AND its error dialog, so a second right-click cannot stack a second question.
 - **ONE vault switch at a time, across every raiser — `switchInFlightRef`, in the provider.**
   `refreshTree` is not serialized, so two switches at once are two vault walks racing and the
@@ -441,8 +439,8 @@ raising the setting later still has history to show.
 - **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the
   walk, `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree
   standing on failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree`
-  first, and only then do `set(IDB_KEY)` → `setRootHandle` → `setFileTree` with no await between the
-  setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
+  first, then save the handle and await App's registered pre-root-change drain before committing
+  `setRootHandle` → `setFileTree` with no await between the setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
   vaults. `setRootHandle` first and `await refreshTree` after left the app split for the WHOLE walk —
   the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows, nothing
   covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.

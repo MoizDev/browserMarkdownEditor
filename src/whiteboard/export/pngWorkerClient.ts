@@ -22,11 +22,12 @@ export async function encodeTiledPngInWorker(
     && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   let pulling = false
   let failure: unknown
+  const activePulls = new Set<Promise<void>>()
   const off = client.on('pngPull', (payload, candidate) => {
     if (!isCurrent(candidate) || !payload || typeof payload !== 'object' || (payload as { streamId?: unknown }).streamId !== streamId) return
     if (pulling) { failure = new Error('Duplicate PNG row request'); abort.abort(failure); return }
     pulling = true
-    void rows.next().then(async next => {
+    const pull = rows.next().then(async next => {
       if (abort.signal.aborted) return
       const lease = !next.done ? options.memory?.reserve(next.value.byteLength) : undefined
       if (!next.done && options.memory && !lease) throw new Error('Insufficient shared memory for PNG export row')
@@ -37,6 +38,8 @@ export async function encodeTiledPngInWorker(
           { priority: 0, cpu: 'light', signal: abort.signal, transfer: row ? [row.buffer] : [] }, isCurrent)
       } finally { if (lease) options.memory!.release(lease) }
     }).catch(error => { failure = error; abort.abort(error) })
+    activePulls.add(pull)
+    void pull.then(() => { activePulls.delete(pull) })
   })
   try {
     const result = await client.request<Blob>('pngStart', { streamId, width, height, clipboard: options.clipboard,
@@ -48,6 +51,7 @@ export async function encodeTiledPngInWorker(
     off()
     abort.abort()
     options.signal?.removeEventListener('abort', cancelled)
-    void rows.return?.(undefined).catch(() => {})
+    await Promise.allSettled([...activePulls])
+    await rows.return?.(undefined).catch(() => {})
   }
 }

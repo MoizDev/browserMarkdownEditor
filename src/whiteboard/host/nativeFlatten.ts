@@ -7,7 +7,7 @@ export interface NativeFlattenOptions extends Omit<FlattenOptions, 'capture'> {
     readonly boardName: string;
     readonly theme: 'light' | 'dark';
     /** App-owned immutable asset acquisition; never a direct filesystem read here. */
-    readMedia?(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
+    readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     notice(message: string): void;
     onError(error: unknown): void;
 }

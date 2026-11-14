@@ -142,7 +142,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded();
+                this.evictUnneeded(input.viewport);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -286,8 +286,9 @@ export class PdfTileLayer implements Layer {
             width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
     }
 
-    private evictUnneeded(): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key))
+    private evictUnneeded(viewport: Readonly<Rect>): void {
+        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
+            !intersects(rect(entry.request), viewport))
             .sort((a, b) => a[1].used - b[1].used);
         for (const [key, entry] of candidates) this.remove(key, entry);
     }

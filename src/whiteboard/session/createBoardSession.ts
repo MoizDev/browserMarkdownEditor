@@ -3,9 +3,10 @@ import { createApplyController } from '../change/apply';
 import { ApplyFailed } from '../change/errors';
 import { History } from '../change/history';
 import type { BoardKey, TouchedSet, Transaction, TransactionOrigin } from '../change/ops';
+import { mediaExtension } from '../media/ingest';
 import type { MediaLease } from '../media/store';
 import type { NodeId, SheetId } from '../model/ids';
-import type { MediaId } from '../model/media';
+import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import { boardContentSource, type PinnedBoardBuild } from './contentSource';
 import { createSessionGestureQueue } from './gestureQueue';
 import { createSaveScheduler } from './saveScheduler';
@@ -150,8 +151,24 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         captureJournal: () => journal.capture(),
         journalError: options.onFailure,
     });
+    const mediaReferenceSnapshot = () => {
+        const names = new Set<string>(), unresolved = new Set<MediaId>();
+        const resolve = (id: MediaId) => {
+            const entry = doc.media.get(id), registered = media.currentFile(id);
+            const file = registered === undefined ? entry?.file : registered;
+            if (typeof file === 'string') { names.add(file); return; }
+            if (entry && /^sha256:[0-9a-f]{64}$/.test(id) && (MEDIA_MIMES as readonly string[]).includes(entry.mime)) {
+                names.add(`${id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}`);
+            } else unresolved.add(id);
+        };
+        for (const [id, refs] of doc.mediaRefs) if (refs.size) resolve(id);
+        for (const [id, count] of doc.preservedMediaRefs) if (count > 0 && !doc.mediaRefs.get(id)?.size) resolve(id);
+        return { names: Object.freeze([...names]), unresolved: Object.freeze([...unresolved]) };
+    };
     const session = {
         owner, doc, samples, history,
+        mediaReferences() { return mediaReferenceSnapshot().names; },
+        mediaReferenceIssues() { return mediaReferenceSnapshot().unresolved; },
         get isReadOnly() { return !!readonlyReason(); },
         get readOnlyReason() { return readonlyReason(); },
         get isGestureActive() { return queue.isGestureActive; },

@@ -10,7 +10,7 @@ import { svgFrameFactory } from './svgFrameHost';
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
 // port deliberately cannot fall back to a detached parser in the vault origin.
 export interface SvgAdmissionProfile {
-    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number }>;
+    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number; readonly rgbaBytes: number }>;
     probe(blob: Blob, signal: AbortSignal): Promise<void>;
 }
 interface WorkerInspection {
@@ -79,10 +79,11 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         signal.throwIfAborted();
         const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
         signal.throwIfAborted();
-        if (!validSize(size.width, size.height)) throw new RangeError('Invalid SVG dimensions');
+        if (!validSize(size.width, size.height) || !Number.isSafeInteger(size.rgbaBytes)
+            || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
         const id = await worker.request<MediaId>('hash', { blob }, { priority: 1, deadlineMs: 10000, signal });
         signal.throwIfAborted();
-        const lease = options.memory.reserve(4 * size.width * size.height);
+        const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
             const typed = blob.slice(0, blob.size, 'image/svg+xml');

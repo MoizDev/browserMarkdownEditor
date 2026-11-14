@@ -55,7 +55,8 @@ export class BoardSpellClient {
                 if (this.pending.delete(id)) {
                     const error = new DOMException('Spelling deadline exceeded', 'TimeoutError');
                     reject(error);
-                    if (terminateOnDeadline) this.failed(worker, error);
+                    if (terminateOnDeadline) this.failed(worker, payload.kind === 'suggest'
+                        ? new DOMException('Spelling worker restarted after a slow suggestion', 'AbortError') : error);
                 }
             }, deadline);
             this.pending.set(id, pending);
@@ -116,7 +117,8 @@ export class BoardSpellClient {
     async suggest(word: string): Promise<readonly string[]> {
         if (!word || word.length > 64) return [];
         await this.start();
-        const value = await this.request<unknown>({ kind: 'suggest', word }, 250);
+        // nspell suggestions are synchronous in the worker; a timed-out call otherwise blocks every later check.
+        const value = await this.request<unknown>({ kind: 'suggest', word }, 250, true);
         if (!Array.isArray(value) || value.length > 5 || value.some(item => typeof item !== 'string' || item.length > 256))
             throw new Error('Invalid spelling suggestion response');
         return value;
@@ -151,7 +153,11 @@ export class BoardSpellClient {
                 return this.request<unknown>({ kind: 'check', text }, 10_000, true);
             }).then(value => {
                 if (value !== null && !this.disposed && generation === this.generation) publish(misspellings(value, text));
-            }).catch(reason => { if (!this.disposed && generation === this.generation) error(reason); });
+            }).catch(reason => {
+                if (this.disposed || generation !== this.generation) return;
+                if (reason instanceof DOMException && reason.name === 'AbortError' && !this.worker) this.check(text, publish, error, 0);
+                else error(reason);
+            });
         }, Number.isFinite(delay) ? Math.max(0, Math.min(delay, 10_000)) : 300);
     }
 

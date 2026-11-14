@@ -234,9 +234,8 @@ export function flushRecord(key: string): boolean {
    tab sessions make "the same path open in two vaults" routine, so switching
    back would scroll a note to an offset measured in a different file.
 
-   Everything else in the app drops its per-vault caches on a switch
-   (clearLinkCache, the search cache, the object-URL registry); these records
-   deliberately OUTLIVE the session instead, so they carry the vault in the key
+   The worker index and object-URL registry release their active-vault state on
+   a switch; these records deliberately OUTLIVE the session instead, so they carry the vault in the key
    rather than being cleared.
 
    Two costs, both accepted rather than overlooked:

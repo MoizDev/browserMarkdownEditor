@@ -46,7 +46,10 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
                 if (phase !== 'idle' && done !== 0 && now - lastStatus < 100) return;
                 lastStatus = now;
                 context.emit('status', { session, phase, done, total });
-            }, (changes, sweepComplete) => context.emit('fileTimes', { session, changes, sweepComplete }));
+            }, (changes, sweepComplete) => {
+                context.emit('fileTimes', { session, changes, sweepComplete });
+                if (sweepComplete) context.emit('searchChanged', { session });
+            });
         const owner = engine;
         const persistence = new PersistSession(session.vaultId, (kind, detail) => context.emit('problem', { session, kind, detail }));
         owner.persistence = persistence;
@@ -54,10 +57,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (current(session) !== owner) { await persistence.close(); return null; }
         owner.store.hydrate(records);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
-        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner, (path, mtime, size) => {
-            const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
-            return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
-        });
+        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
+            (path, mtime, size) => owner.readPersistedText(path, mtime, size));
         return null;
     },
     async close(value) {
@@ -179,14 +180,17 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         return null;
     },
     async sweepBatch(value, context) {
-        const { session, start, treeGen } = value as SessionArgs & { start: number; treeGen: number };
+        const { session, start, treeGen, reason } = value as SessionArgs & { start: number; treeGen: number; reason: string };
+        if (current(session) && start === 0 && reason !== 'open') searchText?.revalidate();
         try { return await current(session)?.sweepBatch(start, treeGen, context) ?? null; }
         catch (error) { problem(context, session, error); return null; }
     },
     async invalidate(value, context) {
         const { session, paths } = value as SessionArgs & { paths: string[] };
-        if (current(session)) searchText?.invalidate(paths);
-        try { await current(session)?.invalidate(paths, context); } catch (error) { problem(context, session, error); }
+        const active = current(session);
+        if (active) searchText?.invalidate(paths);
+        try { await active?.invalidate(paths, context); } catch (error) { problem(context, session, error); }
+        if (active && current(session) === active) context.emit('searchChanged', { session });
         return null;
     },
 } });

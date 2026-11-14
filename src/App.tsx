@@ -10,6 +10,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
 import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
+import { setIndexProgress } from './utils/indexProgress';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -33,6 +34,7 @@ import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import { recoveryAdapter } from './utils/recoveryAdapters';
+import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -254,8 +256,9 @@ interface AppDialog extends DialogRequest {
  * that identity is load-bearing: a fresh object propagates into GraphView's
  * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
  * the RAF loop and the ResizeObserver. Without this, an unrelated tab
- * autosaving visibly re-heated the graph the user was looking at — and the
- * graph is rebuilt after EVERY save, not just on tree changes.
+ * autosaving visibly re-heated the graph the user was looking at. Only changed
+ * link facts/tree revisions request new work; equivalent worker publications
+ * must still leave the running layout alone.
  */
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
@@ -476,13 +479,12 @@ export default function App() {
   const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
   const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
   const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
-  const [indexProgressState, setIndexProgressState] = useState<{ activation: number; value: IndexProgress } | null>(null);
-  const indexProgress = indexProgressState?.activation === searchActivation ? indexProgressState.value : null;
+  useLayoutEffect(() => { setIndexProgress(null); }, [searchActivation]);
   const reportGraphFreshness = useCallback((stale: boolean) => {
     if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
   }, [getVaultActivation, searchActivation]);
   const reportIndexProgress = useCallback((value: IndexProgress) => {
-    if (getVaultActivation() === searchActivation) setIndexProgressState({ activation: searchActivation, value });
+    if (getVaultActivation() === searchActivation) setIndexProgress(value);
   }, [getVaultActivation, searchActivation]);
   const publishIndexGraph = useCallback((next: GraphData | null, activation: number, current: () => boolean) => {
     const value = next ?? EMPTY_GRAPH;
@@ -987,6 +989,10 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  const [recoveryJournal] = useState(() => createRecoveryJournal({
+    refused: () => announce('Recovery storage may be evicted by the browser.'),
+    failed: () => announce('Could not write recovery storage; keep your edits open.'),
+  }));
   useEffect(() => subscribeRenderStatus(announce), [announce]);
   useEffect(() => {
     const showRestoreNotice = () => {
@@ -1274,7 +1280,7 @@ export default function App() {
     pdfSeedsRef.current.set(id, seed);
     return seed;
   }, [readBytesVersioned]);
-  /** Read through a ref for the same reason writeFile and rebuildGraph are: the
+  /** Read through a ref to keep the captured IO callback current: the
    *  save helpers keep a stable identity, and a dependency here would re-arm
    *  every timer and listener they own. */
   const pdfSeedForRef = useRef(pdfSeedFor);
@@ -1531,7 +1537,7 @@ export default function App() {
     }
   }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation]);
 
-  // Read through a ref for the same reason writeFile and rebuildGraph are: it
+  // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
   const reconcileAssetsRef = useRef(reconcileAssets);
   useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);
@@ -2533,8 +2539,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') void checkpointAll(); };
-    const pagehide = () => { void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryJournal.flush().catch(() => {}); void checkpointAll(); } };
+    const pagehide = () => { void recoveryJournal.flush().catch(() => {}); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -2544,7 +2550,7 @@ export default function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, syncExitGuard]);
+  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryJournal]);
 
   const preparePdfPrint = useCallback(async (path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -4491,8 +4497,9 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
+    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -5393,9 +5400,14 @@ export default function App() {
   }, []);
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
-    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle || sessionRootRef.current !== rootHandle || sessionVaultIdRef.current !== entry.vaultId) return 'unavailable';
+    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle) return 'unavailable';
     try {
+      const vault = recentVaults.find(item => item.id === entry.vaultId);
+      if (!vault) return 'unavailable';
+      const relative = await handleIO.relativeTo(rootHandle, vault.handle);
+      if (!relative || relative.length !== 0 || rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
       const handle = await resolveFileHandle(entry.path);
+      if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
       if (!handle) return 'copy';
       const snapshot = await readFileSnapshot(handle);
       try {
@@ -5408,7 +5420,7 @@ export default function App() {
         return version.hash === entry.fingerprint ? 'match' : 'copy';
       } finally { snapshot.dispose(); }
     } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
-  }, [rootHandle, currentVaultId, resolveFileHandle, readFileSnapshot]);
+  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, readFileSnapshot]);
 
   const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
     const tab = tabsRef.current.find(t => t.file.path === entry.path);
@@ -5588,7 +5600,7 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
-        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} />}
+        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
             <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
@@ -5602,7 +5614,7 @@ export default function App() {
             vaultKey={sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId && currentVaultId
               ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
             indexing={graphFreshness?.activation !== searchActivation}
-            updating={(graphFreshness?.activation === searchActivation && graphFreshness.stale) || indexProgress?.phase === 'sweeping'}
+            updating={graphFreshness?.activation === searchActivation && graphFreshness.stale}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

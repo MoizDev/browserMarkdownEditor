@@ -6,7 +6,7 @@ import { DamageAccumulator } from './damage';
 import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameBudget, FrameToken, Layer } from './types';
-import { recordRenderFrame } from './renderPerf';
+const benchmarkPerf = __BME_BENCH__ ? await import('./renderPerf') : null;
 
 /** Accumulated CSS camera-pan positions, not raw finger positions (design §7.3:706–713). */
 export interface TouchPanSample extends Point { readonly time: number }
@@ -670,11 +670,11 @@ export class FrameScheduler {
                     if (drawn.length) this.acknowledgements.push({ entry: item.work.entry, frameId, token: item.work.frame.token,
                         submission: completed ? { drawn, completed } : { drawn } });
                     item.work.entry.pane.writeOverlays(item.work.frame);
-                    if (__BME_BENCH__) {
+                    if (benchmarkPerf) {
                         const frame = item.work.frame;
                         const accounting = item.work.entry.pane.benchmarkMemory?.();
                         const uploads = meter.byPane?.get(item.work.entry.pane.paneId);
-                        recordRenderFrame({ frameId, token: frame.token, camera: frame.view.camera,
+                        benchmarkPerf.recordRenderFrame({ frameId, token: frame.token, camera: frame.view.camera,
                             sceneRevision: frame.damage.contentRevision, deviceGeneration: frame.token.deviceGeneration,
                             memory: accounting?.memory ?? {}, grants: accounting?.grants ?? {},
                             uploadedBytes: uploads?.bytes ?? 0, uploadCalls: uploads?.calls ?? 0, uploadMs: uploads?.ms ?? 0 });

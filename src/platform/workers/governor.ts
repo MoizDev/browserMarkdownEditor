@@ -1,6 +1,7 @@
 import { now } from './clock';
-import { recordWorkerPerf } from './perf';
 import type { CpuAdmission, CpuPermit, CpuPermits, Priority } from './envelope';
+
+const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
 
 const starvationMs = 2000;
 type Entry = {
@@ -154,14 +155,14 @@ class Governor implements CpuPermits {
     }
 
     private record(entry: Entry, transition: string): void {
-        if (!__BME_BENCH__) return;
+        if (!benchmarkPerf) return;
         const counts = this.perfCounts();
         // The permit seam has no client-generation or original-call timestamp. Preserve its
         // admission timestamp and mark that generation unavailable rather than inventing one.
         const sample = { worker: entry.admission.name, generation: 0, requestId: entry.admission.id,
             priority: entry.priority, phase: 'permit' as const, time: now(), requestTime: entry.perfAsked!,
             postTime: null, inFlight: this.entries.size, permitsHeld: counts.held, permitsQueued: counts.queued, transition };
-        recordWorkerPerf(sample);
+        benchmarkPerf.recordWorkerPerf(sample);
     }
 
     private armFairness(): void {

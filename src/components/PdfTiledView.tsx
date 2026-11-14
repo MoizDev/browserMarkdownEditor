@@ -422,7 +422,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         setReaderVisible: () => {}, clearMirrorPages: () => {}, releaseGpu: () => {},
         rebuildVisible: () => paneRef.current?.current?.invalidate('pdf-selection-visible') });
     const mirrorView = useCallback((view: ViewState) => ({ token: session.token, sourceRole: session.source,
-        contentRevision: pdfMirrorRevision(profile.current.enabled, getPdfFontEpoch(pdf.poolDocument.docKey), pdf.emphasis.revision()),
+        contentRevision: pdfMirrorRevision(profile.current.enabled, pdf.poolDocument.docKey, pdf.emphasis.revision()),
         colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view }),
         [session, geometryDigest, pdf]);
     const textMirror = usePdfTextMirror({ host: overlay, visible: isVisible && capabilities.copy === true, fileName: filePath.split('/').at(-1) ?? filePath,

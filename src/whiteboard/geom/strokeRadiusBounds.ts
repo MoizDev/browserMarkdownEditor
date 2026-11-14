@@ -1,6 +1,6 @@
 import type { Affine } from '../../platform/types';
 import { dyadicRatioInterval } from './dyadicRatio';
-import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, multiply, sqrtInterval, type Interval } from './numeric';
+import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 
 const opposite = (value: { readonly n: bigint; readonly e: number }) => ({ n: -value.n, e: value.e });
 function addDyadic(a: ReturnType<typeof dyadic>, b: ReturnType<typeof dyadic>) { return dyadicSubtract(a, opposite(b)); }
@@ -23,13 +23,24 @@ export function strokeRadiusBounds(matrix: Affine, localRadius: number): Interva
     const first = add(square(matrix[0]), square(matrix[1])), uniform = isUniformDistanceMatrix(matrix);
     const squared = uniform ? first : add(first, add(square(matrix[2]), square(matrix[3])));
     if (!Number.isFinite(squared.hi) || squared.hi < 0) return null;
-    const upperScale = sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi });
-    let lower = upperScale.lo;
+    let upperScale = sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi }), lower = upperScale.lo;
     if (!uniform) {
         const determinant = dyadicSubtract(dyadicMultiply(dyadic(matrix[0]), dyadic(matrix[3])), dyadicMultiply(dyadic(matrix[1]), dyadic(matrix[2])));
+        const absolute = { n: determinant.n < 0n ? -determinant.n : determinant.n, e: determinant.e };
+        // The exact quadratic singular-value formula tightens Frobenius when
+        // its interval arithmetic is finite; otherwise Frobenius stays safe.
+        if (determinant.n) try {
+            const det = dyadicRatioInterval(absolute, dyadic(1));
+            const discriminant = subtract(multiply(squared, squared), multiply(interval(4), multiply(det, det)));
+            if (Number.isFinite(discriminant.hi) && discriminant.hi >= 0) {
+                const root = sqrtInterval({ lo: Math.max(0, discriminant.lo), hi: discriminant.hi });
+                const maxSquared = multiply(add(squared, root), interval(0.5));
+                if (Number.isFinite(maxSquared.hi) && maxSquared.hi >= 0)
+                    upperScale = sqrtInterval({ lo: Math.max(0, maxSquared.lo), hi: maxSquared.hi });
+            }
+        } catch (error) { if (!(error instanceof RangeError)) throw error; }
         if (!determinant.n || !upperScale.hi) lower = 0;
         else {
-            const absolute = { n: determinant.n < 0n ? -determinant.n : determinant.n, e: determinant.e };
             try { lower = Math.max(0, dyadicRatioInterval(absolute, dyadic(upperScale.hi)).lo); }
             catch (error) { if (error instanceof RangeError) return null; throw error; }
         }

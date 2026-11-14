@@ -22,6 +22,8 @@ const nonvisualRaw = new Set(['locked', 'alt', 'url']);
 export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     readonly signal: AbortSignal;
     cooperate?(): Promise<void>;
+    /** Selection captures still check their ancestors and all global preserved records. */
+    readonly includeNodes?: ReadonlySet<NodeId>;
 }): Promise<PdfVisualPreflight> {
     options.signal.throwIfAborted();
     if (!doc || !doc.nodes || !doc.preserved) throw new TypeError('Invalid board document');
@@ -35,6 +37,7 @@ export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     const due = () => ++visits % 256 === 0 || performance.now() - started >= 3;
     for (const node of doc.nodes.values()) {
         if (due()) await tick();
+        if (options.includeNodes && !options.includeNodes.has(node.id)) continue;
         if (node.kind === 'opaque') issues.push({ kind: 'opaque-node', nodeId: node.id });
         if (!node.ext) continue;
         for (const field of node.ext.raw.keys()) {

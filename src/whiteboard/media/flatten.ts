@@ -56,7 +56,7 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
             const bounds = captured.bounds, top = doc.nodes.get(captured.topmost);
             if (!rootSet.has(captured.topmost) || !top || !(captured.blob instanceof Blob) || !bounds
                 || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
-                || bounds.width < 1 || bounds.height < 1 || bounds.width > 1_000_000 || bounds.height > 1_000_000) throw new Error('Invalid flatten capture');
+                || bounds.width <= 0 || bounds.height <= 0 || bounds.width > 1_000_000 || bounds.height > 1_000_000) throw new Error('Invalid flatten capture');
             const blob = new Blob([captured.blob], { type: 'image/png' });
             const info = await inspectMedia(blob, { memory: options.memory, identity, isCurrent: current, signal: context.signal }); check();
             if (info.mime !== 'image/png' || info.duration !== null || info.animated) throw new Error('Flatten capture is not a still PNG');
@@ -65,7 +65,9 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
             const entry: MediaEntry = old ?? { id: info.id, mime: info.mime, bytes: blob.size, w: info.width, h: info.height,
                 duration: null, animated: false, name: 'Flattened selection', file: null, ext: null };
             const file = await options.storeMedia(entry, blob, context.signal); check();
-            if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
+            // Flatten deletes the vector originals. A cache-only/missing asset
+            // would survive until reload and then lose the user's actual drawing.
+            if (file === null || !isSafeMediaFile(file)) throw new Error('The flattened image could not be stored');
             if (old && old.file !== file && (old.ext?.raw.size || old.ext?.fields.size || (doc.preservedMediaRefs.get(info.id) ?? 0) > 0)) throw new Error('Cannot remap preserved image metadata');
             mediaLease = runtime.media.retain(info.id, 'snapshot'); runtime.media.put(info.id, blob);
             const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, bounds.y + bounds.height) : undefined;

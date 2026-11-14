@@ -38,6 +38,8 @@ export interface ApplyController {
     readonly failure: ApplyFailed | null;
     apply(transaction: Transaction): Applied;
     begin(origin: TransactionOrigin, label: string): TxBuilder;
+    /** Exact, validated rollback of latest committed receipts, newest first. */
+    revert(receipts: readonly Applied[]): Applied;
     dispose(): void;
 }
 
@@ -130,13 +132,13 @@ class ReceiptSamples {
         this.refs.clear(); // Released receipts no longer pin chunks through handle closures.
     }
 }
-function receipt(forward: readonly Op[], inverse: readonly Op[], touched: TouchedSet,
+function receipt(forward: readonly Op[], inverse: readonly Op[], inverseGroups: readonly (readonly Op[])[], touched: TouchedSet,
     dirtying: boolean, recorded: boolean, samples: ReceiptSamples): Applied {
     const sampleRefs = samples.ids();
     let owners = 1, rootActive = true;
     const drop = () => { if (--owners === 0) samples.release(); };
     return Object.freeze({
-        forward: Object.freeze(forward), inverse: Object.freeze(inverse), touched, dirtying, recorded, sampleRefs,
+        forward: Object.freeze(forward), inverse: Object.freeze(inverse), inverseGroups: Object.freeze(inverseGroups), touched, dirtying, recorded, sampleRefs,
         retain(): AppliedLease {
             if (owners === 0) throw new ApplyFailed('released', 'The applied receipt has been released');
             let active = true;
@@ -356,6 +358,9 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
     let active: TxBuilder | undefined;
     let readOnly = false, failure: ApplyFailed | null = null;
     let faultSamples: ReceiptSamples | undefined;
+    let allowRevert = false, expectedRevision = doc.rev;
+    let logicalHead: WeakRef<Applied> | undefined;
+    const links = new WeakMap<Applied, WeakRef<Applied> | null>();
     const report = (error: ApplyFailed) => {
         if (!failure?.unsafe || error.unsafe) failure = error;
         try { consumers.reportError?.(error); } catch { /* Reporting cannot reopen or undo a commit. */ }
@@ -393,6 +398,7 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
         },
         begin(origin, label) {
             guard();
+            if (origin === 'revert' && !allowRevert) throw new ApplyFailed('origin', 'Internal revert cannot be started externally');
             const context: ValidationContext = { doc, samples, origin };
             const entries: Entry[] = [], resources = new ReceiptSamples(samples);
             const savepoints = new Map<number, number>();
@@ -460,7 +466,7 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                 let plan: OpPlan | undefined, captured: NormalizationStep['captured'];
                 try {
                     plan = planOp(doc, op);
-                    captured = !plan || origin === 'undo' || origin === 'redo' ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
+                    captured = !plan || origin === 'undo' || origin === 'redo' || origin === 'revert' ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
                 } catch (error) {
                     if (error instanceof ApplyRefused) throw new ApplyRefused({ ok: false, code: error.code, reason: error.reason, nodeId: error.nodeId, opIndex });
                     return fail(error, error instanceof ModelInvariantError);
@@ -522,22 +528,23 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     try {
                         // Undo/redo already contain the exact follow-on ops. In
                         // particular imported long keys must be restored verbatim.
-                        if (origin !== 'undo' && origin !== 'redo') normalizeChanges(doc, { push: stage }, entries, geometry);
-                        const forward: Op[] = [], inverse: Op[] = [], touched = emptyTouched();
+                        if (origin !== 'undo' && origin !== 'redo' && origin !== 'revert') normalizeChanges(doc, { push: stage }, entries, geometry);
+                        const forward: Op[] = [], inverse: Op[] = [], inverseGroups: (readonly Op[])[] = [], touched = emptyTouched();
                         impacts = new Map();
                         let dirtying = false, recorded = false;
                         for (const entry of entries) {
                             forward.push(entry.plan.forward);
+                            inverseGroups.push(Object.freeze(entry.plan.inverse.map(op => Object.freeze({ ...op }))));
                             mergeTouched(touched, entry.plan.touched);
                             for (const [id, mask] of entry.plan.impacts) impacts.set(id, (impacts.get(id) ?? 0) | mask);
                             const policy = policyForOp(entry.plan.forward);
                             dirtying ||= opDirties(policy, doc.kind);
                             recorded ||= policy.history;
                         }
-                        for (let i = entries.length - 1; i >= 0; i--) {
-                            for (const op of entries[i].plan.inverse) inverse.push(op);
+                        for (let i = inverseGroups.length - 1; i >= 0; i--) {
+                            for (const op of inverseGroups[i]) inverse.push(op);
                         }
-                        applied = receipt(forward, inverse, touched, dirtying, recorded && origin !== 'undo' && origin !== 'redo', resources);
+                        applied = receipt(forward, inverse, inverseGroups, touched, dirtying, recorded && origin !== 'undo' && origin !== 'redo' && origin !== 'revert', resources);
                         transaction = { ops: applied.forward, origin, label };
                         // Prepare both revision writes before either is run. An
                         // empty/no-op transaction is not a new document version.
@@ -557,6 +564,10 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     }
                     // R-W27 COMMIT POINT: successful end of commit check. No
                     // consumer exception can roll back this published version.
+                    if (entries.length) {
+                        if (origin !== 'revert') { links.set(applied, logicalHead ?? null); logicalHead = new WeakRef(applied); }
+                        expectedRevision = doc.rev;
+                    }
                     savepoints.clear();
                     closed = true;
                     active = undefined;
@@ -580,6 +591,23 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
             phase = 'building';
             active = builder;
             return builder;
+        },
+        revert(receipts) {
+            guard();
+            if (!receipts.length || doc.rev !== expectedRevision) throw new ApplyFailed('revert', 'History receipts are not the latest board commits');
+            let cursor = logicalHead;
+            const ops: Op[] = [];
+            for (const item of receipts) {
+                if (cursor?.deref() !== item || !links.has(item)) throw new ApplyFailed('revert', 'History receipts are not the latest board commits');
+                for (let i = item.inverseGroups.length - 1; i >= 0; i--) for (const op of item.inverseGroups[i]) ops.push(op);
+                cursor = links.get(item) ?? undefined;
+            }
+            allowRevert = true;
+            try {
+                const result = controller.apply({ origin: 'revert', label: 'Revert gesture', ops });
+                logicalHead = cursor;
+                return result;
+            } finally { allowRevert = false; }
         },
         dispose() {
             if (phase === 'disposed') return;

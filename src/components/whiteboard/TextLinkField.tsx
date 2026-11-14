@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 interface TextLinkFieldProps {
     readonly x: number;
@@ -18,6 +18,18 @@ export function TextLinkField({ x, y, initial, normalizeUrl, commit, cancel, vis
     const [invalid, setInvalid] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
+    useLayoutEffect(() => {
+        const place = () => {
+            const element = root.current;
+            if (!element) return;
+            const bounds = element.getBoundingClientRect();
+            element.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
+            element.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
+        };
+        place();
+        window.addEventListener('resize', place);
+        return () => window.removeEventListener('resize', place);
+    }, [x, y]);
     useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
     useEffect(() => {
         const outside = (event: PointerEvent) => {
@@ -34,7 +46,7 @@ export function TextLinkField({ x, y, initial, normalizeUrl, commit, cancel, vis
         if (!url) { setInvalid(true); return; }
         commit(url);
     };
-    return <div ref={root} role="dialog" aria-label="Edit text link" style={{ position: 'fixed', left: x, top: y, zIndex: 1000, padding: 8, background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: 6 }}
+    return <div ref={root} role="dialog" aria-label="Edit text link" style={{ position: 'fixed', left: x, top: y, zIndex: 1000, padding: 8, background: 'var(--background-primary)', border: '1px solid var(--background-modifier-border)', borderRadius: 6 }}
         onContextMenu={event => { if (event.target !== input.current) event.preventDefault(); }}>
         <label>URL <input ref={input} value={value} aria-invalid={invalid} onChange={event => { setValue(event.target.value); setInvalid(false); }}
             onContextMenu={event => { event.preventDefault(); contextMenu(event); }}

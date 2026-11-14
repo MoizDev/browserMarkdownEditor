@@ -29,7 +29,10 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
     changed(selection: EditSelection): void;
+    requestChrome(): void;
+    reducedMotion(): boolean;
     reportError(error: unknown): void;
+    announce(message: string): void;
     autoScroll(x: number, y: number): void;
     stopAutoScroll(): void;
     touchHandles(show: boolean): void;
@@ -56,6 +59,8 @@ export class TextEditSession {
     private affinity: CaretPosition['affinity'];
     private goalX: number | undefined;
     private lastActivity = performance.now();
+    private blinkTimer: ReturnType<typeof setTimeout> | null = null;
+    private blinkReduced = false;
     private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
     private compositionSelection: EditSelection | null = null;
     private compositionRange: { from: number; to: number } | null = null;
@@ -134,10 +139,25 @@ export class TextEditSession {
                 return layout.caret.characterBounds(start, end).map(rect => clientBounds(rect, layout.localToClient));
             },
         }, forceFallback);
+        this.resetBlink();
+    }
+
+    private resetBlink(): void {
+        this.lastActivity = performance.now();
+        if (this.blinkTimer !== null) clearTimeout(this.blinkTimer);
+        this.blinkTimer = null;
+        this.blinkReduced = this.services.reducedMotion();
+        if (this.blinkReduced) return;
+        const tick = () => {
+            if (this.closed || this.services.reducedMotion()) { this.blinkTimer = null; return; }
+            this.services.requestChrome();
+            this.blinkTimer = setTimeout(tick, 530);
+        };
+        this.blinkTimer = setTimeout(tick, 530);
     }
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
-        this.lastActivity = performance.now();
+        this.resetBlink();
         try { this.selection = this.controller.replace(change, kind, this.selection); }
         catch (error) { this.services.reportError(error); return; }
         this.affinity = undefined;
@@ -147,7 +167,7 @@ export class TextEditSession {
 
     private select(next: EditSelection, moving = false): void {
         if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
-        this.lastActivity = performance.now();
+        this.resetBlink();
         this.typingHistory.invalidateRule();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
@@ -213,7 +233,7 @@ export class TextEditSession {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];
                 if (mark) {
-                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); }
+                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.services.announce(`${command} formatting changed`); }
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
                 } else {
@@ -229,6 +249,7 @@ export class TextEditSession {
     sync(): void {
         if (this.closed) return;
         if (!this.services.alive()) { this.close(false); return; }
+        if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
         this.host.sync();
         const layout = this.services.layout();
         const { a, b, c, d, e, f } = layout.localToClient;
@@ -302,7 +323,7 @@ export class TextEditSession {
         let applied: boolean;
         try { applied = this.controller.applyLink(url, selection); }
         catch (error) { this.services.reportError(error); return false; }
-        if (applied) { this.selection = selection; this.services.changed(selection); this.host.focus(); }
+        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce('Link formatting changed'); this.host.focus(); }
         return applied;
     }
 
@@ -314,6 +335,8 @@ export class TextEditSession {
         if (this.closed) return;
         this.host.finishComposition(commitComposition);
         this.closed = true;
+        if (this.blinkTimer !== null) clearTimeout(this.blinkTimer);
+        this.blinkTimer = null;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
         if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {

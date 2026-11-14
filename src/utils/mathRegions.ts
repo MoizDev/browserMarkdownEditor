@@ -1,5 +1,17 @@
 import { overlapsRange } from './rangeSearch';
 import type { CharRange } from './rangeSearch';
+import type { Tree } from '@lezer/common';
+
+export function codeRangesForTree(tree: Tree): CharRange[] {
+    const out: CharRange[] = [];
+    tree.iterate({ enter(node) {
+        if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'InlineCode') {
+            out.push({ from: node.from, to: node.to });
+            return false;
+        }
+    } });
+    return out;
+}
 
 /** One $…$ / $$…$$ span. `latex` is the inner source, delimiters excluded. */
 export interface MathRegion {

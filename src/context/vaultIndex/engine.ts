@@ -15,9 +15,6 @@ export class IndexEngine {
     private foreground = 0;
     private ioActive = 0;
     private ioWaiters: (() => void)[] = [];
-    private sweeping = false;
-    private rerun = false;
-    private sweepWaiters: { resolve(): void; reject(error: unknown): void }[] = [];
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void) {}
@@ -25,22 +22,26 @@ export class IndexEngine {
     close(): void {
         this.stopped = true;
         this.ioWaiters.splice(0).forEach(wake => wake());
-        this.sweepWaiters.splice(0).forEach(waiter => waiter.resolve());
     }
     foregroundIO(active: number): void {
         this.foreground = Math.max(0, active);
         if (!this.foreground) this.ioWaiters.splice(0).forEach(wake => wake());
     }
-    publishGraph(stale = false): void {
-        if (!this.stopped) this.publish(assembleGraph(this.session, ++this.graphGen,
-            this.store.files, this.store.records, stale));
+    async publishGraph(context: WorkerContext, stale = false): Promise<void> {
+        if (this.stopped) return;
+        const generation = ++this.graphGen;
+        const graph = await assembleGraph(this.session, generation, this.store.treeGen,
+            this.store.files, new Map(this.store.records), stale, () => context.slice());
+        if (!this.stopped && !context.cancelled && generation === this.graphGen) this.publish(graph);
     }
-    async prime(path: string, mtime: number, size: number, text: string, context: WorkerContext): Promise<void> {
-        const rev = this.store.reservePrime(path);
-        if (rev === undefined) return;
+    async prime(path: string, rev: number, mtime: number, size: number, text: string, context: WorkerContext): Promise<void> {
+        if (this.stopped || this.store.revision(path) !== rev) return;
         try {
             const facts = await noteFactsSliced(text, () => context.slice());
-            if (!this.stopped && this.store.prime(path, rev, mtime, size, facts)) this.publishGraph();
+            if (!this.stopped && this.store.prime(path, rev, mtime, size, facts)) {
+                this.store.releasePrime(path, rev);
+                await this.publishGraph(context);
+            }
         } finally { this.store.releasePrime(path, rev); }
     }
     private async acquireIO(context: WorkerContext): Promise<boolean> {
@@ -89,11 +90,10 @@ export class IndexEngine {
     async invalidate(paths: readonly string[], context: WorkerContext): Promise<void> {
         const wanted = new Set(paths);
         await this.runFiles(this.store.files.filter(file => wanted.has(file.path)), context);
-        this.publishGraph();
+        await this.publishGraph(context);
     }
-    private async runFiles(files: readonly IndexFile[], context: WorkerContext, interrupted = () => false,
-        progress?: (done: number, total: number) => void): Promise<void> {
-        for (let start = 0; start < files.length && !this.stopped && !context.cancelled && !interrupted(); start += 8) {
+    private async runFiles(files: readonly IndexFile[], context: WorkerContext): Promise<void> {
+        for (let start = 0; start < files.length && !this.stopped && !context.cancelled; start += 8) {
             const reads = await Promise.all(files.slice(start, start + 8).map(file => this.read(file, context)));
             for (const read of reads) {
                 if (!read || this.stopped || context.cancelled) continue;
@@ -104,36 +104,23 @@ export class IndexEngine {
                 if (!this.stopped && !context.cancelled) this.store.commitRead(read.file, read.rev, read.mtime, read.size, facts);
                 await context.slice();
             }
-            progress?.(Math.min(start + 8, files.length), files.length);
         }
     }
-    async sweep(context: WorkerContext): Promise<void> {
-        if (this.sweeping) {
-            this.rerun = true;
-            return new Promise<void>((resolve, reject) => this.sweepWaiters.push({ resolve, reject }));
+    async sweepBatch(start: number, treeGen: number, context: WorkerContext): Promise<{ next: number; treeGen: number; done: boolean }> {
+        const currentGen = this.store.treeGen;
+        if (treeGen !== currentGen) start = 0;
+        const files = this.store.files;
+        if (start === 0) this.status('sweeping', 0, files.length);
+        await this.runFiles(files.slice(start, start + 8), context);
+        if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
+        const next = Math.min(start + 8, files.length);
+        if (next === files.length) {
+            await this.publishGraph(context);
+            if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
+            if (!this.stopped) this.status('idle', next, files.length);
+            return { next, treeGen: currentGen, done: true };
         }
-        this.sweeping = true;
-        let completing: typeof this.sweepWaiters = [];
-        try {
-            do {
-                this.rerun = false;
-                completing = this.sweepWaiters.splice(0);
-                const files = [...this.store.files];
-                this.status('sweeping', 0, files.length);
-                await this.runFiles(files, context, () => this.rerun,
-                    (done, total) => this.status('sweeping', done, total));
-                this.publishGraph();
-                if (this.rerun) this.sweepWaiters.unshift(...completing);
-                else completing.forEach(waiter => waiter.resolve());
-                completing = [];
-            } while (this.rerun && !this.stopped && !context.cancelled);
-        } catch (error) {
-            [...completing, ...this.sweepWaiters.splice(0)].forEach(waiter => waiter.reject(error));
-            throw error;
-        } finally {
-            this.sweeping = false;
-            if (!this.stopped) this.status('idle', this.store.files.length, this.store.files.length);
-            this.sweepWaiters.splice(0).forEach(waiter => waiter.resolve());
-        }
+        this.status('sweeping', next, files.length);
+        return { next, treeGen: currentGen, done: false };
     }
 }

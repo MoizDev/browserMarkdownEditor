@@ -8,7 +8,7 @@ export class IndexStore {
     readonly records = new Map<string, FileRecord>();
     private revisions = new Map<string, number>();
     private primes = new Map<string, number>();
-    private treeGen = -1;
+    treeGen = -1;
     private byPath = new Map<string, IndexFile>();
     files: IndexFile[] = [];
 
@@ -45,7 +45,10 @@ export class IndexStore {
             files.set(to, { path: to, kind });
             if (record) this.records.set(to, { ...record, path: to, kind, rev: this.bump(to) });
         }
-        for (const file of added) files.set(file.path, file);
+        for (const file of added) {
+            if (files.has(file.path)) this.remove(file.path);
+            files.set(file.path, file);
+        }
         const ordered = order ? order.map(path => files.get(path)).filter((file): file is IndexFile => !!file) : [...files.values()];
         this.treeGen = treeGen;
         this.files = ordered;

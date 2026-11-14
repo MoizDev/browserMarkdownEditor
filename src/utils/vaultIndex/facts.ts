@@ -1,9 +1,8 @@
 import { parser, GFM, Subscript, Superscript, Emoji } from '@lezer/markdown';
 import type { Tree } from '@lezer/common';
 import { embedPattern } from '../assets';
-import { findMathRegions } from '../mathRegions';
+import { codeRangesForTree, findMathRegions } from '../mathRegions';
 import { overlapsRange } from '../rangeSearch';
-import type { CharRange } from '../rangeSearch';
 
 export interface NoteFacts {
     wikilinks: string[];
@@ -18,19 +17,14 @@ const markdown = parser.configure([GFM, Subscript, Superscript, Emoji]);
 function markdownTarget(raw: string): string | null {
     let path: string;
     try { path = decodeURIComponent(raw.trim()); } catch { return null; }
-    if (!path || /[\x00-\x1f\x7f\\?#]/.test(path) || path.startsWith('//')
+    if (!path || [...path].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+        || /[\\?#]/.test(path) || path.startsWith('//')
         || /^[a-z][a-z\d+.-]*:/i.test(path) || !/\.md$/i.test(path)) return null;
     return path;
 }
 
 export function noteFacts(text: string, tree: Tree = markdown.parse(text)): NoteFacts {
-    const code: CharRange[] = [];
-    tree.iterate({ enter(node) {
-        if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'InlineCode') {
-            code.push({ from: node.from, to: node.to });
-            return false;
-        }
-    } });
+    const code = codeRangesForTree(tree);
     const math = findMathRegions(text, code);
     const excluded = (from: number, to: number) => overlapsRange(code, from, to) || overlapsRange(math, from, to);
     const wikilinks: string[] = [], mdLinks: string[] = [], embeds: string[] = [];

@@ -13,9 +13,14 @@ export interface FileRecord extends IndexFile {
 export interface IndexGraph {
     session: IndexSession;
     graphGen: number;
+    treeGen: number;
     paths: string[];
     names: string[];
     unresolved: string[];
     edges: Int32Array;
+    degrees: Int32Array;
+    links: { source: string; target: string }[];
+    backlinks: Record<string, string[]>;
+    outlinks: Record<string, string[]>;
     stale: boolean;
 }

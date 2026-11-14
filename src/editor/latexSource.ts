@@ -5,7 +5,7 @@ import { syntaxTree } from '@codemirror/language';
 import { docString } from './docCache';
 import { straddlesPoint } from '../utils/rangeSearch';
 import type { CharRange } from '../utils/rangeSearch';
-import { findMathRegions } from '../utils/mathRegions';
+import { codeRangesForTree, findMathRegions } from '../utils/mathRegions';
 import type { MathRegion } from '../utils/mathRegions';
 export { findMathRegions } from '../utils/mathRegions';
 export type { MathRegion } from '../utils/mathRegions';
@@ -13,16 +13,7 @@ export type { MathRegion } from '../utils/mathRegions';
 /** Ranges where $ is literal text: fenced/indented code blocks and inline
  *  backticks. Shared by the live preview and the math bracket handler. */
 export function collectCodeRanges(state: EditorState): CharRange[] {
-    const out: CharRange[] = [];
-    syntaxTree(state).iterate({
-        enter(n) {
-            if (n.name === 'FencedCode' || n.name === 'CodeBlock' || n.name === 'InlineCode') {
-                out.push({ from: n.from, to: n.to });
-                return false;
-            }
-        },
-    });
-    return out;
+    return codeRangesForTree(syntaxTree(state));
 }
 
 /* ── Whole-document analysis, computed once per (document, syntax tree) ──

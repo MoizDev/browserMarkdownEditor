@@ -10,6 +10,7 @@ type TreeArgs = SessionArgs & { treeGen: number };
 let engine: IndexEngine | undefined;
 let reader: HandleReader | undefined;
 let pending: { treeGen: number; files: HandleFile[] } | undefined;
+const primes = new Map<string, { rev: number; mtime: number; size: number; text: string }>();
 
 function current(session: IndexSession): IndexEngine | undefined {
     return engine?.session.sessionNo === session.sessionNo && engine.session.vaultId === session.vaultId ? engine : undefined;
@@ -25,13 +26,20 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         engine?.close();
         reader = new HandleReader();
         pending = undefined;
-        engine = new IndexEngine(session, reader, graph => context.emit('graph', graph, [graph.edges.buffer]),
-            (phase, done, total) => context.emit('status', { session, phase, done, total }));
+        primes.clear();
+        let lastStatus = -Infinity;
+        engine = new IndexEngine(session, reader, graph => context.emit('graph', graph, [graph.edges.buffer, graph.degrees.buffer]),
+            (phase, done, total) => {
+                const now = performance.now();
+                if (phase !== 'idle' && done !== 0 && now - lastStatus < 100) return;
+                lastStatus = now;
+                context.emit('status', { session, phase, done, total });
+            });
         return null;
     },
     close(value) {
         const { session } = value as SessionArgs;
-        if (current(session)) { engine?.close(); engine = undefined; reader = undefined; pending = undefined; }
+        if (current(session)) { engine?.close(); engine = undefined; reader = undefined; pending = undefined; primes.clear(); }
         return null;
     },
     treeBegin(value) {
@@ -53,7 +61,6 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (active.store.setTree(treeGen, files.map(({ path, kind }) => ({ path, kind })))) {
             reader.handles.clear();
             for (const file of files) reader.handles.set(file.path, file.handle);
-            active.publishGraph(true);
         }
         return null;
     },
@@ -66,13 +73,28 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
             for (const path of removed) reader.handles.delete(path);
             for (const item of renamed) { reader.handles.delete(item.from); reader.handles.set(item.to, item.handle); }
             for (const file of added) reader.handles.set(file.path, file.handle);
-            active.publishGraph(true);
         }
         return null;
     },
-    async prime(value, context) {
+    async graph(value, context) {
+        const { session, stale } = value as SessionArgs & { stale?: boolean };
+        await current(session)?.publishGraph(context, stale);
+        return null;
+    },
+    primeReserve(value) {
         const { session, path, mtime, size, text } = value as SessionArgs & { path: string; mtime: number; size: number; text: string };
-        await current(session)?.prime(path, mtime, size, text, context);
+        const rev = current(session)?.store.reservePrime(path);
+        if (rev !== undefined) primes.set(path, { rev, mtime, size, text });
+        return rev ?? null;
+    },
+    async primeCommit(value, context) {
+        const { session, path, rev } = value as SessionArgs & { path: string; rev: number };
+        const active = current(session);
+        const prime = primes.get(path);
+        if (active && prime?.rev === rev) {
+            primes.delete(path);
+            await active.prime(path, rev, prime.mtime, prime.size, prime.text, context);
+        }
         return null;
     },
     fgio(value) {
@@ -80,10 +102,10 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         current(session)?.foregroundIO(active);
         return null;
     },
-    async sweep(value, context) {
-        const { session } = value as SessionArgs;
-        try { await current(session)?.sweep(context); } catch (error) { problem(context, session, error); }
-        return null;
+    async sweepBatch(value, context) {
+        const { session, start, treeGen } = value as SessionArgs & { start: number; treeGen: number };
+        try { return await current(session)?.sweepBatch(start, treeGen, context) ?? null; }
+        catch (error) { problem(context, session, error); return null; }
     },
     async invalidate(value, context) {
         const { session, paths } = value as SessionArgs & { paths: string[] };

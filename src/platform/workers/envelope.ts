@@ -116,7 +116,8 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
 }
 
 // Check caller arguments and contained replies only: structuredClone permits shared buffers and
-// handles beyond C5. Trusted same-origin replies already cloned without functions/accessors; walking
+// handles beyond C5; only the index's opted-in same-origin operations carry file handles.
+// Trusted same-origin replies already cloned without functions/accessors; walking
 // their large index snapshots again on the main thread would defeat moving that work off-thread.
 // Walk containers only; never scan the bytes of a buffer, bitmap or Blob.
 export function assertPayload(value: unknown, seen = new Set<object>(), allowFileHandles = false): void {

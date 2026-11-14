@@ -106,7 +106,7 @@ export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
 }
 
 let recoveryInstalled = false;
-/** Install once outside React; legacy writers get an off-critical-path snapshot. */
+/** Install once outside React; snapshot pre-mirror settings off the startup path. */
 export function installStorageRecovery(): () => void {
     if (recoveryInstalled) return () => {};
     recoveryInstalled = true;

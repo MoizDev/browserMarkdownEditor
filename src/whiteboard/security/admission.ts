@@ -36,9 +36,21 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
     const outstanding = new Map<number, { job: ContentJob; controller: AbortController }>();
     let tail: Promise<void> = Promise.resolve();
     function isCurrent(job: ContentJob): boolean {
-        if (disposed || job.session !== session || job.vaultEpoch !== epoch || job.generation !== currentGeneration) return false;
-        const active = outstanding.get(job.request);
-        return !!active && !active.controller.signal.aborted && active.job.request === job.request;
+        if (disposed || !job || typeof job !== 'object') return false;
+        try {
+            const prototype = Object.getPrototypeOf(job);
+            if ((prototype !== Object.prototype && prototype !== null) || Reflect.ownKeys(job).length !== 4) return false;
+            const sessionField = Object.getOwnPropertyDescriptor(job, 'session');
+            const epochField = Object.getOwnPropertyDescriptor(job, 'vaultEpoch');
+            const generationField = Object.getOwnPropertyDescriptor(job, 'generation');
+            const requestField = Object.getOwnPropertyDescriptor(job, 'request');
+            if (!sessionField || !epochField || !generationField || !requestField
+                || !('value' in sessionField) || !('value' in epochField) || !('value' in generationField) || !('value' in requestField)
+                || sessionField.value !== session || epochField.value !== epoch || generationField.value !== currentGeneration
+                || typeof requestField.value !== 'number' || !validCounter(requestField.value)) return false;
+            const active = outstanding.get(requestField.value);
+            return !!active && !active.controller.signal.aborted;
+        } catch { return false; }
     }
     function abortAll(reason: string): void {
         for (const entry of outstanding.values()) entry.controller.abort(cancelled(reason));

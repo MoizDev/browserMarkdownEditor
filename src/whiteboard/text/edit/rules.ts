@@ -36,7 +36,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
     }
     const patterns: readonly [RegExp, ToggleMark, number][] = [
         [/\*\*([^*\n]+)\*\*$/, 'b', 2], [/__([^_\n]+)__$/, 'b', 2],
-        [/\*([^*\n]+)\*$/, 'i', 1], [/_([^_\n]+)_$/, 'i', 1],
+        [/(?<!\*)\*([^*\n]+)\*$/, 'i', 1], [/(?<!_)_([^_\n]+)_$/, 'i', 1],
         [/`([^`\n]+)`$/, 'code', 1], [/~~([^~\n]+)~~$/, 's', 2], [/==([^=\n]+)==$/, 'hl', 2],
     ];
     for (const [pattern, mark, delimiter] of patterns) {

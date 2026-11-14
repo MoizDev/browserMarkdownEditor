@@ -260,6 +260,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             runtime.refresh();
         },
         invalidate(reason) { if (!disposed) { if (reason === 'input') lastInputAt = performance.now(); lifecycle?.invalidate(reason); } },
+        captureRegion(worldRect, maxSidePx, captureOptions) {
+            const capture = surfaceHost.current?.captureRegion;
+            if (disposed || !capture || !surfaceHost.current) return Promise.reject(new Error('Pane capture is unavailable'));
+            return capture.call(surfaceHost.current, worldRect, maxSidePx, captureOptions);
+        },
         dispose() {
             if (disposed) return;
             setVisible(false);

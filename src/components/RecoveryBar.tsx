@@ -14,13 +14,18 @@ interface RecoveryBarProps {
 /** The app's own bar: an interrupted edit never opens a native confirmation. */
 export default function RecoveryBar({ matching, copies, onRecover, onDiscard, onSaveCopy }: RecoveryBarProps) {
     const [busy, setBusy] = useState(false);
+    const [error, setError] = useState('');
     const run = async (action: (entry: RecoveryEntry) => Promise<void>, entry: RecoveryEntry) => {
         if (busy) return;
         setBusy(true);
-        try { await action(entry); } finally { setBusy(false); }
+        setError('');
+        try { await action(entry); }
+        catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not complete recovery.'); }
+        finally { setBusy(false); }
     };
     if (!matching && !copies.length) return null;
     return <section className="recovery-bar" aria-label="Recovered changes">
+        {error && <div className="disk-bar" role="alert">{error}</div>}
         {matching && <div className="disk-bar" role="status">
             <span className="disk-bar-message">Unsaved changes were found for <strong>{matching.path}</strong>.</span>
             <span className="disk-bar-actions">

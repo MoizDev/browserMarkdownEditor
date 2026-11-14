@@ -5,6 +5,8 @@ import type { SampleSequence, SegmentKind } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL, radiusAtSample, realizeStrokePoints, validateInkWidth, type InkWidth } from '../ink/width';
 import type { StrokeNode } from '../model/nodes';
 import type { SampleChunk, SampleStoreReader } from '../model/samples';
+import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 // The scene pin owns the sample lease. This adapter borrows chunk views, not a
 // point-sized object/array copy, and respects the store's exact chunk endpoints.
@@ -137,8 +139,14 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
 /** Chunks are one stroke's union, not independently composited alpha bands. */
 export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
     deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal; worker?: CoverageWorker;
+    lod?: { identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean };
 }): Promise<readonly InkCoverage[]> {
-    const job = strokeCoverage(node, samples, options);
+    const lod = options.lod;
+    const chunkCount = Math.max(1, Math.ceil((samples.count(node.samples) - 1) / CURVE_CHUNK_SPANS));
+    const worker: CoverageWorker | undefined = lod ? (points, parameters, width, range, coverageOptions) =>
+        prepareInkCoverageInWorker(points, parameters, width, range, coverageOptions, lod.identity, options.signal,
+            lod.isCurrent, { chunkCount }) : options.worker;
+    const job = strokeCoverage(node, samples, { ...options, worker });
     try {
         let value: InkCoverage | undefined;
         for (;;) {

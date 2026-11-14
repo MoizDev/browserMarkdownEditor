@@ -10,7 +10,8 @@ import { TransferSlabs } from './slabs';
 /** Copies only one canonical range and its neighbours; the caller retains the original sequence. */
 export async function prepareInkCoverageInWorker(samples: SampleSequence, parameters: CurveParameters,
     style: InkWidth, range: CurveRange, options: CoverageOptions, identity: BoardJobIdentity,
-    signal: AbortSignal | undefined, isCurrent: (identity: BoardJobIdentity) => boolean): Promise<InkCoverage> {
+    signal: AbortSignal | undefined, isCurrent: (identity: BoardJobIdentity) => boolean,
+    lod?: { chunkCount: number; onChoice?: (level: 'fine' | 'coarse') => void }): Promise<InkCoverage> {
     if (!Number.isSafeInteger(samples.count) || samples.count < 1 || !Number.isInteger(range.firstSpan)
         || !Number.isInteger(range.spanCount) || range.firstSpan < 0 || range.spanCount < 0
         || range.spanCount > CURVE_CHUNK_SPANS || range.firstSpan + range.spanCount >= samples.count) {
@@ -47,8 +48,15 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
     }, parameters, style, range, options: plainOptions };
     let reply: InkCoverageReply;
     try {
-        reply = await boardWorker('geometry').request<InkCoverageReply>('ink.coverage', payload, identity,
-            { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+        if (lod) {
+            const result = await boardWorker('geometry').request<{ coverage: InkCoverageReply; level: 'fine' | 'coarse' }>('ink.lod',
+                { request: payload, chunkCount: lod.chunkCount }, identity, { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+            reply = result.coverage;
+            lod.onChoice?.(result.level);
+        } else {
+            reply = await boardWorker('geometry').request<InkCoverageReply>('ink.coverage', payload, identity,
+                { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+        }
     } finally { moved.release(); }
     return Object.freeze({ ...reply, radiusAt(span: number, t: number): number {
         const { arcMaps: maps, radii } = reply;

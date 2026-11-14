@@ -4,6 +4,7 @@ import { normalizeTextSelection } from './rangeMap';
 import { insertionFragment } from './richOperations';
 import { spliceRichText, type RichText } from './richText';
 import type { RichEdit, RichSelection } from './rich';
+import type { PlainTextOptions } from './plainText';
 
 export type LogicalMotion = 'grapheme' | 'word' | 'document';
 
@@ -21,6 +22,7 @@ export class RichSelectionOperations {
     word(text: RichText, offset: number): RichSelection { return this.boundaries.selectWord(text, offset); }
     block(text: RichText, offset: number): RichSelection { return this.boundaries.selectBlock(text, offset); }
     all(text: RichText): RichSelection { return { anchor: 0, focus: projectionLength(text) }; }
+    primeWords(text: RichText, options: PlainTextOptions): Promise<void> { return this.boundaries.primeWords(text, options); }
 
     move(text: RichText, selection: RichSelection, direction: BoundaryDirection, unit: LogicalMotion, extend = false): RichSelection {
         const current = this.normalize(text, selection, direction);

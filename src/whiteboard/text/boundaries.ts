@@ -4,6 +4,8 @@ import { WeakIdentityLru } from './weakLru';
 import { WordBlockIndex } from './wordIndex';
 import { runIndex } from './runIndex';
 import { GraphemeNavigator } from './graphemes';
+import { finishTextStepsCooperative } from './cooperative';
+import type { PlainTextOptions } from './plainText';
 
 export interface BoundarySelection { readonly anchor: number; readonly focus: number }
 export type BoundaryDirection = -1 | 1;
@@ -183,6 +185,26 @@ export class TextBoundaries {
             }
         }
         return direction < 0 ? 0 : length;
+    }
+
+    private *primeWordSteps(text: RichText): Generator<void, void> {
+        let visited = 0;
+        for (let index = 0; index < text.blocks.length; index++) {
+            if ((++visited & 255) === 0) yield;
+            if (emptyWords.has(text, index)) continue;
+            const entry = this.entry(text.blocks[index]);
+            let hasWord = false;
+            for (const part of (entry.words ??= wordSegmenter.segment(entry.text))) {
+                if ((++visited & 255) === 0) yield;
+                if (part.isWordLike) { hasWord = true; break; }
+            }
+            if (!hasWord) emptyWords.mark(text, index);
+        }
+    }
+
+    /** Warm only proven wordless blocks; aborting leaves any prior proofs valid. */
+    primeWords(text: RichText, options: PlainTextOptions): Promise<void> {
+        return finishTextStepsCooperative(this.primeWordSteps(text), options);
     }
 
     clear(): void { this.entries.clear(); }

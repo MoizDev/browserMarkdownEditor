@@ -22,11 +22,12 @@ as live tldraw shapes.
   `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
   are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
   `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
-  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. An
-  `original.pdf` alone does NOT make a file ours. A failed or partial read never falls back to
-  `plain`; the outer pages stay readable. The first save of a `plain` PDF is what adds the
-  attachments, and files from the old spawn-a-sibling behaviour still work. Only `plain` may be
-  rotated (`canRotatePdfRole`).
+  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. A role-passing
+  snapshot is loaded into an isolated legacy store before mounting; a library rejection or render
+  error revokes its exact source and replaces the editor with a read-only notice. An `original.pdf`
+  alone does NOT make a file ours. A failed or partial read never falls back to `plain`; the outer
+  pages stay readable. The first save of a `plain` PDF adds the attachments, and files from the old
+  spawn-a-sibling behaviour still work. Only `plain` may be rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
   `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
   again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.
@@ -50,7 +51,8 @@ as live tldraw shapes.
 - **Annotations reach the page as VECTOR paths, not pixels.** `getSvgString` → `svgToVectorOps`
   (`pdfVector.ts`) → `page.drawSvgPath` per op. A `PageOverlay` (`pdfOverlay.ts`) carries `vector`
   and/or `raster`; shapes with no path form (text, images — `RASTER_ONLY_SHAPES`) still export as a
-  PNG, and the builder draws that **first** so ink lands on top. `svgToVectorOps` returning null
+  PNG, and the builder draws that **first** so ink lands on top. Each physical page carries an
+  ordered layer per tldraw sheet, stamped bottom to top. `svgToVectorOps` returning null
   (embedded fonts, `<pattern>` fills, clip paths, a non-similarity transform) sends the whole page
   down the raster route, which is the pre-vector behaviour — so a failure is softer output, never
   wrong output.
@@ -547,7 +549,7 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 - **It scrolls like a PDF and has the annotator's page strip and page box** (`pagedCanvas.ts`,
   `PageControls`, `PdfThumbnails`). `layOutPages` is the one place the page stack changes, so it is
   where `lockRef.setPages` re-bounds the camera. A thumbnail is the page's region through
-  `editor.toImage` with `bounds`, as the PDF export renders it. A document-scope store listener
+  `editor.toImage` with `bounds`, composited in sheet order as in the PDF export. A document-scope store listener
   collects the pages each changed shape touches (live bounds, plus the record's `y`, which is all a
   removed shape leaves) and calls the strip's `invalidate` 700ms after the pen pauses; the old image
   stays up until its replacement lands. The strip is keyed on the paper's LOOK, not its page count:

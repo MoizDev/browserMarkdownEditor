@@ -770,7 +770,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     // lags a render, and the stale-walk guards below compare against it in the
     // very tick a switch commits.
     const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+    const vaultActivationRef = useRef(0);
+    const getVaultActivation = useCallback(() => vaultActivationRef.current, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
+        // A→B→A is not the original activation, even if a handle is reused.
+        if (rootHandleRef.current !== handle) vaultActivationRef.current++;
         rootHandleRef.current = handle;
         setRootHandle(handle);
     }, []);
@@ -1581,10 +1585,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * as recovering the other — and restoreAsset undoes it automatically when
      * the reference comes back.
      */
-    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
-        if (!isAssetName(fileName)) return false;
-        // Snapshot before IO can outlive a vault switch, without giving the
-        // shipped callback a new dependency (and therefore a new identity).
+    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => withMutation(async () => {
+        if (!isAssetName(fileName) || !guard()) return false;
+        const activation = vaultActivationRef.current;
         let benchmarkRoot: FileSystemDirectoryHandle | null = null;
         if (__BME_BENCH__) {
             try { benchmarkRoot = rootHandleRef.current; } catch { /* instrumentation only */ }
@@ -1593,6 +1596,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
             const source = await assetsDir.getFileHandle(fileName);   // throws => nothing to retire
             const file = await source.getFile();
+            if (!guard()) return false;
 
             // Under its own name, not a free one: a retired asset has to be
             // findable again by the name the note used. Two assets that share a
@@ -1608,12 +1612,19 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 } catch { /* instrumentation must never interrupt a file operation */ }
             }
             const graveyard = await retiredAssetsDir(dirHandle, true);
+            if (!guard()) return false;
             await copyFileInto(graveyard, fileName, file);
+            // A copy may finish after its proof detached. Keeping both copies
+            // is safe; removing the live one on that obsolete proof is not.
+            if (!guard()) return false;
             await assetsDir.removeEntry(fileName);
 
             // The url cache pins a blob per file version; this one can't be
             // served again until the asset comes back (which re-mints it).
             const key = `${joinVaultPath(await dirPath(dirHandle), ASSETS_DIR)}/${fileName}`;
+            // An authorized removal can finish after a switch. The new vault
+            // may already have put a different blob under this relative key.
+            if (vaultActivationRef.current !== activation) return true;
             const cached = assetUrlsRef.current.get(key);
             if (cached) {
                 URL.revokeObjectURL(cached.url);
@@ -1634,8 +1645,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * cheapest one: a folder that has never retired an asset has no
      * `.Garbage/.Assets` at all, and the lookup fails at the first step.
      */
-    const restoreAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
-        if (!isAssetName(fileName)) return false;
+    const restoreAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => withMutation(async () => {
+        if (!isAssetName(fileName) || !guard()) return false;
         let benchmarkRoot: FileSystemDirectoryHandle | null = null;
         if (__BME_BENCH__) {
             try { benchmarkRoot = rootHandleRef.current; } catch { /* instrumentation only */ }
@@ -1656,13 +1667,17 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
             // Only now is there anything to restore — and only now is creating
             // the folder's .Assets warranted.
+            if (!guard()) return false;
             const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR, { create: true });
             try {
                 await assetsDir.getFileHandle(fileName);
                 return false;    // a live asset already holds the name; leave both alone
             } catch { /* free — take it back */ }
 
+            if (!guard()) return false;
             await copyFileInto(assetsDir, fileName, file);
+            // A switch during the copy must leave the retired source recoverable.
+            if (!guard()) return false;
             await graveyard.removeEntry(fileName);
             return true;
         } catch {
@@ -2170,6 +2185,44 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
     }, []);
 
+    const inspectExportTarget = useCallback(async (dir: FileSystemDirectoryHandle, name: string): Promise<DiskVersion | null> => {
+        try {
+            const handle = await dir.getFileHandle(name);
+            const { file, buf } = await readSnapshot(handle);
+            return await versionOfSnapshot(file, buf);
+        } catch (error) {
+            if (isNotFound(error)) return null;
+            throw error;
+        }
+    }, []);
+
+    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }> => {
+        const root = rootHandleRef.current;
+        if (!expected) {
+            // FSA has no exclusive create; the final name check is the narrowest
+            // possible window, and counts folders as well as files.
+            if (await entryExists(dir, name)) return { status: 'changed' };
+            const handle = await dir.getFileHandle(name, { create: true });
+            await writeAllBytes(handle, bytes);
+            if (root && rootHandleRef.current === root) await patchTreeDirs(root, [parentPath]);
+            return { status: 'written', version: await versionAfterWrite(handle, bytes) };
+        }
+        let handle: FileSystemFileHandle;
+        try { handle = await dir.getFileHandle(name); }
+        catch (error) { if (isGone(error)) return { status: 'changed' }; throw error; }
+        const { file, buf } = await readSnapshot(handle);
+        const observed = await versionOfSnapshot(file, buf);
+        if (observed.hash !== expected.hash) return { status: 'changed' };
+        const trash = await dir.getDirectoryHandle(TRASH_DIR, { create: true });
+        const backupName = await freeEntryName(trash, name);
+        // Keep the snapshot even if a later write fails: it is the last known
+        // complete version and the existing file is never truncated first.
+        await copyFileInto(trash, backupName, file);
+        const result = await writeFileVersioned(handle, bytes, observed);
+        if (result.status !== 'written') return { status: 'changed' };
+        return { status: 'written', version: result.version };
+    }), [patchTreeDirs, withMutation, writeFileVersioned]);
+
     /**
      * Park `data` beside `filePath` as `stem (conflict).ext`, then
      * `stem (conflict 2).ext`, … — never over anything: the name is verified free
@@ -2458,6 +2511,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
        reader types, re-rendered anyway. */
     const value: FileSystemContextValue = useMemo(() => ({
         rootHandle,
+        getVaultActivation,
         fileTree,
         isLoading,
         previousVault,
@@ -2498,6 +2552,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         renameFile,
         readFileVersioned,
         readBytesVersioned,
+        inspectExportTarget,
+        writeNotebookExport,
         statFile: statOf,
         writeFileVersioned,
         writeConflictCopy,
@@ -2508,6 +2564,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
     }), [
         rootHandle,
+        getVaultActivation,
         fileTree,
         isLoading,
         previousVault,
@@ -2542,6 +2599,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         renameFile,
         readFileVersioned,
         readBytesVersioned,
+        inspectExportTarget,
+        writeNotebookExport,
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,

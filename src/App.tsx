@@ -1,15 +1,15 @@
 import { runReaderHostCommand } from './utils/documentReading';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,getReadingSurface } from './utils/documentReading';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
-import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
+import React, { useState, useReducer, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
-import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -382,6 +382,7 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
+    getVaultActivation,
     pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
@@ -409,6 +410,8 @@ export default function App() {
     readFileVersioned,
     readFileSnapshot,
     readBytesVersioned,
+    inspectExportTarget,
+    writeNotebookExport,
     statFile,
     writeFileVersioned,
     writeConflictCopy,
@@ -420,7 +423,11 @@ export default function App() {
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [tabs, setTabs] = useReducer(
+    (previous: OpenTab[], action: React.SetStateAction<OpenTab[]>) =>
+      classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous),
+    [],
+  );
   // How those documents are arranged on screen: a row of panes — columns, all
   // drawn at once — each holding its own ordered tabs and showing one of them
   // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
@@ -558,46 +565,46 @@ export default function App() {
     } else {
       document.documentElement.removeAttribute('data-theme');
     }
-    localStorage.setItem('theme', theme);
+    writeStoredValue('theme', theme);
   }, [theme]);
 
   // Sync font sizes to CSS variables and localStorage
   useEffect(() => {
     document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
-    localStorage.setItem('editorFontSize', String(editorFontSize));
+    writeStoredValue('editorFontSize', String(editorFontSize));
   }, [editorFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--code-font-size', codeFontSize + 'px');
-    localStorage.setItem('codeFontSize', String(codeFontSize));
+    writeStoredValue('codeFontSize', String(codeFontSize));
   }, [codeFontSize]);
 
   // Not a CSS variable: the plugin is an editor extension, so each code pane
   // reconfigures its own compartment (DocumentPane).
   useEffect(() => {
-    localStorage.setItem('rainbowBrackets', String(rainbowBrackets));
+    writeStoredValue('rainbowBrackets', String(rainbowBrackets));
   }, [rainbowBrackets]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
-    localStorage.setItem('treeFontSize', String(treeFontSize));
+    writeStoredValue('treeFontSize', String(treeFontSize));
   }, [treeFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
-    localStorage.setItem('editorPadding', String(editorPadding));
+    writeStoredValue('editorPadding', String(editorPadding));
   }, [editorPadding]);
 
   useEffect(() => {
-    localStorage.setItem('tabSize', String(tabSize));
+    writeStoredValue('tabSize', String(tabSize));
   }, [tabSize]);
 
   useEffect(() => {
-    localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
+    writeStoredValue('recentVaultLimit', String(recentVaultLimit));
   }, [recentVaultLimit]);
 
   useEffect(() => {
-    localStorage.setItem('showVaultInTitle', String(showVaultInTitle));
+    writeStoredValue('showVaultInTitle', String(showVaultInTitle));
   }, [showVaultInTitle]);
 
   // The tab reads as the vault it holds, so tabs open on different vaults can
@@ -628,15 +635,15 @@ export default function App() {
       ? `left ${caretSpeed}ms ease-out, top ${caretSpeed}ms ease-out, height ${caretSpeed}ms ease-out`
       : 'none');
 
-    localStorage.setItem('caretStyle', caretStyle);
-    localStorage.setItem('caretThickness', String(caretThickness));
-    localStorage.setItem('smoothCaret', String(smoothCaret));
-    localStorage.setItem('caretSpeed', String(caretSpeed));
+    writeStoredValue('caretStyle', caretStyle);
+    writeStoredValue('caretThickness', String(caretThickness));
+    writeStoredValue('smoothCaret', String(smoothCaret));
+    writeStoredValue('caretSpeed', String(caretSpeed));
   }, [caretStyle, caretThickness, smoothCaret, caretSpeed]);
 
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
-    localStorage.setItem('fontFamily', fontFamily);
+    writeStoredValue('fontFamily', fontFamily);
     const linkId = 'google-font-link';
     let link = document.getElementById(linkId) as HTMLLinkElement | null;
     const family = fontFamily.trim();
@@ -673,7 +680,7 @@ export default function App() {
       root.removeProperty('--interactive-accent');
       root.removeProperty('--interactive-accent-hover');
     }
-    localStorage.setItem('accentColor', accentColor);
+    writeStoredValue('accentColor', accentColor);
   }, [accentColor]);
 
   // Same override trick for the plain-code-block ink; its stylesheet default
@@ -685,7 +692,7 @@ export default function App() {
     } else {
       root.removeProperty('--code-block-color');
     }
-    localStorage.setItem('codeBlockColor', codeBlockColor);
+    writeStoredValue('codeBlockColor', codeBlockColor);
   }, [codeBlockColor]);
 
   const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
@@ -1080,7 +1087,7 @@ export default function App() {
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
   useEffect(() => {
-    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+    writeStoredValue('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
   // Suppresses the collapse animation while drag-resizing, so the width
   // tracks the pointer instead of easing 150ms behind it.
@@ -1093,7 +1100,7 @@ export default function App() {
   // a window can shrink under a stored width.
   const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('agentPanelOpen', String(agentPanelOpen));
+    writeStoredValue('agentPanelOpen', String(agentPanelOpen));
   }, [agentPanelOpen]);
   const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
   // Whether the reader has opened the panel this session (⌘⇧X, the footer
@@ -1114,7 +1121,7 @@ export default function App() {
   // keyboard, as with the agent panel.
   const [terminalOpen, setTerminalOpen] = useState<boolean>(() => localStorage.getItem('terminalOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('terminalOpen', String(terminalOpen));
+    writeStoredValue('terminalOpen', String(terminalOpen));
   }, [terminalOpen]);
   const [terminalOpenedByUser, setTerminalOpenedByUser] = useState(false);
   const terminalOpenRef = useRef(terminalOpen);
@@ -1229,9 +1236,34 @@ export default function App() {
    * only be read (and handed over) SYNCHRONOUSLY at the point of the save — see
    * flushTab.
    */
-  const reconcileAssets = useCallback(async (file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    const dir = file.parentHandle;
-    if (!dir) return;
+  type AssetOutcome = 'retired' | 'kept' | 'skipped-detached' | 'failed';
+  interface ReconcileJob {
+    activation: number; path: string; parentHandle: FileSystemDirectoryHandle | null;
+    text: string; before: ReadonlySet<string>; after: ReadonlySet<string>;
+    measuredNames?: string[];
+  }
+  const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
+  const assetProofTreeRef = useRef(fileTree);
+  const assetReferenceRevisionRef = useRef(0);
+  const pendingAssetDropsRef = useRef(new Map<string, Set<string>>());
+  const assetOwnerRootRef = useRef(rootHandle);
+  useLayoutEffect(() => {
+    if (assetOwnerRootRef.current !== rootHandle) {
+      pendingAssetDropsRef.current.clear();
+      assetOwnerRootRef.current = rootHandle;
+    }
+    if (rootHandle) assetActivationsRef.current.set(rootHandle, getVaultActivation());
+    // The ordinary tree mirror is passive; a proof needs the committed tree
+    // before an in-flight file read can resume, not a render later.
+    assetProofTreeRef.current = fileTree;
+    assetReferenceRevisionRef.current++;
+  }, [rootHandle, fileTree, getVaultActivation]);
+
+  const reconcileAssets = useCallback(async (job: ReconcileJob): Promise<AssetOutcome> => {
+    const { activation, path, parentHandle: dir, before, after } = job;
+    const attached = () => getVaultActivation() === activation;
+    if (!attached()) return 'skipped-detached';
+    if (!dir) return 'kept';
 
     try {
       // A reference that came BACK — undo, or the same embed pasted into a
@@ -1244,12 +1276,43 @@ export default function App() {
       let reclaimed = false;
       for (const name of after) {
         if (before.has(name)) continue;
-        if (await restoreAsset(name, dir)) reclaimed = true;
+        if (!attached()) return 'skipped-detached';
+        if (await restoreAsset(name, dir, attached)) reclaimed = true;
       }
-      if (reclaimed) retryMissingAssets();
+      if (reclaimed && attached()) retryMissingAssets();
 
-      const orphaned = new Set([...before].filter(name => !after.has(name)));
-      if (orphaned.size === 0) return;
+      if (!attached()) return 'skipped-detached';
+      const folder = parentVaultPath(path);
+      const names = new Set(pendingAssetDropsRef.current.get(folder));
+      for (const name of before) if (!after.has(name)) names.add(name);
+      if (__BME_BENCH__) {
+        try { job.measuredNames = [...names]; } catch { /* Measurement cannot interrupt a job. */ }
+      }
+      if (names.size === 0) return 'kept';
+      const orphaned = new Set(names);
+      const revision = assetReferenceRevisionRef.current;
+      const proofTabs = tabsRef.current;
+      // Dirty-only save acknowledgements do not change a reference proof.
+      // Opening/closing a tab or changing its readable buffer does.
+      const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
+        && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
+          const old = proofTabs[i];
+          return tab.id === old.id && tab.file.path === old.file.path && tab.content === old.content
+            && tab.readError === old.readError && tab.representation === old.representation;
+        });
+      let retired = false;
+      const abandon = (): AssetOutcome => {
+        if (!attached()) return retired ? 'retired' : 'skipped-detached';
+        // Retain only undecided names, not a false last-SAVED embed baseline.
+        // The next real save retries once; this job never restarts itself.
+        if (names.size) pendingAssetDropsRef.current.set(folder, names);
+        else pendingAssetDropsRef.current.delete(folder);
+        return retired ? 'retired' : 'kept';
+      };
+      const own = proofTabs.find(tab => tab.file.path === path);
+      const ownText = own ? (canReadTabText(own) ? latestContentRef.current.get(path) ?? own.content : null) : job.text;
+      if (ownText === null) return abandon();
+      for (const name of orphaned) if (referencesAsset(ownText, name)) orphaned.delete(name);
 
       // Who has to be consulted before a picture is taken away — a picture
       // shared with another note must survive being removed from this one.
@@ -1263,10 +1326,9 @@ export default function App() {
       // actually dropped, which is rare; same-folder notes come first because
       // they are the overwhelmingly likely hit, and the walk stops as soon as
       // every dropped name has been spoken for.
-      const folder = parentVaultPath(file.path);
       const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(fileTreeRef.current).filter(f =>
-        f.path !== file.path && isTextFile(f.name) && f.path.startsWith(under));
+      const candidates = collectFiles(assetProofTreeRef.current).filter(f =>
+        f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
@@ -1278,27 +1340,39 @@ export default function App() {
       // the whole vault.
       for (const note of neighbours) {
         if (orphaned.size === 0) break;
+        if (!proofCurrent()) return abandon();
         // An open tab is read from its BUFFER, so an unsaved reference counts
         // just as much as a saved one — unless it could not be read at all
         // (OpenTab.readError): that buffer is no text, so it answers "keep".
-        const open = tabsRef.current.find(t => t.file.path === note.path);
+        const open = proofTabs.find(t => t.file.path === note.path);
         const text = open
-          ? (open.readError ? null : open.content)
+          ? (canReadTabText(open) ? latestContentRef.current.get(note.path) ?? open.content : null)
           : await readFile(note.handle).catch(() => null);
+        if (!proofCurrent()) return abandon();
         // A note that can't be read might say anything, so it is taken to say
         // "keep": a stale file costs nothing next to deleting a picture that is
         // still on screen somewhere.
-        if (text === null) return;
+        if (text === null) return abandon();
         for (const name of orphaned) {
           if (referencesAsset(text, name)) orphaned.delete(name);
         }
       }
 
-      for (const name of orphaned) await retireAsset(name, dir);
+      for (const name of orphaned) {
+        if (!proofCurrent()) return abandon();
+        if (await retireAsset(name, dir, proofCurrent)) {
+          retired = true;
+          names.delete(name);
+        }
+      }
+      if (!proofCurrent()) return abandon();
+      pendingAssetDropsRef.current.delete(folder);
+      return retired ? 'retired' : 'kept';
     } catch (err) {
-      console.error('Could not reconcile assets for', file.path, err);
+      console.error('Could not reconcile assets for', path, err);
+      return 'failed';
     }
-  }, [readFile, retireAsset, restoreAsset]);
+  }, [readFile, retireAsset, restoreAsset, getVaultActivation]);
 
   // Read through a ref for the same reason writeFile and rebuildGraph are: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -1319,9 +1393,23 @@ export default function App() {
    * its own errors, so this chain never rejects.
    */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const queueReconcile = useCallback((file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    reconcileQueueRef.current = reconcileQueueRef.current
-      .then(() => reconcileAssetsRef.current(file, before, after));
+  const queueReconcile = useCallback((job: ReconcileJob) => {
+    reconcileQueueRef.current = reconcileQueueRef.current.then(async () => {
+      let outcome: AssetOutcome = 'failed';
+      try { outcome = await reconcileAssetsRef.current(job); }
+      finally {
+        if (__BME_BENCH__) {
+          try {
+            const root = perfRoot();
+            const jobs = (root.assetJobs ??= { completed: [] }) as { completed: Array<{
+              activation: number; path: string; outcome: AssetOutcome; names: string[]; t: number;
+            }> };
+            jobs.completed.push({ activation: job.activation, path: job.path, outcome,
+              names: job.measuredNames ?? [...job.before].filter(name => !job.after.has(name)), t: performance.now() });
+          } catch { /* The waiting hook cannot change queue settlement. */ }
+        }
+      }
+    });
   }, []);
 
   const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
@@ -1645,23 +1733,27 @@ export default function App() {
     if (next !== current) void writeEntryStyles(next);
   }, [writeEntryStyles]);
 
-  /** PDF names this session has exported. Re-exporting must not ask about a
-   *  file that is this notebook's own previous export. */
-  const exportedNotebooksRef = useRef<Set<string>>(new Set());
+  const exportedNotebooksRef = useRef(new Map<string, DiskVersion>());
+  const notebookExportInFlightRef = useRef(false);
+  const trashInFlightRef = useRef<boolean>(false);
 
   /**
    * Write the open notebook out as a PDF beside it.
    *
    * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting overwrites the same name rather than piling up "(1)" copies —
-   * that name is derived from the notebook's, so it can only ever land on this
-   * notebook's own export. It is the one deliberate exception to the app's
-   * never-overwrite rule, and it is why the confirm below exists: a PDF of that
-   * name that ISN'T ours is a file we would be destroying.
+   * re-exporting uses the same name rather than piling up copies. A previous
+   * target is preserved in Trash, and a changed or unfamiliar target needs
+   * confirmation before it can be replaced.
    */
   const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle) return;
+    if (!file.parentHandle || notebookExportInFlightRef.current || trashInFlightRef.current) return;
     const targetName = notebookPdfName(file.name);
+    const vault = currentVaultIdRef.current;
+    const root = rootHandleRef.current;
+    if (!vault || !root) { notify('The vault is not ready for export.'); return; }
+    const parentPath = parentVaultPath(file.path);
+    const targetPath = joinVaultPath(parentPath, targetName);
+    const key = JSON.stringify([vault, file.path, targetPath]);
 
     const exporter = getNotebookExporter(file.path);
     if (!exporter) {
@@ -1669,38 +1761,34 @@ export default function App() {
       return;
     }
 
+    notebookExportInFlightRef.current = true;
+    trashInFlightRef.current = true;
     try {
       const exported = await exporter();
       if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
-
-      // Only ask when there is something to lose, and only once: after the
-      // first export the file at that name is one of ours.
-      if (!exportedNotebooksRef.current.has(targetName)
-          && await nameTaken(file.parentHandle, targetName)) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: `A PDF of that name is already in this folder. Exporting will overwrite it.`,
-          confirmLabel: 'Replace',
-          danger: true,
-        });
-        if (!replace) return;
-      }
-
       const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
       const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
         path: file.path,
         exportedAt: Date.now(),
       });
-      // createFile refreshes the tree, so the PDF shows up in the sidebar.
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export:create' }); } catch { /* Measurement must not interrupt a write. */ }
+      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
+      const observed = await inspectExportTarget(file.parentHandle, targetName);
+      const trusted = exportedNotebooksRef.current.get(key);
+      if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
+        const replace = await ask({
+          title: `Replace "${targetName}"?`,
+          body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
+          confirmLabel: 'Replace', danger: true,
+        });
+        if (!replace) return;
       }
-      const handle = await createFile(file.parentHandle, targetName);
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export' }); } catch { /* Measurement must not interrupt a write. */ }
+      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
+      const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed);
+      if (result.status !== 'written') {
+        notify(`"${targetName}" changed while exporting. Export again to review it.`);
+        return;
       }
-      await writeFileBytes(handle, bytes);
-      exportedNotebooksRef.current.add(targetName);
+      exportedNotebooksRef.current.set(key, result.version);
       void tell({
         title: 'Exported to PDF',
         confirmLabel: 'OK',
@@ -1710,8 +1798,11 @@ export default function App() {
     } catch (err) {
       console.error('Could not export the notebook:', err);
       notify(`Could not export "${file.name}".`);
+    } finally {
+      notebookExportInFlightRef.current = false;
+      trashInFlightRef.current = false;
     }
-  }, [ask, createFile, notify, tell, writeFileBytes]);
+  }, [ask, inspectExportTarget, notify, tell, writeNotebookExport]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -2056,6 +2147,10 @@ export default function App() {
     // and could retire a picture that save had just put back.
     const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
     const embedsAfter = embedsBefore && assetEmbeds(snapshot);
+    const assetJob: ReconcileJob | undefined = embedsBefore && embedsAfter ? {
+      activation: rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1,
+      path, parentHandle: file.parentHandle ?? null, text: snapshot, before: embedsBefore, after: embedsAfter,
+    } : undefined;
     if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
@@ -2104,7 +2199,7 @@ export default function App() {
         // Queued rather than awaited: reconciling reads the note's neighbours,
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
-        if (embedsBefore && embedsAfter) queueReconcile(file, embedsBefore, embedsAfter);
+        if (assetJob) queueReconcile(assetJob);
         // Only clear `dirty` if the content hasn't changed since we snapshotted.
         // By id: a rename mid-write moved the document, not the write.
         setTabs(prev => prev.map(t =>
@@ -2191,6 +2286,7 @@ export default function App() {
       } catch { /* Measurement must not interrupt a content report. */ }
     }
     if (!accepted) return;
+    assetReferenceRevisionRef.current++;
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -3519,7 +3615,6 @@ export default function App() {
    * the same fact: unlike every other deletion in this app, trashing a folder is
    * a copy of arbitrary size, and it runs for as long as that takes. See below.
    */
-  const trashInFlightRef = useRef<boolean>(false);
 
   /**
    * The move itself, with no question in front of it — shared by the reader's
@@ -4687,6 +4782,7 @@ export default function App() {
 
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
+    const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
     agentDepsRef.current = {
       vaultId: currentVaultId,
       root: rootHandle,
@@ -4706,7 +4802,8 @@ export default function App() {
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
         recordFileWritten(file.path);
-        if (tracksAssets(file)) queueReconcile(file, assetEmbeds(before), assetEmbeds(after));
+        if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
+          text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
         rebuildGraphRef.current();
         bumpSaveEpoch();
       },
@@ -4909,7 +5006,7 @@ export default function App() {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       // Once, at the end of the drag — not sixty writes a second.
-      localStorage.setItem('agentPanelWidth', String(width));
+      writeStoredValue('agentPanelWidth', String(width));
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };

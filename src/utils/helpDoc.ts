@@ -44,6 +44,10 @@ Under the tabs, while the file tree is showing, is a row of buttons for the tree
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
 
+In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. Turning developer settings off restores the normal engine choices without deleting your saved selections.
+
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
 
@@ -260,7 +264,7 @@ With more than one pane open, it searches the pane you last clicked in. While yo
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
 
 ### Auto-Save
-You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
+You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`. If you reload or close the window while a change is still waiting to be saved, the browser asks whether you want to leave, in its own words; choose to stay and the save finishes as usual. Switching away from the window also saves straight away, as far as the browser lets it: that is a best effort, not a guarantee against a crash.
 
 ### When Files Change Outside the App
 Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
@@ -316,7 +320,9 @@ A notebook scrolls like a PDF: swipe up and down to move through the pages, and
 pinch to zoom. At full width the page fills the screen edge to edge, and the
 pages can never be swiped off screen. The page box at the bottom right jumps to
 a page, and the button beside it opens a **strip of page thumbnails** down the
-left, showing what is written on each one.
+left, showing what is written on each one. The canvas sheet menu offers separate
+sheets of ink; each sheet shows the notebook's same paper underneath. PDF
+annotation sheets similarly share the original PDF pages.
 
 The bar across the top of a notebook is its paper:
 
@@ -334,9 +340,11 @@ The download icon in the top bar writes a PDF beside the notebook — \`Assignme
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open.
 
-The notebook stays the original you keep writing in. Exporting again overwrites
-the same PDF rather than leaving a pile of copies, and asks first if a PDF of
-that name is there that this notebook did not put there.
+The notebook stays the original you keep writing in. Exporting again uses the
+same PDF name rather than leaving a pile of copies. An existing PDF is kept in
+the folder's Trash before replacement. The app asks first unless it is this
+notebook's unchanged last export; if the target changes during export, export
+again to review it.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone
@@ -509,8 +517,9 @@ Everything around a page — the toolbars, the pen panel, the space the pages si
 on — follows the app's theme, so a notebook or a PDF is dark at night like the
 rest of the app. The **pages themselves stay white** in either theme, because
 that is paper: it is what the exported PDF prints on, and ink that changed colour
-with the theme would come out invisible in the file. A drawing has no pages, so
-it is dark all over.
+with the theme would come out invisible in the file. Notebook and PDF ink use a
+light ink palette and do not offer the board's Theme menu or its theme shortcut;
+a drawing has its own Theme menu and no paper.
 
 ---
 
@@ -608,6 +617,8 @@ An address written *inside* a label — \`[read this https://example.com now](ht
 
 ### Wiki Links
 \`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
+
+**Neural Brain** and **Linked mentions** follow these note links only: a web link creates no relationship between notes, even when its address ends in \`.md\`. When two notes share a name, a note link chooses the first of them in the vault's own order, whatever order the sidebar is sorted in.
 
 ### Lists
 Unordered Lists:
@@ -734,6 +745,8 @@ It can also look things up on the web.
 
 ### What the agent can change
 It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
+
+Its searches use JavaScript regular-expression syntax. A slow pattern never freezes the editor: after five seconds the search answers anyway, keeps the matches it had found, and says plainly that the result is incomplete.
 
 **It has the same access to your computer as in your terminal.** It can run programs and read and change files anywhere your account can, and it does so without asking first, because nobody could answer a permission prompt in the panel. It is told to make every change to the vault through this app, which is what puts its edits in your editor live and lets \`Cmd + Z\` undo them.
 

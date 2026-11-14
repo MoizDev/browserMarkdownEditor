@@ -22,6 +22,10 @@ export const LOCAL_STORAGE_KEYS = [
     'fileTreeSortOrder', 'fileTreeAutoReveal', 'expandedPaths', 'vaultSessions',
     'fileScrollAnchors', 'collapsedHeadings', 'canvasViewPositions', 'pdfViewPositions',
     'readerViewState', 'pdfTextViewState',
+    'bme.developer', 'bme.whiteboard.engine.drawing', 'bme.whiteboard.engine.notebook',
+    'bme.whiteboard.engine.pdfInk', 'bme.whiteboard.emergencyReadOnly.drawing',
+    'bme.whiteboard.emergencyReadOnly.notebook', 'bme.whiteboard.emergencyReadOnly.pdfInk',
+    'bme.pdf.viewer', 'bme.pdf.platformLayer', 'bme.whiteboard.userDictionary',
     // Migration removals also need tombstones, or an old backup resurrects them.
     'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus',
     'openTabGroupSizes', 'openTabsVaultId', 'activeTabPath', 'lastFilePath',
@@ -43,6 +47,10 @@ const mirror = createLocalStorageMirror({
 });
 
 export function isRegisteredStorageKey(key: string): boolean { return ownedKeys.has(key); }
+
+// Session data belongs to one tab, especially terminal IDs; never mirror it across windows.
+export function writeSessionValue(key: string, value: string): void { sessionStorage.setItem(key, value); }
+export function removeSessionValue(key: string): void { sessionStorage.removeItem(key); }
 
 /** Raw-string writer for keys whose readers do not JSON-parse their value. */
 export function writeStoredValue(key: string, value: string): boolean {
@@ -106,7 +114,7 @@ export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
 }
 
 let recoveryInstalled = false;
-/** Install once outside React; legacy writers get an off-critical-path snapshot. */
+/** Install once outside React; snapshot pre-mirror settings off the startup path. */
 export function installStorageRecovery(): () => void {
     if (recoveryInstalled) return () => {};
     recoveryInstalled = true;

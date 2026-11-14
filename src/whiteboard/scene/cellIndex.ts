@@ -66,6 +66,17 @@ export class SceneCellIndex {
         merged.length = write;
         return merged;
     }
+    /** Upper bound on `candidates(world).length`, read from list lengths without merging: a node
+     * spanning k cells is counted k times. Cheap enough to run before every frame. */
+    countCandidates(world: Readonly<Rect>): number {
+        if (this.closed) throw new Error('Scene cell index is closed');
+        const x0 = Math.floor(world.x / CELL_SIDE), y0 = Math.floor(world.y / CELL_SIDE);
+        const x1 = Math.floor((world.x + world.width) / CELL_SIDE), y1 = Math.floor((world.y + world.height) / CELL_SIDE);
+        if (![x0, y0, x1, y1].every(Number.isSafeInteger) || (x1 - x0 + 1) * (y1 - y0 + 1) > MAX_CELLS_PER_QUERY) return this.ids.length;
+        let count = this.always.length;
+        for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) count += this.cells.get(key(cx, cy))?.length ?? 0;
+        return count;
+    }
     /** Occupied cells, for coarse summaries; an always-candidate node is not a cell. */
     get occupiedCells(): number { return this.cells.size; }
     get alwaysCandidates(): number { return this.always.length; }

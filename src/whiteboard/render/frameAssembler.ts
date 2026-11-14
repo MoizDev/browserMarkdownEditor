@@ -8,6 +8,7 @@ import type { PaintFrame, PaintItem, PaintNode, PaintNodeSource } from './paintS
 import type { PaintBand } from './material';
 import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from './frameTypes';
 import type { SessionDenseRasters } from './sessionDenseRasters';
+import type { ScenePaintNodeStream } from './scenePaintStream';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -27,6 +28,7 @@ interface Owner {
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     isCurrent(): boolean;
     release(): void | Promise<void>;
 }
@@ -77,6 +79,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get sessionRasters() { return stream.sessionRasters; },
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
+        openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
         isCurrent: () => stream.isCurrent(),
         // The stream drains its active next() before the snapshot that pins its sources may go.
         async release() {
@@ -197,7 +200,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const o = work.owner;
         const frame: PaintFrame = Object.freeze({ token: o.token, sceneRevision: o.sceneRevision,
             sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
-            sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld,
+            sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
             underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         retained.set(frame, published); latest = published; staging = null; invalidate();

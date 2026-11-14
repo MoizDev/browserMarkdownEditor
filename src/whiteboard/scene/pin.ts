@@ -70,7 +70,7 @@ export function createSceneSnapshot(options: {
     // The index is built once per pinned sheet in bounded slices; every stream and frame of this pin
     // then visits candidate ordinals only. A pending build is part of the pin, never a silent miss.
     const built: SceneCellIndex[] = [];
-    const indexes = new Map<SheetId, Promise<SceneCellIndex>>();
+    const indexes = new Map<SheetId, Promise<SceneCellIndex>>(), ready = new Map<SheetId, SceneCellIndex>();
     const cooperateSlice = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const buildIndex = async (sheetId: SheetId): Promise<SceneCellIndex> => {
         const index = new SceneCellIndex();
@@ -94,7 +94,7 @@ export function createSceneSnapshot(options: {
                 }
             }
             check();
-            built.push(index);
+            built.push(index); ready.set(sheetId, index);
             return index;
         } catch (error) { index.close(); throw error; }
     };
@@ -121,13 +121,15 @@ export function createSceneSnapshot(options: {
             const id = index.ids[ordinal], bounds = cull ? options.bounds?.get(id) : undefined;
             const usable = bounds?.revision === revision && (bounds.quality === BoundsQuality.Exact || bounds.quality === BoundsQuality.Conservative)
                 && bounds.ink;
+            if (request.only && !request.only.has(id)) continue;
             if (!cull || !usable || !(usable[2] < cull.x || usable[0] > cull.x + cull.width
                 || usable[3] < cull.y || usable[1] > cull.y + cull.height)) yield id;
         }
     };
     const copyRequest = (request: ScenePaintRequest): ScenePaintRequest => Object.freeze({ ...request,
         ...(request.world ? { world: Object.freeze({ ...request.world }) } : {}),
-        ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}) });
+        ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}),
+        ...(request.only ? { only: new Set(request.only) } : {}) });
     const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined): ScenePaintNodeStream => {
         let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
         const close = (): Promise<void> => {
@@ -199,6 +201,11 @@ export function createSceneSnapshot(options: {
             if (released || !records.get(id)) return null;
             return options.bounds?.get(id) ?? { revision, quality: BoundsQuality.Pending, ink: null, selectable: null };
         },
+        countCandidates(sheetId, world) {
+            check();
+            const index = ready.get(sheetId);
+            return index ? index.countCandidates(world) : null;
+        },
         readNodeNow(id) { check(); return records.get(id); },
         metadataNow() { check(); return metadata; },
         async readDocument(signal) {
@@ -256,7 +263,7 @@ export function createSceneSnapshot(options: {
                 await Promise.allSettled([...inFlight]);
                 const retired = await Promise.allSettled([...streams].map(close => close()));
                 const failure = retired.find(result => result.status === 'rejected');
-                indexes.clear();
+                indexes.clear(); ready.clear();
                 for (const index of built.splice(0)) index.close();
                 if (failure?.status === 'rejected') throw failure.reason;
                 try { records.release(); } finally { options.renderer?.release(); }

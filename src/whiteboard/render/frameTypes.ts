@@ -3,6 +3,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PaintFrame, PaintNodeSource } from './paintStream';
 import type { PaintFrameSource } from './resources';
 import type { ScenePaintNodeStream } from './scenePaintStream';
+import type { Rect } from '../../platform/types';
 
 /** A scene supplies a pinned source and owns its leases until release. The assembler never reads
  * mutable model data after admission; cancellation drops the partial frame rather than publishing. */
@@ -16,6 +17,9 @@ export interface PinnedPaintSource {
 export interface PinnedPaintStream {
     readonly stream: ScenePaintNodeStream;
     release(): void | Promise<void>;
+    /** Opens another bounded stream of this same pin over `world`, with this frame's request
+     * identity (precision, sensitivity). Dense tiles use it; the pin stays owned by the frame. */
+    open?(world: Readonly<Rect>, signal: AbortSignal): Promise<ScenePaintNodeStream>;
 }
 export interface PaintFrameAssembler extends PaintFrameSource {
     bindMemory?(allocator: MemoryAllocator): void;

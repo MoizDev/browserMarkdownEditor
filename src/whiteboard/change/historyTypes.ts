@@ -34,6 +34,7 @@ export interface HistoryPorts {
     /** Undo/redo apply projects media through the session's MediaLocations; rollback stays exact. */
     apply(transaction: Transaction): Applied;
     retainMedia(id: MediaId): HistoryLease;
+    retainSample(ref: SampleRef): HistoryLease;
     sampleBytes(ref: SampleRef): number;
     /** The host combines this with the journal-cap notice for one session notice. */
     historyLimitReached(): void;

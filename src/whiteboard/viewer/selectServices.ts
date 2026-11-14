@@ -5,6 +5,7 @@ import type { ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
+import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
@@ -49,6 +50,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
     let guides: readonly BoardSnapGuide[] = [];
     let warmedRevision = -1, warmed = new Set<NodeId>();
+    let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && !session.isReadOnly;
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
@@ -61,6 +63,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         pending.add(cancel); return () => { pending.delete(cancel); };
     };
     const cancelPending = () => {
+        nudgeEpoch++;
         const work = [...pending], had = work.length > 0 || controllers.size > 0;
         pending.clear(); for (const cancel of work) { try { cancel(); } catch (error) { report(error); } }
         for (const controller of controllers) controller.abort(); controllers.clear();
@@ -156,6 +159,31 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
         onError: report,
     };
+    const nudge = (key: string, coarse: boolean): boolean => {
+        const direction: Record<string, Vec2> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },
+            ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
+        const delta = direction[key], selection = runtime.selection.getSnapshot();
+        if (!mutable() || !delta || !selection.selected.length) return false;
+        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected], scale = coarse ? 10 : 1;
+        // Repeated key presses queue individual history steps rather than racing immutable snapshots.
+        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
+            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
+                || runtime.selection.getSnapshot() !== selection) return;
+            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
+            let unregister: (() => void) | undefined, plan: Awaited<ReturnType<typeof createBoardTranslationPlan>> | undefined;
+            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
+                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+            try {
+                unregister = registerPending(() => controller.abort());
+                plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
+                    alwaysSnap: () => false, current: active, signal: controller.signal });
+                const preview = await plan.preview({ x: delta.x * scale, y: delta.y * scale }, false, false, controller.signal);
+                if (active()) plan.commit(preview);
+            } catch (error) { if (active()) report(error); }
+            finally { try { plan?.cancel(); } finally { try { unregister?.(); } finally { release(); } } }
+        });
+        return true;
+    };
     const eraserSweep = sweep(true);
     const eraser: EraserContext = {
         ...eraserSweep, hold: () => session.beginGesture(), registerPending,
@@ -242,7 +270,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, nudge, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

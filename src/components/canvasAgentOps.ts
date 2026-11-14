@@ -264,14 +264,16 @@ export function dominantPage(boxes: readonly PageBox[], view: Box): number {
 
 /** A white PNG — what an empty region looks like (tldraw's export refuses to
  *  build an image with no shapes in it). */
-export async function blankPng(width: number, height: number): Promise<Blob | null> {
+export async function blankPng(width: number, height: number, transparent = false): Promise<Blob | null> {
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(width));
     canvas.height = Math.max(1, Math.round(height));
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (!transparent) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
 }
 
@@ -287,21 +289,21 @@ export async function blankPng(width: number, height: number): Promise<Blob | nu
  * `maxScale` keeps a small region from being blown up past what the screen
  * shows (a viewport is captured at no more than twice its on-screen size).
  */
-export async function captureRegion(editor: Editor, bounds: Box, maxSide: number, maxScale = Infinity): Promise<Blob | null> {
+export async function captureRegion(editor: Editor, bounds: Box, maxSide: number, maxScale = Infinity, transparent = false): Promise<Blob | null> {
     if (!(bounds.w > 0 && bounds.h > 0) || !(maxSide > 0)) return null;
     const scale = Math.min(maxScale, maxSide / Math.max(bounds.w, bounds.h));
     const ids = [...editor.getCurrentPageShapeIds()].filter(id => {
         const b = editor.getShapePageBounds(id);
         return !!b && Box.Collides(b, bounds);
     });
-    if (ids.length === 0) return blankPng(bounds.w * scale, bounds.h * scale);
+    if (ids.length === 0) return blankPng(bounds.w * scale, bounds.h * scale, transparent);
     try {
         const { blob } = await editor.toImage(ids, {
             bounds,
             scale,
             pixelRatio: 1,
             padding: 0,
-            background: true,
+            background: !transparent,
             darkMode: false,
             format: 'png',
         });

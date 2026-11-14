@@ -3,9 +3,9 @@ import { boardWorker } from '../workers/client'
 import type { BoardJobIdentity } from '../workers/protocol'
 import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
-import { createTextDisplayWrapper, paintItemDisplay } from './displayList'
+import { captureTextDisplay, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
-import { createStreamingExportTextResolver } from './textStreamResolver'
+import { openExportTextStream } from './textStreamLease'
 
 function transferBytes(item: PageDisplayItem): number {
   if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
@@ -14,17 +14,13 @@ function transferBytes(item: PageDisplayItem): number {
   return item.d.length * 64
 }
 
-function transferable(item: PageDisplayItem, transfers: Transferable[], owned: boolean): PageDisplayItem {
-  if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers, owned)) }
+function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDisplayItem {
+  if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers)) }
   if (item.kind === 'image') {
     const bytes = Uint8Array.from(item.bytes); transfers.push(bytes.buffer)
     return { ...item, bytes }
   }
   if (item.kind === 'raster') {
-    if (owned && item.png.buffer instanceof ArrayBuffer && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) {
-      transfers.push(item.png.buffer)
-      return item
-    }
     const png = Uint8Array.from(item.png); transfers.push(png.buffer)
     return { ...item, png }
   }
@@ -41,14 +37,13 @@ export async function streamSvg(
   signal.throwIfAborted()
   const identity: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const streamId = crypto.randomUUID(), client = boardWorker('export')
-  const text = createStreamingExportTextResolver(source, signal)
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
     && candidate.session === identity.session && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   const opts = { priority: 0 as const, signal }
   const chunk: PaintItem[] = []
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   let started = false, finished = false
-  async function send(items: PageDisplayItem[], owned = false): Promise<void> {
+  async function send(items: PageDisplayItem[]): Promise<void> {
     let offset = 0
     while (offset < items.length) {
       signal.throwIfAborted()
@@ -59,7 +54,7 @@ export async function streamSvg(
         bytes += next; end++
       }
       const transfer: Transferable[] = []
-      const payload = items.slice(offset, end).map(item => transferable(item, transfer, owned))
+      const payload = items.slice(offset, end).map(item => transferable(item, transfer))
       await client.request('svgChunk', { streamId, items: payload }, identity, { ...opts, transfer }, current)
       offset = end
     }
@@ -83,21 +78,12 @@ export async function streamSvg(
         if (item.kind === 'text') {
           await send(items)
           items.length = 0
-          const wrap = createTextDisplayWrapper(item)
-          const parts: PageDisplayItem[] = []
-          let partBytes = 0
-          for await (const part of text(item, scale, signal)) {
-            signal.throwIfAborted()
-            const wrapped = wrap([part])
-            parts.push(wrapped)
-            partBytes += transferBytes(wrapped)
-            if (parts.length >= 64 || partBytes >= 4 * 1024 * 1024) {
-              await send(parts, true)
-              parts.length = 0; partBytes = 0
-            }
-            if (!source.isCurrent()) throw new Error('Paint capture stale')
-          }
-          await send(parts, true)
+          const frame = captureTextDisplay(item)
+          const lease = await openExportTextStream(source, item, scale, signal)
+          try {
+            await client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
+            lease.complete()
+          } finally { lease.release() }
         } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }

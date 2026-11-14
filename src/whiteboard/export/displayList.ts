@@ -46,14 +46,21 @@ export async function inkOutline(coverage: PaintInkCoverage, scale: number, sign
   return commands
 }
 
-export function createTextDisplayWrapper(item: PaintTextItem): (items: readonly PageDisplayItem[]) => PageDisplayItem {
+type TextDisplayClip = NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>
+export interface TextDisplayFrame { readonly transform: Affine; readonly clips: readonly TextDisplayClip[] }
+export function captureTextDisplay(item: PaintTextItem): TextDisplayFrame {
   if (item.clips.length > 62) throw new RangeError('Export clip nesting exceeds 64 levels')
-  const clips = item.clips.map(clip => ({ d: transformPath(clip.d, clip.localToWorld), fillRule: clip.fillRule }))
-  return items => {
-    let leaf: PageDisplayItem = { kind: 'group', transform: item.localToWorld, items: [...items] }
-    for (let i = clips.length - 1; i >= 0; i--) leaf = { kind: 'group', clip: clips[i], items: [leaf] }
-    return leaf
-  }
+  return { transform: item.localToWorld,
+    clips: item.clips.map(clip => ({ d: transformPath(clip.d, clip.localToWorld), fillRule: clip.fillRule })) }
+}
+export function wrapCapturedTextDisplay(frame: TextDisplayFrame, items: readonly PageDisplayItem[]): PageDisplayItem {
+  let leaf: PageDisplayItem = { kind: 'group', transform: frame.transform, items: [...items] }
+  for (let i = frame.clips.length - 1; i >= 0; i--) leaf = { kind: 'group', clip: frame.clips[i], items: [leaf] }
+  return leaf
+}
+export function createTextDisplayWrapper(item: PaintTextItem): (items: readonly PageDisplayItem[]) => PageDisplayItem {
+  const frame = captureTextDisplay(item)
+  return items => wrapCapturedTextDisplay(frame, items)
 }
 
 export async function paintItemDisplay(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText): Promise<PageDisplayItem> {

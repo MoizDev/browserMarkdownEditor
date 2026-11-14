@@ -82,7 +82,7 @@ export function isOutlineStreamRequest(value: unknown): boolean {
 }
 
 /** Each request holds a WorkerHost CPU permit only while the generator advances, never while its sink waits. */
-export async function handleOutlineStream(value: unknown, context: WorkerContext, create: GeneratorFactory): Promise<OutlineStreamReply> {
+export async function handleOutlineStream(value: unknown, context: WorkerContext, create: GeneratorFactory, transfer = true): Promise<OutlineStreamReply> {
     if (!record(value) || value.outlineStream !== 1 || typeof value.id !== 'string' || !value.id || value.id.length > 128)
         throw new TypeError('Invalid text outline stream request');
     const owner = ownerOf(value.owner);
@@ -136,7 +136,7 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
             items.push(result.value); bytes += size;
         }
         if (done) dispose(slot);
-        for (const item of items) transferItem(item, context);
+        if (transfer) for (const item of items) transferItem(item, context);
         if (value.mode === 'next') return items.length ? { kind: 'item', item: items[0] } : { kind: 'done' };
         return { kind: 'batch', items, done };
     } catch (error) {

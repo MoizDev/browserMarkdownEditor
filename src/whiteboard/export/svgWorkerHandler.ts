@@ -1,9 +1,14 @@
 import type { PageDisplayItem, Rect } from '../../platform/types'
 import type { WorkerContext } from '../../platform/workers/serve'
+import { streamTextOutline } from '../text/outline'
+import { handleOutlineStream } from '../text/outlineStream'
+import type { BoardJobIdentity } from '../workers/protocol'
+import { wrapCapturedTextDisplay } from './displayList'
+import type { TextDisplayFrame } from './displayList'
 import { createSvgWriter } from './svg'
 
 interface Start { streamId: string; bounds: Rect }
-interface Chunk { streamId: string; items: PageDisplayItem[] }
+interface Chunk { streamId: string; items?: PageDisplayItem[]; text?: { id: string; owner: BoardJobIdentity; frame: TextDisplayFrame } }
 interface Key { streamId: string }
 interface Entry { writer: ReturnType<typeof createSvgWriter>; timer: ReturnType<typeof setTimeout>; busy: boolean; cancelled: boolean }
 const streams = new Map<string, Entry>()
@@ -28,17 +33,32 @@ export function svgStart(args: unknown): null {
   return null
 }
 export async function svgChunk(args: unknown, context: WorkerContext): Promise<null> {
-  const id = key(args), entry = streams.get(id), items = (args as Chunk).items
-  if (!entry || !Array.isArray(items) || items.length > 64) throw new Error('Invalid SVG chunk')
+  const id = key(args), entry = streams.get(id), { items, text } = args as Chunk
+  if (!entry || (text ? items !== undefined : !Array.isArray(items) || items.length > 64)) throw new Error('Invalid SVG chunk')
+  if (text && (!text.frame || !Array.isArray(text.frame.transform) || text.frame.transform.length !== 6
+      || !text.frame.transform.every(Number.isFinite) || !Array.isArray(text.frame.clips) || text.frame.clips.length > 62
+      || text.frame.clips.some(clip => !clip || !Array.isArray(clip.d)
+        || (clip.fillRule !== undefined && clip.fillRule !== 'nonzero' && clip.fillRule !== 'evenodd')))) throw new TypeError('Invalid SVG text frame')
   if (entry.busy) throw new Error('SVG stream is already advancing')
   entry.busy = true
   clearTimeout(entry.timer)
   try {
-    let count = 0
-    for (const item of items) {
-      context.signal.throwIfAborted()
-      await entry.writer.appendCooperative(item, context, () => !entry.cancelled)
-      if (++count % 16 === 0) await context.slice()
+    if (text) {
+      for (;;) {
+        context.signal.throwIfAborted()
+        const batch = await handleOutlineStream({ outlineStream: 1, mode: 'nextBatch', id: text.id, owner: text.owner },
+          context, streamTextOutline, false)
+        if (batch.kind !== 'batch') throw new TypeError('Invalid SVG text outline batch')
+        if (batch.items.length) await entry.writer.appendCooperative(wrapCapturedTextDisplay(text.frame, batch.items), context, () => !entry.cancelled)
+        if (batch.done) break
+      }
+    } else {
+      let count = 0
+      for (const item of items!) {
+        context.signal.throwIfAborted()
+        await entry.writer.appendCooperative(item, context, () => !entry.cancelled)
+        if (++count % 16 === 0) await context.slice()
+      }
     }
     return null
   } catch (error) { drop(id, entry); throw error }

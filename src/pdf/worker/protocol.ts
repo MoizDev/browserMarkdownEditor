@@ -38,8 +38,8 @@ export function parsePdfDocKey(value: string): PdfDocumentIdentity {
 }
 
 export interface EngineInitArgs {
-    /** Pinned app asset. Opaque worker fetches with SRI/CORS/omit and compiles there; never a Module in C5. */
-    wasmUrl: string;
+    /** Host-verified WASM Blob URL minted in the opaque broker; never a Module in C5. */
+    engineUrl: string;
     wasmBytes: number;
     buildId: string;
     artifactSha256: string;

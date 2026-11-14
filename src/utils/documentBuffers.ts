@@ -24,6 +24,11 @@ export interface DeferredSource {
 
 export type ContentSource = string | DeferredSource;
 
+/** A disk reload reports its new immutable source without creating an unsaved edit. */
+export interface SourceReportOptions {
+    readonly fromDisk?: boolean;
+}
+
 /** App revisions, not a reporter's revision, decide whether the buffer is dirty. */
 export interface BufferRevision {
     readonly revision: number;

@@ -5,7 +5,7 @@ import type { OwnedBoardSession, OwnedBoardSessionOptions } from './ownedSession
 /** The one session factory is shared by drawing, notebook and PDF ink; only the injected
  * pinned-build ports differ. App releases this owner after its save barrier, not on hide. */
 export function createOwnedBoardSession(options: OwnedBoardSessionOptions): OwnedBoardSession {
-    if (!options.session.isCurrent(options.session.owner)) throw new DOMException('Board session ended', 'AbortError');
+    // C-19 calls its creator before registering the owner; liveness is checked on use.
     const builds = createBoardBuildPinning(options.builds);
     try {
         const board = createBoardSession({ ...options.session, pinBuild: builds.pinBuild });

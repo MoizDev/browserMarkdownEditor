@@ -5,6 +5,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { openContextMenu } from '../../utils/contextMenu';
 import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCommands';
+import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrome/preferences';
+import type { Op } from '../../whiteboard/change/ops';
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
@@ -30,6 +32,7 @@ export interface NativeClipboardBinding {
     detach(): void;
 }
 export interface NativeClipboardService {
+    readonly preferences: BoardPreferenceState;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean): NativeClipboardBinding;
 }
@@ -57,6 +60,20 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     };
     const report = (message: string) => { const target = active ?? bindings.values().next().value; target?.notice(message); };
     const fail = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error instanceof Error ? error.message : String(error)); };
+    const preferenceLifetime = new AbortController();
+    const preferences = new BoardPreferenceState(readBoardViewFlags(runtime.session.doc.view), flags => {
+        if (!current() || runtime.session.isReadOnly) throw new Error(runtime.session.readOnlyReason ?? 'Board is read-only');
+        runtime.tools.setLocked(flags.toolLock);
+        void runtime.session.enqueueAfterGesture(preferenceLifetime.signal, () => {
+            if (!current() || runtime.session.isReadOnly) return;
+            const view = runtime.session.doc.view, ops: Op[] = [];
+            for (const key of ['grid', 'focusMode', 'transparent', 'debugMode'] as const) {
+                if (view[key] !== flags[key]) ops.push({ t: 'board', key: `view.${key}`, value: flags[key] });
+            }
+            if (ops.length) runtime.session.apply({ origin: 'host', label: 'Board view preferences', ops }).release();
+        }).catch(fail);
+    });
+    const stopPreferences = runtime.session.subscribe(() => preferences.reconcileView(readBoardViewFlags(runtime.session.doc.view)));
     const finishGesture = () => { if (runtime.session.isGestureActive) throw new Error('Finish the current gesture before pasting.'); };
     const ports = createNativeMediaPorts(host, identity);
     const pdfSource = () => {
@@ -100,8 +117,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             download(blob, name) { const url = URL.createObjectURL(blob), link = document.createElement('a');
                 link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); },
         });
-    } catch (error) { ingestor.dispose(); cache.close(); throw error; }
+    } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {
+        preferences,
         attach(surface, lease, theme, notice, inputHandled = false) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let pointer: { x: number; y: number } | null = null;
@@ -116,7 +134,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     && (focused.isContentEditable || focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement);
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
-                pasteAtCursor: () => false, pointer: () => pointer, surfacePoint, editingText, finishGesture,
+                pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, finishGesture,
                 matchClipboard: commands.matchClipboard, readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice }; bindings.add(binding); active = binding;
@@ -182,6 +200,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     try {
         runtime.registerOwned(() => {
             if (disposed) return; disposed = true; services.delete(runtime); active = undefined; bindings.clear();
+            preferenceLifetime.abort(); stopPreferences();
             try { commands.dispose(); } finally {
                 try { for (const controller of controllers) controller.dispose(); } finally {
                     controllers.clear(); try { ingestor.dispose(); } finally { cache.close(); }
@@ -190,7 +209,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         });
         services.set(runtime, service);
         return service;
-    } catch (error) { commands.dispose(); ingestor.dispose(); cache.close(); throw error; }
+    } catch (error) { preferenceLifetime.abort(); stopPreferences(); commands.dispose(); ingestor.dispose(); cache.close(); throw error; }
 }
 
 /** Only event listeners and camera belong to a pane; the command service belongs to the document. */

@@ -122,7 +122,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
         if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
         const fragment = insertionFragment(text, range.from, suggestion, null);
-        editor.restoreSelection({ anchor: range.from, focus: range.to }); editor.replaceSelection(fragment);
+        editor.restoreSelection({ anchor: range.from, focus: range.to }); editor.replaceSelection(fragment); editor.focus();
         return true;
     };
     const openTextMenu = (x: number, y: number) => {
@@ -136,7 +136,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             revision: () => doc.rev,
             suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
             canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’\-]+$/u.test(word),
-            add: word => options.spelling.add(word),
+            add: word => { options.spelling.add(word); manager.current?.editor.focus(); },
             replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
             open: rows => options.ui.spellingMenu(x, y, rows),
         });

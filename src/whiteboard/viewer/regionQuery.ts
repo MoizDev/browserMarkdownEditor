@@ -1,7 +1,7 @@
 import type { Affine, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { worldPose } from '../change/coordinates';
-import { compose, inverse, transformPoint } from '../geom/affine';
+import { compose, inverse } from '../geom/affine';
 import { regionPath } from '../geom/pick';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
@@ -15,6 +15,7 @@ import { InkRegionPickJob } from '../ink/regionPick';
 import type { NodeId } from '../model/ids';
 import type { Attachment, Node } from '../model/nodes';
 import type { SpatialRef } from '../pick';
+import { BoundsQuality } from '../scene/bounds';
 import type { createBoardRenderServices } from '../render/services';
 import { selectableAtFocus } from '../selection';
 
@@ -127,12 +128,14 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 let ancestor = doc.nodes.get(node.parent as NodeId);
                 for (let depth = 0; ancestor && depth < 64; depth++) {
                     if (ancestor.kind === 'frame') {
-                        const frameWorld = matrix(doc, ancestor.id), toFrame = inverse(frameWorld, 1e12), bounds = scene.worldBounds(node.id)?.ink;
-                        if (!toFrame || !bounds) throw new BoardRegionUncertain('Frame-clipped ink has no certified bounds');
+                        const frameWorld = matrix(doc, ancestor.id), toFrame = inverse(frameWorld, 1e12), record = scene.worldBounds(node.id);
+                        const bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
+                            ? record.selectable : null;
+                        if (!toFrame || !bounds) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
                         const corners = [{ x: bounds[0], y: bounds[1] }, { x: bounds[2], y: bounds[1] },
-                            { x: bounds[2], y: bounds[3] }, { x: bounds[0], y: bounds[3] }].map(p => transformPoint(toFrame, p));
+                            { x: bounds[2], y: bounds[3] }, { x: bounds[0], y: bounds[3] }].map(p => exactPointIntervals(exactAffinePoint(toFrame, p)));
                         const frame = ancestor;
-                        const fullyVisible = corners.every(p => p.x > 0 && p.y > 0 && p.x < frame.w && p.y < frame.h);
+                        const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
                             if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                             const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },

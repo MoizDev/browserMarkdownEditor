@@ -169,7 +169,7 @@ export interface ViewReporter {
     /** A PNG of what is on screen, long side ≤ maxSide px. Canvases and PDFs only. */
     capture?(maxSide: number): Promise<Blob | null>;
     /** PDF text of the given 1-based pages from the loaded document. */
-    pdfText?(pages: number[]): Promise<Array<{ page: number; text: string }>>;
+    pdfText?(pages: number[]): Promise<Array<{ page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }>>;
     /** A PNG of one 1-based page (PDF / notebook), long side ≤ maxSide. */
     renderPage?(page: number, maxSide: number): Promise<Blob | null>;
     /** Markdown: dispatch changes into the live editor as one undoable

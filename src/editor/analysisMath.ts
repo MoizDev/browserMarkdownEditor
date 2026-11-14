@@ -1,6 +1,6 @@
 import type { Text } from '@codemirror/state';
-import { overlapsRange } from './rangeSearch';
-import type { CharRange } from './rangeSearch';
+import { overlapsRange } from '../utils/rangeSearch';
+import type { CharRange } from '../utils/rangeSearch';
 import type { LineMatch } from './analysisLines';
 import type { MathRegion } from './latexSource';
 

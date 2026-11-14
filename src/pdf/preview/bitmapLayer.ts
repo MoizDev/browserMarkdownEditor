@@ -160,23 +160,25 @@ export class PreviewBitmapLayer implements Layer {
 
     drawGpu(pass: GpuPass, view: ViewState): void {
         for (const [index, page] of this.bitmaps.entries) {
-            if (this.expected.get(index)?.key !== page.key) continue;
+            const expected = this.expected.get(index);
+            if (expected?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 const uploaded = this.uploaded.get(tile);
                 if (!uploaded || uploaded.device !== this.host.device() || !onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(pass, uploaded.texture, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
             }
         }
     }
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         for (const [index, page] of this.bitmaps.entries) {
-            if (this.expected.get(index)?.key !== page.key) continue;
+            const expected = this.expected.get(index);
+            if (expected?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(ctx, tile.bitmap, tile.source,
-                    project(tile.destination, view), { opacity: 1, sampling: 'linear' });
+                    project(tile.destination, view), { opacity: 1, sampling: 'linear', coverage: expected.current() ? 'current' : 'standin' });
             }
         }
     }

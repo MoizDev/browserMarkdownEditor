@@ -6,6 +6,7 @@ import { getPlatformRuntime } from './platformRuntime';
 import { PaneCapturer } from './capture';
 import type { CaptureGpuOwner, CaptureOptions, CaptureRequest, CaptureSnapshot } from './capture';
 import { CaptureQueue } from './captureQueue';
+import { GpuIsolationPlan } from './gpuIsolationPlan';
 
 /** One queue across every session; it never starts work or retains a pane by itself (design §4.6). */
 const queue = new CaptureQueue();
@@ -31,6 +32,12 @@ export function captureGpuOwner(owner: Webgl2Owner, compositor: CaptureGpuScope)
         acquireTarget: request => owner.acquireTarget(request),
         releaseTarget: lease => owner.releaseTarget(lease),
         discardFrame: encoder => owner.discardFrame(encoder),
+        prepareIsolation: (view, inventory) => {
+            const plan = new GpuIsolationPlan(Math.ceil(view.viewport.width * view.viewport.dpr),
+                Math.ceil(view.viewport.height * view.viewport.dpr));
+            for (const declaration of inventory) plan.declare(declaration);
+            return owner.admitIsolation(plan.finish());
+        },
         withCapturePass: (encoder, pass, view, paint) => compositor.withCapturePass(encoder, pass, view, paint),
     };
 }

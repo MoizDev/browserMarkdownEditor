@@ -157,11 +157,18 @@ export interface PdfBackend {
     init(env: BackendEnv): BackendInfo;
     open(source: ByteSource, options: { password?: string }): BackendDoc;
     heapBytes(): number;
+    /** Dispose documents, callback table and library when the worker retires. */
+    close?(): void;
 }
 
 export type PdfEngineErrorName = 'PasswordRequired' | 'UnsupportedSecurity' | 'InvalidPdf' | 'FileError'
     | 'PageError' | 'NotFoundError' | 'AbortError' | 'NotSupported' | 'RangeError' | 'ResourceLimit'
-    | 'EngineBroken' | 'WorkerDied';
+    | 'EngineBroken' | 'WorkerDied' | 'FontPending';
 export class PdfEngineError extends Error {
     constructor(name: PdfEngineErrorName, message: string) { super(message); this.name = name; }
+}
+
+/** Specs are bounded worker-local data; callers can request approved local assets and reopen. */
+export class PdfFontPendingError extends PdfEngineError {
+    constructor(readonly specs: readonly FontSpec[]) { super('FontPending', 'PDF fonts are pending; reopen the document after supplying them'); }
 }

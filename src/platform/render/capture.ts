@@ -3,6 +3,7 @@ import type { FrameEncoder, GpuPass } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { MemoryAllocator } from './memoryGovernor';
 import type { Layer, RenderToken } from './types';
+import type { IsolationReservation } from './compositor.types';
 import { CaptureError, captureAbort } from './captureError';
 import { CaptureQueue } from './captureQueue';
 import { captureIsolation2d } from './captureIsolation2d';
@@ -59,6 +60,10 @@ export interface CaptureSnapshot {
     readonly revision: string;
     readonly signal: AbortSignal;
     readonly layers: readonly CapturedLayer[];
+    /** Peak simultaneous scopes in this immutable capture plan, in capture device pixels.
+     * Never reuse the live viewport's inventory: region/scale and selected layers may differ.
+     */
+    readonly isolation?: readonly IsolationReservation[];
     /** Prepare offscreen tiles, never Layer.prepare's view jobs. Must honor signal;
      * all temporary resources belong to this lease, including late worker arrivals.
      * A missing exact tile is incomplete, never a successful white image.
@@ -69,6 +74,8 @@ export interface CaptureSnapshot {
 }
 
 export type CaptureGpuOwner = Pick<Webgl2Owner, 'resources' | 'acquireTarget' | 'releaseTarget' | 'discardFrame'> & {
+    /** Admits offscreen scope storage before encoding; false selects the complete CPU path. */
+    readonly prepareIsolation?: (view: ViewState, inventory: readonly IsolationReservation[]) => boolean;
     /** Installs the existing compositor's frame-scoped LayerHost services for this offscreen pass. */
     readonly withCapturePass?: (encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void) => void;
 };
@@ -190,6 +197,9 @@ export class PaneCapturer {
                 throw new CaptureError('incomplete');
             }
             const lease = snapshot, active = operation;
+            const isolation = Object.freeze((snapshot.isolation ?? []).map(item => Object.freeze({ ...item,
+                bounds: Object.freeze({ ...item.bounds }), targets: item.targets ? Object.freeze({ ...item.targets,
+                    bounds: Object.freeze({ ...item.targets.bounds }) }) : undefined })));
             const layers = Object.freeze(snapshot.layers.map(layer => Object.freeze({
                 id: layer.id, draw2d: layer.draw2d.bind(layer), drawGpu: layer.drawGpu?.bind(layer),
             })));
@@ -201,7 +211,7 @@ export class PaneCapturer {
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {
                 started = true;
-                try { return await this.render(request, lease, layers, active); }
+                try { return await this.render(request, lease, layers, isolation, active); }
                 finally { release(); }
             }, options.thumbnailKey).finally(() => {
                 // An active abort may reject before prepare/readback has unwound. The
@@ -223,7 +233,8 @@ export class PaneCapturer {
         if (completeness !== 'exact' && !(request.policy === 'allow-standin' && completeness === 'standin')) throw new CaptureError('incomplete');
     }
 
-    private async render(request: CaptureRequest, snapshot: CaptureSnapshot, layers: readonly CapturedLayer[], active: CaptureScope): Promise<ImageBitmap> {
+    private async render(request: CaptureRequest, snapshot: CaptureSnapshot, layers: readonly CapturedLayer[],
+        isolation: readonly IsolationReservation[], active: CaptureScope): Promise<ImageBitmap> {
         try {
             active.check();
             const owner = layers.every(layer => layer.drawGpu) ? this.options.tryGpu?.(snapshot) : null;
@@ -233,7 +244,8 @@ export class PaneCapturer {
                     // Preparation can yield while the user begins input or the pane changes
                     // generations. Never submit to an owner no longer selected for capture.
                     const current = this.options.tryGpu?.(snapshot);
-                    if (current?.withCapturePass && current.resources === owner.resources) {
+                    if (current?.withCapturePass && current.resources === owner.resources &&
+                        current.prepareIsolation?.(request.view, isolation)) {
                         return await this.drawGpu(request, layers, current, active);
                     }
                 } catch (error) {
@@ -264,13 +276,14 @@ export class PaneCapturer {
             canvas = document.createElement('canvas');
             canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
-            if (!ctx) throw new CaptureError('render-failed');
+            if (!ctx || ctx.isContextLost()) throw new CaptureError('render-failed');
             captureIsolation2d(ctx, this.options.memory);
             for (const layer of layers) {
                 active.check();
                 ctx.save();
                 try { layer.draw2d(ctx, request.view); } finally { ctx.restore(); }
             }
+            if (ctx.isContextLost()) throw new CaptureError('render-failed');
             // This checks origin cleanliness without reading back an entire capture.
             ctx.getImageData(0, 0, 1, 1);
             bitmap = await createImageBitmap(canvas, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' });

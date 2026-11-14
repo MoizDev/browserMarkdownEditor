@@ -7,17 +7,34 @@ import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey } from '../work
 import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
+import { validatePdfWriterReply } from '../writing/validateReply';
 import type { PdfDocumentOp, PdfOpenOptions, PdfPageBitmapOptions, PdfPool, PdfPoolDocument, PdfRequestOptions, PdfWriterSession, WithoutDocKey } from './types';
 import type { PdfPoolOptions } from './broker.types';
 import { TileCredits } from './credits';
 import { canSteal, homeWorker, maximumWorkers, poolBudget, recycleCeiling } from './routing';
 import { renderPdfPageBitmap } from './bitmap';
+import { createPdfReplyValidators } from './validation';
+import { PDF_FONT_CATALOGUE } from '../fonts/catalogue';
+import type { PdfFontId } from '../fonts/catalogue';
+import { pdfFontCache } from '../fonts/cache';
+import { record, integer, boolean, invalidPdfReply } from './validationCommon';
+import { validatePdfTextReply } from '../text/validate';
+import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
+import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/workerMemory';
+
+const validators = createPdfReplyValidators();
+const workerOwners = new WeakMap<WorkerClient, BootstrapPort>();
+function reportMemory(client: WorkerClient, bytes: number): void {
+    const owner = workerOwners.get(client);
+    if (owner) reportWorkerMemory(owner, bytes);
+}
 
 type Doc = { key: PdfDocKey; source: 'outer' | 'original'; blob: Blob; password?: string; refs: number; controller: AbortController;
     info?: DocInfo; signature?: string; opening?: Promise<DocInfo>; geometry: Map<number, Readonly<PageGeometry>>;
-    pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean };
+    pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean; fonts: Set<PdfFontId> };
 type Slot = { id: number; client: WorkerClient; generation: number; opens: Map<string, Promise<DocInfo>>;
-    pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number };
+    pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number;
+    fonts: Map<PdfFontId, Promise<void>>; needed: Map<PdfDocKey, PdfFontId[]>; fontEpoch: number };
 type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unknown>; priority: Priority; signal: AbortSignal;
     asked: number; timeoutMs?: number; deadline?: number; controller: AbortController; resolve: (value: unknown) => void; reject: (error: unknown) => void;
     abort: () => void; timer?: ReturnType<typeof setTimeout>; posted?: Promise<unknown>; slot?: Slot; attempts: number; settled: boolean };
@@ -31,7 +48,7 @@ type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled
 /** The broker supplies a direct worker port and trusted init metadata, never a same-origin fallback (C5.4). */
 function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writer', id: number): WorkerClient {
     let port: BootstrapPort | null = null;
-    return createWorkerClient({ name, protocol: PDF_ENGINE_PROTOCOL,
+    const client = createWorkerClient({ name, protocol: PDF_ENGINE_PROTOCOL,
         spawn: async () => {
             const spawned = await options.broker.spawn(role, id);
             const candidate = spawned as Partial<BootstrapPort>;
@@ -41,6 +58,10 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
                 throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
             }
             port = spawned as BootstrapPort;
+            const owner = port;
+            const terminate = owner.terminate.bind(owner);
+            owner.terminate = () => { releaseWorkerMemory(owner); terminate(); };
+            workerOwners.set(client, owner);
             return port;
         },
         onStart: async client => {
@@ -52,6 +73,7 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
                 !Number.isFinite(info.heapBytes) || info.heapBytes < 0 || !Array.isArray(info.features)) {
                 throw new PdfEngineError('EngineBroken', 'The contained PDF engine did not match its trusted build');
             }
+            reportMemory(client, info.heapBytes);
             await current.compiled();
         },
         absoluteMs: role === 'writer' ? 120_000 : 60_000,
@@ -60,6 +82,7 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
             { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
         events: role === 'render' ? ['font.needed', 'page.geometry', 'dying'] : [],
     });
+    return client;
 }
 
 function validInfo(value: unknown): value is DocInfo {
@@ -82,6 +105,7 @@ function validGeometry(value: unknown, page: number): value is PageGeometry {
 }
 
 function rememberGeometry(doc: Doc, value: unknown, page: number): Readonly<PageGeometry> {
+    value = validators.geometry(value, page);
     if (!validGeometry(value, page)) throw new PdfEngineError('EngineBroken', 'Invalid PDF page geometry');
     const previous = doc.geometry.get(page);
     if (previous && JSON.stringify(previous) !== JSON.stringify(value)) {
@@ -128,6 +152,7 @@ class Pool implements PdfPool {
     private readonly failedDocs = new Set<string>();
     private readonly credits = new TileCredits(() => this.pump());
     private readonly writers = new Set<WorkerClient>();
+    private writerTail: Promise<void> = Promise.resolve();
     private timer?: ReturnType<typeof setInterval>;
     private growth?: ReturnType<typeof setTimeout>;
     private disposed = false;
@@ -141,7 +166,17 @@ class Pool implements PdfPool {
     private slot(): Slot {
         const id = ++this.nextSlot;
         const client = pdfClient(this.options, `pdf-render-${this.serial}-${id}`, 'render', id);
-        const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now() };
+        const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now(), fonts: new Map(), needed: new Map(), fontEpoch: 0 };
+        client.on('font.needed', value => {
+            try {
+                const data = record(value, ['ids', 'docKey', 'page']);
+                if (typeof data.docKey !== 'string' || !this.docs.has(data.docKey) || !slot.opens.has(data.docKey) ||
+                    !Array.isArray(data.ids) || !data.ids.length || data.ids.length > 14 ||
+                    data.ids.some(id => typeof id !== 'string' || !Object.hasOwn(PDF_FONT_CATALOGUE, id))) invalidPdfReply();
+                if (data.page !== undefined) integer(data.page, 0, this.docs.get(data.docKey)!.info!.pageCount - 1);
+                slot.needed.set(data.docKey, [...new Set(data.ids as PdfFontId[])]);
+            } catch { void client.recycle('Invalid PDF font request').catch(() => {}); }
+        });
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
             const event = value as { docKey?: string; geometry?: PageGeometry }, doc = event.docKey ? this.docs.get(event.docKey) : undefined;
@@ -163,14 +198,16 @@ class Pool implements PdfPool {
         return slot;
     }
     private syncGeneration(slot: Slot): void {
-        if (slot.client.generation !== slot.generation) { slot.generation = slot.client.generation; slot.opens.clear(); slot.pages.clear(); }
+        if (slot.client.generation !== slot.generation) { slot.generation = slot.client.generation; slot.opens.clear(); slot.pages.clear(); slot.fonts.clear(); slot.needed.clear(); slot.fontEpoch = 0; }
     }
     private async openOn(slot: Slot, doc: Doc, priority: Priority, signal: AbortSignal): Promise<DocInfo> {
         this.syncGeneration(slot);
+        for (const id of doc.fonts) await this.provideFont(slot, id, doc.controller.signal);
         let pending = slot.opens.get(doc.key);
         if (!pending) {
-            pending = slot.client.request<DocInfo>('doc.open', { docKey: doc.key, source: doc.blob, size: doc.blob.size, ...(doc.password ? { password: doc.password } : {}) },
-                { priority, signal: doc.controller.signal, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true });
+            pending = slot.client.request<unknown>('doc.open', { docKey: doc.key, source: doc.blob, size: doc.blob.size, ...(doc.password ? { password: doc.password } : {}) },
+                { priority, signal: doc.controller.signal, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true })
+                .then(value => validators.document(value));
             slot.generation = slot.client.generation;
             slot.opens.set(doc.key, pending);
             const promise = pending;
@@ -197,7 +234,7 @@ class Pool implements PdfPool {
             bytesGeneration: options.token.bytesGeneration, source: options.source });
         let doc = this.docs.get(key);
         if (doc && (doc.blob.size !== options.blob.size || doc.password !== options.password || doc.closing)) throw new PdfEngineError('EngineBroken', 'Conflicting PDF source identity');
-        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), geometry: new Map(), pending: new Set(), leases: new Set(), closing: false }; this.docs.set(key, doc); }
+        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), geometry: new Map(), pending: new Set(), leases: new Set(), closing: false, fonts: new Set() }; this.docs.set(key, doc); }
         doc.refs++;
         const lease = new Lease(this, doc, options.token); doc.leases.add(lease);
         try {
@@ -300,22 +337,42 @@ class Pool implements PdfPool {
             const payload = { ...job.args, docKey: job.doc.key };
             const page = job.args.page;
             const remaining = job.deadline === undefined ? 60_000 : Math.max(0, Math.min(60_000, job.deadline - Date.now()));
-            const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal: job.signal, deadlineMs: remaining,
-                terminateOnDeadline: true, cpu: 'governed', key: Number.isSafeInteger(page) ? pageKey(job.doc.key, page as number) : job.doc.key });
-            job.posted = posted;
-            const result = await posted;
+            let result: unknown;
+            const installed = new Set<PdfFontId>();
+            for (;;) {
+                const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal: job.signal, deadlineMs: remaining,
+                    terminateOnDeadline: true, cpu: 'governed', key: Number.isSafeInteger(page) ? pageKey(job.doc.key, page as number) : job.doc.key });
+                job.posted = posted;
+                try { result = await posted; break; }
+                catch (error) {
+                    if (!(error instanceof Error) || error.name !== 'FontPending') throw error;
+                    const ids = slot.needed.get(job.doc.key); slot.needed.delete(job.doc.key);
+                    if (!ids?.length || ids.some(id => installed.has(id))) throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable');
+                    for (const id of ids) {
+                        installed.add(id); job.doc.fonts.add(id);
+                        try { await this.provideFont(slot, id, job.signal); }
+                        catch { throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable'); }
+                    }
+                    job.signal.throwIfAborted();
+                }
+            }
             if (job.op === 'page.tile') {
                 const args = payload as PageTileArgs;
+                result = validators.tile(result, args);
                 if (!validTile(result, args)) throw new PdfEngineError('EngineBroken', 'Invalid PDF tile reply');
+                reportMemory(slot.client, result.heapBytes);
                 const before = slot.heapBytes; slot.heapBytes = Math.max(slot.heapBytes, result.heapBytes);
                 const key = pageKey(job.doc.key, args.page);
                 this.footprints.set(key, Math.max(this.footprints.get(key) ?? 0, result.heapBytes - before));
                 slot.pages.add(key);
                 if (job.settled || job.signal.aborted) throw abortError();
                 this.credits.publish(result, release!); release = null;
-            } else if (Number.isSafeInteger(page)) {
-                const key = pageKey(job.doc.key, page as number);
-                if (job.op === 'page.release') slot.pages.delete(key); else slot.pages.add(key);
+            } else {
+                result = await this.validateResult(slot, job, result);
+                if (Number.isSafeInteger(page)) {
+                    const key = pageKey(job.doc.key, page as number);
+                    if (job.op === 'page.release') slot.pages.delete(key); else slot.pages.add(key);
+                }
             }
             return result;
         })();
@@ -327,6 +384,82 @@ class Pool implements PdfPool {
                 this.pump();
             } else this.finish(job, error);
         }).finally(() => { release?.(); slot.inFlight--; if (!slot.inFlight) slot.idleAt = Date.now(); this.maintain(); this.pump(); });
+    }
+    private provideFont(slot: Slot, id: PdfFontId, signal: AbortSignal): Promise<void> {
+        let pending = slot.fonts.get(id);
+        if (!pending) {
+            pending = (async () => {
+                const blob = await pdfFontCache.load(id, signal);
+                const bytes = await blob.arrayBuffer(); signal.throwIfAborted();
+                const result = await slot.client.request('font.provide', { id, bytes },
+                    { priority: 0, signal, transfer: [bytes], cpu: 'light', deadlineMs: 60_000 });
+                const reply = record(result, ['fontEpoch']);
+                const epoch = integer(reply.fontEpoch, 1, 14);
+                if (epoch < slot.fontEpoch) invalidPdfReply();
+                slot.fontEpoch = epoch;
+            })();
+            slot.fonts.set(id, pending);
+            const installed = pending;
+            void pending.catch(() => { if (slot.fonts.get(id) === installed) slot.fonts.delete(id); });
+        }
+        return waitFor(pending, signal);
+    }
+    private async validateResult(slot: Slot, job: Job, value: unknown): Promise<unknown> {
+        const page = job.args.page as number;
+        switch (job.op) {
+            case 'page.geometry': return rememberGeometry(job.doc, value, page);
+            case 'page.text': {
+                const data = record(value, ['docKey', 'page', 'schema', 'text', 'tokenBreaks', 'quality', 'reasons', 'model', 'digest', 'sel']);
+                if (data.docKey !== job.doc.key || data.page !== page || data.schema !== 2) invalidPdfReply();
+                const reply = data as unknown as PageTextReply;
+                await validatePdfTextReply(reply, job.doc.geometry.get(page), job.args.detail as PdfTextDetail, job.signal);
+                return reply;
+            }
+            case 'page.links': {
+                const geometry = job.doc.geometry.get(page);
+                if (!geometry) invalidPdfReply();
+                return validators.links(value, geometry, job.doc.info!.pageCount);
+            }
+            case 'doc.outline': return validators.outline(value, job.doc.info!.pageCount);
+            case 'doc.attachment': return validators.attachmentBytes(value, job.args.maxBytes as number);
+            case 'page.release': return record(value, []);
+            case 'page.complexity': {
+                const keys = ['objects', 'textObjects', 'imageObjects', 'imagePixels', 'pathObjects', 'formObjects'] as const;
+                const data = record(value, keys);
+                return Object.fromEntries(keys.map(key => [key, integer(data[key], 0, Number.MAX_SAFE_INTEGER)]));
+            }
+            case 'page.imageRegions': {
+                const data = record(value, ['regions', 'partial']);
+                if (!Array.isArray(data.regions) || data.regions.length > 20_000) invalidPdfReply();
+                return { partial: boolean(data.partial), regions: data.regions.map(item => {
+                    const region = record(item, ['id', 'box']);
+                    if (!Array.isArray(region.box) || region.box.length !== 4 || region.box.some(n => typeof n !== 'number' || !Number.isFinite(n) || Math.abs(n) > 14_400)) invalidPdfReply();
+                    if (region.box[0] > region.box[2] || region.box[1] > region.box[3]) invalidPdfReply();
+                    return { id: integer(region.id, 0, 0x7fffffff), box: [...region.box] };
+                }) };
+            }
+            case 'worker.stats': {
+                const data = record(value, ['heapBytes', 'docs', 'pagesLoaded', 'blockCacheBytes']);
+                const heapBytes = integer(data.heapBytes, 0, 1024 ** 3);
+                slot.heapBytes = heapBytes; reportMemory(slot.client, heapBytes);
+                return { heapBytes, docs: integer(data.docs, 0, 100_000), pagesLoaded: integer(data.pagesLoaded, 0, 100_000),
+                    blockCacheBytes: integer(data.blockCacheBytes, 0, 1024 ** 3) };
+            }
+            case 'page.emphasisProbe': {
+                const data = record(value, ['complete', 'candidates', 'eligibleGlyphs', 'changedPixels', 'capability', 'reason', 'probe']);
+                if (data.complete !== true || !['supported', 'unavailable'].includes(data.capability as string) ||
+                    (data.reason !== undefined && (typeof data.reason !== 'string' || data.reason.length > 128))) invalidPdfReply();
+                const probe = record(data.probe, ['scale', 'w', 'h', 'pixels', 'rendered']);
+                if (typeof probe.scale !== 'number' || !Number.isFinite(probe.scale) || probe.scale <= 0) invalidPdfReply();
+                const w = integer(probe.w, 1, 2046), h = integer(probe.h, 1, 2046);
+                const pixels = integer(probe.pixels, 1, 1_048_576);
+                if (w * h !== pixels) invalidPdfReply();
+                return { complete: true, candidates: integer(data.candidates, 0, 200_000), eligibleGlyphs: integer(data.eligibleGlyphs, 0, 200_000),
+                    changedPixels: integer(data.changedPixels, 0, pixels), capability: data.capability,
+                    ...(data.reason === undefined ? {} : { reason: data.reason }), probe: { scale: probe.scale, w, h, pixels, rendered: boolean(probe.rendered) } };
+            }
+            default: invalidPdfReply();
+        }
     }
     private workerFailure(error: unknown): boolean { return error instanceof Error && ['WorkerCrashed', 'WorkerDied', 'WorkerFailed', 'Deadline'].includes(error.name); }
     private recordDeath(job: Job): boolean {
@@ -377,18 +510,47 @@ class Pool implements PdfPool {
     }
     async writer(options: { signal?: AbortSignal } = {}): Promise<PdfWriterSession> {
         if (this.disposed || options.signal?.aborted) throw abortError();
+        const previous = this.writerTail;
+        let releaseTurn!: () => void;
+        const turn = new Promise<void>(resolve => { releaseTurn = resolve; });
+        this.writerTail = previous.then(() => turn);
+        try { await waitFor(previous, options.signal); }
+        catch (error) { releaseTurn(); throw error; }
+        if (this.disposed || options.signal?.aborted) { releaseTurn(); throw abortError(); }
         const id = ++this.nextSlot;
         const client = pdfClient(this.options, `pdf-writer-${this.serial}-${id}`, 'writer', id);
         this.writers.add(client);
         let closed = false;
-        const close = async () => { if (closed) return; closed = true; options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); };
+        const sources = new Map<string, WriterOperations['writer.prepareSource']['result'] & { source: WriterOperations['writer.prepareSource']['args']['source'] }>();
+        const stages = new Map<string, { sourceFingerprint: string; pageCount: number; revision: number }>();
+        const close = async () => { if (closed) return; closed = true; options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); sources.clear(); stages.clear(); releaseTurn(); };
         const abort = () => { void close(); };
         options.signal?.addEventListener('abort', abort, { once: true });
         return {
-            request: <K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], requestOptions: PdfRequestOptions) => {
-                if (closed) return Promise.reject(abortError());
-                return client.request<WriterOperations[K]['result']>(op, args, { ...requestOptions, cpu: 'governed',
+            request: async <K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], requestOptions: PdfRequestOptions) => {
+                if (closed) throw abortError();
+                const value = await client.request<unknown>(op, args, { ...requestOptions, cpu: 'governed',
                     deadlineMs: Math.min(requestOptions.deadlineMs ?? 120_000, 120_000), terminateOnDeadline: true });
+                if (closed) throw abortError();
+                const result = validatePdfWriterReply(op, value, args);
+                if (op === 'writer.prepareSource') {
+                    const output = result as WriterOperations['writer.prepareSource']['result'];
+                    sources.set(output.writerSession, { ...output, source: (args as WriterOperations['writer.prepareSource']['args']).source });
+                } else if (op === 'writer.stageAnnotated') {
+                    const input = args as WriterOperations['writer.stageAnnotated']['args'];
+                    const output = result as WriterOperations['writer.stageAnnotated']['result'];
+                    const prepared = sources.get(input.writerSession);
+                    if (!prepared || output.sourceFingerprint !== prepared.sourceFingerprint ||
+                        JSON.stringify(output.geometryEngine) !== JSON.stringify(prepared.source.geometryEngine) ||
+                        JSON.stringify(input.geometries) !== JSON.stringify(prepared.inspection.geometries)) invalidPdfReply();
+                    stages.set(output.stageId, { sourceFingerprint: prepared.sourceFingerprint, pageCount: prepared.inspection.pageCount, revision: input.revision });
+                } else if (op === 'writer.finishAnnotated') {
+                    const input = args as WriterOperations['writer.finishAnnotated']['args'];
+                    const output = result as WriterOperations['writer.finishAnnotated']['result'];
+                    const staged = stages.get(input.stageId); stages.delete(input.stageId);
+                    if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision) invalidPdfReply();
+                } else if (op === 'writer.release') sources.delete((args as WriterOperations['writer.release']['args']).writerSession);
+                return result;
             },
             reprioritise: (promise, priority) => client.reprioritise(promise, priority), close,
         };

@@ -121,6 +121,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return createLayerHost({
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: () => surfaceHost.current,
+            preparationCompositor: drawCompositor,
             invalidate: reason => lifecycle?.invalidate(reason),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
         });
@@ -173,7 +174,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const tilePixels = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2;
             const bandPixels = Math.min(requestedPixels, tilePixels);
             const isolated = layerSet.compositorLayers.filter(binding => binding.isolation).length;
-            const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
+            // CPU's retained back frame coexists with the staged GPU backing and its
+            // document-colour target until promotion. Inversion is not a free surface effect.
+            const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
             let mandatory = 0, prefetch = 0;
             for (const layer of layerSet.layers) {
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
@@ -300,6 +303,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         drawing?.setAppearance(options.readAppearance());
                         drawing?.snapshot(view);
+                        // Arrivals and colour-mode changes alter demand without a ResizeObserver
+                        // event. Refresh before preparation, not after an allocation was refused.
+                        runtime.refresh();
                     },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
@@ -327,12 +333,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 let presented;
                                 let complete: boolean;
                                 let sharp: boolean;
+                                let staleVersion: boolean | undefined;
                                 let qualityScale: number;
                                 if (mirrored) {
                                     encoding?.discard();
                                     presented = { drawn: [] };
                                     complete = mirror!.complete;
                                     sharp = mirror!.sharp;
+                                    staleVersion = mirror!.staleVersion;
                                     qualityScale = cpuMetrics.current?.kind === 'ready' ? cpuMetrics.current.metrics.qualityScale : 1;
                                 } else {
                                     presented = encoding?.submit();
@@ -341,6 +349,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
+                                    staleVersion = coverage.staleVersion;
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
@@ -358,7 +367,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
-                                    complete, sharp, staleVersion: drawing.coverage(frame).staleVersion,
+                                    complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision });
                                 if (lastQuality !== qualityScale) {
                                     lastQuality = qualityScale;

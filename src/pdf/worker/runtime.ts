@@ -1,6 +1,8 @@
 import { serve } from '../../platform/workers/serve';
 import type { WorkerContext } from '../../platform/workers/serve';
-import { PdfEngineError } from '../engine/types';
+import { PdfEngineError, PdfFontPendingError } from '../engine/types';
+import { PDF_FONT_CATALOGUE, resolvePdfFont } from '../fonts/catalogue';
+import type { PdfFontId } from '../fonts/catalogue';
 import type { BackendDoc, PdfBackend, RawPageText } from '../engine/types';
 import { loadPdfiumBackend } from '../engine/pdfiumBackend';
 import { buildEmphasisPlan } from '../emphasis/plan';
@@ -13,8 +15,11 @@ import { buildWorkerPageText } from './text';
 import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, parsePdfDocKey } from './protocol';
 import type { EngineInitArgs, PageTileArgs, PageTextReply } from './protocol';
 import type { PdfWorkerBinding } from '../contained/protocol';
+import type { PdfWriterRuntime } from '../writing/nativeHandlers.types';
+import type { WriterOperations } from '../writing/protocol';
 
-type OpenDoc = { doc: BackendDoc; source: PdfBlobSource; raw: Map<number, RawPageText>; clone?: BackendDoc };
+type OpenDoc = { doc: BackendDoc; source: PdfBlobSource; raw: Map<number, RawPageText>; clone?: BackendDoc;
+    geometry: Map<number, string>; loaded: Map<number, number>; password?: string; needsReopen: boolean }; 
 const bad = (name: 'EngineBroken' | 'RangeError' | 'NotFoundError', message: string) => new PdfEngineError(name, message);
 const record = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw bad('RangeError', 'Invalid PDF request');
@@ -22,14 +27,34 @@ const record = (value: unknown): Record<string, unknown> => {
 };
 export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     let backend: PdfBackend | undefined;
+    let writer: PdfWriterRuntime | undefined;
     let chain: Promise<unknown> = Promise.resolve();
     let closed = false;
     const docs = new Map<string, OpenDoc>();
+    const fonts = new Map<PdfFontId, Uint8Array>();
+    let fontEpoch = 0;
     const channel = new MessageChannel();
     const yieldTurn = () => new Promise<void>(resolve => { channel.port1.onmessage = () => resolve(); channel.port2.postMessage(0); });
     const serial = (fn: (value: unknown, context: WorkerContext) => unknown | Promise<unknown>) =>
         (value: unknown, context: WorkerContext) => {
-            const next = chain.then(() => { if (closed || context.cancelled) throw new DOMException('Cancelled', 'AbortError'); return fn(value, context); });
+            const next = chain.then(async () => {
+                if (closed || context.cancelled) throw new DOMException('Cancelled', 'AbortError');
+                try { return await fn(value, context); }
+                catch (error) {
+                    if (!(error instanceof PdfFontPendingError)) throw error;
+                    const args = record(value), key = args.docKey;
+                    if (typeof key !== 'string') throw new PdfEngineError('NotSupported', 'A font needed by this PDF is unavailable');
+                    const ids = [...new Set(error.specs.map(spec => resolvePdfFont(spec)))];
+                    const item = docs.get(key);
+                    if (item) {
+                        item.clone?.close(); item.clone = undefined; item.doc.close();
+                        item.raw.clear(); item.loaded.clear(); item.needsReopen = true;
+                    }
+                    if (ids.some(id => id === null) || !ids.length) throw new PdfEngineError('NotSupported', 'A font needed by this page is unavailable');
+                    context.emit('font.needed', { ids, docKey: key, ...(typeof args.page === 'number' ? { page: args.page } : {}) });
+                    throw new PdfEngineError('FontPending', 'PDF fonts are being installed');
+                }
+            });
             chain = next.catch(() => {}); return next;
         };
     const lookup = (value: unknown) => {
@@ -38,6 +63,11 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         parsePdfDocKey(key);
         const item = docs.get(key);
         if (!item) throw bad('NotFoundError', 'PDF document is not open');
+        if (item.needsReopen) {
+            if (!backend) throw bad('EngineBroken', 'PDF engine is unavailable');
+            item.doc = backend.open(item.source, { password: item.password });
+            item.needsReopen = false;
+        }
         return { args, key, item };
     };
     const pageNumber = (value: unknown, item: OpenDoc): number => {
@@ -70,18 +100,39 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             })) throw bad('EngineBroken', 'PDF emphasis clone metadata mismatch');
     };
     const geometry = (key: string, item: OpenDoc, page: number, ctx: WorkerContext) => {
-        const result = item.doc.page(page); ctx.emit('page.geometry', { docKey: key, geometry: result }); return result;
+        const before = backend?.heapBytes() ?? 0;
+        const result = item.doc.page(page), signature = JSON.stringify(result), previous = item.geometry.get(page);
+        if (previous !== undefined && previous !== signature) throw bad('EngineBroken', 'PDF page geometry changed');
+        if (previous === undefined) { item.geometry.set(page, signature); ctx.emit('page.geometry', { docKey: key, geometry: result }); }
+        item.loaded.set(page, Math.max(item.loaded.get(page) ?? 0, (backend?.heapBytes() ?? before) - before));
+        for (const [index, bytes] of item.loaded) if (Math.abs(index - page) > (bytes > 64 * 1024 * 1024 ? 1 : 12)) {
+            item.raw.delete(index); item.doc.releasePage(index); item.clone?.releasePage(index); item.loaded.delete(index);
+        }
+        return result;
     };
+    const writerHandlers = Object.fromEntries((['writer.prepareSource', 'writer.emitInk', 'writer.stageAnnotated',
+        'writer.finishAnnotated', 'writer.buildNotebook', 'writer.rotate', 'writer.inspect', 'writer.release'] as const).map(op =>
+        [op, serial((value, ctx) => {
+            if (!writer || binding.engine.role !== 'writer') throw bad('EngineBroken', 'PDF writer is unavailable');
+            return writer.handlers[op as keyof WriterOperations](value, ctx);
+        })]));
     const stop = serve({ endpoint: binding.port, protocol: PDF_ENGINE_PROTOCOL, buildId: binding.engine.buildId, yield: yieldTurn,
         handlers: {
+            ...writerHandlers,
             'engine.init': serial(async (value, ctx) => {
                 const args = record(value) as unknown as EngineInitArgs;
-                if (backend || args.role !== 'render' || args.protocol !== PDF_ENGINE_PROTOCOL || args.roleVersion !== PDF_ENGINE_ROLE_VERSION ||
+                if (backend || writer || args.role !== binding.engine.role || args.protocol !== PDF_ENGINE_PROTOCOL || args.roleVersion !== PDF_ENGINE_ROLE_VERSION ||
                     JSON.stringify(args) !== JSON.stringify(binding.engine)) throw bad('EngineBroken', 'PDF engine initialization mismatch');
                 const started = performance.now(), wasm = await compilePdfEngine(args, ctx.signal);
+                if (args.role === 'writer') {
+                    const { createPdfWriterRuntime } = await import('../writing/nativeHandlers');
+                    writer = await createPdfWriterRuntime({ wasm, glueUrl: binding.glueUrl, abi: binding.abi, role: 'writer',
+                        buildId: args.buildId, artifactSha256: args.artifactSha256 });
+                    return { ...writer.info, initMs: performance.now() - started, heapBytes: writer.heapBytes() };
+                }
                 backend = await loadPdfiumBackend({ wasm, glueUrl: binding.glueUrl, abi: binding.abi, role: args.role,
                     buildId: args.buildId, artifactSha256: args.artifactSha256 });
-                const info = backend.init({ wasm, assetBase: args.assetBase, limits: args.limits, fonts: { request: () => undefined } });
+                const info = backend.init({ wasm, assetBase: args.assetBase, limits: args.limits, fonts: { request: spec => { const id = resolvePdfFont(spec); return id ? fonts.get(id) : undefined; } } });
                 return { ...info, initMs: performance.now() - started, heapBytes: backend.heapBytes() };
             }),
             'doc.open': serial((value) => {
@@ -89,7 +140,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                     (args.password !== undefined && typeof args.password !== 'string')) throw bad('RangeError', 'Invalid PDF open');
                 parsePdfDocKey(args.docKey); const existing = docs.get(args.docKey); if (existing) return existing.doc.info();
                 const source = new PdfBlobSource(args.source);
-                try { const doc = backend.open(source, { password: args.password as string | undefined }); docs.set(args.docKey, { doc, source, raw: new Map() }); return doc.info(); }
+                try { const doc = backend.open(source, { password: args.password as string | undefined }); docs.set(args.docKey, { doc, source, raw: new Map(), geometry: new Map(), loaded: new Map(), password: args.password as string | undefined, needsReopen: false }); return doc.info(); }
                 catch (error) { source.close(); throw error; }
             }),
             'doc.close': serial(value => { const args = record(value); if (typeof args.docKey !== 'string') throw bad('RangeError', 'Invalid PDF document key');
@@ -167,10 +218,18 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             'page.links': serial((value, ctx) => { const { args, key, item } = lookup(value), page = pageNumber(args.page, item); geometry(key, item, page, ctx); return item.doc.links(page); }),
             'page.complexity': serial(value => { const { args, item } = lookup(value); return item.doc.complexity(pageNumber(args.page, item)); }),
             'page.imageRegions': serial(value => { const { args, item } = lookup(value); return item.doc.imageRegions(pageNumber(args.page, item)); }),
-            'page.release': serial(value => { const { args, item } = lookup(value), page = pageNumber(args.page, item); item.raw.delete(page); item.doc.releasePage(page); item.clone?.releasePage(page); return {}; }),
+            'page.release': serial(value => { const { args, item } = lookup(value), page = pageNumber(args.page, item); item.raw.delete(page); item.loaded.delete(page); item.doc.releasePage(page); item.clone?.releasePage(page); return {}; }),
             'doc.outline': serial(value => { const { item } = lookup(value); return item.doc.outline({ maxDepth: 64, maxNodes: 20_000 }); }),
             'doc.attachment': serial((value, ctx) => { const { args, item } = lookup(value); if (!Number.isSafeInteger(args.index) || !Number.isSafeInteger(args.maxBytes) || (args.maxBytes as number) < 0 || (args.maxBytes as number) > 0x7fffffff) throw bad('RangeError', 'Invalid attachment request'); const data = item.doc.attachment(args.index as number, args.maxBytes as number); const buffer = data.slice().buffer as ArrayBuffer; ctx.transfer(buffer); return buffer; }),
-            'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.raw.size, 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
+            'font.provide': serial((value) => {
+                const args = record(value);
+                if (typeof args.id !== 'string' || !Object.hasOwn(PDF_FONT_CATALOGUE, args.id) || !(args.bytes instanceof ArrayBuffer)) throw bad('RangeError', 'Invalid PDF font asset');
+                const id = args.id as PdfFontId;
+                if (args.bytes.byteLength !== PDF_FONT_CATALOGUE[id].bytes) throw bad('RangeError', 'Invalid PDF font asset length');
+                if (!fonts.has(id)) { fonts.set(id, new Uint8Array(args.bytes)); fontEpoch++; }
+                return { fontEpoch };
+            }),
+            'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.loaded.size, 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); channel.port1.close(); channel.port2.close(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); void writer?.close(); channel.port1.close(); channel.port2.close(); };
 }

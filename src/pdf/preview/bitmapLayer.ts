@@ -35,7 +35,7 @@ export class PreviewBitmapLayer implements Layer {
     readonly bitmaps: PreviewBitmapStore;
     private readonly uploaded = new Map<PreviewTile, UploadedTile>();
     private pendingFrame = false;
-    private cpuPrepare: (() => void) | null = null;
+    private cpuPrepare: ((view: ViewState) => void) | null = null;
     private disposed = false;
     private expected = new Map<number, PreviewExpectedPage>();
 
@@ -49,7 +49,7 @@ export class PreviewBitmapLayer implements Layer {
     /** Prospective demand is installed by the actor's ResizeObserver before this shared-frame phase.
      * Starting copies in the viewer's sync callback races the first observation and its zero grant.
      */
-    queueCpuPrepare(prepare: (() => void) | null): void {
+    queueCpuPrepare(prepare: ((view: ViewState) => void) | null): void {
         this.cpuPrepare = prepare;
         if (prepare) this.host.invalidate('pdf-preview-copy-ready');
     }
@@ -60,6 +60,7 @@ export class PreviewBitmapLayer implements Layer {
     }
 
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
+        if (this.cpuPrepare) return { complete: false, sharp: false };
         const bounds = {
             x: view.camera.x, y: view.camera.y,
             width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z,
@@ -107,7 +108,7 @@ export class PreviewBitmapLayer implements Layer {
             if (budget.shouldYield()) { this.pendingFrame = true; return; }
             const prepare = this.cpuPrepare;
             this.cpuPrepare = null;
-            prepare();
+            prepare(view);
         }
         const device = this.host.device();
         if (!device || this.disposed) return;

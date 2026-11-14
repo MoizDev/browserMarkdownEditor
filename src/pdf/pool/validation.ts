@@ -19,7 +19,9 @@ function choice<T extends string>(value: unknown, choices: readonly T[]): T {
 }
 function bytes(value: unknown, max: number): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength > max) invalidPdfReply();
-    return value.slice(0);
+    // A transferred, non-shared buffer is already host-owned; rebuilding the
+    // surrounding records does not require a second tile-sized allocation.
+    return value;
 }
 function destination(value: unknown, pageCount: number, bound: number): PdfLinkDestination | undefined {
     const o = record(value, ['page', 'view', 'params', 'zoom']);

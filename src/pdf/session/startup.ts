@@ -30,7 +30,9 @@ export function retainPdfFocus(documentId: string): PdfFocusLease {
 /** Install only a contained pool; failed startup/recovery never silently selects Classic (security §1). */
 export function startPdfPool(): void {
     if (active) return;
-    const broker = createPdfWorkerBroker(() => { if (active === current) current.dispose(); });
+    // Broker loss fails direct requests and performs bounded frame recovery. It
+    // must not replace the pool underneath retained App-owned source sessions.
+    const broker = createPdfWorkerBroker(() => {});
     const pool = createPdfPool({ broker });
     let uninstall: (() => void) | undefined;
     try { uninstall = installTiledPdfPool(pool, id => !!focused.get(id)?.size); }

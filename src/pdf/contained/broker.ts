@@ -12,12 +12,23 @@ export function createPdfWorkerBroker(onFailure: (error: PdfEngineError) => void
     let frame: PdfEngineFrame | undefined;
     let pending: Promise<PdfEngineFrame> | undefined;
     let disposed = false;
+    let broken: PdfEngineError | undefined;
+    const losses: number[] = [];
     const acquire = (): Promise<PdfEngineFrame> => {
         if (disposed) return Promise.reject(new PdfEngineError('EngineBroken', 'PDF broker is closed'));
+        if (broken) return Promise.reject(broken);
         if (frame) return Promise.resolve(frame);
         pending ??= loadTrustedPdfAssets(controller.signal).then(assets => {
             if (disposed) throw new PdfEngineError('EngineBroken', 'PDF broker is closed');
-            return frame = new PdfEngineFrame(assets, workerSource, error => { frame = undefined; onFailure(error); });
+            return frame = new PdfEngineFrame(assets, workerSource, error => {
+                frame = undefined;
+                const now = Date.now();
+                while (losses.length && losses[0] < now - 60_000) losses.shift();
+                losses.push(now);
+                // Keep the App-owned pool and its immutable document slots alive.
+                // Direct-port failures retry against one fresh frame, never stale factories.
+                if (losses.length >= 2) { broken = error; onFailure(error); }
+            });
         }).finally(() => { pending = undefined; });
         return pending;
     };

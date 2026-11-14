@@ -4,7 +4,7 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
-import { createPdfTextReader, pdfTextAnchor } from '../utils/pdfReadingText';
+import { createPdfTextReader, pdfTextAnchor, USER_TEXT_NAVIGATION_CAUSES } from '../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
 import { readPdfNavigationRevision, readPdfViewPos, writePdfViewPos } from '../utils/pdfViewState';
 import type { PdfViewPos } from '../utils/pdfViewState';
@@ -162,6 +162,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const [initialTextAnchor, setInitialTextAnchor] = useState<PdfTextAnchor>();
     const originalCheckpoint = useRef<(PdfViewPos & { navigationRevision: number }) | undefined>(undefined);
     const textNavigationRevision = useRef(0);
+    const textCheckpointRevision = useRef(0);
+    const savedAtMount = reading?.initialRecord;
+    const protectedRestore = useRef<{ textRevision: number; originalRevision: number } | undefined>(
+        savedAtMount && (!savedAtMount.anchorUsable || savedAtMount.storedV !== 1 || savedAtMount.storedSchema !== 1)
+            ? { textRevision: 0, originalRevision: readPdfNavigationRevision(file.path) } : undefined);
+    const [sameTextSchema, setSameTextSchema] = useState(true);
+    const [restoreNotice, setRestoreNotice] = useState('');
     const textPage = useRef(0);
     const [mappingNotice, setMappingNotice] = useState('');
     const [nativeReader, setNativeReader] = useState<EmphasisAvailability>(() => pdfNativeEmphasisAvailability());
@@ -179,6 +186,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     function publishLocation(cause: LocationCause, surface = textSurfaceRef.current) {
         const b = binding.current, version = displayedVersion.current;
         if (!b || !version) return;
+        const held = protectedRestore.current;
+        // A rollback must still find the other engine's original record. Only
+        // the app's navigation counters release it, never a layout/cleanup cause.
+        if (held) {
+            if (textNavigationRevision.current <= held.textRevision && readPdfNavigationRevision(file.path) <= held.originalRevision) return;
+            protectedRestore.current = undefined;
+        }
         const pos = surface ? originalCheckpoint.current : readPdfViewPos(file.path);
         b.onReaderLocation(b.identity, { kind: 'pdf-text', value: {
             v: 1, surface: surface ? 'text' : 'original', rawFingerprint: version.hash, extractionSchema: 1,
@@ -208,10 +222,11 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (textSurfaceRef.current) { focusReading(); return; }
         const epoch = ++returnEpoch.current;
         setMappingNotice('');
+        setSameTextSchema(true); setRestoreNotice(''); pageDigest.current = undefined;
         const checkpoint = readPdfViewPos(file.path) ?? { page: 0, offset: 0, zoom: 1 };
         const revision = readPdfNavigationRevision(file.path);
         originalCheckpoint.current = { ...checkpoint, navigationRevision: revision };
-        textNavigationRevision.current = 0;
+        textCheckpointRevision.current = textNavigationRevision.current;
         textPage.current = checkpoint.page;
         let next: PdfTextAnchor = { physicalPageIndex: checkpoint.page, offsetUTF16: 0, affinity: 'after', quote: '', before: '', after: '' };
         if (textAnchor.current?.physicalPageIndex === checkpoint.page && lastReturnRevision.current === revision) next = textAnchor.current;
@@ -243,7 +258,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (!textSurfaceRef.current) { focusReading(); return; }
         const checkpoint = originalCheckpoint.current ?? { page: 0, offset: 0, zoom: 1 };
         let target = checkpoint;
-        if (pageIndex !== undefined || textNavigationRevision.current > 0) {
+        if (pageIndex !== undefined || textNavigationRevision.current > textCheckpointRevision.current) {
             const page = pageIndex ?? textPage.current;
             target = { ...checkpoint, page, offset: 0 };
             const anchor = textAnchor.current;
@@ -379,6 +394,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     }
                     b?.onReaderVersion(b.identity, current.version);
                 }
+                if (binding.current?.initialRecord?.record.rawFingerprint !== current.version.hash) protectedRestore.current = undefined;
                 displayedVersion.current = current.version;
                 setSource({ role, handle, path: file.path, entry: annotateEntry });
             } catch (err) {
@@ -406,23 +422,34 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 const { bytes, version } = await readBytesVersioned(file.handle as FileSystemFileHandle);
                 if (cancelled) return;
                 const b = binding.current;
+                if (b?.initialRecord?.record.rawFingerprint !== version.hash) protectedRestore.current = undefined;
                 displayedVersion.current = version;
                 // A read-only foreign view must not move the write baseline
                 // after App captured it for the keep-copy choice.
                 if (!writeState.current.isDirty && !writeState.current.disk) b?.onReaderVersion(b.identity, version);
                 if (!restoredRecord.current) {
                     restoredRecord.current = true;
-                    const record = b?.initialRecord;
-                    if (record?.extractionSchema === 1 && record.rawFingerprint === version.hash) {
+                    const saved = b?.initialRecord, record = saved?.record;
+                    if (saved && record?.rawFingerprint === version.hash) {
+                        const sameSchema = saved.anchorUsable && saved.storedSchema === 1 && saved.storedV === 1;
                         originalCheckpoint.current = record.originalCheckpoint;
                         textNavigationRevision.current = record.textNavigationRevision;
-                        textAnchor.current = record.textAnchor;
-                        textPage.current = record.textAnchor?.physicalPageIndex ?? record.originalCheckpoint.page;
-                        pageDigest.current = record.pageDigest;
+                        textCheckpointRevision.current = record.textNavigationRevision;
+                        protectedRestore.current = sameSchema ? undefined : {
+                            textRevision: textNavigationRevision.current, originalRevision: readPdfNavigationRevision(file.path),
+                        };
+                        setSameTextSchema(sameSchema);
+                        const notice = saved.anchorUsable ? '' : 'Restored to the page; the saved text position was made by a newer version of the app.';
+                        setRestoreNotice(notice); setMappingNotice(notice);
+                        const anchor = record.textAnchor ?? { physicalPageIndex: record.originalCheckpoint.page,
+                            offsetUTF16: 0, affinity: 'after' as const, quote: '', before: '', after: '' };
+                        textAnchor.current = anchor;
+                        textPage.current = anchor.physicalPageIndex;
+                        pageDigest.current = sameSchema ? record.pageDigest : undefined;
                         writePdfViewPos(file.path, record.originalCheckpoint);
                         if (record.surface === 'text') {
                             textSurfaceRef.current = true;
-                            setInitialTextAnchor(record.textAnchor);
+                            setInitialTextAnchor(anchor);
                             setTextSurface(true);
                         }
                     }
@@ -549,12 +576,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         } else {
             body = textSurface && textReader ? (
                 <PdfReadingText filePath={file.path} controller={textReader} isFocused={isFocused} isVisible={isVisible} anchor={initialTextAnchor} expectedPageDigest={pageDigest.current}
+                    sameSchema={sameTextSchema} restorationNotice={restoreNotice}
                     onShowOriginalPage={page => { void showOriginal(page); }} onShowOriginal={() => { void showOriginal(); }}
                     onLocation={(anchor, cause, digest) => {
                         textAnchor.current = anchor;
                         pageDigest.current = digest;
                         textPage.current = anchor.physicalPageIndex;
-                        if (cause === 'user-scroll' || cause === 'user-navigation' || cause === 'search' || cause === 'link') ++textNavigationRevision.current;
+                        if (USER_TEXT_NAVIGATION_CAUSES.some(userCause => userCause === cause)) ++textNavigationRevision.current;
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />

@@ -69,8 +69,8 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         ...reading,
         identity,
         // Read once, with the binding: it is the state this document OPENED
-        // with, and re-reading it per render re-ran its validation and cloned
-        // the record for nothing.
+        // with, including its source schema and write-protection metadata.
+        // Re-reading per render would validate and clone it for nothing.
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);

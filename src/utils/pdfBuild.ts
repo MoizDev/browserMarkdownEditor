@@ -174,19 +174,38 @@ export async function buildAnnotatedPdf(
 
     for (let i = 0; i < pages.length; i++) {
         const overlay = overlays[i];
-        if (!overlay) continue;
-
-        // Raster first, then vector. A page needs both only when it mixes ink
-        // with a shape that has no path form (a text label, a pasted image), and
-        // in that mix the ink is what the reader expects to be on top.
-        if (overlay.raster?.length) {
-            // This copy STAYS. The ownership + non-mutation argument above was
-            // established for load() and attach() by reading their code; pdf-lib's
-            // PNG decode path has not been audited the same way, and an overlay is
-            // small next to the document. Don't drop it without doing that reading.
-            stampRaster(pages[i], await doc.embedPng(overlay.raster.slice()));
+        if (!overlay || (!overlay.raster?.length && !overlay.vector?.length)) continue;
+        const geometry = overlay.geometry;
+        if (!geometry || geometry.pageIndex !== i || !geometry.engine.startsWith('pdfjs/') ||
+            ![geometry.width, geometry.height, ...geometry.toUserSpace].every(Number.isFinite) ||
+            geometry.width <= 0 || geometry.height <= 0) {
+            throw new Error(`Missing or invalid display geometry for PDF page ${i + 1}.`);
         }
-        if (overlay.vector?.length) stampVector(pages[i], overlay.vector);
+        const [a, b, c, d, e, f] = geometry.toUserSpace;
+        if (a * d - b * c === 0) throw new Error(`Singular display geometry for PDF page ${i + 1}.`);
+
+        // The Form's bounding box clips the page-local display list. Both kinds
+        // of ink use the very same inverse viewport when the Form is placed.
+        const ink = await PDFDocument.create();
+        const inkPage = ink.addPage([geometry.width, geometry.height]);
+        if (overlay.raster?.length) stampRaster(inkPage, await ink.embedPng(overlay.raster.slice()));
+        if (overlay.vector?.length) stampVector(inkPage, overlay.vector);
+        const embedded = await doc.embedPage(inkPage);
+        const page = pages[i];
+        // pdf-lib normalizes inherited resources in place. Fork both the outer
+        // dictionary and its mutable subdictionaries before adding the Form.
+        const resources = page.node.Resources()?.clone() ?? doc.context.obj({});
+        for (const name of ['Font', 'XObject', 'ExtGState']) {
+            const key = PDFName.of(name);
+            const entry = resources.lookup(key);
+            if (entry instanceof PDFDict) resources.set(key, entry.clone());
+        }
+        page.node.set(PDFName.of('Resources'), resources);
+        // Form space is bottom-up; the viewport inverse expects top-down.
+        page.pushOperators(pushGraphicsState(), concatTransformationMatrix(a, b, -c, -d,
+            c * geometry.height + e, d * geometry.height + f));
+        page.drawPage(embedded, { x: 0, y: 0, width: geometry.width, height: geometry.height });
+        page.pushOperators(popGraphicsState());
     }
 
     doc.attach(original, ORIGINAL_ATTACHMENT, {

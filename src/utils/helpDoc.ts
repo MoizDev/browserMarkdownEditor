@@ -517,7 +517,9 @@ saying it is read-only; drawing and saving change nothing in it. You can still
 read, select, copy and find in it, and open its Text. Choose **Retry** if an
 attachment could not be read; otherwise open it in a version of the app that wrote
 it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away. Existing attachments are retained when you save;
+just to make the note go away. If one PDF page cannot be rendered, its notice offers
+Retry while the other pages remain available. Very long PDFs initially use estimated
+page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
 if different attachments have the same name, a notice gives the recovered names
 used to keep both. If attachment repair or its verification fails, nothing is written.
 

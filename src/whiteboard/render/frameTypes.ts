@@ -1,4 +1,5 @@
 import type { FrameBudget } from '../../platform/render/types';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PaintFrame, PaintNodeSource } from './paintStream';
 import type { PaintFrameSource } from './resources';
 
@@ -9,6 +10,9 @@ export interface PinnedPaintSource {
     release(): void;
 }
 export interface PaintFrameAssembler extends PaintFrameSource {
+    bindMemory?(allocator: MemoryAllocator): void;
+    cpuWorkingSet?(): number;
+    memoryBytes?(): number;
     /** Superseding a request cancels and releases only the incomplete staging source. */
     request(source: PinnedPaintSource): void;
     prepare(budget: FrameBudget): void;

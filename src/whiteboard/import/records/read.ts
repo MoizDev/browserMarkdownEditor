@@ -184,13 +184,16 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape');
         }
     }
+    const byId = new Map<NodeId, Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     if (options.kind !== 'whiteboard' && nodes.length) {
         if (!options.preparePages) throw new Error('Paged import requires page geometry');
         const pageForRoot = await options.preparePages(shapes, nodes, sheets, envelope.paper);
         options.signal?.throwIfAborted();
         options.assertCurrent();
         for (const node of nodes) {
-            if (!sheetIds.has(node.parent as SheetId)) continue;
+            const parent = byId.get(node.parent as NodeId);
+            if (!sheetIds.has(node.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
             try {
                 const position = pageForRoot(node);
                 if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
@@ -198,8 +201,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page'); }
         }
     }
-    const byId = new Map<NodeId, Node>();
-    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     const mappedNodes = nodes.map(node => {
         let ancestor = node;
         for (let depth = 0; depth <= 64; depth++) {

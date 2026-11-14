@@ -85,6 +85,25 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
                 candidate = { ...node, points };
                 ops.push({ t: 'set', id: node.id, key: 'points', value: points });
             }
+        } else if (node.kind === 'sticky') {
+            if (oldBox.w <= 0 || oldBox.h <= 0) throw new AgentOpRefused('a zero-extent note cannot be resized');
+            const sx = (op.w ?? oldBox.w) / oldBox.w, sy = (op.h ?? oldBox.h) / oldBox.h;
+            if (Math.abs(sx - sy) > 1e-9) throw new AgentOpRefused('notes only support proportional resizing');
+            const scale = node.scale * sx;
+            candidate = { ...node, scale };
+            ops.push({ t: 'set', id: node.id, key: 'scale', value: scale });
+        } else if (node.kind === 'connector') {
+            if (node.start.attach || node.end.attach) throw new AgentOpRefused('detach connector ends before resizing');
+            if ((op.w !== undefined && oldBox.w <= 0) || (op.h !== undefined && oldBox.h <= 0))
+                throw new AgentOpRefused('a zero-extent connector axis cannot be resized');
+            const sx = op.w === undefined ? 1 : op.w / oldBox.w, sy = op.h === undefined ? 1 : op.h / oldBox.h;
+            if (node.bend !== 0 && Math.abs(sx - sy) > 1e-9) throw new AgentOpRefused('a curved connector only supports proportional resizing');
+            const stretch = (point: typeof node.start) => ({ x: oldBox.x + (point.x - oldBox.x) * sx,
+                y: oldBox.y + (point.y - oldBox.y) * sy, attach: null });
+            const start = stretch(node.start), end = stretch(node.end), bend = node.bend * sx;
+            candidate = { ...node, start, end, bend };
+            ops.push({ t: 'set', id: node.id, key: 'start', value: start },
+                { t: 'set', id: node.id, key: 'end', value: end }, { t: 'set', id: node.id, key: 'bend', value: bend });
         } else {
             if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
             candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };

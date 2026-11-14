@@ -45,6 +45,31 @@ export function paintItem2d(ctx: PaintContext2d, item: PaintItem, resources: Pai
             const image = resources.image(item.imageKey), dst = item.rect, src = item.sourceRect;
             if (src) ctx.drawImage(image, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
             else ctx.drawImage(image, dst.x, dst.y, dst.width, dst.height);
+        } else if (item.kind === 'text') {
+            applyLocal(ctx, base, item.localToWorld);
+            for (let i = 0; i < item.paint.backgrounds.length; i++) {
+                const rect = item.paint.backgrounds[i];
+                ctx.fillStyle = colourCss(item.material.backgrounds[i]);
+                ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+            }
+            let colour = 0;
+            for (const line of item.paint.lines) for (const fragment of line.fragments) {
+                const face = item.faces.faces[fragment.face];
+                ctx.font = face.css; ctx.direction = fragment.rtl ? 'rtl' : 'ltr'; ctx.textAlign = 'left';
+                ctx.textBaseline = 'alphabetic'; ctx.fontKerning = 'normal'; ctx.textRendering = 'geometricPrecision';
+                ctx.letterSpacing = '0px'; ctx.wordSpacing = '0px'; ctx.fontVariantCaps = 'normal';
+                ctx.fillStyle = colourCss(item.material.glyphs[colour++]);
+                ctx.save();
+                ctx.translate(fragment.x, line.baseline);
+                ctx.scale(face.size / 64, face.size / 64);
+                ctx.fillText(fragment.text, 0, 0);
+                ctx.restore();
+            }
+            for (let i = 0; i < item.paint.decorations.length; i++) {
+                const rect = item.paint.decorations[i];
+                ctx.fillStyle = colourCss(item.material.decorations[i]);
+                ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+            }
         } else {
             const prepared = resources.path(item);
             applyLocal(ctx, base, item.localToWorld, prepared.origin);

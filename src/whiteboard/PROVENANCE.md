@@ -19,7 +19,8 @@ third-party code included (normally "none") · date.
 | `chrome/theme.ts` | w-j | F-THEME-001/002/003/006, R-26, WB-D28 | integration §6; rendering §5 | Theme specification and host scope ruling; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/preferences.ts` | w-j | F-PREF-002/003/005/006/008/012, WB-D30 | integration §§6–7 | Preference specification and public model view flags; session/view changes delegated to host persistence; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/viewFlags.ts` | w-j | F-PREF-002/003/005/012, WB-D30 | integration §§6–7; change-and-history §2 | Model's public session/apply and per-kind dirty policies, PDF browser-record callback; no tldraw or old canvas source | none | 2026-11-13 |
-| `chrome/language.ts` | w-j | F-LANG-001/002/003/004/005 | integration §6.2 | Own English keys and locale manifest, Intl plural rules, input validation and latest-choice async ordering; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/styleCommands.ts` | w-j | F-STYLE-002/004/005/006/007/008, R-2/R-9/R-20 | integration §6; geometry §3.2; change-and-history §2 | Style specification, public model operations and shared StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/language.ts` | w-j | F-LANG-001/002/003/004/005 | integration §6.2 | Own English keys and ready locale manifest, Intl plural rules, input validation and latest-choice async ordering; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Model, changes, history and text (lane w-c)
 
@@ -57,7 +58,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, C8, public model interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
-| `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and model/apply public interfaces; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/transaction.ts` | w-p | F-AGENT-002/003/004/005/012/013, C8 | integration §9; change and history §3 | Agent specification and shared session queue/agent batch runner; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/validate.ts` | w-p | F-AGENT-002/012/013/015, C8 | integration §9 | Agent specification and public model style vocabulary; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/create.ts` | w-p | F-AGENT-002/012/013, C8 | integration §9, document-model §§3–4 | Agent spec and public model/change/page APIs; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/createInk.ts` | w-p | F-AGENT-002/003/013/015, C8 | integration §9, ink §2 | Agent spec, sample store and public geometry/model APIs; no tldraw or old canvas source | none | 2026-11-13 |
@@ -137,7 +138,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
 | `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, sheet-aware asynchronous geometry preparation, notebook and saved PDF backdrop layout | none | 2026-11-13 |
-| `import/worldBounds.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; text §6 | Public text layout, rectangle/figure geometry and geometry provider; recursive parent transforms and group bounds | none | 2026-11-13 |
+| `import/worldBounds.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; text §6 | Public text layout/geometry scale contract; rectangle/figure geometry, recursive parent transforms and group bounds | none | 2026-11-13 |
 | `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
 | `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2/4 | import §§2,6; current-format §§1–3 | Observed envelopes, schema counters, metadata retention and mismatched-record recovery | none | 2026-11-13 |
 | `import/records/storeFields.ts` | w-o | IMP-1, E-IMP-4 | import §6; document-model §9.2 | JSON format and duplicate-record preservation requirement | none | 2026-11-13 |
@@ -226,7 +227,7 @@ third-party code included (normally "none") · date.
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |
 | `geom/pick.ts` | lane w-g | GE-3; F-SEL-001/003/004 | geometry §5.1–5.4 | Design; shared ink affine-distance, exact line topology, w-h contour clipper and semantic-interior region geometry | none | 2026-11-13 |
 | `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; w-e SpatialQuery adapter, scene stamps and resumable narrow-phase services, no second index | none | 2026-11-13 |
-| `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; session-only selection, locked reconciliation and hierarchy navigation | none | 2026-11-13 |
+| `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; session-only selection, history restore, locked reconciliation and hierarchy navigation | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; model indexed opaque guard and w-c's shared locked-descendant deletion command | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool contract; injected resumable scene selection and transform services | none | 2026-11-13 |
 
@@ -315,5 +316,6 @@ third-party code included (normally "none") · date.
 | `host/notebookExport.ts` | lane w-l | F-NB-011/014, F-SHEET-008, R-12, C2.4 | notebook §§F-NB-011/014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
 | `host/pageDisplay.ts` | lane w-l | F-NB-014, F-SHEET-008, C2.4 | notebook §F-NB-014; contracts C2.4 | Specs, platform display list and paint-frame export; no tldraw source | none | 2026-11-13 |
 | `host/pagedView.ts` | lane w-l | F-NB-003/005/009/013, C1.2/1.4/1.5 | notebook §§F-NB-003/005/009/013 | Specs and platform camera/page-stack contracts; no tldraw source | none | 2026-11-13 |
+| `host/conversionInfo.ts` | lane w-l | I-2, D-WB-convert-backup, C7 | import §4; contracts C7 | Owned conversion metadata interface; no tldraw source | none | 2026-11-13 |
 | `host/pdfAttachments.ts` | lane w-l | F-PINK-008, C2.4, R-W15 | pdf-ink §F-PINK-008; native-format §3.6 | Specs, PDF writer attachment contract, owned fence and media hash APIs; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkExport.ts` | lane w-l | F-PINK-008, F-SHEET-008, R-12, C2.4 | pdf-ink §F-PINK-008; sheets §F-SHEET-008 | Specs, platform page geometry/display-list and PDF writer contracts; no tldraw source | none | 2026-11-13 |

@@ -51,6 +51,8 @@ interface ConfirmDialogProps {
     input?: {
         label: string;
         initialValue: string;
+        /** Mask secrets without changing the default for ordinary prompts. */
+        type?: 'text' | 'password';
         placeholder?: string;
         /**
          * Why this value cannot be accepted, or null. Runs on every keystroke:
@@ -173,7 +175,7 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
                             ref={inputRef}
                             id={inputId}
                             className="confirm-input"
-                            type="text"
+                            type={input.type ?? 'text'}
                             value={value}
                             placeholder={input.placeholder}
                             autoComplete="off"

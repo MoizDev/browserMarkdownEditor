@@ -36,21 +36,21 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
     };
     return {
         async prepare(projection, baseline, context) {
-            if (disposed || !authority.isCurrent(context.job)) throw new DOMException('Board load is no longer current', 'AbortError');
-            context.assertCurrent();
-            const cooperate = async () => { context.assertCurrent(); await ports.cooperate?.(); context.assertCurrent(); };
+            if (disposed) throw new DOMException('Board load is no longer current', 'AbortError');
+            authority.assertContext(context);
+            const cooperate = async () => { authority.assertContext(context); await ports.cooperate?.(); authority.assertContext(context); };
             const load = await rehydrateLoad(projection, ports.admit, ports.samples, cooperate, context.signal);
             let registered: AdmittedLoadToken | undefined;
             try {
                 await validateLoadSources(load.sources, load.removedSources, load.unmapped, baseline, cooperate, context.signal);
-                context.assertCurrent();
+                authority.assertContext(context);
                 if (disposed) throw new DOMException('Board load admission is disposed', 'AbortError');
                 const token = Object.freeze({ kind: 'admitted-board-load' }) as AdmittedLoadToken;
                 const abort = () => discard(token);
                 owned.set(token, { job: context.job, load, signal: context.signal, abort });
                 registered = token;
                 context.signal.addEventListener('abort', abort, { once: true });
-                context.assertCurrent();
+                authority.assertContext(context);
                 return token;
             } catch (error) {
                 if (registered) discard(registered); else load.release();

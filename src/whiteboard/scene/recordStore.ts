@@ -7,6 +7,8 @@ export interface SceneRecordPin {
     get(id: NodeId): Node | undefined;
     values(): Iterable<Node>;
     children(parent: ParentId): Iterable<Node>;
+    childCount(parent: ParentId): number;
+    childAt(parent: ParentId, index: number): Node | undefined;
     release(): void;
 }
 export interface SceneRecordStore {
@@ -165,6 +167,26 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
         const previous = root, previousParents = parentRoot;
         root = staged; parentRoot = stagedParents; releaseLink(previous); releaseLink(previousParents);
     };
+    const parentRank = (base: Link | null, parent: ParentId, upper: boolean): number => {
+        let cursor = base, rank = 0;
+        while (cursor) {
+            const key = cursor.value.node.parent;
+            if (key < parent || (upper && key === parent)) {
+                rank += countLinks(cursor.left) + 1; cursor = cursor.right;
+            } else cursor = cursor.left;
+        }
+        return rank;
+    };
+    const select = (base: Link | null, rank: number): Node | undefined => {
+        let cursor = base;
+        while (cursor) {
+            const left = countLinks(cursor.left);
+            if (rank === left) return cursor.value.node;
+            if (rank < left) cursor = cursor.left;
+            else { rank -= left + 1; cursor = cursor.right; }
+        }
+        return undefined;
+    };
     const pin = (): SceneRecordPin => {
         if (disposed) throw new Error('Scene record store is disposed');
         let held = keep(root), heldParents = keep(parentRoot), released = false;
@@ -182,6 +204,16 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
                     yield next.value.node;
                     cursor = next.right;
                 }
+            },
+            childCount(parent) {
+                guard();
+                return parentRank(heldParents, parent, true) - parentRank(heldParents, parent, false);
+            },
+            childAt(parent, index) {
+                guard();
+                if (!Number.isSafeInteger(index) || index < 0) throw new RangeError('Invalid child index');
+                const first = parentRank(heldParents, parent, false), end = parentRank(heldParents, parent, true);
+                return index < end - first ? select(heldParents, first + index) : undefined;
             },
             *children(parent) {
                 guard();

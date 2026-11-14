@@ -1,5 +1,4 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
-import type { RichText } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -18,7 +17,6 @@ export interface EditLayout {
     readonly clientToLocal: TextTransform;
 }
 export interface EditSessionServices extends EditTransactions {
-    readText(): RichText;
     plainText(): string;
     alive(): boolean;
     layout(): EditLayout;
@@ -26,6 +24,7 @@ export interface EditSessionServices extends EditTransactions {
     compositionFormat(event: Event): void;
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
+    undoTransformation(): boolean;
     changed(selection: EditSelection): void;
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
@@ -99,8 +98,7 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
         this.lastActivity = performance.now();
-        this.controller.replace(change, kind, this.selection);
-        this.selection = change.selection;
+        this.selection = this.controller.replace(change, kind, this.selection);
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
@@ -156,6 +154,7 @@ export class TextEditSession {
                 else this.services.command(command, this.selection);
             },
             inList: () => this.services.inList(this.selection.focus),
+            undoTransformation: () => this.services.undoTransformation(),
         }, this.mac);
     }
 

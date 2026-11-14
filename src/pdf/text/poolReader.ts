@@ -75,7 +75,7 @@ export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfT
         async navigate(anchor) { return (await resolveAnchor(anchor, { sameSchema: true })).anchor; },
         setWindow(index) { center = index; },
         setVisible(next) {
-            if (next === visible) return;
+            if (lifetime.signal.aborted || next === visible) return;
             visible = next;
             findEngine.setVisible(next);
             if (next) { visibility = new AbortController(); if (hiddenTimer !== undefined) clearTimeout(hiddenTimer); hiddenTimer = undefined; }

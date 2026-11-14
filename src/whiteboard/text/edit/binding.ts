@@ -129,6 +129,7 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
     return {
         editor,
         refresh() { if (!closed) editor.sync(); },
+        insertText(text) { if (!closed) editor.insertText(text); },
         close(commitComposition = true) { if (!closed) editor.close(commitComposition); },
     };
 }

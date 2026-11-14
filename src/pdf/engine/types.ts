@@ -62,8 +62,6 @@ export interface DocInfo {
     pageCount: number;
     pages: PageGeometry[];
     encrypted: boolean;
-    /** Unknown unless the engine can explicitly distinguish recovered from pristine input. */
-    repairStatus: 'clean' | 'repaired' | 'unknown';
     permissions: number | null;
     signatureCount: number;
     tagged: boolean;

@@ -772,7 +772,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />
-            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
+            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} previewIdentity={reading?.identity} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
                 onLocation={() => publishLocation('layout', false)} onPageRendered={previewPainted} emphasisEnabled={reading?.emphasisEnabled ?? false}
                 onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
                 retryDisabled={retryBusy || isDirty || flushing || !!disk} />

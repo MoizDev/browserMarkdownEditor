@@ -26,7 +26,7 @@ export function useIndexGraph(options: {
     tree: FileTreeNode[];
     resolve(path: string): Promise<FileSystemFileHandle | null>;
     stat(handle: FileSystemFileHandle): Promise<{ lastModified: number; size: number } | null>;
-    publish(graph: GraphData | null): void;
+    publish(graph: GraphData | null, activation: number, current: () => boolean): void;
     onSnapshot?(stale: boolean): void;
     onStatus?(status: IndexProgress): void;
     onProblem(problem: unknown): void;
@@ -39,7 +39,7 @@ export function useIndexGraph(options: {
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
     useEffect(() => {
         let live = true;
-        publish(null);
+        publish(null, activation, () => live && getActivation() === activation);
         if (!root) return () => { live = false; };
         let starting: Promise<ActiveIndexGraph> | undefined;
         const start = () => {
@@ -47,10 +47,14 @@ export function useIndexGraph(options: {
             starting = import('./client').then(({ VaultIndexClient }) => {
                 if (!live || getActivation() !== activation) throw new DOMException('Vault changed', 'AbortError');
                 const session = newIndexSession(vaultId ?? `activation:${activation}`);
-                const client = new VaultIndexClient(session, snapshot => {
-                    if (!live || getActivation() !== activation) return;
-                    const graph = graphForTree(snapshot, latestTree.current);
-                    if (graph) { publish(graph); onSnapshot?.(snapshot.stale); }
+                const client: VaultIndexClient = new VaultIndexClient(session, snapshot => {
+                    const treeAtReply = latestTree.current;
+                    const epoch = client.publicationEpoch;
+                    const current = () => live && getActivation() === activation && active.current?.client === client
+                        && latestTree.current === treeAtReply && client.acceptsGraph(snapshot.graphGen, snapshot.treeGen, epoch);
+                    if (!current()) return;
+                    const graph = graphForTree(snapshot, treeAtReply);
+                    if (graph) { publish(graph, activation, current); onSnapshot?.(snapshot.stale); }
                 }, problem => { if (live && getActivation() === activation) onProblem(problem); }, status => {
                     if (live && getActivation() === activation) onStatus?.(status as IndexProgress);
                 });
@@ -88,7 +92,7 @@ export function useIndexGraph(options: {
             }
         };
     }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onProblem]);
-    useEffect(() => {
+    useLayoutEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;
         const next = indexTree(tree);

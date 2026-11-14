@@ -74,7 +74,10 @@ export class StreamingDenseTileJob {
     private readonly pending = new Set<Promise<unknown>>();
     private stream: ScenePaintNodeStream | null = null;
     private opening = false;
-    private reading = false;
+    private pumping = false;
+    /** Nodes read ahead in background slices; the render loop consumes them without awaiting. */
+    private readonly queue: PaintNode[] = [];
+    private readerEnded = false;
     private node: PaintNode | null = null;
     private itemIndex = 0;
     private item: PaintItem | null = null;
@@ -133,7 +136,7 @@ export class StreamingDenseTileJob {
         return this.memoryBytes + (this.state === 'start' ? 2 * BITMAP_BYTES : this.state === 'estimate' && !this.pathLease ? this.estimate : 0);
     }
     needsFrame(): boolean {
-        if (this.blockedValue || this.opening || this.reading) return false;
+        if (this.blockedValue || this.opening || this.pumping) return false;
         if (this.state === 'item') return !!this.adapter?.needsFrame();
         return this.state === 'start' || this.state === 'read' || this.state === 'items' || this.state === 'bounds' || this.state === 'estimate';
     }
@@ -207,7 +210,7 @@ export class StreamingDenseTileJob {
             () => this.releaseParts(this.sealed), () => this.releaseParts(this.finished)]) {
             try { release(); } catch (cleanupError) { this.report(cleanupError); }
         }
-        this.node = null;
+        this.node = null; this.queue.length = 0;
         if (failed) this.report(error);
         void this.startRetirement();
     }
@@ -226,7 +229,7 @@ export class StreamingDenseTileJob {
             }
         }).finally(() => {
             if (this.state === 'cancelled' || this.state === 'failed') this.options.signal?.removeEventListener('abort', this.abortListener);
-            this.stream = null; this.node = null; this.resolveRetired();
+            this.stream = null; this.node = null; this.queue.length = 0; this.resolveRetired();
             try { this.options.host.invalidate('streaming-dense-retired'); } catch (error) { this.report(error); }
         });
         return this.retirement;
@@ -251,19 +254,30 @@ export class StreamingDenseTileJob {
             } catch (error) { this.stop(true, error); }
         }, error => { this.opening = false; if (!this.controller.signal.aborted) this.stop(true, error); });
     }
-    private requestNode(): void {
-        const stream = this.stream!; this.reading = true;
-        const pending = this.track(stream.next());
-        void pending.then(node => {
-            this.reading = false;
-            try {
+    /** Consumes the next read-ahead node, or starts a background slice that refills the queue. */
+    private readNext(): void {
+        if (this.queue.length) { this.node = this.queue.shift()!; this.itemIndex = 0; this.state = 'items'; return; }
+        if (this.readerEnded) { this.finish(); return; }
+        if (this.pumping) return;
+        const stream = this.stream!; this.pumping = true;
+        const started = performance.now();
+        const slice = (async () => {
+            // Bounded read-ahead: the queue holds at most eight nodes, and a slice ends after 4 ms.
+            while (!this.controller.signal.aborted && !this.readerEnded && this.queue.length < 8 && performance.now() - started < 4) {
+                const node = await stream.next();
                 if (this.controller.signal.aborted) return;
                 if (!this.options.isCurrent()) { this.stop(false); return; }
-                if (node === null) { this.finish(); return; }
-                this.node = node; this.itemIndex = 0; this.state = 'items';
-                this.options.host.invalidate('streaming-dense-node');
-            } catch (error) { this.stop(true, error); }
-        }, error => { this.reading = false; if (!this.controller.signal.aborted) this.stop(true, error); });
+                if (node === null) { this.readerEnded = true; return; }
+                this.queue.push(node);
+            }
+        })();
+        this.track(slice).then(() => {
+            this.pumping = false;
+            if (!this.controller.signal.aborted) this.options.host.invalidate('streaming-dense-node');
+        }, error => {
+            this.pumping = false;
+            if (!this.controller.signal.aborted) this.stop(true, error);
+        });
     }
     private finish(): void {
         try {
@@ -333,7 +347,7 @@ export class StreamingDenseTileJob {
             while (!sliced.shouldYield()) {
                 if (!this.valid()) { this.cancel(); return; }
                 if (this.state === 'start') { this.requestStream(); return; }
-                if (this.state === 'read') { this.requestNode(); return; }
+                if (this.state === 'read') { this.readNext(); if (this.state === 'read') return; continue; }
                 if (this.state === 'items') {
                     const items = this.options.band === 'underlay' ? this.node!.underlay ?? [] : this.node!.content;
                     if (this.itemIndex >= items.length) { this.node = null; this.state = 'read'; continue; }

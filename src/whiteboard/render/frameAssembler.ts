@@ -98,29 +98,41 @@ function syncFeed(source: PaintNodeSource, add: Add): Feed {
     };
 }
 const IDLE_FEED: Feed = { step: () => 'cancelled', get waiting() { return false; }, cancel() { /* Nothing staged yet. */ } };
-function streamFeed(stream: PinnedPaintStream['stream'], add: Add, wake: () => void): Feed {
-    let pending: Promise<void> | null = null, ended = false, cancelled = false, failure: { error: unknown } | null = null;
-    return {
-        step() {
-            if (failure) { const { error } = failure; failure = null; throw error; }
-            if (cancelled) return 'cancelled';
-            if (!stream.isCurrent()) return 'stale';
-            if (pending) return 'waiting';
-            if (ended) return 'complete';
-            const run: Promise<void> = stream.next().then((node: PaintNode | null) => {
+/** Pulls nodes in background slices bounded by the staged blocks and a short time budget, then wakes
+ * the host once per slice. A per-node wake would cost one host frame for every scene node. */
+function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => boolean, wake: () => void): Feed {
+    const SLICE_MS = 4;
+    let pumping = false, ended = false, cancelled = false, failure: { error: unknown } | null = null;
+    const pump = async () => {
+        const started = performance.now();
+        try {
+            while (!cancelled && !ended && room() && performance.now() - started < SLICE_MS) {
+                const node: PaintNode | null = await stream.next();
                 if (cancelled) return;
                 if (node === null) { ended = true; return; }
                 // A node is admitted whole; its items are the only per-node memory, already bounded by the source.
                 for (const item of node.underlay ?? []) add(item, 'underlay');
                 for (const item of node.content) add(item, 'content');
-            }, error => { if (!cancelled) failure = { error }; }).finally(() => {
-                if (pending === run) pending = null;
-                if (!cancelled) wake();
-            });
-            pending = run;
+            }
+        } catch (error) { if (!cancelled) failure = { error }; }
+        finally {
+            pumping = false;
+            if (!cancelled) wake();
+        }
+    };
+    return {
+        step() {
+            if (failure) { const { error } = failure; failure = null; throw error; }
+            if (cancelled) return 'cancelled';
+            if (!stream.isCurrent()) return 'stale';
+            if (pumping) return 'waiting';
+            if (ended) return 'complete';
+            if (!room()) return 'waiting';
+            pumping = true;
+            void pump();
             return 'waiting';
         },
-        get waiting() { return pending !== null; },
+        get waiting() { return pumping; },
         cancel() { cancelled = true; },
     };
 }
@@ -182,7 +194,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         notifyRetired();
     };
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
-    const start = (owner: Owner, feed: (add: Add) => Feed): void => {
+    const start = (owner: Owner, feed: (add: Add, room: () => boolean) => Feed): void => {
         dropStaging();
         const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
         const blocks: Block[] = [];
@@ -194,7 +206,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 inkNodeIds.add(item.nodeId); work.used += INK_SET_ENTRY_BYTES;
             }
         };
-        work.feed = feed(add);
+        work.feed = feed(add, () => !needsBlock(work));
         staging = work;
         invalidate();
     };
@@ -222,7 +234,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         },
         requestStream(pin) {
             if (disposed) { releaseOwned(streamOwner(pin), []); return; }
-            start(streamOwner(pin), add => streamFeed(pin.stream, add, () => { if (staging) invalidate(); }));
+            start(streamOwner(pin), (add, room) => streamFeed(pin.stream, add, room, () => { if (staging) invalidate(); }));
         },
         prepare(budget) {
             const work = staging;

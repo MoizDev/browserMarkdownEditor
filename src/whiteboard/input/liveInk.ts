@@ -1,4 +1,5 @@
-import { SampleBuilder, type SampleBuilderOptions, type SampleSequence } from '../ink/samples'
+import { AuthoringSamples } from '../ink/canonicalize'
+import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
 
 export interface InkIdentity {
@@ -10,6 +11,7 @@ export interface DryInkIdentity extends InkIdentity { readonly nodeRevision: num
 export interface LiveInkContext {
   readonly identity: InkIdentity
   readonly builderOptions: SampleBuilderOptions
+  readonly captureDeviceScale: number
   // Capture style, target sheet and local transform at down; implementations write
   // through the session transaction and preserve the same id/lease for undo/redo.
   toLocal(sample: RealSample): { readonly x: number; readonly y: number }
@@ -47,7 +49,7 @@ export class WetInkHandover {
 export class LiveInk implements GestureOwner {
   readonly kind = 'ink' as const
   readonly pointerIds: ReadonlySet<number>
-  private readonly builder: SampleBuilder
+  private readonly builder: AuthoringSamples
   private ended = false
   private last: RealSample | null = null
   private dirty = true
@@ -56,7 +58,7 @@ export class LiveInk implements GestureOwner {
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
-    this.builder = new SampleBuilder(context.builderOptions)
+    this.builder = new AuthoringSamples(context.builderOptions, context.captureDeviceScale)
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()
@@ -77,6 +79,7 @@ export class LiveInk implements GestureOwner {
   publish(): void {
     if (!this.dirty || this.ended) return
     this.snapshot = this.builder.snapshot()
+    this.builder.markPublished()
     this.dirty = false
     this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: null })
   }
@@ -86,7 +89,7 @@ export class LiveInk implements GestureOwner {
     this.ended = true
     try {
       if (this.dirty || !this.snapshot) this.snapshot = this.builder.snapshot()
-      this.dry = this.context.commit(this.builder, this.context.identity, reason === 'undo')
+      this.dry = this.context.commit(this.builder.finish(), this.context.identity, reason === 'undo')
       if (reason === 'undo') this.handover.clear(this.context.identity)
       else this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: this.dry })
       this.context.invalidate()

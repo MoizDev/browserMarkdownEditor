@@ -15,9 +15,12 @@ export class IndexEngine {
     private foreground = 0;
     private ioActive = 0;
     private ioWaiters: (() => void)[] = [];
+    private reportedTimes = new Map<string, number>();
+    private changedTimes = new Map<string, number>();
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
-        private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void) {}
+        private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,
+        private onTimes?: (changes: [string, number][], sweepComplete: boolean) => void) {}
 
     close(): void {
         this.stopped = true;
@@ -72,6 +75,10 @@ export class IndexEngine {
         const rev = this.store.revision(file.path);
         try {
             const stat = await this.reader.stat(file);
+            if (this.store.revision(file.path) === rev && this.reportedTimes.get(file.path) !== stat.mtime) {
+                this.reportedTimes.set(file.path, stat.mtime);
+                this.changedTimes.set(file.path, stat.mtime);
+            }
             const previous = this.store.records.get(file.path);
             if (previous && previous.mtime === stat.mtime && previous.size === stat.size) return;
             if (!/\.md$/i.test(file.path)) return;
@@ -94,6 +101,10 @@ export class IndexEngine {
     private async runFiles(files: readonly IndexFile[], context: WorkerContext): Promise<void> {
         for (let start = 0; start < files.length && !this.stopped && !context.cancelled; start += 8) {
             const reads = await Promise.all(files.slice(start, start + 8).map(file => this.read(file, context)));
+            if (this.changedTimes.size) {
+                this.onTimes?.([...this.changedTimes], false);
+                this.changedTimes.clear();
+            }
             for (const read of reads) {
                 if (!read || this.stopped || context.cancelled) continue;
                 let text: string | null;
@@ -109,14 +120,21 @@ export class IndexEngine {
         const currentGen = this.store.treeGen;
         if (treeGen !== currentGen) start = 0;
         const files = this.store.files;
-        if (start === 0) this.status('sweeping', 0, files.length);
+        if (start === 0) {
+            const live = new Set(files.map(file => file.path));
+            for (const path of this.reportedTimes.keys()) if (!live.has(path)) this.reportedTimes.delete(path);
+            this.status('sweeping', 0, files.length);
+        }
         await this.runFiles(files.slice(start, start + 8), context);
         if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
         const next = Math.min(start + 8, files.length);
         if (next === files.length) {
             await this.publishGraph(context);
             if (this.store.treeGen !== currentGen) return { next: 0, treeGen: this.store.treeGen, done: false };
-            if (!this.stopped) this.status('idle', next, files.length);
+            if (!this.stopped) {
+                this.onTimes?.([], true);
+                this.status('idle', next, files.length);
+            }
             return { next, treeGen: currentGen, done: true };
         }
         this.status('sweeping', next, files.length);

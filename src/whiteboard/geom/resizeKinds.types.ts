@@ -1,5 +1,5 @@
 import type { Op } from '../change/ops';
-import type { ConnectorNode, FigureNode, GroupNode, Node } from '../model/nodes';
+import type { ClipNode, ConnectorNode, EmbedNode, FigureNode, FrameNode, GroupNode, LinkcardNode, Node } from '../model/nodes';
 
 export interface KindResizeFactors {
     readonly x: number;
@@ -16,5 +16,9 @@ export interface KindResizeContext {
     resizeConnector(node: Readonly<ConnectorNode>, factors: KindResizeFactors): readonly Op[];
     /** Group content is planned recursively exactly once, never by persisting a group scale. */
     resizeGroup(node: Readonly<GroupNode>, factors: KindResizeFactors): readonly Op[];
+    /** Frame resizing compensates children to keep their world poses stable. */
+    resizeFrame(node: Readonly<FrameNode>, width: number, height: number): readonly Op[];
+    /** Media policies own aspect and reflection representation. */
+    resizeMedia(node: Readonly<ClipNode | LinkcardNode | EmbedNode>, factors: KindResizeFactors): readonly Op[];
 }
 export type KindResizePlanner = (node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext) => readonly Op[];

@@ -80,7 +80,8 @@ export class PreviewBitmapLayer implements Layer {
         this.pendingFrame = false;
         const device = this.host.device();
         if (!device || this.disposed) return;
-        for (const page of this.bitmaps.entries.values()) {
+        for (const [index, page] of this.bitmaps.entries) {
+            if (this.expected.get(index)?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
                 const existing = this.uploaded.get(tile);
@@ -113,7 +114,8 @@ export class PreviewBitmapLayer implements Layer {
     }
 
     drawGpu(pass: GpuPass, view: ViewState): void {
-        for (const page of this.bitmaps.entries.values()) {
+        for (const [index, page] of this.bitmaps.entries) {
+            if (this.expected.get(index)?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 const uploaded = this.uploaded.get(tile);
                 if (!uploaded || uploaded.device !== this.host.device() || !onScreen(tile.destination, view)) continue;
@@ -124,7 +126,8 @@ export class PreviewBitmapLayer implements Layer {
     }
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
-        for (const page of this.bitmaps.entries.values()) {
+        for (const [index, page] of this.bitmaps.entries) {
+            if (this.expected.get(index)?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
                 this.host.drawTexturedQuad(ctx, tile.bitmap, { x: 0, y: 0, width: tile.bitmap.width, height: tile.bitmap.height },

@@ -760,9 +760,33 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     closeLease(lease: ByteLease): void { this.#arena.closeLease(lease); }
-    memory(): ArenaMemory { return this.#arena.memory(); }
+    memory(): ArenaMemory {
+        if (__BME_BENCH__) {
+            const own = this.#arena.memory();
+            let live = own.live, retiring = own.retiring;
+            const state = this.#aux();
+            const counters = new Set(state.retiredCounters);
+            if (state.counter) counters.add(state.counter);
+            for (const counter of counters) {
+                const extra = counter.memory();
+                live += extra.live; retiring += extra.retiring;
+            }
+            return { live, retiring };
+        }
+        return this.#arena.memory();
+    }
     leaseMemory(lease: ByteLease): ArenaLeaseMemory { return this.#arena.leaseMemory(lease); }
-    cpuStagingMemory(): ArenaMemory { return { live: this.#cpuBytes, retiring: 0 }; }
+    cpuStagingMemory(): ArenaMemory {
+        if (__BME_BENCH__) {
+            const state = this.#aux();
+            const counters = new Set(state.retiredCounters);
+            if (state.counter) counters.add(state.counter);
+            let extra = 0;
+            for (const counter of counters) extra += counter.cpuBytes;
+            return { live: this.#cpuBytes + extra, retiring: 0 };
+        }
+        return { live: this.#cpuBytes, retiring: 0 };
+    }
 
     resizeSurface(width: number, height: number): SurfaceResizeResult {
         const gl = this.#healthy();

@@ -31,6 +31,8 @@ export class VaultIndexSession {
     private failedPaths = new Set<string>();
     private writtenRevisions = new Map<string, number>();
     private fullPass = false;
+    private allRequested = false;
+    private wantedPaths = new Set<string>();
     private runner: Promise<void> | null = null;
     private listeners = new Set<() => void>();
     private storeRevision = 0;
@@ -45,8 +47,7 @@ export class VaultIndexSession {
         for (const [path, entry] of this.entries) if (entry.text !== undefined) result.set(path, entry.text);
         return result;
     }
-    requestSync(nodes: FileTreeFileNode[]): Promise<void> {
-        if (!this.guard.current()) return Promise.reject(new DOMException('Index disposed', 'AbortError'));
+    private updateMembership(nodes: FileTreeFileNode[]) {
         if (!this.nodes || this.nodes.length !== nodes.length || this.nodes.some((node, i) => node !== nodes[i])) {
             const next = new Map(nodes.map(node => [node.path, node]));
             for (const node of this.nodes ?? []) if (next.get(node.path) !== node) this.bump(node.path);
@@ -55,11 +56,27 @@ export class VaultIndexSession {
             this.fullPass = true;
             this.requestedGeneration++;
         }
-        if (this.failedPaths.size) {
-            for (const path of this.failedPaths) this.dirtyPaths.add(path);
-            this.failedPaths.clear();
-            this.requestedGeneration++;
-        }
+    }
+    private retryFailures() {
+        if (!this.failedPaths.size) return;
+        for (const path of this.failedPaths) this.dirtyPaths.add(path);
+        this.failedPaths.clear();
+        this.requestedGeneration++;
+    }
+    requestSync(nodes: FileTreeFileNode[]): Promise<void> {
+        if (!this.guard.current()) return Promise.reject(new DOMException('Index disposed', 'AbortError'));
+        this.updateMembership(nodes);
+        if (!this.allRequested) { this.allRequested = true; this.requestedGeneration++; }
+        this.retryFailures();
+        return this.start();
+    }
+    ensurePaths(nodes: FileTreeFileNode[], paths: readonly string[]): Promise<void> {
+        if (!this.guard.current()) return Promise.reject(new DOMException('Index disposed', 'AbortError'));
+        this.updateMembership(nodes);
+        let added = false;
+        for (const path of paths) if (!this.wantedPaths.has(path)) { this.wantedPaths.add(path); added = true; }
+        if (added && !this.allRequested) this.requestedGeneration++;
+        this.retryFailures();
         return this.start();
     }
     invalidate(path: string) {
@@ -92,7 +109,7 @@ export class VaultIndexSession {
         this.entries.set(path, { version, text: version.size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined, revision });
         if (this.nodes) {
             const admitted = this.admit();
-            if ([...admitted].some(candidate => !this.entries.has(candidate))) {
+            if ([...admitted].some(candidate => (this.allRequested || this.wantedPaths.has(candidate)) && !this.entries.has(candidate))) {
                 this.requestedGeneration++;
                 void this.start().catch(() => {});
             }
@@ -158,7 +175,7 @@ export class VaultIndexSession {
                 for (const path of this.entries.keys()) if (!paths.has(path)) this.entries.delete(path);
             }
             const admitted = this.admit();
-            await mapPool(nodes.filter(node => admitted.has(node.path)), async node => {
+            await mapPool(nodes.filter(node => admitted.has(node.path) && (this.allRequested || this.wantedPaths.has(node.path))), async node => {
                 const source = this.metadata.get(node.path);
                 if (!source) return;
                 const prev = this.entries.get(node.path);

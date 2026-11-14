@@ -219,10 +219,12 @@ export function createNativeClipboardController(options: NativeClipboardControll
         }
         return { html, text, svg, uriList: null, files, privatePng };
     };
-    const capturePasteTarget = (intent: ClipboardIntent) => {
+    const capturePasteTarget = (intent: ClipboardIntent, borrowedPin?: ClipboardCachePin | null) => {
         const target = targetNow(), revision = doc.rev, selection = runtime.selection.getSnapshot();
-        let pin = options.pinClipboard(), consumed = false;
+        let pin = borrowedPin === undefined ? options.pinClipboard() : borrowedPin, consumed = false;
+        const cachePin = pin;
         return {
+            cachePin,
             run(input: ClipboardInput, signal?: AbortSignal): Promise<void> {
                 if (consumed) return Promise.reject(new Error('Clipboard capture was already consumed'));
                 consumed = true;
@@ -262,7 +264,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
         },
         capturePaste(input: ClipboardInput, intent: ClipboardIntent) {
             const target = capturePasteTarget(intent);
-            return { run: (signal?: AbortSignal) => target.run(input, signal), release: target.release };
+            return { cachePin: target.cachePin, run: (signal?: AbortSignal) => target.run(input, signal), release: target.release };
         },
         importFiles(files: readonly File[], point: ClipboardPoint): Promise<void> {
             if (!files.length) return Promise.resolve();

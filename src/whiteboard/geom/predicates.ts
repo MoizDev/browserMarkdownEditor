@@ -1,4 +1,5 @@
-import { dyadic, dyadicMultiply, dyadicSubtract, finite, interval, multiply, subtract } from './numeric';
+import { add, divide, dyadic, dyadicMultiply, dyadicSubtract, finite, interval, multiply, subtract } from './numeric';
+import type { Interval } from './numeric';
 import type { Vec2 } from './path';
 import type { Sign } from './types';
 
@@ -24,7 +25,7 @@ function onSegment(a: Vec2, b: Vec2, p: Vec2): boolean {
 }
 export type SegmentIntersection =
     | { readonly kind: 'none' }
-    | { readonly kind: 'point'; readonly point?: Vec2 }
+    | { readonly kind: 'point'; readonly point?: Vec2; readonly uncertainty?: Readonly<{ x: Interval; y: Interval }> }
     | { readonly kind: 'overlap'; readonly from: Vec2; readonly to: Vec2 };
 export function segmentIntersection(a: Vec2, b: Vec2, c: Vec2, d: Vec2): SegmentIntersection {
     const abC = orient2d(a, b, c), abD = orient2d(a, b, d), cdA = orient2d(c, d, a), cdB = orient2d(c, d, b);
@@ -38,7 +39,17 @@ export function segmentIntersection(a: Vec2, b: Vec2, c: Vec2, d: Vec2): Segment
     for (const [s, p, u, v] of [[abC, c, a, b], [abD, d, a, b], [cdA, a, c, d], [cdB, b, c, d]] as const) {
         if (s === 0 && onSegment(u, v, p)) return { kind: 'point', point: p };
     }
-    return abC * abD < 0 && cdA * cdB < 0 ? { kind: 'point' } : { kind: 'none' };
+    if (!(abC * abD < 0 && cdA * cdB < 0)) return { kind: 'none' };
+    const ax = interval(a.x), ay = interval(a.y);
+    const rx = subtract(interval(b.x), ax), ry = subtract(interval(b.y), ay);
+    const sx = subtract(interval(d.x), interval(c.x)), sy = subtract(interval(d.y), interval(c.y));
+    const qx = subtract(interval(c.x), ax), qy = subtract(interval(c.y), ay);
+    const cross = (x: Interval, y: Interval, u: Interval, v: Interval) => subtract(multiply(x, v), multiply(y, u));
+    const t = divide(cross(qx, qy, sx, sy), cross(rx, ry, sx, sy));
+    const x = add(ax, multiply(t, rx)), y = add(ay, multiply(t, ry));
+    const ix = { lo: Math.max(x.lo, Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x))), hi: Math.min(x.hi, Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x))) };
+    const iy = { lo: Math.max(y.lo, Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y))), hi: Math.min(y.hi, Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y))) };
+    return { kind: 'point', uncertainty: { x: ix, y: iy }, point: { x: ix.lo / 2 + ix.hi / 2, y: iy.lo / 2 + iy.hi / 2 } };
 }
 export function winding(point: Vec2, polygon: readonly Vec2[]): number | 'boundary' {
     let result = 0;

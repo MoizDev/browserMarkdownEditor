@@ -122,6 +122,17 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
                 verification: { pageCount, attachmentCount } };
             break;
         }
+        case 'writer.prepareUnsignedCopy': {
+            const o = record(value, ['bytes', 'originalSha', 'attachmentName']);
+            if (o.attachmentName !== 'Signed source.pdf') invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), originalSha: fingerprint(o.originalSha), attachmentName: o.attachmentName };
+            break;
+        }
+        case 'writer.verifyUnsignedCopy': {
+            const o = record(value, ['bytes', 'originalSha', 'outputSha']);
+            result = { bytes: outputBytes(o.bytes), originalSha: fingerprint(o.originalSha), outputSha: fingerprint(o.outputSha) };
+            break;
+        }
         case 'writer.verifyNotebookOutput': {
             const input = args as WriterOperations['writer.verifyNotebookOutput']['args'];
             const o = record(value, ['bytes', 'sha256', 'path', 'geometries']);

@@ -3,7 +3,46 @@ name: pdf-and-drawings
 description: The canvas documents — the annotated-PDF read/write pipeline, the pdf.js viewer's rendering/windowing/memory strategy, notebooks (ruled pages + PDF export), and tldraw drawings. Load before touching any pdf* module, paper.ts, notebook*, PdfPane/PdfViewer/PdfAnnotateCanvas/DrawingPane/NotebookPane, or adding an import to any of them (the module split is load-bearing for bundle size).
 ---
 
-# PDF annotation pipeline (the subtlest subsystem)
+# Native PDFium and in-house PDF ink
+
+`src/pdf/` owns the contained native engine, pool, canonical text, tiles, fonts and writers;
+`src/whiteboard/` owns the editable board and its renderability admission. Classic remains an
+explicit separate route, never an automatic parser fallback. A production build without a qualified
+ship artifact must keep the engine unavailable; development artifacts are never relabelled shipping.
+Do not enable NativePdfPane merely because its acquisition API exists: its actual full tools must exist.
+
+- App-owned source/session lifetime outlives a view. Hide/dispose releases view work, not transferred
+  native source ownership (`session/ownedInkAcquisition.ts`). Match the full token/source and actual bytes.
+- `acquirePdfInkSource` admits only plain/native or explicit read-only. Full AF/EmbeddedFiles union and
+  Filespec `/Desc` determine roles; partial native attachment inventory or a filename cannot authorize
+  editing. Never turn a refusal into an empty board or use `.Assets` for embedded PDF media.
+- Legacy conversion is SEPARATE: `acquireLegacyPdfInkCandidate().prepare` requires Core's actual visual
+  renderability gate, foreign-mark dialog and `NativeCanvasHost.keepConversionBackup` of the exact outer
+  bytes. Carry its actual `legacyOriginalSha256` into readiness/build; App independently enforces the
+  backup before first overwrite. `createPdfInkConversionHost` records validated old/new physical frames.
+- PDF owns HOST metadata (`session/inkHost.ts`). Allocate one save write ID before frozen serialization;
+  pin without mutating live undo/dirty state, preserve opaque HOST ext, and rebind only after verified
+  versioned IO to an authoritative forward generation with the same pristine source.
+- Writers are isolated, serial, role-sealed and never replay failed writes. Rebuild from pristine plus
+  current ink and preserved attachments; worker proofs never grant disk authority. Complete orphan
+  recovery uses `whiteboard/host/pdfInkAssembly.ts`, not JSON disguised as PDF or pristine alone.
+- Native notebook export is `writing/notebookClient.buildNativeNotebookPdf(input,{revision,signal})`:
+  use the actual captured revision, one frozen write ID and independent fresh-writer output inspection.
+  `buildDisplayPdf` is a distinct v1 path, not that native writer.
+- `prepareUnsignedPdfCopy` returns a COPY-ONLY result for its strictly admitted signed subset; other
+  cases refuse. Core must warn and allocate a distinct collision-free target. Never overwrite the signed
+  source or claim cryptographic validation; its exact raw bytes remain embedded in the unsigned copy.
+- Fonts are the actual pinned 14 payloads under `vendor/pdf-fonts`, not host/OS fonts. Worker availability
+  IDs are NOT evidence of used faces. Mirror font identity hashes approved IDs plus their real pinned
+  SHAs; numeric epochs still revoke tiles/models/find/selection/captures. Page-language hints use bounded
+  uniform inherited structure language, zero annotations/forms and full native reopen before publication.
+- Retained old mirrors are non-current, non-capture stand-ins only. Preserve full geometry/profile proof;
+  `onUpdating` requires an opaque cover, and only an actual current frame commit calls `notePresentation`.
+  Captures bind actual requested-page emphasis, permission, source and font identity through PNG encoding.
+
+The remaining sections describe the retained **Classic/pdf.js/tldraw** route unless explicitly noted.
+
+# Classic PDF annotation pipeline (the subtlest subsystem)
 
 Files: `pdfAnnotation.ts` (read + rasterize, pdf.js), `pdfBuild.ts` (write, pdf-lib),
 `pdfBuild.worker.ts` + `pdfBuildClient.ts` (off-main-thread), `pdfFormat.ts` (shared attachment

@@ -13,7 +13,7 @@ const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/expor
   rows: { exports: string[] }[];
 }
 const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
-if (pdfiumNativeExports.length !== 138 || new Set(pdfiumNativeExports).size !== 138) throw new Error('The canonical PDFium map must declare 138 unique native exports')
+if (pdfiumNativeExports.length !== 139 || new Set(pdfiumNativeExports).size !== 139) throw new Error('The canonical PDFium map must declare 139 unique native exports')
 
 // The tooltip rule's selectors (explained where the rule is set, below). Named, because
 // a later block that sets no-restricted-syntax replaces the whole option array and must
@@ -191,7 +191,7 @@ export default defineConfig([
           // PdfTiledView is itself a lazy switch target; its engine imports must
           // stay behind that boundary rather than moving into PdfPane/App.
           // These hooks are reached only through the lazy PdfTiledView chunk.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledThumbnails.tsx', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts'],
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           // App's closed-PDF agent seam imports the contained host only on an awaited tiled tool call.

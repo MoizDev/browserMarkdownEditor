@@ -1,7 +1,7 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { countEditorSlice, countEditorTransaction, measureEditorRender } from './editorPerf';
+import { countEditorSlice, countEditorTransaction, countEditorWindow, measureEditorRender, measureEditorWork } from './editorPerf';
 import { docAnalysisField } from './docAnalysis';
 import { planPreviewWindows } from './livePreviewWindows';
 import type { PreviewWindow } from './livePreviewWindows';
@@ -1231,10 +1231,14 @@ export const livePreviewField = StateField.define<LivePreview>({
                 try {
                     const windows = planPreviewWindows(tr, analysis, editorMode !== 'read', analysis.rev !== decorations.analysisRev);
                     if (windows.reduce((sum, window) => sum + window.to - window.from, 0) > (state.doc.length + 1) / 2) return full('coverage');
-                    const parts = windows.map(window => __BME_BENCH__
-                        ? measureEditorRender(state, null, window.to - window.from, () => buildDecorations(viewShim, imageCtx, editorMode, window))
-                        : buildDecorations(viewShim, imageCtx, editorMode, window));
-                    return splicePreview(decorations, tr, windows, parts, imageCtx, editorMode);
+                    const render = () => {
+                        const parts = windows.map(window => {
+                            if (__BME_BENCH__) countEditorWindow(window.to - window.from);
+                            return buildDecorations(viewShim, imageCtx, editorMode, window);
+                        });
+                        return splicePreview(decorations, tr, windows, parts, imageCtx, editorMode);
+                    };
+                    return __BME_BENCH__ ? measureEditorWork(state, render) : render();
                 } catch {
                     return full('error');
                 }

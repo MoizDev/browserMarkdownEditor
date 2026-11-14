@@ -10,7 +10,7 @@ const FILE_LIMIT = 4 * 1024 * 1024;
 const SOURCE_BYTES_LIMIT = 128 * 1024 * 1024;
 
 type TextEntry = { mtime: number; size: number; text?: string };
-type Source = { stat: IndexStat; revision: number };
+type Source = { stat: IndexStat; revision: number; signal?: AbortSignal };
 
 /** Search's optional text residency is separate from graph facts. Only the
  * committed full tree owns membership; a query's scope never prunes it. */
@@ -23,6 +23,7 @@ export class SearchResidency {
     private runner: Promise<void> | undefined;
     private requested = new Set<string>();
     private interested = new Set<string>();
+    private dirty = new Set<string>();
     private started = false;
     private fullStat = false;
     private disposed = false;
@@ -44,13 +45,20 @@ export class SearchResidency {
     }
     invalidate(paths: readonly string[]) {
         for (const path of paths) {
-            this.advance(path); this.sources.delete(path); this.entries.delete(path);
+            this.advance(path); this.sources.delete(path); this.entries.delete(path); this.dirty.add(path);
             if (this.interested.has(path)) this.requested.add(path);
         }
+    }
+    revalidate() {
+        for (const file of this.files) this.advance(file.path);
+        this.sources.clear();
+        this.fullStat = true;
+        for (const path of this.interested) this.requested.add(path);
     }
     prime(path: string, mtime: number, size: number, text: string) {
         if (!this.started) return;
         this.advance(path);
+        this.dirty.delete(path);
         const bytes = size <= FILE_LIMIT ? async () => new TextEncoder().encode(text).buffer : async () => new ArrayBuffer(0);
         this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes } });
         this.entries.set(path, { mtime, size, text: size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined });
@@ -92,12 +100,15 @@ export class SearchResidency {
             const full = this.fullStat;
             this.fullStat = false;
             const eligible = this.files.filter(file => isTextFile(file.path) && !isCanvasFile(file.path));
-            const stats = full ? eligible : eligible.filter(file => wanted.has(file.path) && !this.sources.has(file.path));
+            const stats = full ? eligible : eligible.filter(file => this.dirty.has(file.path) || (wanted.has(file.path) && (!this.sources.has(file.path) || this.sources.get(file.path)?.signal?.aborted)));
             await mapPool(stats, async file => {
                 const rev = this.rev(file.path);
                 try {
                     const stat = await this.stat(file, context);
-                    if (this.valid(file.path, rev) && treeGen === this.treeGen) this.sources.set(file.path, { stat, revision: rev });
+                    if (this.valid(file.path, rev) && treeGen === this.treeGen) {
+                        this.sources.set(file.path, { stat, revision: rev, signal: context.signal });
+                        this.dirty.delete(file.path);
+                    }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
                     /* Transient IO failures are not cached. */

@@ -3,6 +3,7 @@ import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
 import { observeForegroundReads } from './foreground';
 import { newIndexSession } from './session';
+import { notifySearchChanges } from '../../utils/searchChanges';
 import type { SearchBatch } from '../../utils/searchController';
 import type { MatchAnswer } from '../../utils/agentMatcher/types';
 
@@ -41,7 +42,7 @@ export class VaultIndexClient {
         this.worker = createWorkerClient({
             name: `vault-index-${session.sessionNo}`, protocol: 1,
             spawn: () => new Worker(new URL('./index.worker.ts', import.meta.url), { type: 'module' }),
-            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes'], eventLimit: Infinity,
+            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes', 'searchChanged'], eventLimit: Infinity,
             onStart: async bootstrap => {
                 if (this.started) this.session = newIndexSession(this.session.vaultId);
                 this.started = true;
@@ -69,6 +70,7 @@ export class VaultIndexClient {
             const batch = value as SearchBatch;
             if (currentEvent(value)) this.resultListeners.get(batch.queryId)?.(batch);
         });
+        this.worker.on('searchChanged', value => { if (currentEvent(value)) notifySearchChanges(); });
         this.worker.on('fileTimes', value => {
             if (!currentEvent(value)) return;
             const event = value as { changes: [string, number, number][]; sweepComplete: boolean };
@@ -219,5 +221,13 @@ export class VaultIndexClient {
         this.worker.reset();
         void this.sweep('user').catch(() => {});
     }
-    dispose(): void { this.disposed = true; this.stopForeground(); this.worker.dispose(); }
+    dispose(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.stopForeground();
+        // The worker owns the write-behind batch and releases its vault lock
+        // only after the batch has committed.
+        void this.worker.request('close', { session: this.session }, control)
+            .catch(() => {}).finally(() => this.worker.dispose());
+    }
 }

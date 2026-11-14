@@ -1,4 +1,4 @@
-import type { Text } from '@codemirror/state';
+import type { ChangeDesc, Text } from '@codemirror/state';
 import { overlapsRange } from '../utils/rangeSearch';
 import type { CharRange } from '../utils/rangeSearch';
 import type { LineMatch } from './analysisLines';
@@ -28,6 +28,50 @@ export function pairMathTokens(doc: Text, tokens: readonly number[], code: reado
         while (i < tokens.length && tokens[i] < to) i++;
     }
     return pairs;
+}
+
+/** Resume pairing before the first edited line and reuse the suffix once pairing converges. */
+export function updateBlockPairs(previous: readonly BlockPair[], oldDoc: Text, doc: Text,
+    changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[]): BlockPair[] {
+    let firstOld = oldDoc.length, lastNew = 0;
+    changes.iterChangedRanges((fromA, _toA, _fromB, toB) => {
+        firstOld = Math.min(firstOld, oldDoc.lineAt(fromA).from);
+        lastNew = Math.max(lastNew, doc.lineAt(toB).to);
+    });
+    if (changes.empty) return previous.map(pair => ({ ...pair,
+        accepted: !!pair.latex && !overlapsRange(code, pair.from, pair.to) }));
+    let prefix = 0;
+    while (prefix < previous.length && previous[prefix].to <= firstOld) prefix++;
+    const mapPair = (pair: BlockPair): BlockPair => {
+        const from = changes.mapPos(pair.from, 1), to = changes.mapPos(pair.to, -1);
+        return { from, to, latex: pair.latex, accepted: !!pair.latex && !overlapsRange(code, from, to) };
+    };
+    const result = previous.slice(0, prefix).map(mapPair);
+    const start = result.length ? result[result.length - 1].to : 0;
+    let lo = 0, hi = tokens.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (tokens[mid] < start) lo = mid + 1; else hi = mid;
+    }
+    let i = lo, old = prefix;
+    while (i < tokens.length) {
+        const from = tokens[i++];
+        while (i < tokens.length && tokens[i] < from + 3) i++;
+        if (i === tokens.length) break;
+        const to = tokens[i++] + 2;
+        while (i < tokens.length && tokens[i] < to) i++;
+        while (old < previous.length && changes.mapPos(previous[old].from, 1) < from) old++;
+        if (from > lastNew && old < previous.length) {
+            const candidate = mapPair(previous[old]);
+            if (candidate.from === from && candidate.to === to) {
+                for (; old < previous.length; old++) result.push(mapPair(previous[old]));
+                return result;
+            }
+        }
+        const latex = doc.sliceString(from + 2, to - 2).trim();
+        result.push({ from, to, latex, accepted: !!latex && !overlapsRange(code, from, to) });
+    }
+    return result;
 }
 
 export function filterInlineMath(raw: readonly LineMatch[], code: readonly CharRange[], blocks: readonly BlockPair[]): InlineMath[] {

@@ -34,8 +34,8 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
     isStandaloneText(): boolean;
-    // Joins deletion to the last text step, or cancels an empty creation.
-    removeEmptyText(): void;
+    /** The creation step token for a text node created by this edit session. */
+    readonly creationToken?: number;
     finish(): void;
 }
 
@@ -129,8 +129,9 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
-        if (next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
+        if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.lastActivity = performance.now();
+        this.typingHistory.invalidateRule();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
         this.controller.setStoredMarks(null);
@@ -249,11 +250,20 @@ export class TextEditSession {
         return { selection, caret, composition, handles };
     }
 
+    externalChange(): void { this.typingHistory.close(); this.sync(); }
     getSelection(): EditSelection { return this.selection; }
+    selectAll(): void { this.select({ anchor: 0, focus: this.services.plainText().length }); }
     restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
 
     copySelection(): RichFragment {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    deleteSelection(): void {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        if (from === to) return;
+        this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary');
+        this.host.sync();
     }
 
     replaceSelection(fragment: RichFragment): void {
@@ -284,7 +294,22 @@ export class TextEditSession {
         this.closed = true;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
+            const history = this.services.history;
+            const tokens = this.typingHistory.stepTokens;
+            try {
+                const last = tokens[tokens.length - 1];
+                if (last === undefined || !history.reopenLast(last)) history.open('Delete empty text');
+                let deleted = false;
+                try { this.services.apply({ origin: 'tool', label: 'Delete empty text', ops: [{ t: 'delete', id: this.id }] }); deleted = true; }
+                finally {
+                    const deletion = history.close();
+                    if (deleted && this.services.creationToken !== undefined && deletion !== null) {
+                        history.forgetCreatedNode(this.id, this.services.creationToken, [...tokens, deletion]);
+                    }
+                }
+            } catch (error) { this.services.reportError(error); }
+        }
         this.services.finish();
     }
 }

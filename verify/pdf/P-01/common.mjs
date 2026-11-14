@@ -8,7 +8,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 
 export const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-export const TOOLBOX_COMMIT = '527faea';
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 export function argumentsOf(argv, allowed, required = []) {
@@ -28,15 +27,12 @@ export function portNumber(value = '6384') {
 }
 export async function toolbox(directory) {
     const base = resolve(directory ?? join(ROOT, 'verify/lib'));
+    if (base !== resolve(ROOT, 'verify/lib')) throw new Error('Use the merged in-tree verify/lib toolbox');
     const names = ['identity', 'report', 'counters', 'vault', 'serve'];
-    const metadata = { commit: git(ROOT, 'rev-parse', TOOLBOX_COMMIT), directory: base, files: [] };
+    const metadata = { commit: git(ROOT, 'rev-parse', 'HEAD'), directory: base, files: [] };
     const modules = {};
     for (const name of names) {
         const file = join(base, `${name}.mjs`), bytes = await readFile(file);
-        // Until the domain merge, p-lead authorizes only this exact, unmodified
-        // scratch export. Its dependencies remain relative to that same export.
-        const expected = execFileSync('git', ['show', `${TOOLBOX_COMMIT}:verify/lib/${name}.mjs`], { cwd: ROOT });
-        if (!bytes.equals(expected)) throw new Error(`Toolbox export differs from ${TOOLBOX_COMMIT}: ${name}`);
         metadata.files.push({ path: `verify/lib/${name}.mjs`, sha256: sha256(bytes), bytes: bytes.length });
         Object.assign(modules, await import(pathToFileURL(file).href));
     }

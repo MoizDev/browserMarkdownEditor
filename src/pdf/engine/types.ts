@@ -73,7 +73,7 @@ export interface DocInfo {
     signatureCount: number;
     tagged: boolean;
     hasForms: boolean;
-    formType: 'none' | 'acroform' | 'xfa' | 'unknown';
+    formType: 'none' | 'acroform' | 'xfa-full' | 'xfa-foreground' | 'unknown';
     javascript: 'present' | 'absent' | 'unknown';
     actions: 'present' | 'absent' | 'unknown';
     attachments: PdfAttachmentInfo[];

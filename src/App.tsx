@@ -7,6 +7,7 @@ import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdent
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
 import { getSessionIdentity } from './utils/sessionIdentity';
+import { ensurePdfSessionRoute, readPdfSessionRoute } from './utils/pdfSessionRoute';
 import type { NativeCanvasReady } from './types/reading';
 import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
 import { fingerprintSnapshot } from './utils/snapshotFingerprint';
@@ -1063,6 +1064,7 @@ export default function App() {
       if (!tab || tab.readError || !kind || !['pdf', 'drawing', 'notebook'].includes(kind)) continue;
       const entry = documentSessions.ensure(tab.id, kind, bytesGenerationsRef.current.get(tab.id) ?? 0,
         owner => createCanvasSessionBridge(owner, () => documentBuffers.get(tab.id)?.source ?? ''));
+      if (kind === 'pdf') ensurePdfSessionRoute(entry);
       documentBuffers.setOwner(tab.id, { documentId: tab.id, session: entry.serial });
       if (!entry.getSlot(RECOVERY_SESSION_BINDING)) {
         entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
@@ -4993,8 +4995,10 @@ export default function App() {
       documentBuffers.report(id, text, true);
       const existing = documentSessions.get(id);
       if (existing && (isCanvasFile(file.name) || isPdfFile(file.name))) {
+        const pdfRoute = isPdfFile(file.name) ? readPdfSessionRoute(existing) : undefined;
         const next = documentSessions.replace(id, existing.kind, bytesGenerationsRef.current.get(id) ?? 0,
           owner => createCanvasSessionBridge(owner, () => documentBuffers.get(id)?.source ?? ''));
+        if (isPdfFile(file.name)) ensurePdfSessionRoute(next, pdfRoute);
         documentBuffers.setOwner(id, { documentId: id, session: next.serial });
         next.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, next.adapter), dispose => dispose());
       }

@@ -26,7 +26,7 @@ function pictureReflection(node: Readonly<PictureNode>, flipX: boolean, flipY: b
 // these patches alter only the kind's representable geometry and never its paint width.
 export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext): readonly Op[] {
     const { x, y, zeroSignX, zeroSignY } = factors;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || node.locked || node.kind === 'opaque') throw new RangeError('Node cannot be resized');
+    if (!Number.isFinite(x) || !Number.isFinite(y) || node.kind === 'opaque' || node.locked) throw new RangeError('Node cannot be resized');
     const ax = Math.abs(x), ay = Math.abs(y), flipX = reflected(x, zeroSignX), flipY = reflected(y, zeroSignY);
     const ops: Op[] = [];
     switch (node.kind) {

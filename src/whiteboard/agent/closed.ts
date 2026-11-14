@@ -22,7 +22,7 @@ export interface ClosedBoardOptions {
     readonly pdfPages?: readonly (readonly [number, number])[];
     readonly signal?: AbortSignal;
     /** C5 repairs/validates the ordered draft before constructing its indexed doc. */
-    admit(draft: ReadDraft, samples: SampleStore): BoardDoc;
+    admit(draft: ReadDraft, samples: SampleStore): BoardDoc | Promise<BoardDoc>;
 }
 
 // F-AGENT-001/WB-D11: the host selects this only when there is no live session.

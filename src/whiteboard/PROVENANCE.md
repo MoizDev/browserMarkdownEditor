@@ -231,15 +231,15 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Unicode grapheme boundary API; no tldraw source | none | 2026-11-13 |
 | `text/edit/host.ts` | w-i | T-4, F-TEXT-016, E-TXT-2/12/15/21/22 | text §§5.1–5.3, 5.10 | Design, browser EditContext and textarea APIs, window-relative IME format ranges | none | 2026-11-13 |
-| `text/edit/session.ts` | w-i | T-4, F-TEXT-006/011/015/016/018, WB-D26, E-TXT-2/5/12/15 | text §§5.1–5.7, 5.9–5.10 | Design and TX-3 public paint/caret types; injected model, history and view services; caret, selection, IME chrome and formatting dispatch | none | 2026-11-13 |
-| `text/edit/controller.ts` | w-i | T-5, WB-D26 | text §§4–5 | Design and public change operation types | none | 2026-11-13 |
+| `text/edit/session.ts` | w-i | T-4, F-TEXT-006/011/015/016/018, WB-D26, E-TXT-2/5/12/15 | text §§5.1–5.7, 5.9–5.10 | Design and TX-3 public paint/caret types; injected model, history, transformation undo and view services; caret, selection and IME chrome | none | 2026-11-13 |
+| `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015, WB-D26 | text §§4–5 | Design, public change operations and injected history-backed input transformations | none | 2026-11-13 |
 | `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |
-| `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design and Intl.Segmenter through TX-1 | none | 2026-11-13 |
+| `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design, Intl.Segmenter through TX-1, transformation undo service | none | 2026-11-13 |
 | `text/edit/pointer.ts` | w-i | F-TEXT-006 | text §5.6 | Design, pointer and timer APIs | none | 2026-11-13 |
 | `text/edit/selection.ts` | w-i | F-TEXT-006/018 | text §5.6 | Design and Intl.Segmenter | none | 2026-11-13 |
 | `text/edit/caret.ts` | w-i | F-TEXT-006/018 | text §§5.4–5.5, 9 | TX-3 public caret index and design | none | 2026-11-13 |
 | `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design, platform Rect and affine rectangle bounds | none | 2026-11-13 |
-| `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types | none | 2026-11-13 |
+| `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types; typed delimiters and autolink | none | 2026-11-13 |
 | `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
 | `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design and Intl.Segmenter | none | 2026-11-13 |
 

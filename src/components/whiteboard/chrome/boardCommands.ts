@@ -44,6 +44,7 @@ export interface BoardContextMenuSource extends BoardCommandSource {
     readonly debugMode: boolean;
     readonly transparent: boolean;
     readonly transparentLabel: string;
+    readonly transparentDisabledReason?: string;
     readonly noPagesReason: string;
     toggleTransparent(): void;
     readonly pages: readonly { id: string; label: string; enabled: boolean; reason?: string }[];
@@ -61,7 +62,8 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
     const copyAs = menu('copyAs', [
         ...rows(['copyAsPng', 'copyAsSvg', ...(source.debugMode ? ['copyAsJson' as const] : [])]),
         { kind: 'command', id: 'transparent', label: source.transparentLabel,
-            checked: source.transparent, run: () => source.toggleTransparent() },
+            checked: source.transparent, disabled: !!source.transparentDisabledReason, reason: source.transparentDisabledReason,
+            run: () => source.toggleTransparent() },
     ]);
     const selected: ContextMenuEntry[] = source.selectedCount ? [
         menu('edit', rows([

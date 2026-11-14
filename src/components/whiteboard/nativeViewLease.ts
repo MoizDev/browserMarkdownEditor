@@ -121,9 +121,12 @@ export function createNativeViewLease(options: {
     if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
+    const boardRuntime = runtime;
     const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
     if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
-        sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.())) {
+        sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
+        sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||
+        sourceToken.vaultEpoch !== runtime.paintToken.vaultEpoch || sourceToken.bytesGeneration !== runtime.paintToken.bytesGeneration)) {
         throw new Error('PDF view source does not match its acquired owner');
     }
     const token = Object.freeze(sourceToken ? { ...sourceToken } : { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
@@ -294,7 +297,7 @@ export function createNativeViewLease(options: {
         : board.doc.kind === 'pdf-ink' ? [...(backdrop?.layers.map(layer => layer.id) ?? []), 'board-underlay', 'board-content']
             : ['board-underlay', 'board-content'];
     const services = createNativeViewPlatform({ host, identity, board, viewer, camera, documentToken: token,
-        currentSource: () => !backdrop?.sourceToken || backdrop.isCurrentSource?.() === true,
+        currentSource: sourceCurrent,
         paneId, viewLease,
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
@@ -310,7 +313,7 @@ export function createNativeViewLease(options: {
                 navigation.onPresentation(presentation);
                 const source = backdrop?.sourceToken;
                 if (presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
-                    presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+                    presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
                     presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
                     (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
                         presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
@@ -332,11 +335,15 @@ export function createNativeViewLease(options: {
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
-    const sourceCurrent = () => {
+    function sourceCurrent() {
         if (!backdrop?.sourceToken) return true;
-        try { return backdrop.isCurrentSource?.() === true; }
+        try { const source = backdrop.sourceToken, paint = boardRuntime.paintToken;
+            return backdrop.isCurrentSource?.() === true && source.documentId === paint.documentId && source.session === paint.session &&
+                source.vaultEpoch === paint.vaultEpoch && source.bytesGeneration === paint.bytesGeneration &&
+                source.documentId === token.documentId && source.session === token.session && source.vaultEpoch === token.vaultEpoch &&
+                source.bytesGeneration === token.bytesGeneration; }
         catch (error) { options.onError(error); return false; }
-    };
+    }
     const updateInput = () => {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };

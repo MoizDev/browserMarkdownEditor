@@ -13,14 +13,23 @@ import type { TextMaterial } from './material';
 
 // Provenance: text/edit host requests, figure geometry and paint material
 // contracts; independent session service, no third-party source.
+export interface BoardTextGeometryOptions {
+    readonly revision: string;
+    readonly zoom?: number;
+    readonly connectorLength?: number;
+    readonly anchor?: { readonly x: number; readonly y: number };
+}
+export interface PreparedBoardText {
+    readonly paint: TextPaint;
+    readonly request: TextLayoutRequest;
+    readonly placement: { x: number; y: number; scale: number };
+}
 export interface BoardTextGeometry {
     readonly fonts: BoardFonts;
     readonly layout: BoardTextLayout;
     readonly faces: FaceTable;
-    prepare(node: Readonly<Node>, options: { revision: string; zoom?: number; connectorLength?: number;
-        anchor?: { readonly x: number; readonly y: number } }, signal: AbortSignal): Promise<{
-            paint: TextPaint; request: TextLayoutRequest; placement: { x: number; y: number; scale: number };
-        } | null>;
+    prepareNow(node: Readonly<Node>, options: BoardTextGeometryOptions): PreparedBoardText | null;
+    prepare(node: Readonly<Node>, options: BoardTextGeometryOptions, signal: AbortSignal): Promise<PreparedBoardText | null>;
     dispose(): void;
 }
 export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpoch?: (epoch: number) => void;
@@ -47,44 +56,53 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
         }
         return layout;
     };
+    const makeRequest = (node: Readonly<Node>, requestOptions: BoardTextGeometryOptions): TextLayoutRequest | null => {
+        let text: RichText;
+        if (node.kind === 'text' || node.kind === 'sticky') text = node.text;
+        else if (node.kind === 'figure' || node.kind === 'connector') {
+            if (!node.label) return null;
+            text = node.label;
+        } else if (node.kind === 'frame') {
+            text = frameTitleRequest(node, '', requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1).text;
+        } else return null;
+        if (node.kind === 'connector' && (!requestOptions.anchor || !Number.isFinite(requestOptions.anchor.x)
+            || !Number.isFinite(requestOptions.anchor.y))) throw new RangeError('Connector text requires an exact label anchor');
+        return editableTextRequest(node, text, { revision: requestOptions.revision,
+            fontEpoch: getFonts().epoch, zoom: requestOptions.zoom ?? 1, connectorLength: requestOptions.connectorLength });
+    };
+    const prepareNow = (node: Readonly<Node>, requestOptions: BoardTextGeometryOptions): PreparedBoardText | null => {
+        check();
+        const request = makeRequest(node, requestOptions);
+        if (!request) return null;
+        const paint = getLayout().layout(request);
+        let x = 0, y = 0, scale = 1;
+        if (node.kind === 'figure') {
+            const placement = figureLabelRequest(node, requestOptions.revision, request.fontEpoch)!;
+            x = placement.x; y = placement.y;
+        } else if (node.kind === 'sticky' || node.kind === 'text') scale = node.scale;
+        else if (node.kind === 'frame') y = -paint.box.h;
+        else if (node.kind === 'connector') {
+            x = requestOptions.anchor!.x - paint.box.w / 2;
+            y = requestOptions.anchor!.y - paint.box.h / 2;
+        }
+        return { paint, request, placement: { x, y, scale } };
+    };
     return {
         get fonts() { return getFonts(); },
         get layout() { return getLayout(); },
         get faces() { return getLayout().faceTable; },
+        prepareNow,
         async prepare(node, requestOptions, signal) {
             check(signal);
             requestOptions = { ...requestOptions, ...(requestOptions.anchor ? { anchor: { ...requestOptions.anchor } } : {}) };
-            let text: RichText;
-            if (node.kind === 'text' || node.kind === 'sticky') text = node.text;
-            else if (node.kind === 'figure' || node.kind === 'connector') {
-                if (!node.label) return null;
-                text = node.label;
-            } else if (node.kind === 'frame') {
-                text = frameTitleRequest(node, '', requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1).text;
-            } else return null;
-            if (node.kind === 'connector' && (!requestOptions.anchor || !Number.isFinite(requestOptions.anchor.x)
-                || !Number.isFinite(requestOptions.anchor.y))) throw new RangeError('Connector text requires an exact label anchor');
-            const engine = getLayout(), registry = getFonts();
-            const makeRequest = () => editableTextRequest(node, text, { revision: requestOptions.revision,
-                fontEpoch: registry.epoch, zoom: requestOptions.zoom ?? 1, connectorLength: requestOptions.connectorLength });
-            await engine.prepare(makeRequest());
+            const request = makeRequest(node, requestOptions);
+            if (!request) return null;
+            await getLayout().prepare(request);
             check(signal);
             await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
             check(signal);
-            // Font loads can finish during the wait; the cache key must name the measurements actually used.
-            const request = makeRequest(), paint = engine.layout(request);
-            check(signal);
-            let x = 0, y = 0, scale = 1;
-            if (node.kind === 'figure') {
-                const placement = figureLabelRequest(node, requestOptions.revision, request.fontEpoch)!;
-                x = placement.x; y = placement.y;
-            } else if (node.kind === 'sticky' || node.kind === 'text') scale = node.scale;
-            else if (node.kind === 'frame') y = -paint.box.h;
-            else if (node.kind === 'connector') {
-                x = requestOptions.anchor!.x - paint.box.w / 2;
-                y = requestOptions.anchor!.y - paint.box.h / 2;
-            }
-            return { paint, request, placement: { x, y, scale } };
+            // Font loads can finish during the wait; use their actual current epoch and faces.
+            return prepareNow(node, requestOptions);
         },
         dispose() { if (!disposed) { disposed = true; unsubscribe?.(); unsubscribe = undefined; measurer?.clear(); } },
     };

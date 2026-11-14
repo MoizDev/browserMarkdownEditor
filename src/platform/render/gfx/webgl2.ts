@@ -41,6 +41,8 @@ export interface Webgl2Services {
     onFailure(code: GfxError): void;
     /** Runtime adaptive-budget feedback, never a benchmark-only hook or guessed prepare time. */
     recordUpload?(bytes: number, elapsedMs: number): void;
+    /** Mandatory frame-ring batch: its final packed length is known only at submit. */
+    recordUniformUpload?(bytes: number, elapsedMs: number): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
@@ -55,6 +57,8 @@ export interface Webgl2Owner extends BrokerGpuOwner {
     discardFrame(encoder: FrameEncoder): void;
     acquireTarget(request: TargetRequest): TargetLease | null;
     releaseTarget(lease: TargetLease): void;
+    /** Platform quad helpers need physical storage dimensions, never a native texture. */
+    textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }>;
     closeLease(lease: ByteLease): void;
     memory(): ArenaMemory;
     leaseMemory(lease: ByteLease): ArenaLeaseMemory;
@@ -360,6 +364,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     acquireTarget(request: TargetRequest): TargetLease | null { this.#usable(); return this.#pool.acquire(request); }
     releaseTarget(lease: TargetLease): void { this.#pool.release(lease); this.#collect(); }
+
+    textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }> {
+        this.#usable();
+        const native = this.#arena.validate(texture, 'texture');
+        return { width: native.width, height: native.height, format: native.format,
+            usedRect: { ...(native.usedRect ?? { x: 0, y: 0, width: native.width, height: native.height }) } };
+    }
 
     createBuffer(bytes: number, uses: readonly BufferUse[], lease: ByteLease): BufferHandle {
         this.#usable();
@@ -954,7 +965,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.bufferSubData(gl.COPY_WRITE_BUFFER, 0, work.slot.data.subarray(0, work.offset));
             this.#checkUpload();
         } finally {
-            this.#services.recordUpload?.(work.offset, performance.now() - started);
+            (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(work.offset, performance.now() - started);
             this.#reset();
         }
     }

@@ -342,6 +342,15 @@ export class FrameScheduler {
         if (this.meter) { this.meter.reportedBytes += bytes; this.meter.reportedCalls++; this.meter.callMs += elapsedMs; }
     }
 
+    /** Frame-ring data is mandatory presentation work, packed after optional preparation (C4.3).
+     * Account its exact native batch, including alignment gaps; excess remains an honest overshoot
+     * that reduces the next optional slice, not an unmeasured upload or a guessed full-ring charge.
+     */
+    recordUniformUpload(bytes: number, elapsedMs: number): void {
+        this.recordUpload(bytes, elapsedMs);
+        if (this.meter) this.meter.admittedBytes += bytes;
+    }
+
     setReducedMotion(reduced: boolean): void {
         this.reducedMotion = reduced;
         if (!reduced) return;

@@ -123,7 +123,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         selectGpu: grant => {
             if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
             created.presenter.releaseSurface();
-            if (!gpu.backing.promote()) throw new Error('GPU backing promotion was refused');
+            if (!gpu.backing.promote()) {
+                const surface = lifecycle?.surface;
+                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
+                throw new Error('GPU backing promotion was refused');
+            }
             surfaceHost.select(gpu.bundle.compositor);
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
@@ -157,6 +161,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,
+        windowVisibility: (windowVisible: boolean) => {
+            if (!windowVisible) { options.onPresentation(null); return; }
+            const state = lifecycle?.surface.snapshot().state;
+            if (state !== 'gpu-visible' && state !== 'rebuilding') {
+                gpu = null;
+                cpuPresented = false;
+                gpuRequested = false;
+                surfaceHost.clearStaged();
+            }
+        },
         notice: () => options.onNotice('memory-pressure'),
         error: options.onError,
     };

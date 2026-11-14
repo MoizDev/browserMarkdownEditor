@@ -45,6 +45,10 @@ export function countEditorTransaction(state: EditorState): void {
     } catch { /* Measurement cannot interrupt a transaction. */ }
 }
 
+export function countEditorSlice(length: number): void {
+    try { editor.slicedChars += length; publish(); } catch { /* Instrumentation is optional. */ }
+}
+
 export function countEditorWidget(): void {
     try {
         editor.widgetsBuilt++;

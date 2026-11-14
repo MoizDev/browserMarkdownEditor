@@ -1,7 +1,7 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { countEditorTransaction, measureEditorRender } from './editorPerf';
+import { countEditorSlice, countEditorTransaction, measureEditorRender } from './editorPerf';
 import { docAnalysisField } from './docAnalysis';
 import { planPreviewWindows } from './livePreviewWindows';
 import type { PreviewWindow } from './livePreviewWindows';
@@ -340,6 +340,11 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
  * The Live Preview plugin — hides markdown syntax when cursor is away
  * and renders styled content, KaTeX math widgets, and Image widgets.
  */
+function previewSlice(state: EditorState, from: number, to: number): string {
+    if (__BME_BENCH__) countEditorSlice(to - from);
+    return state.sliceDoc(from, to);
+}
+
 function* inWindow<T extends { from: number; to: number }>(items: readonly T[], window: PreviewWindow): Iterable<T> {
     for (let i = firstRangeEndingAfter(items, window.from); i < items.length && items[i].from < window.to; i++) yield items[i];
 }
@@ -492,7 +497,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // === INLINE CODE ===
             if (name === 'InlineCode') {
                 // Find backtick boundaries
-                const content = state.doc.sliceString(from, to);
+                const content = previewSlice(state, from, to);
                 const openTicks = content.match(/^`+/)?.[0].length || 1;
                 const closeTicks = openTicks;
 
@@ -533,7 +538,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 if (lang === 'mermaid' && closed && (editorMode === 'read' || !cursorOnLine(state, from, to))) {
                     const firstContent = startLine.number + 1, lastContent = endLine.number - 1;
                     const code = firstContent <= lastContent
-                        ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
+                        ? previewSlice(state, state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
                     if (code.trim()) {
                         decorations.push(
                             Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
@@ -706,7 +711,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 // level further out — see insideLinkLabel.
                 if (insideLinkLabel(node.node)) return false;
 
-                const href = externalHref(state.doc.sliceString(from, to));
+                const href = externalHref(previewSlice(state, from, to));
                 if (href) decorations.push(externalLinkMark(href).range(from, to));
                 return false;
             }
@@ -823,7 +828,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
     for (const region of inWindow(mathRegions, window)) {
         if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
-            decorations.push(...latexSourceDecorations(state.sliceDoc(region.from, region.to), region.from));
+            decorations.push(...latexSourceDecorations(previewSlice(state, region.from, region.to), region.from));
             continue;
         }
         decorations.push(
@@ -839,7 +844,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         for (const match of inWindow(analysis.lines.dollars, window)) {
             const { from, to } = match;
             if ((to - from) % 2 !== 0) continue;
-            if (state.sliceDoc(Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
+            if (previewSlice(state, Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
             if (intersectsCode(from, to)) continue;
             decorations.push(LATEX_DELIM.range(from, to));
@@ -980,7 +985,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(state.sliceDoc(span.from, span.to), editable, selected,
+                widget: new TableWidget(previewSlice(state, span.from, span.to), editable, selected,
                     state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );

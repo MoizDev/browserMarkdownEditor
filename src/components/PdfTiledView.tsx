@@ -4,6 +4,7 @@ import { cameraForPagedPosition, fitWidthZ, pageAt, pageStack, pagedConstraint, 
 import type { Camera, PlatformPaneOptions, Viewport, ViewState } from '../platform/render';
 import { pdfGeometryDigest, type OpenTiledDocument, type PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import { pdfPageLayerDefinition } from '../pdf/layer/definition';
+import type { PdfMirrorPixels, PdfSessionMirrors } from '../pdf/layer/tileMirror';
 import { PdfLinkOverlay } from '../pdf/overlay/links';
 import type { PdfLinkTarget } from '../pdf/pdfLinkModel';
 import { flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
@@ -18,13 +19,22 @@ const INSETS = { left: 28, right: 28, top: 16, bottom: 0 };
 const LIMITS = { min: 0.4, max: 4 };
 let nextViewLease = 0;
 
-interface Props<T extends object> {
+function paneBackground(): readonly [number, number, number, number] {
+    const value = getComputedStyle(document.documentElement).getPropertyValue('--background-primary').trim();
+    const match = /^#([0-9a-f]{6})$/i.exec(value);
+    if (!match) return [0.12, 0.12, 0.12, 1];
+    const color = Number.parseInt(match[1], 16);
+    return [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
+}
+
+interface Props {
     readonly session: PdfTiledDocumentSession;
     readonly document: OpenTiledDocument;
     readonly filePath: string;
     readonly isVisible: boolean;
     readonly isFocused: boolean;
-    readonly mirror: Pick<PlatformPaneOptions<T>, 'session' | 'readMirrorView' | 'mirrorQuad' | 'mirrorCoverage'>;
+    readonly mirror: PdfSessionMirrors;
+    readonly mirrorCoverage: NonNullable<PlatformPaneOptions<PdfMirrorPixels>['mirrorCoverage']>;
     readonly renderThumbnail: (index: number, scale: number) => Promise<string>;
     readonly onRotate?: (delta: number, pageIndex?: number) => void;
     readonly onNotice: (message: string) => void;
@@ -32,8 +42,8 @@ interface Props<T extends object> {
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
-export default function PdfTiledView<T extends object>({ session, document: pdf, filePath, isVisible, isFocused,
-    mirror, renderThumbnail, onRotate, onNotice }: Props<T>) {
+export default function PdfTiledView({ session, document: pdf, filePath, isVisible, isFocused,
+    mirror, mirrorCoverage, renderThumbnail, onRotate, onNotice }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const [lease] = useState(() => ++nextViewLease);
@@ -50,7 +60,7 @@ export default function PdfTiledView<T extends object>({ session, document: pdf,
     const initialized = useRef(false);
     const interacting = useRef(false);
     const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const paneRef = useRef<ReturnType<typeof usePlatformPane<T>> | null>(null);
+    const paneRef = useRef<ReturnType<typeof usePlatformPane<PdfMirrorPixels>> | null>(null);
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
     const links = useRef<PdfLinkOverlay | null>(null);
     const loadedLinks = useRef(new Set<number>());
@@ -114,8 +124,12 @@ export default function PdfTiledView<T extends object>({ session, document: pdf,
         };
     }, [overlay, navigate]);
 
+    const mirrorView = useCallback((view: ViewState) => ({ token: session.token, sourceRole: session.source,
+        contentRevision: 'plain', colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view }),
+        [session, geometryDigest]);
     const pageLayer = useMemo(() => pdfPageLayerDefinition({
         producer: pdf.producer, isCurrent: () => session.isCurrent() && active.current.isVisible,
+        mirror: { store: mirror, view: mirrorView },
         onError: () => onNotice('A PDF page could not be rendered. Retry the document.'),
         demand: (view: ViewState) => ({ token: session.token, source: session.source, variant: 'plain', stack,
             geometryDigest,
@@ -123,13 +137,14 @@ export default function PdfTiledView<T extends object>({ session, document: pdf,
             rasterScale: view.camera.z * Math.min(view.viewport.dpr, 2), fitWidthZoom: fitWidthZ(view.viewport, stack, INSETS),
             nominalDpr: Math.min(view.viewport.dpr, 2), moving: view.moving,
             velocity: velocity.current, direction: velocity.current }),
-    }), [pdf, session, stack, geometryDigest, onNotice]);
+    }), [pdf, session, stack, geometryDigest, mirror, mirrorView, onNotice]);
     const layers = useMemo(() => [pageLayer.definition], [pageLayer]);
 
-    const services = useMemo<Omit<PlatformPaneOptions<T>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>>(() => ({
+    const services = useMemo<Omit<PlatformPaneOptions<PdfMirrorPixels>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>>(() => ({
         paneId: `pdf:${session.token.documentId}:${lease}`, viewLease: lease,
-        ...mirror, layout: stack,
-        readAppearance: () => ({ background: [0.12, 0.12, 0.12, 1], inverted: getPdfInverted() }),
+        session: { mirrors: mirror.mirrors, checkpoint: () => {} },
+        readMirrorView: mirrorView, mirrorQuad: mirror.mirrorQuad, mirrorCoverage, layout: stack,
+        readAppearance: () => ({ background: [...paneBackground()], inverted: getPdfInverted() }),
         currentToken: () => session.isCurrent() ? session.token : null,
         readCamera: () => camera.current,
         revision: () => String(pageLayer.current()?.revision() ?? 0),
@@ -137,7 +152,9 @@ export default function PdfTiledView<T extends object>({ session, document: pdf,
         setInputEnabled: () => {},
         cancelViewWork: () => {
             for (const task of linkTasks.current.values()) task.abort();
-            linkTasks.current.clear(); pageLayer.current()?.hide();
+            linkTasks.current.clear();
+            for (const index of loadedLinks.current) links.current?.removePage(index);
+            loadedLinks.current.clear(); pageLayer.current()?.hide();
         },
         writeOverlays: frame => {
             links.current?.setView(frame.view, stack.rects);
@@ -160,8 +177,8 @@ export default function PdfTiledView<T extends object>({ session, document: pdf,
         },
         onPresentation: () => {}, onError: error => onNotice(error instanceof Error ? error.message : 'PDF viewer is unavailable.'),
         onNotice: message => onNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.' : 'PDF rendering switched to a compatible mode.'),
-    }), [lease, mirror, onNotice, pageLayer, pdf, session, stack]);
-    const platformPane = usePlatformPane<T>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
+    }), [lease, mirror, mirrorView, mirrorCoverage, onNotice, pageLayer, pdf, session, stack]);
+    const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;
 

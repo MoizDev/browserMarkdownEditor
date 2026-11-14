@@ -1353,16 +1353,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        let rawDpr = window.devicePixelRatio || 1, dpr = canvasDpr();
+        let dpr = canvasDpr();
         let query: MediaQueryList;
         const arm = () => {
             query?.removeEventListener('change', densityChanged);
-            query = window.matchMedia(`(resolution: ${rawDpr}dppx)`);
+            query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
             query.addEventListener('change', densityChanged);
         };
         const densityChanged = () => {
-            const raw = window.devicePixelRatio || 1;
-            if (raw !== rawDpr) { rawDpr = raw; arm(); }
+            arm();
             const next = canvasDpr();
             if (next === dpr) return;
             dpr = next;
@@ -1374,17 +1373,8 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         // Browser zoom can change device pixels without a CSS-width resize.
         try { ro.observe(el, { box: 'device-pixel-content-box' }); }
         catch { ro.observe(el); }
-        // Chromium's emulated 2→1 DPR changed both the value and resolution
-        // match with ZERO media/resize events. Check one number while visible;
-        // hidden panes do not poll, and a check never rebuilds the text layer.
-        const timer = isVisible ? setInterval(densityChanged, 250) : undefined;
-        return () => {
-            clearInterval(timer);
-            query.removeEventListener('change', densityChanged);
-            window.removeEventListener('resize', densityChanged);
-            ro.disconnect();
-        };
-    }, [isVisible, scheduleWindowUpdate]);
+        return () => { query.removeEventListener('change', densityChanged); window.removeEventListener('resize', densityChanged); ro.disconnect(); };
+    }, [scheduleWindowUpdate]);
 
     // Re-anchor whenever geometry changes (first layout, zoom, resize, reload):
     // put the remembered {page, offset} back under the viewport's top edge,

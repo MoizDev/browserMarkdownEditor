@@ -27,6 +27,7 @@ export interface HistoryLease { release(): void }
 export interface HistoryPorts {
     snapshot(): HistorySnapshot;
     switchSheet(sheet: SheetId): void;
+    sheetExists(sheet: SheetId): boolean;
     nodeExists(id: NodeId): boolean;
     restoreSelection(snapshot: HistorySnapshot): void;
     /** The pane's existing CameraController owns the pan; history stores no camera. */
@@ -47,8 +48,8 @@ export interface HistoryController {
     readonly canRedo: boolean;
     /** Captures sheet and selection before a gesture or command changes the document. */
     open(label: string): void;
-    /** The final selection/text caret is captured here. */
-    close(): void;
+    /** Capture final selection and return this step's token, or null for an empty step. */
+    close(): number | null;
     /** Restore and discard an open non-ink gesture; no older step is undone. */
     cancel(): void;
     /** Pen/highlighter admission clears prior redo immediately (R-19). */
@@ -59,8 +60,10 @@ export interface HistoryController {
     mark(): number;
     /** Replay and discard only work after a mark, retaining the earlier typing burst. */
     rollbackTo(mark: number): void;
-    /** Join a leave-empty deletion to the immediately preceding typing step (WB-D16). */
-    reopenLast(): boolean;
+    /** Reopen only if the latest step still matches the caller's close token (WB-D16). */
+    reopenLast(expected: number): boolean;
+    /** After deleting a newly created empty text node, remove only caller-owned node history. */
+    forgetCreatedNode(node: NodeId, creationToken: number, ownedStepTokens: readonly number[]): boolean;
     undo(): void;
     redo(): void;
     clear(): void;

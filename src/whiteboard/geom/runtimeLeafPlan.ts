@@ -80,6 +80,13 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     const common = commonResizeRotation([...rotations.values()].flat()), mixed = common === null, frameAngle = common ?? 0;
     const c = Math.cos(frameAngle), s = Math.sin(frameAngle), target = inverse([c, s, -s, c, 0, 0], 1e12);
     if (!target) { scope.release(); throw new Error('Resize selection frame is not invertible'); }
+    const textNeedsUniform = (node: Readonly<Node>): boolean => {
+        if (node.kind !== 'text') return false;
+        if (mixed || (options.handle.x && options.handle.y)) return true;
+        const turns = Math.round((worldPose(doc, node.id).rotation - frameAngle) / (Math.PI / 2));
+        const turn = (turns % 4 + 4) % 4, hx = options.handle.x, hy = options.handle.y;
+        return (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) !== 0;
+    };
     const leafCentres = new Map<NodeId, Vec2>();
     try {
         for (const ids of leaves.values()) for (const id of ids) {
@@ -94,8 +101,9 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         const descendants = leaves.get(node.id)!.map(id => doc.nodes.get(id)!);
         snapshots.set(node.id, { node, centreWorld: point((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
             cornersWorld: [point(box[0], box[1]), point(box[2], box[1]), point(box[2], box[3]), point(box[0], box[3])],
+            // Default, calibration cut by owner: a text side that cannot change width scales uniformly.
             relevantRotations: rotations.get(node.id)!, forceAspect: descendants.some(child => child.kind === 'clip' || child.kind === 'sticky'
-                || (child.kind === 'text' && !!options.handle.x && !!options.handle.y)), worldRotation: pose.rotation });
+                || textNeedsUniform(child)), worldRotation: pose.rotation });
     } } catch (error) { scope.release(); throw error; }
     type Lease = { release(): void };
     let latest: { value: BoardLeafResizePreview; leases: Lease[]; generation: number; signal: AbortSignal } | undefined;
@@ -138,6 +146,9 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                             const dx = worldX - frame.anchor.x, dy = worldY - frame.anchor.y, u = c * dx + s * dy, v = -s * dx + c * dy;
                             centreWorld = { x: frame.anchor.x + c * u * frame.scaleX - s * v * frame.scaleY,
                                 y: frame.anchor.y + s * u * frame.scaleX + c * v * frame.scaleY };
+                        }
+                        if (node.kind === 'text' && factors.handle === 'side' && (mixed || (!factors.handleX && factors.handleY))) {
+                            factors = { ...factors, handle: 'corner' };
                         }
                         const fx = factors.x < 0 || (factors.x === 0 && factors.zeroSignX < 0);
                         const fy = factors.y < 0 || (factors.y === 0 && factors.zeroSignY < 0);

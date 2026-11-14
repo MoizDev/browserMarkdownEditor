@@ -139,6 +139,9 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         setPrint('closed'); setPrintError('');
     }, []);
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
+    // A pane can be reused for another document without losing focus. Retire
+    // the old handoff before a pending validation can navigate its reserved tab.
+    useLayoutEffect(() => { cancelPrint(); }, [file.path, file.handle, reading?.identity.vaultId, reading?.identity.vaultEpoch, reading?.identity.documentId, reading?.identity.diskRev, cancelPrint]);
     useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); printPopup.current?.close(); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
         if (print === 'preparing' || printPending.current !== null || printPopup.current) return;

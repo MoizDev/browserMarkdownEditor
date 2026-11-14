@@ -21,7 +21,8 @@ export class CaretLineCache {
 
 /** Prefix measurements use the same face and reference-size canvas as the paint. */
 export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer, cache?: CaretLineCache): CaretIndex {
-    const lines: CaretLine[] = paint.lines.map((line, lineIndex) => {
+    const buildLine = (lineIndex: number): CaretLine => {
+        const line = paint.lines[lineIndex];
         const content = projectionSlice(request.text, line.src[0], line.src[1]);
         const key = JSON.stringify([paint.fontEpoch, content, line.x, line.bottom - line.top, line.direction,
             line.fragments.map(fragment => [fragment.text, fragment.x, fragment.width, fragment.rtl, table.faces[fragment.face].css,
@@ -80,7 +81,18 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         const result = { top: line.top, bottom: line.bottom, stops, clusters };
         cache?.set(key, { line: result, start: line.src[0], top: line.top, index: lineIndex });
         return result;
-    });
+    };
+    const built = new Map<number, CaretLine>();
+    const getLine = (index: number): CaretLine => {
+        let line = built.get(index);
+        if (!line) { line = buildLine(index); built.set(index, line); }
+        return line;
+    };
+    const lines: CaretLine[] = paint.lines.map((line, index) => ({
+        top: line.top, bottom: line.bottom,
+        get stops() { return getLine(index).stops; },
+        get clusters() { return getLine(index).clusters; },
+    }));
     function hitTest(x: number, y: number): CaretStop {
         if (!lines.length) return { offset: 0, affinity: 'downstream', x: 0, top: 0, bottom: 0, line: 0 };
         let lo = 0, hi = lines.length - 1;
@@ -94,23 +106,49 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         const before = stops[Math.max(0, left - 1)], after = stops[Math.min(left, stops.length - 1)];
         return Math.abs(before.x - x) <= Math.abs(after.x - x) ? before : after;
     }
-    const byOffset = new Map<number, CaretStop[]>();
-    for (const line of lines) for (const stop of line.stops) {
-        const stops = byOffset.get(stop.offset);
-        if (stops) stops.push(stop); else byOffset.set(stop.offset, [stop]);
-    }
-    const offsets = [...byOffset.keys()].sort((a, b) => a - b);
-    function caret(position: CaretPosition): CaretStop {
-        if (!offsets.length) return hitTest(0, 0);
-        let lo = 0, hi = offsets.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (offsets[mid] < position.offset) lo = mid + 1;
-            else hi = mid;
+    const firstLine = (offset: number): number => {
+        let lo = 0, hi = paint.lines.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (paint.lines[mid].src[1] < offset) lo = mid + 1; else hi = mid; }
+        return lo;
+    };
+    const logicalStops = new Map<number, { offsets: readonly number[]; byOffset: ReadonlyMap<number, readonly CaretStop[]> }>();
+    const stopsByOffset = (index: number) => {
+        let cached = logicalStops.get(index);
+        if (cached) return cached;
+        const byOffset = new Map<number, CaretStop[]>();
+        for (const stop of lines[index].stops) {
+            const stops = byOffset.get(stop.offset);
+            if (stops) stops.push(stop); else byOffset.set(stop.offset, [stop]);
         }
-        const before = offsets[Math.max(0, lo - 1)], after = offsets[Math.min(lo, offsets.length - 1)];
-        const offset = position.offset - before <= after - position.offset ? before : after;
-        const candidates = byOffset.get(offset)!;
+        cached = { offsets: [...byOffset.keys()].sort((a, b) => a - b), byOffset };
+        logicalStops.set(index, cached);
+        return cached;
+    };
+    function caret(position: CaretPosition): CaretStop {
+        if (!lines.length) return hitTest(0, 0);
+        const first = firstLine(position.offset), indices: number[] = [];
+        if (first > 0) indices.push(first - 1);
+        if (first < lines.length) {
+            indices.push(first);
+            for (let i = first + 1; i < lines.length && paint.lines[i].src[0] <= position.offset; i++) indices.push(i);
+        }
+        let bestOffset = 0, distance = Infinity;
+        let candidates: readonly CaretStop[] = [];
+        for (const index of indices) {
+            const { offsets, byOffset } = stopsByOffset(index);
+            if (!offsets.length) continue;
+            let lo = 0, hi = offsets.length;
+            while (lo < hi) { const mid = (lo + hi) >>> 1; if (offsets[mid] < position.offset) lo = mid + 1; else hi = mid; }
+            for (const offset of [offsets[Math.max(0, lo - 1)], offsets[Math.min(lo, offsets.length - 1)]]) {
+                const delta = Math.abs(position.offset - offset);
+                if (delta < distance || (delta === distance && offset < bestOffset)) {
+                    distance = delta; bestOffset = offset; candidates = byOffset.get(offset)!;
+                } else if (delta === distance && offset === bestOffset && !candidates.some(stop => stop.line === index)) {
+                    candidates = [...candidates, ...byOffset.get(offset)!];
+                }
+            }
+        }
+        if (!candidates.length) return hitTest(0, 0);
         if (position.affinity) return candidates.find(stop => stop.affinity === position.affinity) ?? candidates[0];
         const primary = candidates.find(stop => lines[stop.line].clusters.some(cluster =>
             cluster.rtl === (paint.lines[stop.line].direction === 'rtl')
@@ -118,11 +156,6 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             && (Math.abs(cluster.bounds.x - stop.x) < 0.001 || Math.abs(cluster.bounds.x + cluster.bounds.width - stop.x) < 0.001)));
         return primary ?? candidates[0];
     }
-    const firstLine = (offset: number): number => {
-        let lo = 0, hi = paint.lines.length;
-        while (lo < hi) { const mid = (lo + hi) >>> 1; if (paint.lines[mid].src[1] < offset) lo = mid + 1; else hi = mid; }
-        return lo;
-    };
     function selection(start: number, end: number): readonly Rect[] {
         if (start > end) [start, end] = [end, start];
         const result: Rect[] = [];

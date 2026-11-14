@@ -7,7 +7,10 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 import { createDuplicateDragPlan, type DuplicateDragPreview } from './duplicateDrag';
-import { prepareNotebookTranslation, type NotebookTranslation } from './notebookTranslation';
+import { prepareNotebookTransform, prepareNotebookTranslation, type NotebookTransform, type NotebookTranslation } from './notebookTranslation';
+import type { BoardDoc } from '../model/doc';
+import type { BoardRuntime } from '../host/runtime';
+import type { NodeId } from '../model/ids';
 
 export interface AsyncTransformGestureHost {
     hold(): () => void;
@@ -152,11 +155,43 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
     }, host);
 }
 
+type GrowthValue<T extends { readonly doc: BoardDoc; readonly ops: readonly Op[] }> = {
+    readonly base: T; readonly notebook: NotebookTransform<T> | null; readonly ops: readonly Op[];
+};
+function withNotebookGrowth<T extends { readonly doc: BoardDoc; readonly ops: readonly Op[] }>(plan: Plan<T>, options: {
+    readonly runtime: BoardRuntime; readonly ids: readonly NodeId[]; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
+}, signal: AbortSignal, host: AsyncTransformGestureHost, label: string): Plan<GrowthValue<T>> {
+    let notebook: NotebookTransform<T> | null = null;
+    const clear = () => { notebook?.release(); notebook = null; };
+    return {
+        async preview(point, keys, request, commit) {
+            clear(); const base = await plan.preview(point, keys, request, commit);
+            if (commit && base.ops.length) {
+                const prepared = await prepareNotebookTransform({ runtime: options.runtime, ids: options.ids, preview: base,
+                    signal: request, current: () => !signal.aborted && options.current() && host.current(), cooperate: options.cooperate });
+                if (request.aborted || signal.aborted) { prepared?.release(); throw new DOMException('Notebook transform cancelled', 'AbortError'); }
+                notebook = prepared;
+            }
+            return { base, notebook, ops: notebook?.ops ?? base.ops };
+        },
+        display(value) { plan.display?.(value.base); },
+        commit(value) {
+            if (!value.notebook) { plan.commit(value.base); return; }
+            try {
+                if (value.notebook !== notebook || signal.aborted || !options.current() || !host.current()) throw new DOMException('Notebook transform became stale', 'AbortError');
+                const applied = options.runtime.session.apply({ origin: 'tool', label, ops: value.ops }); applied.release();
+            } finally { clear(); plan.cancel(); }
+        },
+        cancel() { clear(); plan.cancel(); },
+    };
+}
+
 export function rotationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardRotationOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost): GestureOwner {
-    return new AsyncTransformGesture<BoardRotationPreview>(sample, modifiers, async signal => {
+    return new AsyncTransformGesture<GrowthValue<BoardRotationPreview>>(sample, modifiers, async signal => {
         const plan: BoardRotationPlan = await createBoardRotationPlan({ ...options, down: sample, signal });
-        return { preview: (point, keys, request) => plan.preview(point, keys.shift, request), commit: value => plan.commit(value), cancel: () => plan.cancel() };
+        return withNotebookGrowth({ preview: (point, keys, request) => plan.preview(point, keys.shift, request),
+            commit: value => plan.commit(value), cancel: () => plan.cancel() }, options, signal, host, 'Rotate selection');
     }, host);
 }
 export interface ResizeSnapOptions {
@@ -165,7 +200,7 @@ export interface ResizeSnapOptions {
 }
 export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardLeafResizePlanOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost, snap?: ResizeSnapOptions): GestureOwner {
-    return new AsyncTransformGesture<BoardLeafResizePreview>(sample, modifiers, async signal => {
+    return new AsyncTransformGesture<GrowthValue<BoardLeafResizePreview>>(sample, modifiers, async signal => {
         const plan: BoardLeafResizePlan = await createBoardLeafResizePlan({ ...options, down: sample, signal });
         const { runtime, ids } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
         const selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
@@ -175,7 +210,7 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
             if (value.frame.scaleX !== 0) signX = value.frame.scaleX < 0 ? -1 : 1;
             if (value.frame.scaleY !== 0) signY = value.frame.scaleY < 0 ? -1 : 1;
         };
-        return {
+        return withNotebookGrowth<BoardLeafResizePreview>({
             async preview(point, keys, request) {
                 let result = await plan.preview(point, { shift: keys.shift, alt: keys.alt }, request, signX, signY);
                 remember(result);
@@ -217,6 +252,6 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
             },
             display: value => host.guides?.(guides.get(value) ?? []),
             commit: value => plan.commit(value), cancel: () => plan.cancel(),
-        };
+        }, options, signal, host, 'Resize selection');
     }, host);
 }

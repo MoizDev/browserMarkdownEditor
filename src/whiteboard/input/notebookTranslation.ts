@@ -5,21 +5,22 @@ import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardTranslationPreview } from '../geom/runtimeTranslation';
 import type { BoardRuntime } from '../host/runtime';
-import { isSheetParent } from '../model/doc';
+import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { boardPageStack } from '../model/pages';
 
-export interface NotebookTranslationOptions {
+interface TransformPreview { readonly doc: BoardDoc; readonly ops: readonly Op[] }
+export interface NotebookTransformOptions<T extends TransformPreview> {
     readonly runtime: BoardRuntime;
     readonly ids: readonly NodeId[];
-    readonly preview: BoardTranslationPreview;
+    readonly preview: T;
     readonly signal: AbortSignal;
     current(): boolean;
     cooperate?(): Promise<void>;
 }
-export interface NotebookTranslation {
-    readonly preview: BoardTranslationPreview;
+export interface NotebookTransform<T extends TransformPreview> {
+    readonly preview: T;
     readonly ops: readonly Op[];
     release(): void;
 }
@@ -27,7 +28,7 @@ export interface NotebookTranslation {
 /** Page growth and actual-geometry page ownership are staged with the move.
  * Existing page-local coordinates are converted through their world poses only
  * after the grown stack has been established, never by moving the content. */
-export async function prepareNotebookTranslation(options: NotebookTranslationOptions): Promise<NotebookTranslation | null> {
+export async function prepareNotebookTransform<T extends TransformPreview>(options: NotebookTransformOptions<T>): Promise<NotebookTransform<T> | null> {
     const { runtime, preview, signal } = options, session = runtime.session, doc = session.doc;
     if (doc.host.kind !== 'notebook' || !preview.ops.length) return null;
     const owner = session.owner, revision = doc.rev, selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
@@ -68,9 +69,14 @@ export async function prepareNotebookTranslation(options: NotebookTranslationOpt
         const final = corrections.length ? await projectBoardGeometrySets(grown, corrections, { signal, current, cooperate }) : grown;
         check(); result = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { doc: final, signal, current, cooperate });
         check();
-        const projected: BoardTranslationPreview = Object.freeze({ doc: final, ops: Object.freeze([...preview.ops, ...corrections]), guides: preview.guides });
+        const projected = Object.freeze({ ...preview, doc: final, ops: Object.freeze([...preview.ops, ...corrections]) }) as T;
         const ops: readonly Op[] = Object.freeze([growth, ...projected.ops]);
         const lease = result; retained = true;
         return { preview: projected, ops, release: () => lease.release() };
     } finally { try { first.release(); } finally { if (!retained) result?.release(); } }
+}
+
+export type NotebookTranslation = NotebookTransform<BoardTranslationPreview>;
+export function prepareNotebookTranslation(options: NotebookTransformOptions<BoardTranslationPreview>): Promise<NotebookTranslation | null> {
+    return prepareNotebookTransform(options);
 }

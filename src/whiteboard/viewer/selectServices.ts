@@ -21,7 +21,7 @@ import type { NodeId } from '../model/ids';
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import { prepareFrameDrop } from '../input/frameDrop';
-import { prepareNotebookTranslation } from '../input/notebookTranslation';
+import { prepareNotebookTransform, prepareNotebookTranslation } from '../input/notebookTranslation';
 import { createBoardCameraCommands } from './cameraCommands';
 import { createSelectionCommandDriver } from './selectionCommands';
 import { createStyleShortcuts } from './styleShortcuts';
@@ -279,7 +279,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                         const dx = box.width * (factor - 1) / 2, dy = box.height * (factor - 1) / 2;
                         const result = await plan.preview({ x: c * dx - s * dy, y: s * dx + c * dy },
                             { shift: true, alt: true }, controller.signal);
-                        if (active()) await presentAndCommit(result.ops, controller.signal, active, () => plan.commit(result));
+                        const notebook = result.ops.length ? await prepareNotebookTransform({ runtime, ids, preview: result, signal: controller.signal, current: active }) : null;
+                        try {
+                            if (active()) await presentAndCommit(notebook?.ops ?? result.ops, controller.signal, active, () => {
+                                if (!notebook) { plan.commit(result); return; }
+                                const applied = session.apply({ origin: 'tool', label: 'Resize selection', ops: notebook.ops }); applied.release();
+                                plan.cancel();
+                            });
+                        } finally { notebook?.release(); }
                     } finally { plan.cancel(); }
                     return;
                 }
@@ -304,7 +311,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     current: active, signal: controller.signal });
                 try {
                     const preview = await plan.preview({ x: centre.x + Math.cos(angle), y: centre.y + Math.sin(angle) }, false, controller.signal);
-                    if (active()) await presentAndCommit(preview.ops, controller.signal, active, () => plan.commit(preview));
+                    const notebook = preview.ops.length ? await prepareNotebookTransform({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
+                    try {
+                        if (active()) await presentAndCommit(notebook?.ops ?? preview.ops, controller.signal, active, () => {
+                            if (!notebook) { plan.commit(preview); return; }
+                            const applied = session.apply({ origin: 'tool', label: 'Rotate selection', ops: notebook.ops }); applied.release();
+                            plan.cancel();
+                        });
+                    } finally { notebook?.release(); }
                 } finally { plan.cancel(); }
             } catch (error) { if (active()) report(error); }
             finally { try { unregister?.(); } finally { release(); } }

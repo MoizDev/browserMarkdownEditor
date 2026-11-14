@@ -1,5 +1,5 @@
 import type { MediaId } from '../model/media';
-import type { NodeId, SheetId } from '../model/ids';
+import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { SampleRef } from '../model/samples';
 import type { Applied, Transaction } from './ops';
 
@@ -11,7 +11,9 @@ export interface TextSelectionSnapshot {
 /** Selection is session state, never part of a document transaction. */
 export interface HistorySnapshot {
     readonly sheet: SheetId;
+    readonly focus: ParentId;
     readonly selected: readonly NodeId[];
+    readonly active: NodeId | null;
     readonly text?: TextSelectionSnapshot;
 }
 export interface HistoryStepInfo {
@@ -32,8 +34,10 @@ export interface HistoryPorts {
     restoreSelection(snapshot: HistorySnapshot): void;
     /** The pane's existing CameraController owns the pan; history stores no camera. */
     revealTouched(ids: ReadonlySet<NodeId>): void;
-    /** Undo/redo apply projects media through the session's MediaLocations; rollback stays exact. */
+    /** Undo/redo apply projects media through the session's MediaLocations. */
     apply(transaction: Transaction): Applied;
+    /** ApplyController.revert: latest receipts, newest first, exact and without projection. */
+    revert(receipts: readonly Applied[]): Applied;
     retainMedia(id: MediaId): HistoryLease;
     retainSample(ref: SampleRef): HistoryLease;
     sampleBytes(ref: SampleRef): number;

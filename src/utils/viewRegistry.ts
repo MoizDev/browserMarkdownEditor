@@ -137,6 +137,8 @@ export interface CanvasApplyResult {
     created: string[];
     updated: string[];
     deleted: string[];
+    /** Authoritative post-commit projection of updated shapes that still exist. */
+    updatedShapes?: readonly ShapeSummary[];
     /** One message per op that was skipped, e.g. "op 3: no shape shape:abc". */
     errors: string[];
 }
@@ -153,6 +155,7 @@ export interface CanvasShapePage {
     revision: number;
     nextOffset?: number;
     revisionChanged?: true;
+    sections?: readonly { readonly offset: number; readonly name: string; readonly index: number }[];
 }
 
 /** The agent's hands on a canvas document (drawing, notebook, PDF annotate). */

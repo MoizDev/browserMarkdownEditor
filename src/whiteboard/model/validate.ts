@@ -10,7 +10,8 @@ import type { SampleStoreReader } from './samples';
 import {
     ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS,
 } from './styles';
-import { isBlockRange, isSurrogateBoundary, scanText, spliceBlockCount } from './textOffsets';
+import { isBlockRange, isSurrogateBoundary, isTextGraphemeBoundary, scanText, spliceBlockCount } from './textOffsets';
+import { normalizeRichText } from '../text/richText';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 export { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 
@@ -60,7 +61,7 @@ const KEYS = {
     paper: ['size', 'orientation', 'ruling', 'spacing', 'margin', 'pageCount'],
     media: ['id', 'mime', 'bytes', 'w', 'h', 'duration', 'animated', 'name', 'file', 'ext'],
     create: ['t', 'node'], delete: ['t', 'id'], set: ['t', 'id', 'key', 'value'],
-    splice: ['t', 'id', 'key', 'from', 'to', 'insert', 'wholeBlocks'], sheetCreate: ['t', 'op', 'sheet'],
+    splice: ['t', 'id', 'key', 'from', 'to', 'insert', 'replaceBlocks', 'wholeBlocks'], sheetCreate: ['t', 'op', 'sheet'],
     sheet: ['id', 'name', 'order', 'ext'], recordDelete: ['t', 'op', 'id'],
     sheetSet: ['t', 'op', 'id', 'key', 'value'], board: ['t', 'key', 'value'], mediaAdd: ['t', 'op', 'entry'],
     ext: ['t', 'target', 'id', 'value'], mediaDrop: ['t', 'op', 'id', 'restoreMissing'],
@@ -376,9 +377,12 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 const text: RichText | null = Reflect.get(node, op.key);
                 const length = scanText(text);
                 if (!integer(op.from, 0, length) || !integer(op.to, op.from, length)
-                    || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered UTF-16 boundaries within the text');
-                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || (context.origin !== 'undo' && context.origin !== 'redo') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
-                if (!validRichText(op.insert) || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
+                    || !isSurrogateBoundary(text, op.from) || !isSurrogateBoundary(text, op.to)
+                    || !isTextGraphemeBoundary(text, op.from) || !isTextGraphemeBoundary(text, op.to)) return refuse('V-11', opIndex, node.id, 'Splice offsets must be ordered grapheme boundaries within the text');
+                if (op.wholeBlocks !== undefined && (op.wholeBlocks !== true || op.replaceBlocks !== undefined || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Whole-block inverse must be block-aligned');
+                if (op.replaceBlocks !== undefined && (op.replaceBlocks !== true || !isBlockRange(text, op.from, op.to))) return refuse('V-11', opIndex, node.id, 'Block replacement must be block-aligned');
+                if (!validRichText(op.insert) || (op.replaceBlocks === true && normalizeRichText(op.insert) !== op.insert)
+                    || length - (op.to - op.from) + scanText(op.insert) > MAX_TEXT_LENGTH
                     || spliceBlockCount(text, op.from, op.to, op.insert.blocks.length) > MAX_TEXT_BLOCKS) return refuse('V-11', opIndex, node.id, 'Splice fragment or resulting text/block count is invalid');
                 return OK;
             }
@@ -404,7 +408,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 return refuse('schema', opIndex, null, 'Unknown sheet property');
             }
             case 'ext': {
-                if ((context.origin !== 'undo' && context.origin !== 'redo') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
+                if ((context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert') || !closed(op, KEYS.ext) || !extension(op.value)) return refuse('schema', opIndex, nodeId, 'Invalid internal extension restore');
                 switch (op.target) {
                     case 'node': {
                         if (!id(op.id)) return refuse('V-1', opIndex, nodeId, 'Extension node id is invalid');
@@ -446,7 +450,7 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 if (op.op === 'drop' && closed(op, KEYS.mediaDrop) && typeof op.id === 'string' && MEDIA_HASH.test(op.id)) {
                     const media = op.id as MediaId;
                     if (!doc.media.has(media)) return refuse('V-9', opIndex, null, 'Media does not exist');
-                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
+                    if (op.restoreMissing !== undefined && (op.restoreMissing !== true || (context.origin !== 'undo' && context.origin !== 'redo' && context.origin !== 'revert'))) return refuse('schema', opIndex, null, 'Only an inverse can restore a missing media entry');
                     if (doc.mediaRefs.get(media)?.size) return refuse('V-9', opIndex, null, 'Media is still referenced by live nodes');
                     return op.restoreMissing === true || !(doc.preservedMediaRefs.get(media) ?? 0)
                         ? OK : refuse('V-9', opIndex, null, 'Media is still referenced by preserved data');

@@ -25,23 +25,33 @@ function selectedNodes(doc: BoardDoc, selected: readonly NodeId[]): Node[] {
     return result;
 }
 
-function apply(session: BoardSession, label: string, ops: readonly Op[]): void {
+function apply(session: BoardSession, label: string, ops: readonly Op[], grouped = false): void {
     if (!ops.length || session.isReadOnly) return;
-    const receipt = session.apply({ origin: 'tool', label, ops });
-    receipt.release();
+    const ownGroup = !grouped && ops.some(op => op.t === 'set');
+    if (ownGroup) session.history.open(label);
+    try {
+        const receipt = session.apply({ origin: 'tool', label, ops });
+        receipt.release();
+    } finally {
+        if (ownGroup) session.history.close();
+    }
 }
 
 /** A slider drag opens one fresh history group; next-tool defaults remain history-silent. */
 export class BoardStyleCommands {
     private widthGesture = false;
     private releaseGesture: (() => void) | null = null;
-    constructor(private readonly session: BoardSession, private readonly selection: () => readonly NodeId[]) {}
+    constructor(
+        private readonly session: BoardSession,
+        private readonly selection: () => readonly NodeId[],
+        private readonly activeTool: () => string,
+    ) {}
 
     currentColor(): Swatch | null {
         const doc = this.session.doc;
         const colors = selectedNodes(doc, this.selection()).flatMap(node =>
             'color' in node && node.color !== null ? [node.color] : []);
-        if (!colors.length) return doc.ui.tool === 'highlighter' ? doc.ui.next.highlighterColor : doc.ui.next.color;
+        if (!colors.length) return this.activeTool() === 'highlighter' ? doc.ui.next.highlighterColor : doc.ui.next.color;
         return colors.every(color => color === colors[0]) ? colors[0] : null;
     }
 
@@ -90,7 +100,7 @@ export class BoardStyleCommands {
     setColor(color: Swatch): void {
         this.endWidth();
         const doc = this.session.doc, next = doc.ui.next;
-        const key = doc.ui.tool === 'highlighter' ? 'highlighterColor' : 'color';
+        const key = this.activeTool() === 'highlighter' ? 'highlighterColor' : 'color';
         const ops: Op[] = [];
         if (next[key] !== color) ops.push({ t: 'board', key: 'ui.next', value: { ...next, [key]: color } });
         for (const node of selectedNodes(doc, this.selection())) {
@@ -216,7 +226,7 @@ export class BoardStyleCommands {
                 if (node.width !== width) ops.push({ t: 'set', id: node.id, key: 'width', value: width });
             }
         }
-        apply(this.session, 'Change pen width', ops);
+        apply(this.session, 'Change pen width', ops, this.widthGesture);
     }
 
     endWidth(): void {

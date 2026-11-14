@@ -22,12 +22,13 @@ export function penPanelView(
     session: BoardSession,
     commands: BoardStyleCommands,
     palette: PaintPalette,
+    activeTool: string,
     panelBackground: Rgba,
     translate: (key: string) => string,
     persistScale: (scale: number) => void,
 ) {
     const ui = session.doc.ui;
-    const highlighter = ui.tool === 'highlighter';
+    const highlighter = activeTool === 'highlighter';
     const next = highlighter ? ui.next.highlighterColor : ui.next.color;
     const pigment = resolveSwatch(palette, next, highlighter ? 'highlight' : 'stroke')!;
     const selected = commands.currentWidthScale();

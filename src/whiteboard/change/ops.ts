@@ -45,7 +45,7 @@ export type ContentOp =
     | { readonly t: 'create'; readonly node: NodeRecord }
     | { readonly t: 'delete'; readonly id: NodeId }
     | NodeSetOp
-    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly wholeBlocks?: true }
+    | { readonly t: 'splice'; readonly id: NodeId; readonly key: 'text' | 'label'; readonly from: number; readonly to: number; readonly insert: RichFragment; readonly replaceBlocks?: true; readonly wholeBlocks?: true }
     | { readonly t: 'sheet'; readonly op: 'create'; readonly sheet: Sheet }
     | { readonly t: 'sheet'; readonly op: 'delete'; readonly id: SheetId }
     | { readonly t: 'sheet'; readonly op: 'set'; readonly id: SheetId; readonly key: 'name' | 'order'; readonly value: string }
@@ -68,7 +68,7 @@ export interface ExtOp {
 type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
 export type Op = ContentOp | ExtOp | MediaFileRestore;
 
-export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host';
+export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert';
 export interface Transaction {
     readonly ops: readonly Op[];
     readonly origin: TransactionOrigin;
@@ -86,6 +86,8 @@ export interface AppliedLease { release(): void }
 export interface Applied {
     readonly forward: readonly Op[];
     readonly inverse: readonly Op[];
+    /** Index-aligned inverse groups; concatenating them in reverse yields inverse. */
+    readonly inverseGroups: readonly (readonly Op[])[];
     readonly touched: TouchedSet;
     readonly dirtying: boolean;
     readonly recorded: boolean;

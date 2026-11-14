@@ -21,7 +21,7 @@ export function localizeBoardChrome(t: BoardTranslate) {
 export function localizeShortcutGroups(groups: readonly ShortcutGroup[], t: BoardTranslate): readonly ShortcutGroup[] {
     return groups.map(group => ({
         ...group,
-        label: t(`shortcutGroups.${group.id === 'style' ? 'transform' : group.id}`),
+        label: t(`shortcutGroups.${group.id === 'style' ? 'transform' : group.id === 'text-formatting' ? 'textFormatting' : group.id}`),
         bindings: group.bindings.map(binding => ({
             ...binding, label: t(`shortcuts.${binding.id.split(':', 1)[0]}`),
         })),

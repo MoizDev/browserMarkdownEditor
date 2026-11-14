@@ -57,6 +57,20 @@ export async function prepareSelectionScope(options: {
     check(); return nodes;
 }
 
+/** Capture ids without an unbounded synchronous map before geometry pinning. */
+export async function selectionNodeIds(doc: BoardDoc, nodes: readonly Node[], options: {
+    readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
+}): Promise<NodeId[]> {
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Selection id capture became stale', 'AbortError'); };
+    const result: NodeId[] = []; let count = 0, started = performance.now();
+    for (const node of nodes) {
+        check(); if (doc.nodes.get(node.id) !== node) throw new DOMException('Selection node changed', 'AbortError'); result.push(node.id);
+        if (++count >= 256 || performance.now() - started >= 3) { await cooperate(); check(); count = 0; started = performance.now(); }
+    }
+    check(); return result;
+}
+
 /** Resolve opaque-descendant flags once per shared subtree, cooperatively. */
 export async function inspectOpaqueSubtrees(doc: BoardDoc, roots: readonly NodeId[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;

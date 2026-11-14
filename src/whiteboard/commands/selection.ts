@@ -6,7 +6,7 @@ import { acquireBoardGeometryScope } from './geometryScope';
 import type { CommandBuilder } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, isSheetParent } from '../model/doc';
-import { inspectOpaqueSubtrees, prepareSelectionScope } from './selectionScope';
+import { inspectOpaqueSubtrees, prepareSelectionScope, selectionNodeIds } from './selectionScope';
 import { prepareSelectionOrderPlan } from './selectionOrderPlan';
 import { prepareContainerContents } from './containerContents';
 import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/ids';
@@ -94,9 +94,9 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         return opacity;
     };
     const bounds = async (roots: readonly Node[], parent: ParentId, state: Capture, signal: AbortSignal): Promise<Box> => {
-        const lease = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, cooperate, current: () => {
-            try { check(state, signal); return true; } catch { return false; }
-        } });
+        const current = () => { try { check(state, signal); return true; } catch { return false; } };
+        const ids = await selectionNodeIds(doc, roots, { signal, current, cooperate });
+        const lease = await acquireBoardGeometryScope(runtime, ids, { signal, cooperate, current });
         try {
             check(state, signal);
             const pose = isSheetParent(doc, parent) ? null : worldPose(doc, parent);
@@ -132,7 +132,9 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         const activeSignal = signal ?? new AbortController().signal, state = capture(); check(state, activeSignal);
         const roots = await rootsFor(ids, state, true, activeSignal); check(state, activeSignal);
         const action = await prepare(roots, state, activeSignal); check(state, activeSignal);
-        const lease = await runtime.render.pinChangeGeometry(roots.map(node => node.id), activeSignal);
+        const current = () => { try { check(state, activeSignal); return true; } catch { return false; } };
+        const rootIds = await selectionNodeIds(doc, roots, { signal: activeSignal, current, cooperate });
+        const lease = await runtime.render.pinChangeGeometry(rootIds, activeSignal, doc, current);
         try { check(state, activeSignal); return commit(state, activeSignal, label, action, select); }
         finally { lease.release(); }
     };
@@ -267,7 +269,9 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
             const plan = await prepareSelectionOrderPlan(doc, roots, direction, { signal: activeSignal, cooperate,
                 current: () => { try { check(state, activeSignal); return true; } catch { return false; } } });
             check(state, activeSignal); if (!plan.length) return;
-            const lease = await runtime.render.pinChangeGeometry(roots.map(node => node.id), activeSignal);
+            const current = () => { try { check(state, activeSignal); return true; } catch { return false; } };
+            const rootIds = await selectionNodeIds(doc, roots, { signal: activeSignal, current, cooperate });
+            const lease = await runtime.render.pinChangeGeometry(rootIds, activeSignal, doc, current);
             try {
                 commit(state, activeSignal, 'Reorder', builder => {
                     for (const run of plan) {

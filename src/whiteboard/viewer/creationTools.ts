@@ -190,6 +190,9 @@ class CreationGesture implements GestureOwner {
         this.ended = true;
         this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
+        if (this.context.kind === 'connector' && this.isClick()) {
+            this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); return;
+        }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
         void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
     }

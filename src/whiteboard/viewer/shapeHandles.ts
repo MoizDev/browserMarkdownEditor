@@ -14,6 +14,7 @@ import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import { connectorEndHandleGesture } from '../input/connectorHandles';
 import { connectorControlGesture } from '../input/connectorControlsGesture';
+import { toggleConnectorHead } from '../input/connectorHead';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
@@ -53,7 +54,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
-    let controlPending: AbortController | undefined;
+    let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; options.invalidate(); };
     const refresh = () => {
@@ -137,6 +138,15 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
+        },
+        toggleHead(hit: ShapeHandleHit): boolean {
+            if (!current() || !selected || hit.kind !== 'connector-end') return false;
+            if (headBusy || controlPending) return true;
+            return toggleConnectorHead({ runtime, id: selected, terminal: hit.terminal, current,
+                hold: () => { const release = options.hold(); headBusy = true; return () => { headBusy = false; release(); }; },
+                registerPending: options.registerPending, show: options.show, waitUntilIdle: options.waitUntilIdle,
+                waitUntilReady: options.waitUntilReady, armCommit: options.armCommit, finishCommit: options.finishCommit,
+                cancelCommit: options.cancelCommit, clear: options.clear, error: options.error, cooperate: options.cooperate });
         },
         remove(hit: ShapeHandleHit): boolean {
             if (!current() || !selected || hit.kind !== 'polyline-vertex') return false;

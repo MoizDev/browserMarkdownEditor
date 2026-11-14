@@ -34,7 +34,8 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
     if (!node || node.kind !== 'connector' || isLocked(doc, node) || session.isReadOnly) throw new Error('Connector endpoint is not editable');
     let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false, lastMovedAt = first.time;
-    let lastSurface = options.sampleToSurface(first);
+    let lastSurface = options.sampleToSurface(first), moved = false;
+    const downSurface = lastSurface;
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined;
     const release = options.hold();
@@ -97,11 +98,12 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             keys = next; for (const value of samples) if (value.pointerId === first.pointerId) {
                 const surface = options.sampleToSurface(value);
                 if (surface.x !== lastSurface.x || surface.y !== lastSurface.y) lastMovedAt = value.time;
+                if (Math.hypot(surface.x - downSurface.x, surface.y - downSurface.y) >= 4) moved = true;
                 lastSurface = surface; sample = value;
             }
             void render(false);
         },
-        finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current()) { cancel(); return; } ended = true; void render(true); },
+        finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current() || !moved) { cancel(); return; } ended = true; void render(true); },
         cancel(_reason: CancelReason) { cancel(); },
     };
 }

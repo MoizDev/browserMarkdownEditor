@@ -1,4 +1,4 @@
-import type { createPdfInkHost, pinPdfInkHostForSave, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
+import type { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import type { PdfEditableInkSource } from '../../pdf/session/inkAcquisition.types';
 import type { RenderToken } from '../../platform/render/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -37,6 +37,7 @@ export interface PrepareNativePdfRuntimeOptions {
     readonly zMax: number;
     readonly createHost: typeof createPdfInkHost;
     readonly validateLoadedHost: typeof validateLoadedPdfInkHost;
+    readonly readLegacyDigest: typeof readPdfInkLegacyDigest;
     readonly pinHost: typeof pinPdfInkHostForSave;
     readonly currentReadOnly: () => string | null;
     readonly afterWritten: (revision: number, written: WrittenPdf, sources: SourceOwnerPort) => void | Promise<void>;
@@ -99,6 +100,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         if (acquired.status !== 'editable') throw new Error('PDF ink board could not be admitted for editing');
         const { load, samples } = acquired, doc = load.doc;
         if (doc.kind !== 'pdf-ink' || !options.validateLoadedHost(accepted, doc.host)) throw new Error('PDF ink host does not match its inspected source');
+        const legacyOriginalSha256 = accepted.kind === 'native' ? options.readLegacyDigest(accepted, doc.host) : null;
         const visual = await inspectPdfVisualModel(load, { signal });
         check();
         if (visual.status !== 'known') throw new Error('This PDF contains ink that cannot be safely displayed or rewritten. Open it in the PDF reader instead.');
@@ -158,7 +160,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         const preparedSerializer = serializer;
         check();
         return {
-            sources, media: store,
+            sources, media: store, legacyOriginalSha256,
             runtime: () => owned?.runtime,
             take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
                 if (disposed || transferred) throw new Error('PDF preparation already consumed');

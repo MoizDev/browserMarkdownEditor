@@ -202,7 +202,7 @@ export const NODE_PROPERTY_ORDER = {
     text: ['text', 'color', 'size', 'font', 'align', 'autoSize', 'w', 'scale'],
     sticky: ['text', 'color', 'labelColor', 'size', 'font', 'align', 'valign', 'growY', 'fit', 'scale', 'url'],
     connector: ['route', 'start', 'end', 'bend', 'elbowMid', 'headStart', 'headEnd', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'label', 'labelAt', 'width', 'labelScale'],
-    polyline: ['points', 'spline', 'color', 'dash', 'size', 'width'],
+    polyline: ['points', 'startAttach', 'endAttach', 'spline', 'color', 'dash', 'size', 'width'],
     frame: ['w', 'h', 'name', 'color'], group: [],
     picture: ['w', 'h', 'media', 'crop', 'flipX', 'flipY', 'alt', 'inverted', 'playing', 'url'],
     clip: ['w', 'h', 'media', 'time', 'playing', 'autoplay', 'alt'],

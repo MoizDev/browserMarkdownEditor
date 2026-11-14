@@ -2551,6 +2551,32 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return joinVaultPath(parentPath, copyName);
     }), [withMutation, patchTreeDirs]);
 
+    const distinctCopyQueue = useRef<Promise<void>>(Promise.resolve());
+    const writeDistinctCopy = useCallback((parent: FileSystemDirectoryHandle, parentPath: string, name: string,
+        data: Blob, isCurrent: () => boolean) => {
+        const root = rootHandleRef.current;
+        const check = () => {
+            if (!root || rootHandleRef.current !== root || !isCurrent()) throw new DOMException('Copy source changed', 'AbortError');
+        };
+        const copy = distinctCopyQueue.current.then(() => withMutation(async () => {
+            check();
+            const segments = await root!.resolve(parent);
+            check();
+            if (!segments || segments.join('/') !== parentPath) throw new Error('The copy folder is no longer in this vault');
+            const copyName = await freeEntryName(parent, name);
+            check();
+            // Once this fresh-file transaction starts, finish the immutable copy
+            // even if its pane closes. Rechecking mid-write would leave an empty file.
+            const handle = await parent.getFileHandle(copyName, { create: true });
+            await writeAllBytes(handle, data);
+            const version = await versionAfterWrite(handle, data);
+            if (rootHandleRef.current === root) await patchTreeDirs(root!, [parentPath]);
+            return { path: joinVaultPath(parentPath, copyName), name: copyName, handle, version };
+        }));
+        distinctCopyQueue.current = copy.then(() => {}, () => {});
+        return copy;
+    }, [withMutation, patchTreeDirs]);
+
     /**
      * Put back a file that was deleted outside the app ("Save again"): create any
      * missing parent folders and the file — only if NOTHING is at `filePath`
@@ -2857,6 +2883,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         statFile: statOf,
         writeFileVersioned,
         writeConflictCopy,
+        writeDistinctCopy,
         recreateFile,
         resolveFileHandle,
         subscribeVaultChanges,
@@ -2910,6 +2937,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         writeNotebookExport,
         writeFileVersioned,
         writeConflictCopy,
+        writeDistinctCopy,
         recreateFile,
         resolveFileHandle,
         subscribeVaultChanges,

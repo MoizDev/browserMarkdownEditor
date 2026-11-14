@@ -1,4 +1,4 @@
-import type { SourceOwner } from '../../utils/documentBuffers';
+import type { DeferredSource, SourceOwner } from '../../utils/documentBuffers';
 import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import type { NativeCanvasReady } from '../../types/reading';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
@@ -6,6 +6,7 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 /** Preparation owns the original bytes until take transfers them to the App-owned session. */
 export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly legacyOriginalSha256: string | null;
+    readonly conversionPending?: boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
         dispose(): void | Promise<void>;
@@ -22,6 +23,7 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly emergencyReadOnlyReason: string;
     existing?(): AcquiredNativeBoard<S> | undefined;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
+    acceptConvertedSource?: (source: DeferredSource, originalDigest: string) => void;
     onError(error: unknown): void;
 }
 export interface AcquiredNativeBoard<S extends BoardSessionPort> {

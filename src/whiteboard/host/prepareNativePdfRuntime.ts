@@ -146,15 +146,19 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         return {
             sources, media: store,
             runtime: () => owned?.runtime,
-            take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) {
+            take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
                 if (disposed || transferred) throw new Error('PDF preparation already consumed');
-                check();
-                if (owner.documentId !== identity.documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw new DOMException('PDF session ended', 'AbortError');
+                try {
+                    check();
+                    if (owner.documentId !== identity.documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw new DOMException('PDF session ended', 'AbortError');
+                } catch (error) { dispose(); throw error; }
                 const current = () => isLiveOwner(owner) && host.isCurrent(identity);
                 const build = createPdfInkBuildCapture({ runtime: () => {
                     if (!owned) throw new Error('PDF runtime is not ready'); return owned.runtime;
                 }, sources, pinHost: options.pinHost, currentOwner: current, onError: options.onError });
-                const journal = createBoardJournal({ doc, samples, capture: {
+                let journal: ReturnType<typeof createBoardJournal> | undefined;
+                try {
+                journal = createBoardJournal({ doc, samples, capture: {
                     baseline: prime, doc, encoder, records: initialRecords(), representation: 'pdf-ink',
                     mediaPath: () => null,
                     mediaAsset(id) {
@@ -177,11 +181,10 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                             return { files: new Map<MediaId, string>(), release() { for (const lease of leases) lease.release(); } };
                         } catch (error) { for (const lease of leases) lease.release(); throw error; }
                     }, onError: options.onError });
-                try {
                     owned = createOwnedBoardRuntime({ runtime: { owner, doc, samples, media: store, render: services,
                         serializer: preparedSerializer, records, encoder, journal, geometry: services.changeGeometry,
                         isCurrent: candidate => candidate.documentId === owner.documentId && candidate.session === owner.session && current(),
-                        readOnlyReason: options.currentReadOnly, captureBuild: build.captureBuild,
+                        readOnlyReason: () => readOnlyReason() ?? options.currentReadOnly(), captureBuild: build.captureBuild,
                         afterWritten: (revision, context) => options.afterWritten(revision, build.writtenContext(revision, context), sources),
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: services.bounds, retainNode: services.retainNode, realize: services.realize,
@@ -215,13 +218,17 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                             release() { if (!released) { released = true; for (const item of held) item.lease.release(); } },
                         };
                     }, pinPdf: build.pinPdf } });
-                    transferred = true; releaseCreators(); acquired?.dispose();
+                    releaseCreators(); acquired?.dispose();
+                    transferred = true;
                     let closed = false;
                     return { board: owned.board, sources, dispose() {
                         if (closed) return; closed = true;
                         try { owned?.dispose(); } finally { try { services.dispose(); } finally { sources.dispose(); } }
                     } };
-                } catch (error) { journal.dispose(); throw error; }
+                } catch (error) {
+                    try { owned?.dispose(); } finally { try { journal?.dispose(); } finally { dispose(); } }
+                    throw error;
+                }
             }, dispose,
         };
     } catch (error) { dispose(); throw error; }

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "ページの削除",
     "paper.cancel": "キャンセル",
     "paper.keepProtected": "ロックされたコンテンツは保持されます。",
-    "chrome.readOnly": "このボードは読み取り専用です。"
+    "chrome.readOnly": "このボードは読み取り専用です。",
+    "shortcuts.file.print": "印刷",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

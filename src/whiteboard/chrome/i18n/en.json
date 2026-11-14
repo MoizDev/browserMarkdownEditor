@@ -348,6 +348,9 @@
     "kinds.embed.one": "{count} embed",
     "kinds.embed.other": "{count} embeds",
     "kinds.unsupported.one": "{count} unsupported item",
-    "kinds.unsupported.other": "{count} unsupported items"
+    "kinds.unsupported.other": "{count} unsupported items",
+    "shortcuts.file.print": "Print",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

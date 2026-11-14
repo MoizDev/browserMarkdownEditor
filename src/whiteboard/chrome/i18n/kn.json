@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "ಪುಟವನ್ನು ಅಳಿಸಿ",
     "paper.cancel": "ರದ್ದುಮಾಡು",
     "paper.keepProtected": "ಲಾಕ್ ಮಾಡಿದ ವಿಷಯವನ್ನು ಇರಿಸಲಾಗುತ್ತದೆ.",
-    "chrome.readOnly": "ಈ ಬೋರ್ಡ್ ಓದಲು ಮಾತ್ರ."
+    "chrome.readOnly": "ಈ ಬೋರ್ಡ್ ಓದಲು ಮಾತ್ರ.",
+    "shortcuts.file.print": "ಮುದ್ರಿಸಿ",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "Poista sivu",
     "paper.cancel": "Peruuta",
     "paper.keepProtected": "Lukittu sisältö säilytetään.",
-    "chrome.readOnly": "Tämä taulu on vain luku -tilassa."
+    "chrome.readOnly": "Tämä taulu on vain luku -tilassa.",
+    "shortcuts.file.print": "Tulosta",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

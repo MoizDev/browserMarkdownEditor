@@ -14,6 +14,8 @@ export function createNativeBoardActions(options: {
     readonly openShortcuts: () => void;
     /** Starts one print of the pinned board; false when the board is not current or already printing. */
     readonly print: () => boolean;
+    /** Starts one whole-sheet PDF export; false when the board is not current or already busy. */
+    readonly exportPdf: () => boolean;
 }): Omit<Record<MainAction, NativeCommandOperation>, 'unlockAll'> {
     const { lease, capabilities, camera } = options;
     return { ...camera,
@@ -26,6 +28,10 @@ export function createNativeBoardActions(options: {
                 importer.open(surfaceToWorld({ x: viewport.width / 2, y: viewport.height / 2 }, lease.camera.camera));
             },
         },
+        exportJson: {
+            state: () => lease.editing?.getBinding() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
+            run() { const binding = lease.editing?.getBinding(); if (!binding) throw new Error('The board input is not attached'); return binding.commands.exportJson('menu'); },
+        },
         exportPng: {
             state: () => lease.editing?.getBinding() ? { enabled: true } : { enabled: false, reason: 'The board input is not attached' },
             run() { const binding = lease.editing?.getBinding(); if (!binding) throw new Error('The board input is not attached'); return binding.commands.exportPng('menu'); },
@@ -37,6 +43,10 @@ export function createNativeBoardActions(options: {
         print: {
             state: () => lease.isCurrent() ? { enabled: true } : { enabled: false, reason: 'The board is not open' },
             run() { if (!options.print()) throw new Error('The board is not ready to print'); },
+        },
+        exportPdf: {
+            state: () => lease.isCurrent() ? { enabled: true } : { enabled: false, reason: 'The board is not open' },
+            run() { if (!options.exportPdf()) throw new Error('The board is not ready to export'); },
         },
         insertEmbed: capabilities.insertEmbed,
         convertToBookmark: capabilities.convertToBookmark,

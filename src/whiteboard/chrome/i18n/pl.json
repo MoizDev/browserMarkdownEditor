@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "Usuń stronę",
     "paper.cancel": "Anuluj",
     "paper.keepProtected": "Zablokowana zawartość zostanie zachowana.",
-    "chrome.readOnly": "Ta tablica jest tylko do odczytu."
+    "chrome.readOnly": "Ta tablica jest tylko do odczytu.",
+    "shortcuts.file.print": "Drukuj",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

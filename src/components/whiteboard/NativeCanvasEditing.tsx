@@ -177,14 +177,16 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             const blob = await clipboard.readMedia(entry, signal);
             if (!blob) throw new Error('A board media item is unavailable for printing.');
             return blob;
-        }, notice: setNotice, onError: report }), [runtime, clipboard, current, setNotice, report]);
+        }, boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
+        notice: setNotice, onError: report }), [runtime, clipboard, current, host, identity, setNotice, report]);
     useEffect(() => () => printer.dispose(), [printer]);
     const runPrint = useCallback(() => printer.run(), [printer]);
+    const runExportPdf = useCallback(() => printer.exportPdf(), [printer]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {
         const camera = createNativeCameraOperations({ runtime, lease, current, signal, minimapVisible, setMinimapVisible });
-        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, print: runPrint });
+        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, print: runPrint, exportPdf: runExportPdf });
         const labels = localizeBoardChrome((key, values) => translateBoard(language.getSnapshot().table, key, values));
         const commands = createNativeBoardOperations({ runtime, lease, current, canWrite,
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
@@ -193,7 +195,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const value = { camera, commands }; setOwned(value);
         return () => setOwned(previous => previous === value ? null : previous);
     }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts,
-        language, canWrite, link, mac, setNotice, report, runPrint]);
+        language, canWrite, link, mac, setNotice, report, runPrint, runExportPdf]);
     useLayoutEffect(() => {
         if (!owned) return;
         const { commands, camera } = owned;

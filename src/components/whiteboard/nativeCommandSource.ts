@@ -65,12 +65,12 @@ const commandMutates: Record<BoardCommand, boolean> = {
     stretchHorizontal: true, stretchVertical: true, distributeHorizontal: true, distributeVertical: true,
     stackHorizontal: true, stackVertical: true, pack: true, sendBack: true, sendBackward: true,
     bringForward: true, bringFront: true, rotateCounterclockwise: true, rotateClockwise: true,
-    copyAsPng: false, copyAsSvg: false, copyAsJson: false, exportPng: false, exportSvg: false,
+    copyAsPng: false, copyAsSvg: false, copyAsJson: false, exportPng: false, exportSvg: false, exportJson: false,
 };
 const actionMutates: Record<MainAction, boolean> = {
     uploadMedia: true, insertEmbed: true, unlockAll: true, convertToBookmark: true, convertToEmbed: true,
     zoomIn: false, zoomOut: false, zoomToFit: false, zoomToSelection: false, zoomTo100: false,
-    toggleMinimap: false, exportPng: false, exportSvg: false, print: false, keyboardShortcuts: false,
+    toggleMinimap: false, exportPng: false, exportSvg: false, exportPdf: false, exportJson: false, print: false, keyboardShortcuts: false,
 };
 
 /** One authority for menus and input: eligibility is checked again at invocation. */

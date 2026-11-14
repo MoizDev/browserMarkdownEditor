@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "删除页面",
     "paper.cancel": "取消",
     "paper.keepProtected": "锁定的内容将被保留。",
-    "chrome.readOnly": "该板是只读的。"
+    "chrome.readOnly": "该板是只读的。",
+    "shortcuts.file.print": "打印",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

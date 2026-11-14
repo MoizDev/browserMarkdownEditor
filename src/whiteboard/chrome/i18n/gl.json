@@ -30,6 +30,16 @@
       "key": "commands.exportPng",
       "text": "PNG",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "Eliminar páxina",
     "paper.cancel": "Cancelar",
     "paper.keepProtected": "O contido bloqueado manterase.",
-    "chrome.readOnly": "Este taboleiro é só de lectura."
+    "chrome.readOnly": "Este taboleiro é só de lectura.",
+    "shortcuts.file.print": "Imprimir",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

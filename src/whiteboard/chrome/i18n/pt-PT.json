@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "Apagar página",
     "paper.cancel": "Cancelar",
     "paper.keepProtected": "O conteúdo bloqueado será mantido.",
-    "chrome.readOnly": "Esta placa é de leitura apenas."
+    "chrome.readOnly": "Esta placa é de leitura apenas.",
+    "shortcuts.file.print": "Imprimir",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "ਪੰਨਾ ਮਿਟਾਓ",
     "paper.cancel": "ਰੱਦ ਕਰੋ",
     "paper.keepProtected": "ਲਾਕ ਕੀਤੀ ਸਮੱਗਰੀ ਰੱਖੀ ਜਾਵੇਗੀ।",
-    "chrome.readOnly": "ਇਹ ਬੋਰਡ ਸਿਰਫ਼ ਪੜ੍ਹਨ ਲਈ ਹੈ।"
+    "chrome.readOnly": "ਇਹ ਬੋਰਡ ਸਿਰਫ਼ ਪੜ੍ਹਨ ਲਈ ਹੈ।",
+    "shortcuts.file.print": "ਪ੍ਰਿੰਟ ਕਰੋ",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

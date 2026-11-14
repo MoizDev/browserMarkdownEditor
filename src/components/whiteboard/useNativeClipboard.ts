@@ -4,6 +4,7 @@ import { surfaceToWorld } from '../../platform/render/camera';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { openContextMenu } from '../../utils/contextMenu';
+import { downloadBlob } from '../../utils/downloadBlob';
 import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCommands';
 import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrome/preferences';
 import type { Op } from '../../whiteboard/change/ops';
@@ -133,8 +134,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 void text.catch(() => {});
                 return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]);
             },
-            download(blob, name) { const url = URL.createObjectURL(blob), link = document.createElement('a');
-                link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); },
+            download: downloadBlob,
+            boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {

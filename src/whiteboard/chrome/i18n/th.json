@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -379,6 +389,9 @@
     "paper.deleteConfirm": "ลบเพจ",
     "paper.cancel": "ยกเลิก",
     "paper.keepProtected": "เนื้อหาที่ถูกล็อคจะถูกเก็บไว้",
-    "chrome.readOnly": "บอร์ดนี้เป็นแบบอ่านอย่างเดียว"
+    "chrome.readOnly": "บอร์ดนี้เป็นแบบอ่านอย่างเดียว",
+    "shortcuts.file.print": "พิมพ์",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

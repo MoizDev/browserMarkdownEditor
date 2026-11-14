@@ -1,6 +1,7 @@
 import type { PdfPoolDocument } from '../pool/types';
 import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
 import type { PdfPoolTextSource } from './poolReader';
+import { validatePdfTextReply } from './validate';
 
 /** The session's retained pool lease is the only engine-facing text source. */
 export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource {
@@ -10,6 +11,7 @@ export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource 
         const reply = await document.text(page, detail, { priority, signal });
         if (document.closed || signal.aborted) throw new DOMException('PDF text operation cancelled', 'AbortError');
         if (reply.docKey !== docKey || reply.page !== page || reply.schema !== 2) throw new Error('The PDF text worker returned a stale page.');
+        await validatePdfTextReply(reply, document.geometry(page), detail, signal);
         return reply;
     };
     return {

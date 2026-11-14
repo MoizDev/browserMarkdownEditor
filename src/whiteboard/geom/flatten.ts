@@ -2,6 +2,13 @@ import { CubicFlattenJob as InkCubicFlattenJob } from '../ink/flatten';
 import type { Arc, Cubic, Vec2 } from './path';
 
 function midpoint(a: Vec2, b: Vec2): Vec2 { return { x: a.x / 2 + b.x / 2, y: a.y / 2 + b.y / 2 }; }
+export function splitCubicAt(c: Cubic, t: number): readonly [Cubic, Cubic] {
+    if (!Number.isFinite(t) || t < 0 || t > 1) throw new RangeError('Invalid cubic parameter');
+    const lerp = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x * (1 - t) + b.x * t, y: a.y * (1 - t) + b.y * t });
+    const a = lerp(c.p0, c.p1), b = lerp(c.p1, c.p2), d = lerp(c.p2, c.p3);
+    const e = lerp(a, b), f = lerp(b, d), m = lerp(e, f);
+    return [{ p0: c.p0, p1: a, p2: e, p3: m }, { p0: m, p1: f, p2: d, p3: c.p3 }];
+}
 export function splitCubic(c: Cubic): readonly [Cubic, Cubic] {
     const a = midpoint(c.p0, c.p1), b = midpoint(c.p1, c.p2), d = midpoint(c.p2, c.p3);
     const e = midpoint(a, b), f = midpoint(b, d), m = midpoint(e, f);
@@ -11,8 +18,12 @@ export function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
     const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
     if (![p.x, p.y, a.x, a.y, b.x, b.y, dx, dy, length].every(Number.isFinite)) throw new RangeError('Non-finite segment geometry');
     if (!length) return Math.hypot(p.x - a.x, p.y - a.y);
-    const t = Math.max(0, Math.min(length, (p.x - a.x) * (dx / length) + (p.y - a.y) * (dy / length)));
-    return Math.hypot(p.x - (a.x + t * dx / length), p.y - (a.y + t * dy / length));
+    const px = p.x - a.x, py = p.y - a.y;
+    if (!Number.isFinite(px) || !Number.isFinite(py)) throw new RangeError('Segment displacement overflows');
+    const t = Math.max(0, Math.min(length, px * (dx / length) + py * (dy / length)));
+    const result = Math.hypot(px - t * (dx / length), py - t * (dy / length));
+    if (!Number.isFinite(result)) throw new RangeError('Segment distance overflows');
+    return result;
 }
 export class CubicFlattenJob {
     private readonly job: InkCubicFlattenJob;

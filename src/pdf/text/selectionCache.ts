@@ -1,5 +1,6 @@
 import type { PdfPoolDocument } from '../pool/types';
 import type { PageSelectionModel, PageTextReply } from '../worker/protocol';
+import { validatePdfTextReply } from './validate';
 
 export type PdfSelectionReply = Omit<PageTextReply, 'model' | 'digest' | 'sel'> & { sel: PageSelectionModel };
 
@@ -33,6 +34,9 @@ export class PdfSelectionGeometryCache {
         this.pages.delete(page); this.pages.set(page, found);
         return found.value;
     }
+    cachedTextPages(): ReadonlyMap<number, string> {
+        return new Map([...this.pages].map(([page, entry]) => [page, entry.value.text]));
+    }
     setEndpoints(pages: readonly number[]): void {
         this.pinned = new Set(pages.filter(page => Number.isInteger(page) && page >= 0 && page < this.document.info.pageCount));
         if (!this.visible) this.dropUnpinned();
@@ -50,6 +54,7 @@ export class PdfSelectionGeometryCache {
         if (signal.aborted || this.document.closed) throw abort();
         if (reply.docKey !== this.key || reply.page !== page || reply.schema !== 2 || !reply.sel)
             throw new Error('The PDF text worker returned stale or incomplete selection geometry.');
+        await validatePdfTextReply(reply, this.document.geometry(page), 'select', signal);
         // Selection has its own 8 MiB budget; the optional rich model belongs
         // only to the separate Text reader's 4 MiB cache.
         const value: PdfSelectionReply = { docKey: reply.docKey, page: reply.page, schema: reply.schema,

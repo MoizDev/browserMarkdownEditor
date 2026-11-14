@@ -88,7 +88,7 @@ export async function rasterEncode(args: unknown, context: WorkerContext): Promi
         let count = 0
         for (const item of entry.items) {
           context.signal.throwIfAborted()
-          paintItem2d(ctx as unknown as CanvasRenderingContext2D, item, resources)
+          paintItem2d(ctx, item, resources)
           if (++count % 128 === 0) await context.slice()
         }
         return new Uint8Array(ctx.getImageData(apron, apron, tile.width, tile.height).data.buffer)

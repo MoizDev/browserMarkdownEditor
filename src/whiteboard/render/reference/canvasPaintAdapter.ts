@@ -127,11 +127,9 @@ export function createCanvasPaintAdapter(
             const clip = item.clips[s.clipIndex++];
             if (!s.clips.has(clip.key)) {
                 const key = `clip:${clip.key}`;
-                const cached = s.geometry.get(key) ?? presented?.geometry.get(key);
-                if (cached) {
-                    if (!s.geometry.has(key)) { s.geometry.set(key, cached); s.bytes += cached.bytes; }
-                    s.clips.set(clip.key, cached.prepared);
-                } else s.job = { key, clip: clip.key, path: new Path2dJob(clip.d, pathOrigin(clip.d)) };
+                const cached = s.geometry.get(key);
+                if (cached) s.clips.set(clip.key, cached.prepared);
+                else s.job = { key, clip: clip.key, path: new Path2dJob(clip.d, pathOrigin(clip.d)) };
             }
             return;
         }

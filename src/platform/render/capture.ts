@@ -192,6 +192,14 @@ function hasCode(error: unknown, code: string): boolean {
  */
 export class PaneCapturer {
     private readonly lifetime = new AbortController();
+    private readonly pending = new Set<Promise<void>>();
+
+    private trackRetirement(): () => void {
+        let finish = () => {};
+        const retired = new Promise<void>(resolve => { finish = resolve; });
+        this.pending.add(retired);
+        return () => { this.pending.delete(retired); finish(); };
+    }
 
     constructor(private readonly options: PaneCapturerOptions) {
         if (!options.paneId) throw new CaptureError('invalid-input');
@@ -233,9 +241,10 @@ export class PaneCapturer {
             const lease = snapshot, operation = active;
             const layers = Object.freeze(lease.layers.map(layer => Object.freeze({ id: layer.id, draw2d: layer.draw2d.bind(layer) })));
             let started = false, released = false;
+            const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return; released = true;
-                try { await lease.release(); } finally { operation.dispose(); }
+                try { await lease.release(); } finally { operation.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, operation.signal, async () => {
                 started = true;
@@ -276,10 +285,11 @@ export class PaneCapturer {
                 id: layer.id, draw2d: layer.draw2d.bind(layer), drawGpu: layer.drawGpu?.bind(layer),
             })));
             let started = false, released = false;
+            const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return;
                 released = true;
-                try { await lease.release(); } finally { active.dispose(); }
+                try { await lease.release(); } finally { active.dispose(); retire(); }
             };
             return this.options.queue.run(this.options.paneId, active.signal, async () => {
                 started = true;
@@ -296,7 +306,12 @@ export class PaneCapturer {
         }
     }
 
-    dispose(): void { this.lifetime.abort(new CaptureError('disposed')); }
+    async dispose(): Promise<void> {
+        this.lifetime.abort(new CaptureError('disposed'));
+        // Caller abort settles promptly in CaptureQueue; only real source/native retirement
+        // ends allocator ownership. No new capture can enter after the lifetime abort.
+        await Promise.allSettled([...this.pending]);
+    }
 
     private async prepare(request: CaptureRequest, snapshot: CaptureSnapshot, route: '2d' | 'gpu', active: CaptureScope): Promise<void> {
         active.check();

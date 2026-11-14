@@ -1,5 +1,6 @@
 import type { Camera, Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
+import type { CaptureExportOptions } from './captureExport';
 import type { CameraController, Point } from './camera';
 import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
@@ -45,6 +46,7 @@ export interface PlatformPaneOptions<T extends object> {
         checkpoint(): void;
         captureRegion?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
         captureBlob?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+        captureExportBlob?(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
     };
     readonly layers: readonly PlatformLayerDefinition[];
     readonly initialVisible: boolean;
@@ -88,5 +90,6 @@ export interface PlatformPane {
     cancelMotion(): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+    captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
     dispose(): void;
 }

@@ -40,7 +40,7 @@ import { creationDiff, lineDiff } from './agentDiff';
 import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sha256Hex } from './agentMedia';
 import { formatShape, summarizeCanvasFile, type FileShape } from './canvasFileSummary';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
-import { createVaultTextCache, isTextFile } from './vaultSearch';
+import { isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
 import { isEpubFile, isCanvasFile, isNativeDrawingFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { ASSETS_DIR, TRASH_DIR } from './assets';
@@ -48,7 +48,6 @@ import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
-import { matchAgentSearch } from './agentMatcher/client';
 import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
@@ -691,12 +690,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
 /* ───────────────────────── vault_search ───────────────────────── */
 
-// Module-level, like the sidebar's: repeat searches in a run (and across runs)
-// re-read only files whose (lastModified, size) changed. Emptied when the vault
-// changes, because two vaults share paths freely.
-const searchCache = createVaultTextCache();
-let searchCacheToken: object | null = null;
-
 async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const query = String(a.query);
     const scope = a.path !== undefined ? ctx.path(a.path) : '';
@@ -705,27 +698,16 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     let textFileCount = 0;
     let answer: MatchAnswer;
     try {
-        answer = await matchAgentSearch({ query, regex: a.regex === true, caseSensitive: a.caseSensitive === true, maxResults }, async () => {
-            if (scope) {
-                const kind = await ctx.host.entryKind(scope);
-                if (!kind) throw new ToolError(`"${scope}" does not exist.`);
-            }
-            if (token !== searchCacheToken) { searchCache.clear(); searchCacheToken = token; }
-            const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
-            const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
-            // Keep scope/cache admission here; the disposable worker receives no file handles.
-            const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-            const index = await searchCache.sync(textFiles, handle => ctx.host.readSnapshot(handle));
-            ctx.ensureLive();
-            textFileCount = textFiles.length;
-            const textPaths = new Set(textFiles.map(f => f.path));
-            return (function* () {
-                for (const file of files) yield {
-                    path: file.path, name: file.name,
-                    text: textPaths.has(file.path) ? ctx.host.openBuffer(file.path) ?? index.get(file.path) : undefined,
-                };
-            })();
-        }, { signal: ctx.signal, vaultToken: token, isCurrent: () => ctx.host.vaultToken() === token });
+        if (scope) {
+            const kind = await ctx.host.entryKind(scope);
+            if (!kind) throw new ToolError(`"${scope}" does not exist.`);
+        }
+        ctx.ensureLive();
+        const inScope = (p: string) => !scope || p === scope || p.startsWith(`${scope}/`);
+        textFileCount = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path) && isTextFile(f.name) && !isCanvasFile(f.name)).length;
+        answer = await ctx.host.searchAgent({ query, regex: a.regex === true, caseSensitive: a.caseSensitive === true, scope, maxResults }, ctx.signal);
+        ctx.ensureLive();
+        if (ctx.host.vaultToken() !== token) throw new ToolError(SWITCHED);
     } catch (err) {
         if (err instanceof Error && err.name === 'SyntaxError') throw new ToolError(err.message);
         throw err;

@@ -232,9 +232,10 @@ export class PaneCapturer {
                     return await this.drawGpu(request, layers, owner, active);
                 } catch (error) {
                     active.check();
-                    // Retry this SAME retained revision once. A GPU budget refusal also
-                    // uses the default CPU route; neither path asks the broker for a slot.
-                    if (!hasCode(error, 'lost') && !hasCode(error, 'out-of-budget')) throw error;
+                    // Hide can abort the device's view jobs without aborting this session
+                    // capture. active.check() above distinguishes a caller/session abort.
+                    // Retry the SAME retained revision on 2D, never a new context.
+                    if (!hasCode(error, 'lost') && !hasCode(error, 'aborted') && !hasCode(error, 'out-of-budget')) throw error;
                 }
             }
             await this.prepare(request, snapshot, '2d', active);

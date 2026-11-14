@@ -227,8 +227,11 @@ A cache HIT still costs a `getFile()` — one browser round trip per note. Measu
 vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
 vault to discover nothing had changed. So:
 
-- **`flushTab` primes rather than re-reads.** `graph.primeLinks(path, mtime, size, text)` puts the
-  text the app just wrote into the link cache and returns whether that note's links MOVED. They
+- **`flushTab` primes rather than re-reads.** `graph.primeLinks(session, path, mtime, size, text)` puts the
+  text the app just wrote into that activation's link cache and returns whether that note's links MOVED.
+  Capture the session before IO; a closing save still preserves the old document but never primes the
+  incoming index. Graph/search share `IndexSessionGuard` path tokens; graph membership belongs only to
+  the committed tree, and both build completion and React's updater recheck publication authority. They
   usually have not, and then no rebuild runs at all. When they have, `rebuildGraph(false)` runs
   without revalidating: pure arithmetic over what is in memory.
 - **`revalidate: true` is for somebody ELSE's write** — a tree change, a watcher rescan, a vault

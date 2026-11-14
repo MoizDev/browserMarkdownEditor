@@ -181,6 +181,7 @@ async function linksFor(session: LinkIndexSession, node: FileTreeFileNode, reval
     } catch (error) {
         if (!session.owns(token)) return null;
         if (!session.acceptsPath(pathToken)) return session.cache.get(node.path)?.targets ?? null;
+        session.cache.delete(node.path);
         throw error;
     } finally { snapshot?.dispose(); }
 }

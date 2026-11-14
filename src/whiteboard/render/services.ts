@@ -307,11 +307,12 @@ export function createBoardRenderServices(options: {
             },
         };
     };
-    const rasterVariant = (doc: BoardDoc, request: ScenePaintRequest, epoch: number) => JSON.stringify([
+    const rasterVariant = (doc: BoardDoc, request: ScenePaintRequest, epoch: number, sourceToken: RenderToken) => JSON.stringify([
+        sourceToken.vaultEpoch, sourceToken.documentId, sourceToken.bytesGeneration, sourceToken.session,
         request.sheetId, request.theme, palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, epoch,
     ]);
     const paint = async (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): Promise<PaintNodeSource> => {
-        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch);
+        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
         const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
         return { ...source, sessionRasters, sourceWorld: world,

@@ -201,6 +201,9 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const [updating, setUpdating] = useState(false), [viewGeneration, setViewGeneration] = useState(0);
     const [awaitingPresentation, setAwaitingPresentation] = useState(false);
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
+    useEffect(() => {
+        if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
+    }, [props.isVisible]);
     useEffect(() => () => { handoff.current?.dispose(); handoff.current = null; }, []);
     const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
         while (true) {

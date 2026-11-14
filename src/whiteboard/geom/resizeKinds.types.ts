@@ -8,6 +8,9 @@ export interface KindResizeFactors {
     readonly zeroSignX: -1 | 1;
     readonly zeroSignY: -1 | 1;
     readonly handle: 'side' | 'corner';
+    /** Active handle direction in this node's local axes, when supplied by a gesture. */
+    readonly handleX?: -1 | 0 | 1;
+    readonly handleY?: -1 | 0 | 1;
     readonly scope: 'single' | 'multi';
 }
 export interface KindResizeContext {

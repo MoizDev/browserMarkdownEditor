@@ -105,7 +105,10 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
             const ratio = known ? media!.w / media!.h : node.w / node.h;
             const minWidth = Math.max(1, ratio), maxWidth = Math.min(1_000_000, ratio * 1_000_000);
             if (!Number.isFinite(ratio) || ratio <= 0 || minWidth > maxWidth) throw new RangeError('Clip aspect cannot satisfy model dimensions');
-            const w = Math.max(minWidth, Math.min(maxWidth, node.w * x)), h = extent(w / ratio);
+            // Default, calibration cut by owner: a vertical side preserves its scaled height.
+            const requestedWidth = factors.handle === 'side' && factors.handleX === 0 && factors.handleY
+                ? node.h * y * ratio : node.w * x;
+            const w = Math.max(minWidth, Math.min(maxWidth, requestedWidth)), h = extent(w / ratio);
             kindOps = [{ t: 'set', id: node.id, key: 'w', value: w }, { t: 'set', id: node.id, key: 'h', value: h }];
         } else {
             // Default, calibration cut by owner: card/embed reflow inside independently resized bounds.

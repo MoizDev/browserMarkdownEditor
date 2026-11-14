@@ -52,9 +52,14 @@ export class ResizePlan {
                 y: anchor.y + s * u * frame.scaleX + c * v * frame.scaleY };
             const quarterTurns = Math.round((snapshot.worldRotation - angle) / (Math.PI / 2));
             const swap = !this.mixed && Math.abs(quarterTurns % 2) === 1;
+            const turn = this.mixed ? 0 : (quarterTurns % 4 + 4) % 4;
+            const hx = this.handle.x, hy = this.handle.y;
+            const localX = (turn === 0 ? hx : turn === 1 ? hy : turn === 2 ? -hx : -hy) as -1 | 0 | 1;
+            const localY = (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) as -1 | 0 | 1;
             const factors: KindResizeFactors = { x: swap ? frame.scaleY : frame.scaleX, y: swap ? frame.scaleX : frame.scaleY,
                 zeroSignX: swap ? zeroSignY : zeroSignX, zeroSignY: swap ? zeroSignX : zeroSignY,
-                handle: this.handle.x && this.handle.y ? 'corner' : 'side', scope: this.scopeOverride ?? (this.snapshots.length === 1 ? 'single' : 'multi') };
+                handleX: localX, handleY: localY, handle: hx && hy ? 'corner' : 'side',
+                scope: this.scopeOverride ?? (this.snapshots.length === 1 ? 'single' : 'multi') };
             yield { snapshot, centre, factors };
         }
     }

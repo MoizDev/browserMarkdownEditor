@@ -388,11 +388,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         if (!mutable()) return null;
         const surface = physicalSurface(sample), coarse = sample.source === 'touch';
-        const shapeHit = shapeHandles.hit(surface, coarse);
+        const shapeHit = shapeHandles.hit(surface, coarse, sample.time);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
-        const direction = stickyHandles.hit(surface, coarse);
+        const direction = stickyHandles.hit(surface, coarse, sample.time);
         if (!direction) {
-            const hit = selectionHandles.hit(surface, coarse); if (!hit) return null;
+            const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
             const ids = [...runtime.selection.getSnapshot().selected], host = {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
                 show: (ops: readonly Op[]) => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
@@ -448,17 +448,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         void stickyHandles.activate(direction, true).finally(() => { try { unregister?.(); } finally { release(); } });
         return true;
     };
-    const doubleClickHandle = (surface: Vec2, world: Vec2): boolean => {
+    const doubleClickHandle = (surface: Vec2, world: Vec2, time?: number): boolean => {
         if (!mutable()) return false;
-        const hit = shapeHandles.hit(surface);
+        const hit = shapeHandles.hit(surface, false, time);
         if (hit && shapeHandles.toggleHead(hit)) return true;
-        if (!selectionHandles.contains(world)) return false;
+        if (!selectionHandles.contains(world, time)) return false;
         return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
             hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });
     };
     const handleCommand = (id: string, sample: RealSample): boolean => {
         if (id !== 'delete' || sample.source !== 'keyboard' || !mutable()) return false;
-        const hit = shapeHandles.hit(physicalSurface(sample));
+        const hit = shapeHandles.hit(physicalSurface(sample), false, sample.time);
         return hit ? shapeHandles.remove(hit) : false;
     };
     const command = (id: string): boolean => {

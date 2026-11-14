@@ -16,6 +16,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { connectorEndHandleGesture } from '../input/connectorHandles';
 import { connectorControlGesture } from '../input/connectorControlsGesture';
 import { toggleConnectorHead } from '../input/connectorHead';
+import { PresentedHistory } from '../input/presentedHistory';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
@@ -58,11 +59,11 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
     let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCamera = '';
-    let hitCamera: ViewState['camera'] | null = null;
+    const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined;
-        rendered = null; renderedCount = 0; renderedCamera = ''; hitCamera = null; options.invalidate(); };
+        rendered = null; renderedCount = 0; renderedCamera = ''; presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
         clear(); if (!current()) return;
@@ -132,11 +133,12 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     refresh();
     return {
         refresh,
-        hit(surface: Vec2, coarse = false): ShapeHandleHit | null {
+        hit(surface: Vec2, coarse = false, time?: number): ShapeHandleHit | null {
             if (!current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            const camera = hitCamera, radius = coarse ? 16 : 7;
-            if (!camera || rendered !== handles) return null;
-            for (let index = 0; index < renderedCount; index++) {
+            const state = presented.at(time), radius = coarse ? 16 : 7;
+            if (!state || state.handles !== handles) return null;
+            const camera = state.camera;
+            for (let index = 0; index < state.count; index++) {
                 const handle = handles[index], p = worldToSurface(handle.point, camera);
                 if (Math.hypot(surface.x - p.x, surface.y - p.y) <= radius) return handle.hit;
             }
@@ -199,14 +201,14 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             return true;
         },
         write(frame: ScheduledFrame) {
-            if (!current() || !handles.length) { svg?.remove(); svg = undefined; rendered = null; renderedCount = 0; hitCamera = null; return; }
+            if (!current() || !handles.length) { svg?.remove(); svg = undefined; rendered = null; renderedCount = 0; presented.clear(); return; }
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
             }
             const camera = frame.view.camera, key = `${camera.x}:${camera.y}:${camera.z}`;
             if (rendered !== handles || renderedCamera !== key) {
-                svg.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key; hitCamera = { ...camera };
+                svg.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key;
             }
             // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
             const limit = Math.min(handles.length, renderedCount + 1024);
@@ -221,10 +223,11 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
                 path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.append(path);
             }
+            presented.present(frame.timestamp, { camera: { ...camera }, handles, count: renderedCount });
             if (renderedCount < handles.length) options.invalidate();
         },
         hide() { generation++; controller?.abort(); controlPending?.abort(); clear(); },
         dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null;
-            rendered = null; renderedCount = 0; hitCamera = null; },
+            rendered = null; renderedCount = 0; presented.clear(); },
     };
 }

@@ -595,7 +595,7 @@ export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: (
         if (step.done) { check(); return step.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             check();
-            await cooperate?.();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
             check();
             count = 0; started = performance.now();
         }

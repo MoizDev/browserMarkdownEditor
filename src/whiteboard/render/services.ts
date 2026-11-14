@@ -96,6 +96,9 @@ export function createBoardRenderServices(options: {
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    // An opaque service incarnation binds the full owner token without putting an arbitrarily
+    // long document id into the worker protocol's 128-character session field.
+    const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
@@ -135,8 +138,7 @@ export function createBoardRenderServices(options: {
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
         if (node.kind === 'stroke') {
             const revision = doc.rev, sampleRef = node.samples;
-            const identity = { session: JSON.stringify([options.token.vaultEpoch, options.token.documentId,
-                options.token.bytesGeneration, options.token.session]), epoch: options.token.vaultEpoch, revision };
+            const identity = { session: workerSession, epoch: options.token.vaultEpoch, revision };
             const ink = await buildStrokeCoverage(node, options.samples, {
                 deviceScale: options.deviceScale ?? 3, cooperate: options.cooperate, signal,
                 worker: (points, parameters, style, range, coverage) => prepareInkCoverageInWorker(

@@ -4,6 +4,7 @@ import type { GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gf
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
+import { paintContributions } from './paintContributions';
 import { analyticInkPaint, createAnalyticInk, type AnalyticInkPaint } from './analyticInk';
 import type { PaintFrame, PaintItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
@@ -12,7 +13,7 @@ import { paintItem2d } from './reference/paint2d';
 const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; analytic?: never }
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; analytic?: never }
     | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never }; 
 interface Plan {
     frame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number;
@@ -20,6 +21,7 @@ interface Plan {
     band: PaintBand; item: number; x: number; y: number; tiles: Record<PaintBand, Tile[]>;
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
     analyticReady: boolean;
+    parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
 }
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -94,6 +96,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (!prepared || !device || !documentMatches(prepared.frame, budget.token) || device.generation !== budget.token.deviceGeneration ||
                 host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
             const scale = rasterScale(view, demand);
+            // One bounded source group and its independently leased real backdrop are reused
+            // sequentially; the node/group itself never becomes an isolated-opacity operation.
+            if (ready?.hasMultiply || staged?.hasMultiply) host.reserveIsolation({ depth: 1, maskDepth: 0,
+                bounds: { x: 0, y: 0, width: Math.min(Math.ceil(view.viewport.width * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2),
+                    height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
@@ -105,7 +112,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
                 staged = { frame: prepared.frame, token: { ...budget.token }, device, projection: projection(view), scale,
-                    x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready() };
+                    x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
+                    parts: null, part: null, partIndex: 0, hasMultiply: false };
             }
             const p = staged;
             try {
@@ -115,33 +123,39 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (p.band === 'underlay') { p.band = 'content'; p.item = 0; continue; }
                         drop(ready); ready = p; staged = null; return;
                     }
-                    const item = items[p.item];
-                    if (p.analyticReady && !p.tileBounds && item.kind === 'ink') {
-                        const paint = analyticInkPaint(item, view);
-                        if (paint) { p.tiles[p.band].push({ item, x: 0, y: 0, analytic: paint }); p.item++; continue; }
+                    const original = items[p.item];
+                    if (!p.parts) { p.parts = paintContributions(original); p.partIndex = 0; }
+                    if (!p.part) {
+                        const next = p.parts.next();
+                        if (next.done) { p.parts = null; p.item++; continue; }
+                        p.part = next.value; p.partIndex++;
                     }
-                    if ((item.kind === 'image' ? item.blend : item.material.blend) !== 'normal') {
-                        throw new Error('Unsupported GPU board paint: multiply blend');
+                    const item = p.part;
+                    const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
+                    p.hasMultiply ||= multiply;
+                    if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
+                        const paint = analyticInkPaint(item, view);
+                        if (paint) { p.tiles[p.band].push({ item: original, x: 0, y: 0, analytic: paint }); p.part = null; continue; }
                     }
                     if (!p.tileBounds) {
                         p.boundsJob ??= new PaintBoundsJob(item);
                         if (!p.boundsJob.step(1)) continue;
                         const bounds = p.boundsJob.result; p.boundsJob = null;
-                        if (!bounds) { p.item++; continue; }
+                        if (!bounds) { p.part = null; continue; }
                         const x0 = Math.max(p.x0, Math.floor((bounds.x * scale - GUTTER) / EDGE));
                         const y0 = Math.max(p.y0, Math.floor((bounds.y * scale - GUTTER) / EDGE));
                         const x1 = Math.min(p.x1, Math.ceil(((bounds.x + bounds.width) * scale + GUTTER) / EDGE));
                         const y1 = Math.min(p.y1, Math.ceil(((bounds.y + bounds.height) * scale + GUTTER) / EDGE));
-                        if (x0 >= x1 || y0 >= y1) { p.item++; continue; }
-                        p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = contentKey(item);
+                        if (x0 >= x1 || y0 >= y1) { p.part = null; continue; }
+                        p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = `${p.partIndex}:${contentKey(item)}`;
                     }
                     const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
                         p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, p.itemKey]);
                     const existing = cache.get(tileKey);
                     if (existing) {
-                        existing.refs++; p.tiles[p.band].push({ item, x: p.x, y: p.y, cached: existing });
+                        existing.refs++; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached: existing, multiply });
                         const bounds = p.tileBounds;
-                        if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.item++; p.tileBounds = null; } }
+                        if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                         return;
                     }
                     const cpu = host.allocator.cpu.reserve(CPU_BYTES);
@@ -157,13 +171,13 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const ctx = canvas.getContext('2d');
                         if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
                         ctx.setTransform(scale, 0, 0, scale, GUTTER - p.x * EDGE, GUTTER - p.y * EDGE);
-                        paintItem2d(ctx, item, prepared.resources);
+                        paintItem2d(ctx, item, { ...prepared.resources, path: () => prepared.resources.path(original) });
                         bitmap = canvas.transferToImageBitmap();
                         texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                             { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         const cached: CachedTile = { texture, device, refs: 1, key: tileKey };
-                        cache.set(tileKey, cached); p.tiles[p.band].push({ item, x: p.x, y: p.y, cached }); texture = null;
+                        cache.set(tileKey, cached); p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached, multiply }); texture = null;
                     } finally {
                         bitmap?.close(); if (canvas) { canvas.width = 0; canvas.height = 0; }
                         if (texture) device.destroy(texture);
@@ -171,7 +185,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         host.allocator.cpu.release(cpu); scratch = 0;
                     }
                     const bounds = p.tileBounds;
-                    if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.item++; p.tileBounds = null; } }
+                    if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                     return;
                 }
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
@@ -196,7 +210,14 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
                 const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
                 const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
-                host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: ready.projection === projection(view) ? 'current' : 'standin' });
+                const left = Math.max(0, Math.floor(dest.x)), top = Math.max(0, Math.floor(dest.y));
+                const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(dest.x + dest.width));
+                const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(dest.y + dest.height));
+                if (right <= left || bottom <= top) continue;
+                const group = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
+                    { opacity: 1, blend: 'multiply', colourEffect: 'none' }) : null;
+                host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: 'none' });
+                if (group) pass.endGroup(group);
             }
         },
         release(_reason: GpuReleaseReason): void { reset(); analytic.release(); denied = false; currentToken = null; lastFrame = -1; },

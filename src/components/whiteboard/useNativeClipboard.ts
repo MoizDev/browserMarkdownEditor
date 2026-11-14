@@ -141,8 +141,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             const binding: ViewBinding = { controller, surface, theme, notice }; bindings.add(binding); active = binding;
             const focus = () => { active = binding; };
             const move = (event: PointerEvent) => { focus(); try { pointer = surfaceToWorld(surfacePoint(event.clientX, event.clientY), lease.camera.camera); } catch { pointer = null; } };
-            const copy = (event: ClipboardEvent) => { if (!editingText()) { focus(); commands.copyEvent(event); } };
-            const cut = (event: ClipboardEvent) => { if (!editingText()) { focus(); commands.copyEvent(event, true); } };
+            const copy = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); focus(); commands.copyEvent(event); } };
+            const cut = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); focus(); commands.copyEvent(event, true); } };
             const paste = (event: ClipboardEvent) => { if (!runtime.session.isReadOnly) { focus(); controller.pasteEvent(event); } };
             const keydown = (event: KeyboardEvent) => {
                 if (editingText()) return;

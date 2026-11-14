@@ -81,13 +81,13 @@ export function createNativeClipboardController(options: NativeClipboardControll
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
     const execute = (input: Promise<ClipboardInput> | null, captured: ReturnType<typeof targetNow>, intent: ClipboardIntent,
         duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob> },
-        imageRead?: Promise<ClipboardInput | null>) => {
+        imageRead?: Promise<ClipboardInput | null>, externalSignal?: AbortSignal) => {
         const controller = new AbortController();
         jobs.add(controller);
         const stop = runtime.selection.subscribe(() => {
             if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) controller.abort();
         });
-        const signal = AbortSignal.any([lifetime.signal, controller.signal]);
+        const signal = AbortSignal.any([lifetime.signal, controller.signal, ...externalSignal ? [externalSignal] : []]);
         pending++;
         const work = runtime.jobs.run(async context => {
             const { target, zoom } = captured, revision = doc.rev;
@@ -211,8 +211,18 @@ export function createNativeClipboardController(options: NativeClipboardControll
         }
         return { html, text, svg, uriList: null, files, privatePng };
     };
+    const capturePasteTarget = (intent: ClipboardIntent) => {
+        const target = targetNow();
+        let consumed = false;
+        return (input: ClipboardInput, signal?: AbortSignal): Promise<void> => {
+            if (consumed) return Promise.reject(new Error('Clipboard capture was already consumed'));
+            consumed = true; return execute(Promise.resolve(input), target, intent, undefined, undefined, signal);
+        };
+    };
     return {
         pasteEvent,
+        readClipboard,
+        capturePasteTarget,
         paste(intent: 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted' = 'paste') {
             if (options.editingText()) return;
             report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(options.onError); });
@@ -232,13 +242,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
             }
             return execute(null, target, 'duplicate', { snapshot, media });
         },
-        capturePaste(input: ClipboardInput, intent: ClipboardIntent): () => Promise<void> {
-            const target = targetNow();
-            let consumed = false;
-            return () => {
-                if (consumed) return Promise.reject(new Error('Clipboard capture was already consumed'));
-                consumed = true; return execute(Promise.resolve(input), target, intent);
-            };
+        capturePaste(input: ClipboardInput, intent: ClipboardIntent): (signal?: AbortSignal) => Promise<void> {
+            const forward = capturePasteTarget(intent);
+            return signal => forward(input, signal);
         },
         importFiles(files: readonly File[], point: ClipboardPoint): Promise<void> {
             if (!files.length) return Promise.resolve();

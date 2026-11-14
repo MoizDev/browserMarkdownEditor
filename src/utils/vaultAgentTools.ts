@@ -708,7 +708,7 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
             const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
             // Keep scope/cache admission here; the disposable worker receives no file handles.
             const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-            const index = await searchCache.sync(textFiles);
+            const index = await searchCache.sync(textFiles, handle => ctx.host.readSnapshot(handle));
             ctx.ensureLive();
             textFileCount = textFiles.length;
             const textPaths = new Set(textFiles.map(f => f.path));

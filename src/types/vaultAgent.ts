@@ -99,6 +99,7 @@ export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.
      *  The executor captures it when a run starts and refuses once it changes. */
     vaultToken(): object | null;
+    readSnapshot(handle: FileSystemFileHandle): Promise<File>;
     /** The file tree as the sidebar has it (root hidden folders excluded). */
     getFileTree(): FileTreeNode[];
     /** Direct children of a vault folder, straight from disk, hidden ones

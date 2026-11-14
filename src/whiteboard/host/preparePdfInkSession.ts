@@ -139,15 +139,16 @@ export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSession
             catch (error) { void close().catch(options.onError); throw error; }
             if (closed) throw stale();
             try { onTransfer?.(); } catch (error) { void close().catch(options.onError); throw error; }
-            const pdfWriteAuthority = Object.freeze({ canWrite() {
+            const canWriteSource = () => {
                 try {
                     const state = rebind.getSnapshot(), outer = host.outerIdentity(documentId), token = state.source.source.token;
-                    return !closed && current() && isLiveOwner(owner) && !owned.board.isReadOnly && state.status === 'ready'
+                    return !closed && current() && isLiveOwner(owner) && state.status === 'ready'
                         && !!outer && host.isCurrent(outer) && outer.documentId === token.documentId && outer.session === token.session
                         && outer.vaultActivation === token.vaultEpoch && outer.bytesGeneration === token.bytesGeneration
                         && state.source.writeSafety.kind === 'safe' && state.source.isCurrent();
                 } catch { return false; }
-            } });
+            };
+            const pdfWriteAuthority = Object.freeze({ canWriteSource, canWrite: () => canWriteSource() && !owned.board.isReadOnly });
             return { board: owned.board, pdfWriteAuthority, dispose: close };
         },
         async dispose() {

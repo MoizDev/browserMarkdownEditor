@@ -1176,7 +1176,7 @@ export default function App() {
   }, [tabs, layout, documentBuffers, ensureCanvasBridge]);
   const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
     (documentId, create, commit) => attachCanvasSession(documentSessions, documentId, create, commit), [documentSessions]);
-  const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean; pdfWriteAuthority?: { canWrite(): boolean } }>());
+  const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean; pdfWriteAuthority?: { canWriteSource(): boolean; canWrite(): boolean } }>());
   const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
     const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
     const live = () => {
@@ -1227,16 +1227,18 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && (entry.bytesGeneration === identity.bytesGeneration || retained) ? tab : undefined;
     };
-    const writable = (identity: NativeCanvasIdentity) => {
+    const writableSource = (identity: NativeCanvasIdentity) => {
       const policy = nativePoliciesRef.current.get(identity.documentId);
       const entry = documentSessions.get(identity.documentId);
       return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
         && policy.activation === identity.vaultActivation && policy.kind === identity.kind
         && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasWritableHostedNativeOwner(entry, identity.documentId)
-        && (identity.kind !== 'pdfInk' || !!getBaseline(identity.documentId) && !diskStateRef.current.has(identity.documentId)
-          && policy.pdfWriteAuthority?.canWrite() === true);
+        && hasHostedNativeOwner(entry, identity.documentId) && !!getBaseline(identity.documentId)
+        && !diskStateRef.current.has(identity.documentId)
+        && (identity.kind !== 'pdfInk' || policy.pdfWriteAuthority?.canWriteSource() === true);
     };
+    const writable = (identity: NativeCanvasIdentity) => writableSource(identity)
+      && hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId);
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
@@ -1268,6 +1270,7 @@ export default function App() {
           vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
       },
       isCurrent: identity => !!current(identity),
+      canWriteSource: identity => writableSource(identity),
       canWrite: identity => writable(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;

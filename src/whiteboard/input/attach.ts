@@ -56,7 +56,7 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
-  keyboardNavigation?(): KeyboardNavigationPriority
+  keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void
@@ -392,7 +392,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
-    cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
+    cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },

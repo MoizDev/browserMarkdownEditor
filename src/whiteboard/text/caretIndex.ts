@@ -36,11 +36,20 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
                 clusters: previous.line.clusters.map(cluster => ({ ...cluster, src: [cluster.src[0] + shiftOffset, cluster.src[1] + shiftOffset] as const, bounds: { ...cluster.bounds, y: cluster.bounds.y + shiftY }, line: lineIndex })),
             };
         }
-        const validBoundaries = new Set(graphemeBoundaries(content));
-        const stops: CaretStop[] = [], clusters: TextCluster[] = [];
+        const lineBoundaries = graphemeBoundaries(content), validBoundaries = new Set(lineBoundaries);
+        const boundaryAfter = (offset: number) => {
+            let lo = 0, hi = lineBoundaries.length;
+            while (lo < hi) { const mid = (lo + hi) >>> 1; if (lineBoundaries[mid] <= offset) lo = mid + 1; else hi = mid; }
+            return lo;
+        };
+        const stops: CaretStop[] = [], pieces: TextCluster[] = [];
         for (const fragment of line.fragments) {
             if (fragment.src[0] === fragment.src[1]) continue;
-            const face = table.faces[fragment.face], boundaries = graphemeBoundaries(fragment.text);
+            const face = table.faces[fragment.face], boundaries = [...new Set([
+                ...graphemeBoundaries(fragment.text),
+                ...lineBoundaries.slice(boundaryAfter(fragment.src[0] - line.src[0]), boundaryAfter(fragment.src[1] - line.src[0] - 1))
+                    .map(offset => line.src[0] + offset - fragment.src[0]),
+            ])].sort((a, b) => a - b);
             const positions = boundaries.map(offset => {
                 const advance = measurer.measure(face, fragment.text.slice(0, offset), fragment.rtl, request.fontEpoch).width * face.size / 64;
                 return fragment.rtl ? fragment.x + fragment.width - advance : fragment.x + advance;
@@ -48,9 +57,23 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             for (let i = 0; i < boundaries.length; i++) {
                 const offset = fragment.src[0] + boundaries[i];
                 if (validBoundaries.has(offset - line.src[0])) stops.push({ offset, affinity: i === 0 ? 'downstream' : 'upstream', x: positions[i], top: line.top, bottom: line.bottom, line: lineIndex });
-                if (i) clusters.push({ src: [fragment.src[0] + boundaries[i - 1], fragment.src[0] + boundaries[i]], bounds: { x: Math.min(positions[i - 1], positions[i]), y: line.top, width: Math.abs(positions[i] - positions[i - 1]), height: line.bottom - line.top }, rtl: fragment.rtl, line: lineIndex });
+                if (i) pieces.push({ src: [fragment.src[0] + boundaries[i - 1], fragment.src[0] + boundaries[i]], bounds: { x: Math.min(positions[i - 1], positions[i]), y: line.top, width: Math.abs(positions[i] - positions[i - 1]), height: line.bottom - line.top }, rtl: fragment.rtl, line: lineIndex });
             }
         }
+        // Mark and bidi boundaries can split one Unicode grapheme into several painted fragments.
+        // Its UTF-16 code units must all report the same selection/IME rectangle.
+        const graphemes = new Map<number, TextCluster>();
+        for (const piece of pieces) {
+            const relative = piece.src[0] - line.src[0];
+            const index = Math.max(0, boundaryAfter(relative) - 1), from = line.src[0] + lineBoundaries[index], to = line.src[0] + (lineBoundaries[index + 1] ?? lineBoundaries[index]);
+            const previous = graphemes.get(from);
+            if (!previous) graphemes.set(from, { ...piece, src: [from, to] });
+            else {
+                const left = Math.min(previous.bounds.x, piece.bounds.x), right = Math.max(previous.bounds.x + previous.bounds.width, piece.bounds.x + piece.bounds.width);
+                graphemes.set(from, { ...previous, bounds: { ...previous.bounds, x: left, width: right - left } });
+            }
+        }
+        const clusters = [...graphemes.values()];
         if (!stops.length) stops.push({ offset: line.src[0], affinity: 'downstream', x: line.x, top: line.top, bottom: line.bottom, line: lineIndex });
         stops.sort((a, b) => a.x - b.x || a.offset - b.offset);
         clusters.sort((a, b) => a.bounds.x - b.bounds.x);

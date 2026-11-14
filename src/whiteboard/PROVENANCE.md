@@ -211,7 +211,7 @@ third-party code included (normally "none") · date.
 | `export/rasterWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Sliced OffscreenCanvas shared painter, pinned loaded/fallback text faces, padded tiles and streaming PNG; no tldraw source | none | 2026-11-13 |
 | `export/streamRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Pinned paint stream, shared ink outline, chunked geometry and owned bitmap transfers; no tldraw source | none | 2026-11-13 |
 | `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
-| `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration and PDF assembly ports; no tldraw source | none | 2026-11-13 |
+| `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, conditional set-file and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
@@ -266,6 +266,7 @@ third-party code included (normally "none") · date.
 | `geom/resizeKinds.types.ts` | lane w-g | GE-4 | geometry §6.4 | Design; injected text, connector, frame, media and group geometry contracts and single/multi scope | none | 2026-11-13 |
 | `geom/resizePlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; immutable target geometry and page-aware placement service contracts | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
+| `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |
 | `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres and per-kind transaction planning | none | 2026-11-13 |
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |

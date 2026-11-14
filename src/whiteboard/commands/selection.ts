@@ -7,6 +7,7 @@ import type { CommandBuilder } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, isSheetParent } from '../model/doc';
 import { inspectOpaqueSubtrees, prepareSelectionScope } from './selectionScope';
+import { prepareSelectionOrderPlan } from './selectionOrderPlan';
 import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/ids';
 import { createFrame, createGroup, type Node } from '../model/nodes';
 import { boardPageStack, pageOrigin } from '../model/pages';
@@ -264,38 +265,30 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                 };
             }, moved => moved);
         },
-        reorderSelection(ids: readonly NodeId[], direction: SelectionOrder, signal?: AbortSignal) {
-            if (!['front', 'back', 'forward', 'backward'].includes(direction)) return Promise.reject(new RangeError('Invalid selection order'));
-            return guarded(ids, 'Reorder', signal, async roots => builder => {
-                const parents = new Map<ParentId, Set<NodeId>>();
-                for (const node of roots) { const set = parents.get(node.parent) ?? new Set<NodeId>(); set.add(node.id); parents.set(node.parent, set); }
-                for (const [parent, selected] of parents) {
-                    const original = [...childrenOf(doc, parent)]; let desired = [...original];
-                    if (direction === 'front' || direction === 'back') {
-                        const chosen = desired.filter(node => selected.has(node.id)), other = desired.filter(node => !selected.has(node.id));
-                        desired = direction === 'front' ? [...other, ...chosen] : [...chosen, ...other];
-                    } else if (direction === 'forward') {
-                        for (let i = desired.length - 2; i >= 0; i--) if (selected.has(desired[i].id) && !selected.has(desired[i + 1].id)) {
-                            [desired[i], desired[i + 1]] = [desired[i + 1], desired[i]];
-                        }
-                    } else {
-                        for (let i = 1; i < desired.length; i++) if (selected.has(desired[i].id) && !selected.has(desired[i - 1].id)) {
-                            [desired[i], desired[i - 1]] = [desired[i - 1], desired[i]];
+        async reorderSelection(ids: readonly NodeId[], direction: SelectionOrder, signal?: AbortSignal): Promise<void> {
+            if (!['front', 'back', 'forward', 'backward'].includes(direction)) throw new RangeError('Invalid selection order');
+            const activeSignal = signal ?? new AbortController().signal, state = capture(); check(state, activeSignal);
+            const roots = await rootsFor(ids, state, true, activeSignal); check(state, activeSignal);
+            const plan = await prepareSelectionOrderPlan(doc, roots, direction, { signal: activeSignal, cooperate,
+                current: () => { try { check(state, activeSignal); return true; } catch { return false; } } });
+            check(state, activeSignal); if (!plan.length) return;
+            const lease = await runtime.render.pinChangeGeometry(roots.map(node => node.id), activeSignal);
+            try {
+                commit(state, activeSignal, 'Reorder', builder => {
+                    for (const run of plan) {
+                        const keys = allocateOrderKeys(doc, builder, run.parent, run.before, run.after, run.ids.length);
+                        for (let i = 0; i < run.ids.length; i++) {
+                            const node = doc.nodes.get(run.ids[i]); if (!node) throw new Error('Reordered node disappeared');
+                            setIfChanged(builder, node, 'order', keys[i]);
                         }
                     }
-                    for (let i = 0; i < desired.length;) {
-                        if (!selected.has(desired[i].id)) { i++; continue; }
-                        const start = i; while (i < desired.length && selected.has(desired[i].id)) i++;
-                        if (desired.slice(start, i).every((node, j) => original[start + j]?.id === node.id)) continue;
-                        const keys = allocateOrderKeys(doc, builder, parent, start ? desired[start - 1].id : null, i < desired.length ? desired[i].id : null, i - start);
-                        for (let j = start; j < i; j++) setIfChanged(builder, doc.nodes.get(desired[j].id)!, 'order', keys[j - start]);
-                    }
-                }
-            });
+                });
+            } finally { lease.release(); }
         },
         async toggleLocked(ids: readonly NodeId[], signal?: AbortSignal): Promise<void> {
             const token = signal ?? new AbortController().signal, state = capture();
             const roots = await rootsFor(ids, state, false, token, true); check(state, token);
+            if (!roots.length) return;
             for (const node of roots) if (node.kind === 'opaque') throw new Error('Opaque nodes cannot be unlocked');
             const label = roots.every(node => node.locked) ? 'Unlock' : roots.every(node => !node.locked) ? 'Lock' : 'Toggle lock';
             commit(state, token, label, builder => { for (const node of roots) setIfChanged(builder, node, 'locked', !node.locked); });
@@ -308,6 +301,7 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                 if (node.locked && node.kind !== 'opaque') ids.push(node.id);
                 if (++count >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, token); count = 0; started = performance.now(); }
             }
+            if (!ids.length) return;
             commit(state, token, 'Unlock all', builder => { for (const id of ids) { const node = doc.nodes.get(id); if (node) setIfChanged(builder, node, 'locked', false); } });
         },
     };

@@ -496,6 +496,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     };
     setVisible(options.initialVisible);
     return {
+        currentFrameToken: token,
         setVisible,
         setFocused(value) { if (!disposed && focused !== value) { focused = value; lifecycle?.setFocused(value); runtime.refresh(); } },
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },

@@ -1,6 +1,6 @@
 import type { BoardWorkerClient } from '../workers/client';
 import type { BoardJobIdentity } from '../workers/protocol';
-import { BoardFonts } from './fonts';
+import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import type { Face, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 
@@ -34,10 +34,15 @@ export class TextLayoutClient {
     private readonly unsubscribe: (() => void)[] = [];
     private compatibility: 'unknown' | 'matching' | 'different' = 'unknown';
     private epoch = 0;
-    constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: () => void) {
-        const changed = () => { this.compatibility = 'unknown'; onFontArrival?.(); };
-        this.unsubscribe.push(fonts.subscribe(changed));
-        if (worker) this.unsubscribe.push(worker.on('fontEpoch', changed));
+    constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
+        const changed = (key: FontKey) => { this.compatibility = 'unknown'; onFontArrival?.(key); };
+        this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
+        if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
+            if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
+            const key = payload.key as Partial<FontKey> | null;
+            if (!key || !['draw', 'sans', 'serif', 'mono'].includes(key.family ?? '') || typeof key.bold !== 'boolean' || typeof key.italic !== 'boolean') return;
+            changed(key as FontKey);
+        }));
     }
     /** Call on every vault/session switch, including a switch to a same-path document. */
     beginSession(): void {

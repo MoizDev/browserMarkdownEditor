@@ -76,7 +76,7 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
 
 type BufferDesc = { bytes: number; uses: readonly BufferUse[]; pack?: boolean };
 type TextureDesc = { width: number; height: number; format: TextureFormat; uses: readonly TextureUse[] } | { reference: TextureHandle };
-type TargetDesc = { color: TextureHandle; samples: Samples; stencil: boolean } |
+type TargetDesc = { color: TextureHandle; samples: Samples; stencil: boolean; coverage?: TextureHandle } |
     { reference: TargetHandle; color: TextureHandle; purpose: TargetRequest['purpose'] };
 type SamplerDesc = { filter: 'nearest' | 'linear' } | { reference: SamplerHandle };
 type PipelineCreate = { role: 'program'; shader: ShaderModule } |
@@ -109,6 +109,7 @@ interface NativeTexture {
 interface NativeTarget {
     color: TextureHandle;
     colorTexture: NativeTexture;
+    coverage: NativeTexture | null;
     samples: Samples;
     stencil: boolean;
     capture: boolean;
@@ -244,6 +245,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #programSignatures = new Map<string, string>();
     readonly #samplers = new Map<'nearest' | 'linear', SamplerHandle>();
     readonly #attachments = new Map<TextureHandle, TargetHandle>();
+    #coverageTextures = new WeakMap<WebGLTexture, TextureHandle>();
     readonly #pool: Webgl2TargetPool;
     readonly #frames = new Map<ArenaEncoding, FrameWork>();
     readonly #controlledFrames = new WeakMap<FrameEncoder, ControlledFrame>();
@@ -546,7 +548,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const texture = this.#arena.validate(color, 'texture');
         if (!texture.uses.includes('render')) throw new ArenaError('invalid-input');
         const bytes = this.#targetBytes(texture, options.samples, options.stencil);
-        const handle = this.#allocate('target', { color, samples: options.samples, stencil: options.stencil }, bytes, lease, [color, ...this.#textureBacking(color)]);
+        const handle = this.#allocateColorTarget(color, options.samples, options.stencil, bytes, lease, [color, ...this.#textureBacking(color)]);
         if (options.stencil) {
             const gl = this.#usable();
             const encoding = this.#arena.beginEncoding();
@@ -702,7 +704,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#pollCancel = null; this.#white = null; this.#composition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
-                () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(), () => this.#arena.abandon(),
+                () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
+                () => { this.#coverageTextures = new WeakMap(); }, () => this.#arena.abandon(),
             ]);
         } finally { this.#gl = null; this.#canvas = null; }
     }
@@ -829,7 +832,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             texture = this.#allocate('texture', { width: request.width, height: request.height, format,
                 uses: ['sample', 'render', 'copy-src', 'copy-dst'] }, colorBytes, lease);
-            const target = this.#allocate('target', { color: texture, samples: request.samples, stencil: request.stencil }, extra, lease, [texture]);
+            const target = this.#allocateColorTarget(texture, request.samples, request.stencil, extra, lease, [texture]);
             return { texture, target, request };
         } catch (error) { if (texture) this.destroy(texture); throw error; }
         finally { this.closeLease(lease); }
@@ -1245,6 +1248,32 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         finally { this.closeLease(lease); }
     }
 
+    #allocateColorTarget(color: TextureHandle, samples: Samples, stencil: boolean, bytes: number, lease: ByteLease,
+        dependencies: readonly Handle[]): TargetHandle {
+        const texture = this.#arena.validate(color, 'texture');
+        let coverage: TextureHandle | undefined;
+        let created = false;
+        if (__BME_BENCH__ && samples === 1 && texture.format === 'rgba8') {
+            coverage = this.#coverageTextures.get(texture.texture);
+            if (!coverage) {
+                coverage = this.#owned('texture', { width: texture.width, height: texture.height, format: 'r8',
+                    uses: ['sample', 'render', 'copy-src', 'copy-dst'] }, byteSize(texture.width, texture.height), this.#services.working);
+                this.#coverageTextures.set(texture.texture, coverage);
+                created = true;
+            }
+        }
+        try {
+            return this.#allocate('target', { color, samples, stencil, coverage }, bytes, lease,
+                coverage ? [...dependencies, coverage] : dependencies);
+        } catch (error) {
+            if (created && coverage) {
+                this.#coverageTextures.delete(texture.texture);
+                this.#destroyDirect(coverage);
+            }
+            throw error;
+        }
+    }
+
     #targetBytes(texture: NativeTexture, samples: Samples, stencil: boolean): number {
         this.#extent(texture.width, texture.height, this.limits.maxRenderTargetSize);
         if (samples !== 1 && samples !== 4 || typeof stencil !== 'boolean') throw new ArenaError('invalid-input');
@@ -1262,9 +1291,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const cached = this.#attachments.get(texture);
         if (cached) return cached;
         this.#arena.validate(texture, 'texture');
-        const handle = this.#owned('target', { color: texture, samples: 1, stencil: false }, 0, this.#services.working, [texture, ...this.#textureBacking(texture)]);
-        this.#attachments.set(texture, handle);
-        return handle;
+        const lease = this.#reserve(this.#services.working, 0);
+        try {
+            const handle = this.#allocateColorTarget(texture, 1, false, 0, lease, [texture, ...this.#textureBacking(texture)]);
+            this.#attachments.set(texture, handle);
+            return handle;
+        } finally { this.closeLease(lease); }
     }
     #pipeline(desc: PipelineDesc): PipelineDesc {
         if (typeof desc.shader.id !== 'string' || !desc.shader.id ||
@@ -1637,7 +1669,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#targetBytes(texture, desc.samples, desc.stencil);
         const framebuffer = gl.createFramebuffer();
         if (!framebuffer) throw new ArenaError('allocation');
-        const target: NativeTarget = { ...desc, colorTexture: texture, capture: false, framebuffer, resolveFramebuffer: framebuffer,
+        const coverage = desc.coverage ? this.#arena.validate(desc.coverage, 'texture') : null;
+        const target: NativeTarget = { ...desc, colorTexture: texture, coverage, capture: false, framebuffer, resolveFramebuffer: framebuffer,
             releaseDependency: this.#retainTextureDependency(desc.color), multisample: null, depthStencil: null,
             width: texture.width, height: texture.height, format: texture.format, colorStored: false, stencilStored: false };
         try {
@@ -1649,6 +1682,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 gl.renderbufferStorageMultisample(gl.RENDERBUFFER, 4, texture.format === 'rgba8' ? gl.RGBA8 : gl.R8, texture.width, texture.height);
                 gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, target.multisample);
             } else gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture.texture, 0);
+            if (coverage) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, coverage.texture, 0);
+            gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
             if (desc.stencil) {
                 target.depthStencil = gl.createRenderbuffer();
                 if (!target.depthStencil) throw new ArenaError('allocation');
@@ -1727,7 +1762,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             }
             case 'texture': {
                 const texture = object as NativeTexture;
-                if (!texture.reference) gl.deleteTexture(texture.texture);
+                if (!texture.reference) {
+                    const coverage = this.#coverageTextures.get(texture.texture);
+                    if (coverage) {
+                        this.#coverageTextures.delete(texture.texture);
+                        this.#arena.release(coverage);
+                        this.#handles.delete(coverage);
+                    }
+                    gl.deleteTexture(texture.texture);
+                }
                 break;
             }
             case 'sampler': {

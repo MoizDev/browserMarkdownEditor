@@ -1,8 +1,9 @@
 import { readJSON, writeJSON } from './storage';
+import boardLocales from './boardLocales.json';
 
 const KEY = 'bme.whiteboard.preferences';
 const LEGACY_KEY = 'TLDRAW_USER_DATA_v3';
-const LOCALES = new Set('id ms ca cs da de en es fil fr gl hr it hu nl no pl pt-BR pt-PT ro sl so fi sv vi tr el ru uk he ur ar fa ne mr hi bn pa gu ta te kn ml th km ko ja zh-CN zh-TW'.split(' '));
+const LOCALES = new Set(boardLocales.map(locale => locale.code));
 export interface BoardPreferences {
     version: 1;
     isSnapMode: boolean;
@@ -32,7 +33,7 @@ function clamp(value: unknown): BoardPreferences {
         version: 1,
         isSnapMode: flag('isSnapMode', defaults.isSnapMode),
         isWrapMode: flag('isWrapMode', defaults.isWrapMode),
-        isDynamicResizeMode: flag('isDynamicResizeMode', defaults.isDynamicResizeMode),
+        isDynamicResizeMode: typeof input.isDynamicResizeMode === 'boolean' ? input.isDynamicResizeMode : typeof input.isDynamicSizeMode === 'boolean' ? input.isDynamicSizeMode : defaults.isDynamicResizeMode,
         animationSpeed: typeof input.animationSpeed === 'number' && Number.isFinite(input.animationSpeed) ? Math.max(0, Math.min(1, input.animationSpeed)) : 1,
         areKeyboardShortcutsEnabled: flag('areKeyboardShortcutsEnabled', defaults.areKeyboardShortcutsEnabled),
         enhancedA11yMode: flag('enhancedA11yMode', defaults.enhancedA11yMode),

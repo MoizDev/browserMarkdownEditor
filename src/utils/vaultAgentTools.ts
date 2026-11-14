@@ -734,8 +734,8 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
         // A closed native ink board is pictured from its admitted source; every other PDF keeps the routes below.
-        if (!view && ctx.host.closedNativePdfPicture) {
-            const picture = await ctx.host.closedNativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
+        if (!view && ctx.host.nativePdfPicture) {
+            const picture = await ctx.host.nativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
                 try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
             } });
             ctx.ensureLive();

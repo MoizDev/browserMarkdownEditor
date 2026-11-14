@@ -16,7 +16,7 @@ export interface ClippedTubeBudget { readonly deadline: number; readonly maxWork
 type Coordinate = { readonly range: Interval; readonly exact: Dyadic; readonly value: number };
 type Control = { readonly x: Coordinate; readonly y: Coordinate };
 type Controls = readonly [Control, Control, Control, Control];
-type WorkNode = { readonly controls: Controls; readonly depth: number };
+type WorkNode = { readonly controls: Controls; readonly radii: readonly [Interval, Interval]; readonly depth: number };
 function coord(value: number): Coordinate { return { range: interval(value), exact: dyadic(value), value }; }
 function midpoint(a: Coordinate, b: Coordinate): Coordinate {
     const sum = dyadicSubtract(a.exact, { n: -b.exact.n, e: b.exact.e });
@@ -57,17 +57,18 @@ function union(a: Box | null, b: Box): Box {
 function uncertainty(reason: string): ClippedTubeResult { return { status: 'uncertain', reason }; }
 
 /** A depth-first certified union of clipped outer balls and actual inner discs. */
-export function createClippedTubeBoundsJob(curve: Cubic, radius: number, clip: readonly Vec2[], tolerance: number,
+export function createClippedTubeBoundsJob(curve: Cubic, radius: number | readonly [number, number], clip: readonly Vec2[], tolerance: number,
     limits: ClippedTubeLimits = {}): { step(budget: ClippedTubeBudget): ClippedTubeStep } {
     const points = [curve.p0, curve.p1, curve.p2, curve.p3];
-    if (!points.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) || !Number.isFinite(radius) || radius < 0
+    const radii: readonly [number, number] = typeof radius === 'number' ? [radius, radius] : radius;
+    if (!points.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) || radii.length !== 2 || radii.some(r => !Number.isFinite(r) || r < 0)
         || !Number.isFinite(tolerance) || tolerance <= 0) throw new RangeError('Invalid cubic tube or tolerance');
     const maxDepth = limits.maxDepth ?? 32, maxNodes = limits.maxNodes ?? 65536, maxWork = limits.maxWork ?? 10000000;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 64 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || clip.length > 256) throw new RangeError('Invalid cubic tube work limits');
     const polygon = clip.map(p => ({ ...p }));
     const controls = points.map(p => ({ x: coord(p.x), y: coord(p.y) })) as unknown as Controls;
-    const stack: WorkNode[] = [{ controls, depth: 0 }];
+    const stack: WorkNode[] = [{ controls, radii: [interval(radii[0]), interval(radii[1])], depth: 0 }];
     let nodes = 1, spent = 0, result: ClippedTubeResult | undefined = tolerance / 8 === 0
         ? uncertainty('Cubic tube tolerance is below the numeric budget') : undefined;
     let outer: Box | null = null;
@@ -114,15 +115,19 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number, clip: r
                     return finish({ status: 'bounded', bounds: outer, errorWorld: error });
                 }
                 parts = split(node.controls);
-                const middle = locate(parts.middle), cover = enclosure(node.controls, middle.centre), outerRadius = nextUp(radius + cover);
+                const middle = locate(parts.middle), cover = enclosure(node.controls, middle.centre);
+                const outerRadius = nextUp(Math.max(node.radii[0].hi, node.radii[1].hi) + cover);
                 if (!Number.isFinite(middle.centre.x) || !Number.isFinite(middle.centre.y) || !Number.isFinite(outerRadius)) return finish(uncertainty('Cubic tube enclosure overflow'));
                 startCircle('outer', middle.centre, outerRadius); continue;
             }
             if (sample < 3) {
                 const p = sample === 0 ? node.controls[0] : sample === 1 ? parts!.middle : node.controls[3]; sample++;
                 const actual = locate(p);
+                const r = sample === 1 ? node.radii[0] : sample === 2
+                    ? add(multiply(node.radii[0], interval(0.5)), multiply(node.radii[1], interval(0.5))) : node.radii[1];
                 // Shrinking by centre uncertainty makes this disc a subset of
                 // the real disc; a nonrepresentable radius-zero sample is skipped.
+                const radius = Math.max(0, r.lo);
                 if (actual.error > radius || (radius === 0 && actual.error !== 0)) continue;
                 const innerRadius = actual.error === 0 ? radius : nextDown(radius - actual.error);
                 if (innerRadius < 0 || !Number.isFinite(innerRadius)) continue;
@@ -133,7 +138,9 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number, clip: r
             if (gap <= tolerance) outer = union(outer, box);
             else {
                 if (node.depth >= maxDepth || nodes + 2 > maxNodes) return finish(uncertainty('Cubic tube subdivision limit reached'));
-                nodes += 2; stack.push({ controls: parts!.right, depth: node.depth + 1 }, { controls: parts!.left, depth: node.depth + 1 });
+                const middle = add(multiply(node.radii[0], interval(0.5)), multiply(node.radii[1], interval(0.5)));
+                nodes += 2; stack.push({ controls: parts!.right, radii: [middle, node.radii[1]], depth: node.depth + 1 },
+                    { controls: parts!.left, radii: [node.radii[0], middle], depth: node.depth + 1 });
             }
             node = undefined; parts = undefined; currentOuter = null;
         }
@@ -142,7 +149,7 @@ export function createClippedTubeBoundsJob(curve: Cubic, radius: number, clip: r
 }
 
 /** Synchronous convenience; interactive callers must drive the resumable job. */
-export function clippedTubeBounds(curve: Cubic, radius: number, clip: readonly Vec2[], tolerance: number,
+export function clippedTubeBounds(curve: Cubic, radius: number | readonly [number, number], clip: readonly Vec2[], tolerance: number,
     limits?: ClippedTubeLimits): ClippedTubeResult {
     const job = createClippedTubeBoundsJob(curve, radius, clip, tolerance, limits);
     for (;;) { const step = job.step({ maxWork: 4096, deadline: Number.MAX_VALUE }); if (step.done) return step.result; }

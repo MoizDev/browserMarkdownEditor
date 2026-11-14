@@ -116,11 +116,20 @@ export async function markRecoveryCopies(vaultId: string, ids: readonly string[]
 }
 
 /** Explicit discard; never used to make room or to resolve a path collision. */
-export async function discardRecovery(vaultId: string, journalId: string): Promise<void> {
+export async function discardRecovery(vaultId: string, journalId: string, revision?: number): Promise<void> {
     const db = await open();
     const tx = db.transaction('entries', 'readwrite');
     const finished = done(tx);
-    tx.objectStore('entries').delete([vaultId, journalId]);
+    const store = tx.objectStore('entries');
+    if (revision === undefined) store.delete([vaultId, journalId]);
+    else {
+        const request = store.get([vaultId, journalId]);
+        request.onsuccess = () => {
+            const entry = request.result as RecoveryEntry | undefined;
+            if (entry && entry.revision !== revision) tx.abort();
+            else if (entry) store.delete([vaultId, journalId]);
+        };
+    }
     await finished;
 }
 

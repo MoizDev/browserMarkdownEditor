@@ -167,7 +167,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         const query = { point: surface, localToSurface, input };
                         const attachment = prepared.vector.attachments;
                         if (targetMode && attachment) {
-                            result = pointPath([attachment.outline], query, { interiorPaths: [attachment.outline], strokeRadiusLocal: 0,
+                            // Attachment targeting is an edge query, unlike selection of a hollow interior.
+                            result = pointPath([attachment.outline], query, { strokeRadiusLocal: 0,
                                 marginCss: 4, errorCss: 0.01, maxSegments: 8192 });
                             if (result.hit) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {

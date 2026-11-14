@@ -1059,6 +1059,9 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onTypographyChange={updateReadingTypography}
                             registerKeyboardTarget={registerKeyboardTarget}
                             file={tab.file}
+                            theme={theme}
+                            nativeCanvasHost={nativeCanvasHost}
+                            onToggleMode={onToggleMode}
                             isVisible={visible}
                             retainClosing={closingDocumentIds.has(tab.id)}
                             isFocused={tab.file.path === focusedPath}

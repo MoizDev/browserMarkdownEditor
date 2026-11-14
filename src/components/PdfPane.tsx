@@ -33,6 +33,8 @@ import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionId
 import { choosePdfSessionRoute, readPdfSessionRoute, subscribePdfSessionRoute } from '../utils/pdfSessionRoute';
 import { assertPdfPrintAllowed, PDF_PRINT_UNKNOWN, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { requestVaultSearch } from '../utils/searchRequest';
+import { pdfEngineAvailableInBuild } from '../utils/pdfEngineAvailability';
+import { routeEngines } from '../utils/engineRouting';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
@@ -43,6 +45,9 @@ import './PdfPane.css';
 const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
 const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
 const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
+const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
+const NATIVE_PDF_ZOOM = Object.freeze({ min: 0.4, max: 4 });
+const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
 
 export interface PdfPaneProps {
     documentId: string;
@@ -53,6 +58,8 @@ export interface PdfPaneProps {
     reading?: PdfReadingBinding;
     nativeCanvasHost?: import('../types/nativeCanvas').NativeCanvasHost;
     file: ActiveFile;
+    theme: import('../types').Theme;
+    onToggleMode(path: string): void;
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
      * open PDF tab and merely hides the ones that aren't, so switching tabs
@@ -137,7 +144,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
@@ -311,8 +318,10 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
-    const roleNotice = source && pdfRoleNotice(source) || (!disk && !pdfRebuild ? foreignNotice : undefined);
-    const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
+    const nativeCandidate = mode === 'edit' && !disk && source?.kind === 'newer' && source.attachments.includes('board.json')
+        && pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
+    const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined);
+    const readOnly = mode === 'edit' && (nativeCandidate || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const sessionVersion = useRef<string | undefined>(undefined);
@@ -828,6 +837,19 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                     </button>
                 </div>
             );
+        } else if (nativeCandidate && nativeCanvasHost && attachCanvasSession && reading) {
+            const nativeIdentity = nativeCanvasHost.identity(documentId);
+            body = nativeIdentity && nativeIdentity.kind === 'pdfInk' ? (
+                <Suspense fallback={<div className="pdf-pane-message">Preparing PDF annotations…</div>}>
+                    <NativePdfEntry file={file} documentId={documentId} identity={nativeIdentity} nativeCanvasHost={nativeCanvasHost}
+                        attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
+                        isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={routeEngines('pdfInk').canvas.pdfInk.emergencyReadOnly}
+                        zoomLimits={NATIVE_PDF_ZOOM} insets={NATIVE_PDF_INSETS} zMax={100} deadlineMs={30_000}
+                        registerKeyboardTarget={reading.registerKeyboardTarget} onFocusPane={onFocusPane}
+                        emphasisEnabled={reading.emphasisEnabled} onNotice={reading.onNotify}
+                        onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
+                </Suspense>
+            ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
         } else if (mode === 'edit' && editableSource && loadedSource?.session) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and

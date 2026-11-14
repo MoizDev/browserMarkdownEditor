@@ -8,6 +8,16 @@
 .pdf-tiled-surface { overflow: hidden; touch-action: none; }
 .pdf-tiled-surface canvas { position: absolute; inset: 0; }
 .pdf-tiled-overlays { pointer-events: none; }
+.pdf-tiled-updating {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    background: var(--background-primary);
+    color: var(--text-muted);
+    font-size: 13px;
+}
 .pdf-tiled-link { pointer-events: auto; }
 .pdf-tiled-notice {
     position: absolute;

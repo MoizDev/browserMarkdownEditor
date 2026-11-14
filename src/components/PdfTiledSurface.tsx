@@ -79,7 +79,7 @@ export default function PdfTiledSurface(props: Props) {
     if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
-        mirror={source.mirror} capturer={source.capturer} selectionState={source.selection}
+        mirror={source.mirror} capturer={source.capturer} selectionState={source.selection} transition={source.transition} bridge={source.bridge}
         filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={props.sourceHash}
         findMemory={props.findMemory} onSearchVault={props.searchVault} onRotate={props.rotate}
         onOpenTextView={props.openText} onNotice={props.notify} onOpenClassic={props.openClassic} />;

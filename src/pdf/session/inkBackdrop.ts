@@ -2,7 +2,9 @@ import { fitWidthZ, pageAt, pageStack } from '../../platform/render';
 import type { Rect, RenderToken, ViewState } from '../../platform/render';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
-import { getPdfFontEpoch, pdfVariantRevision, subscribePdfFontEpoch } from '../fonts/profiles';
+import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
+import { pdfMirrorRevision, pdfVersionTransitionOwner } from './versionOwner';
+import type { PdfVersionBridge } from '../layer/versionBridge';
 import { pdfPageLayerDefinition } from '../layer/definition';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { createPdfTileProducer } from '../layer/tileProducer';
@@ -23,6 +25,7 @@ interface Owner {
     session: PdfTiledDocumentSession;
     views: Set<ViewLease>;
     ready?: ReturnType<PdfTiledDocumentSession['open']>;
+    adoption?: Promise<PdfVersionBridge | null>;
 }
 const slot = Symbol('pristine PDF ink backdrop');
 const stale = () => new DOMException('PDF ink backdrop is no longer current', 'AbortError');
@@ -92,6 +95,15 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     if (!emphasis || pdf.source !== 'original' || pdf.docKey !== source.docKey || !sameToken(pdf.token, token)) throw stale();
     const stack = pageStack(document.pages), geometryDigest = pdfGeometryDigest(document.pages);
     const mirror = getPdfSessionMirrors({ session: retained.session, token, currentToken: () => currentToken(token) ? token : null });
+    const transition = pdfVersionTransitionOwner(token.documentId, 'original');
+    if (!retained.adoption) {
+        const adoption = transition.adopt({ session: retained.session, document, mirror },
+            () => pdfMirrorRevision(options.emphasisEnabled(), getPdfFontEpoch(pdf.docKey), emphasis.revision()), retained.session.lifetimeSignal);
+        retained.adoption = adoption;
+        void adoption.catch(() => { if (retained.adoption === adoption) retained.adoption = undefined; });
+    }
+    const bridge = await waitFor(retained.adoption, options.signal);
+    if (!options.isCurrent() || !retained.session.isCurrent() || options.signal?.aborted) throw stale();
     const capturer = pdfSessionCapturer(retained.session, stack), focus = retainPdfFocus(token.documentId);
     const lease: ViewLease = { visible: options.isVisible(), focused: options.isFocused(), enabled: options.emphasisEnabled(), pages: [], focusPage: -1 };
     retained.views.add(lease);
@@ -108,12 +120,12 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     sync();
     const isCurrent = () => !disposed && retained.session.isCurrent() && options.isCurrent();
     const mirrorView = (view: ViewState) => ({ token, sourceRole: 'original' as const,
-        contentRevision: pdfVariantRevision(lease.enabled ? 'emphasis' : 'plain', getPdfFontEpoch(pdf.docKey)),
+        contentRevision: pdfMirrorRevision(lease.enabled, getPdfFontEpoch(pdf.docKey), emphasis.revision()),
         colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view });
     const layer = pdfPageLayerDefinition({ producer: { render(request, signal) {
         assertPdfRenderAllowed(tiledPdfCapabilities(pdf.info));
         return document.producer.render(request, signal);
-    } }, isCurrent: () => isCurrent() && options.isVisible(), mirror: { store: mirror, view: view => lease.enabled ? null : mirrorView(view) },
+    } }, isCurrent: () => isCurrent() && options.isVisible(), mirror: { store: mirror, view: view => lease.enabled ? null : mirrorView(view) }, bridge,
     onError: error => options.onError(error), demand(view) {
         lease.visible = options.isVisible(); lease.focused = options.isFocused(); lease.enabled = options.emphasisEnabled();
         const top = view.camera.y, bottom = top + view.viewport.height / view.camera.z;
@@ -127,12 +139,19 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
             rasterScale: view.camera.z * Math.min(view.viewport.dpr, 2), fitWidthZoom: fitWidthZ(view.viewport, stack, { left: 0, right: 0, top: 0, bottom: 0 }),
             nominalDpr: Math.min(view.viewport.dpr, 2), moving: view.moving, velocity: { x: 0, y: 0 }, direction: { x: 0, y: 0 } };
     } });
+    let unsubscribeTransition: (() => void) | undefined;
+    const observeTransition = () => {
+        unsubscribeTransition?.(); unsubscribeTransition = undefined;
+        if (!lease.visible || !bridge) return;
+        const refresh = () => { if (!transition.isActive(bridge)) layer.current()?.expireBridge(); };
+        unsubscribeTransition = transition.subscribe(refresh); refresh();
+    };
     const setVisible = (visible: boolean, focused = false) => {
         if (disposed) return;
         lease.visible = visible; lease.focused = visible && focused;
         if (!visible) { lease.pages = []; lease.focusPage = -1; }
         focus.setFocused(lease.visible && lease.focused);
-        sync();
+        sync(); observeTransition();
         if (!visible) layer.current()?.hide();
         else layer.current()?.retry();
     };
@@ -144,6 +163,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         };
         return instance;
     } };
+    observeTransition();
     const refresh = () => { if (isCurrent()) layer.current()?.retry(); };
     const unsubscribeFont = subscribePdfFontEpoch(pdf.docKey, refresh), unsubscribeEmphasis = emphasis.subscribe(refresh);
     const check = (signal?: AbortSignal) => { signal?.throwIfAborted(); if (!isCurrent() || pdf.closed) throw stale(); };
@@ -162,7 +182,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
             return captureRegion(stack.rects[page], maxSide, signal);
         } }, dispose() {
             if (disposed) return;
-            disposed = true; unsubscribeFont(); unsubscribeEmphasis(); focus.dispose();
+            disposed = true; unsubscribeTransition?.(); unsubscribeFont(); unsubscribeEmphasis(); focus.dispose();
             layer.current()?.hide(); retained.views.delete(lease); sync();
         } };
 }

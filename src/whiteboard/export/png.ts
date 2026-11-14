@@ -51,7 +51,9 @@ export async function encodePng(
 ): Promise<Blob> {
   checkPngSize(width, height, options.clipboard)
   const density = options.pixelsPerWorldUnit
-  if (density !== undefined && (!Number.isFinite(density) || density <= 0 || density * 72 / 0.0254 > 0xffffffff)) {
+  const pixelsPerMetre = density === undefined ? undefined : Math.round(density * 72 / 0.0254)
+  if (density !== undefined && (!Number.isFinite(density) || density <= 0 || !Number.isSafeInteger(pixelsPerMetre)
+      || pixelsPerMetre! < 1 || pixelsPerMetre! > 0xffffffff)) {
     throw new RangeError('Invalid PNG density')
   }
   options.signal?.throwIfAborted()
@@ -68,9 +70,8 @@ export async function encodePng(
   if (density !== undefined) {
     const phys = new Uint8Array(9)
     const view = new DataView(phys.buffer)
-    const pixelsPerMetre = Math.round(density * 72 / 0.0254)
-    view.setUint32(0, pixelsPerMetre)
-    view.setUint32(4, pixelsPerMetre)
+    view.setUint32(0, pixelsPerMetre!)
+    view.setUint32(4, pixelsPerMetre!)
     phys[8] = 1
     parts.push(chunk('pHYs', phys))
   }

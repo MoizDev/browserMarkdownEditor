@@ -40,7 +40,7 @@ export function boardHandlers(handlers: Readonly<Record<string, BoardWorkerHandl
                 slice: () => context.slice(),
                 heartbeat: () => context.heartbeat(),
                 transfer: (...items) => context.transfer(...items),
-                emit: (event, payload, transfer) => context.emit(event, { identity, payload }, transfer),
+                emit: (event, payload, transfer) => context.emit(event, event === 'mem' ? payload : { identity, payload }, transfer),
             };
             const payload = await handler(args.payload, scoped);
             context.signal.throwIfAborted();

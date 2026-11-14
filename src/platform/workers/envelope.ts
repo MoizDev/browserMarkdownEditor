@@ -80,6 +80,8 @@ export type ClientState = 'idle' | 'starting' | 'ready' | 'recycling' | 'backoff
 
 export interface WorkerClient {
     request<T>(op: string, args: unknown, options: RequestOptions): Promise<T>;
+    /** Physical endpoint retirement can follow logical rejection after a posted cancellation. */
+    whenRetired(request: Promise<unknown>): Promise<void>;
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     cancelAll(match: (op: string, args: unknown) => boolean): void;
     on(event: string, handler: (data: unknown) => void): () => void;

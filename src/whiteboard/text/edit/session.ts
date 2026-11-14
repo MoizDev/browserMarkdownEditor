@@ -23,6 +23,7 @@ export interface EditLayout {
 }
 export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
     readonly history: HistoryController;
+    prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
     alive(): boolean;
     layout(): EditLayout;
@@ -359,6 +360,31 @@ export class TextEditSession {
 
     copySelection(): RichFragment {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    prepareCut(): { commit(): void; release(): void } {
+        if (this.closed || !this.services.alive() || this.compositionSelection || this.compositionRange)
+            throw new Error('Text editing is not ready for cut');
+        const before = { ...this.selection }, from = Math.min(before.anchor, before.focus);
+        const proof = this.services.prepareCut(this.controller.cutTransaction(before));
+        let released = false, committed = false;
+        const current = () => !this.closed && this.services.alive() && !this.compositionSelection && !this.compositionRange
+            && this.selection.anchor === before.anchor && this.selection.focus === before.focus;
+        try { if (!current()) throw new Error('Text selection changed; cut again'); }
+        catch (error) { proof.release(); throw error; }
+        return {
+            commit: () => {
+                if (released || committed || !current()) throw new Error('Text selection changed; nothing was cut');
+                this.typingHistory.close();
+                this.services.history.open('Cut text');
+                try {
+                    proof.commit(); committed = true;
+                    this.lastText = this.services.plainText();
+                    this.select({ anchor: from, focus: from });
+                } finally { this.services.history.close(); }
+            },
+            release: () => { if (!released) { released = true; proof.release(); } },
+        };
     }
 
     deleteSelection(): boolean {

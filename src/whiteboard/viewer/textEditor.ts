@@ -489,6 +489,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
             return editor.deleteSelection();
         },
+        prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
+            const editor = manager.current?.editor, current = editor?.getSelection();
+            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)
+                throw new Error('Text selection changed; cut again');
+            return editor.prepareCut();
+        },
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
         spellingAtClient(x: number, y: number) {
             const editor = manager.current?.editor;

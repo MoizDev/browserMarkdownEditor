@@ -80,6 +80,27 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         lastOwnRevision = session.doc.rev;
         applied.release();
     }
+    function prepareCut(transaction: Transaction): { commit(): void; release(): void } {
+        if (closed || !session.doc.nodes.has(id)) throw new Error('Text editing is no longer active');
+        const revision = session.doc.rev;
+        const prepared = options.prepareTransaction(translateFrame(transaction));
+        const proof = session.preflight(prepared);
+        const current = () => !closed && session.doc.rev === revision && session.doc.nodes.has(id);
+        try {
+            if (!current() || !proof.ops.length) throw new Error('Text cut is not available');
+        } catch (error) { proof.release(); throw error; }
+        let released = false, committed = false;
+        return {
+            commit() {
+                if (released || committed || !current()) throw new Error('Text changed; nothing was cut');
+                const applied = session.apply({ ...prepared, ops: proof.ops });
+                committed = true;
+                lastOwnRevision = session.doc.rev;
+                applied.release();
+            },
+            release() { if (!released) { released = true; proof.release(); } },
+        };
+    }
     function inList(offset: number): boolean {
         const text = readText();
         let position = 0;
@@ -95,6 +116,7 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         history: session.history,
         ...adapter,
         apply,
+        prepareCut,
         alive: () => !closed && session.doc.nodes.has(id),
         layout,
         inList,

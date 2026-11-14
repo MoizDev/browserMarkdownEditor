@@ -2,13 +2,13 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { ClipboardCopy } from '../clipboard/copy';
 import type { ClipboardClassifierHost } from '../clipboard/classify';
 import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
-import type { CopySnapshot, CopySnapshotHost } from '../clipboard/snapshot';
+import type { CopySnapshot } from '../clipboard/snapshot';
 import type { ClipboardInput } from '../clipboard/types';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { createBoardTextEditor } from '../viewer/textEditor';
 import { classifyTextPaste } from './clipboardPaste';
 import { readPrivateClipboardText } from './clipboardPrivate';
-import { snapshotCopiedTextRange } from './clipboardSnapshot';
+import { snapshotCopiedTextRange, type TextCopySnapshotHost } from './clipboardSnapshot';
 
 export type TextPasteIntent = 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted';
 export interface TextClipboardAdapterOptions {
@@ -18,7 +18,7 @@ export interface TextClipboardAdapterOptions {
     readonly html: ClipboardHtmlFrameHost;
     readonly memory: MemoryAllocator;
     /** Captures the real source sheet, encoder and resource holders at the gesture. */
-    copyHost(): CopySnapshotHost;
+    copyHost(): TextCopySnapshotHost;
     identity(): BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     /** Core owns the OS event and forwards non-text content after editing has ended. */
@@ -49,12 +49,19 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
         },
         isCurrent: current,
         /** Use as ClipboardCopy.prepareCut for a snapshot with textSelection. */
-        prepareCut(snapshot: CopySnapshot): () => void {
+        prepareCut(snapshot: CopySnapshot): { commit(): void; release(): void } {
             if (!current(snapshot) || !snapshot.textSelection) throw new Error('Text selection changed; cut again');
             const selection = { ...snapshot.textSelection }, revision = snapshot.revision;
-            return () => {
-                if (!current(snapshot) || !options.editor.cutText(selection.node, revision, { anchor: selection.anchor, focus: selection.focus }))
-                    throw new Error('Text selection changed; nothing was cut');
+            const proof = options.editor.prepareTextCut(selection.node, revision, { anchor: selection.anchor, focus: selection.focus });
+            try { if (!current(snapshot)) throw new Error('Text selection changed; cut again'); }
+            catch (error) { proof.release(); throw error; }
+            let released = false, committed = false;
+            return {
+                commit() {
+                    if (released || committed || !current(snapshot)) throw new Error('Text selection changed; nothing was cut');
+                    proof.commit(); committed = true;
+                },
+                release() { if (!released) { released = true; proof.release(); } },
             };
         },
         /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */

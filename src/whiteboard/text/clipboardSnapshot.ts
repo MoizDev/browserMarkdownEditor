@@ -6,7 +6,9 @@ import type { EditSelection } from './edit/host';
 import type { RichFragment } from './richText';
 
 /** A text range copies as one synthetic text node, while the original node stays untouched. */
-export function snapshotCopiedTextRange(host: CopySnapshotHost, original: Node, selection: EditSelection,
+export type TextCopySnapshotHost = Pick<CopySnapshotHost, 'doc' | 'sheet' | 'board' | 'encoder'>;
+
+export function snapshotCopiedTextRange(host: TextCopySnapshotHost, original: Node, selection: EditSelection,
     fragment: RichFragment, bounds: ClipboardBounds): CopySnapshot {
     if (selection.anchor === selection.focus || !host.doc.nodes.has(original.id)) throw new Error('There is no text range to copy');
     const defaults = host.doc.ui.next;
@@ -29,7 +31,7 @@ export function snapshotCopiedTextRange(host: CopySnapshotHost, original: Node, 
         align: original.kind === 'text' ? original.align : original.kind === 'frame' ? 'start' : defaults.textAlign,
         autoSize: true, w: Math.max(1, bounds.w / scale), scale });
     // Clipboard records are always world-rooted, even when their source host is paged.
-    const syntheticHost: CopySnapshotHost = { ...host, doc: { ...host.doc, kind: 'whiteboard' },
+    const syntheticHost: TextCopySnapshotHost = { ...host, doc: { ...host.doc, kind: 'whiteboard' },
         encoder: { ...host.encoder, bounds: candidate => candidate.id === node.id
             ? [bounds.x, bounds.y, bounds.w, bounds.h] : host.encoder.bounds(candidate) } };
     const snapshot = snapshotTextSelection(syntheticHost, fragment, node, bounds,

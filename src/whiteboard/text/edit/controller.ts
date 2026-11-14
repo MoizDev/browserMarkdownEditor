@@ -28,6 +28,13 @@ export class TextEditController {
 
     setStoredMarks(marks: Marks | null): void { this.storedMarks = marks; }
 
+    cutTransaction(selection: EditSelection): Transaction {
+        const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+        if (from === to) throw new Error('There is no text range to cut');
+        const fragment = this.services.fragment(from, '', this.storedMarks);
+        return { origin: 'tool', label: 'Cut text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] };
+    }
+
     toggleMark(mark: ToggleMark, selection: EditSelection): void {
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
         if (from === to) {

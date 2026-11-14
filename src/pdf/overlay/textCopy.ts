@@ -60,7 +60,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         const controller = new AbortController(), epoch = localEpoch; pending = controller;
         const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && sameSelection(selection, host.selection()) && host.pageCount() === state.count;
         const parts: string[] = [];
-        let units = 0, normalizedUnits = 0;
+        let units = 0, normalizedUnits = 0, previousEndsInLF = false;
         try {
             for (let page = state.first; page <= state.last; page++) {
                 if (!valid()) return;
@@ -69,9 +69,11 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
                 if (!valid()) return;
                 const from = !selection.wholeDocument && page === state.first ? Math.max(0, Math.min(text.length, state.range.start.offset)) : 0;
                 const to = !selection.wholeDocument && page === state.last ? Math.max(from, Math.min(text.length, state.range.end.offset)) : text.length;
-                units += to - from + (page > state.first ? 1 : 0);
+                const separator = page > state.first && !previousEndsInLF ? '\n' : '';
+                units += to - from + separator.length;
                 if (units > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
-                if (page > state.first) { parts.push('\n'); normalizedUnits++; }
+                if (separator) { parts.push(separator); normalizedUnits++; }
+                previousEndsInLF = to > from && text[to - 1] === '\n';
                 // Clipboard normalization is code-point local; never split a surrogate pair.
                 for (let offset = from; offset < to;) {
                     let end = Math.min(to, offset + 4096);

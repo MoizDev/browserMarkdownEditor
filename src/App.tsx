@@ -9,7 +9,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
-import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -544,46 +544,46 @@ export default function App() {
     } else {
       document.documentElement.removeAttribute('data-theme');
     }
-    localStorage.setItem('theme', theme);
+    writeStoredValue('theme', theme);
   }, [theme]);
 
   // Sync font sizes to CSS variables and localStorage
   useEffect(() => {
     document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
-    localStorage.setItem('editorFontSize', String(editorFontSize));
+    writeStoredValue('editorFontSize', String(editorFontSize));
   }, [editorFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--code-font-size', codeFontSize + 'px');
-    localStorage.setItem('codeFontSize', String(codeFontSize));
+    writeStoredValue('codeFontSize', String(codeFontSize));
   }, [codeFontSize]);
 
   // Not a CSS variable: the plugin is an editor extension, so each code pane
   // reconfigures its own compartment (DocumentPane).
   useEffect(() => {
-    localStorage.setItem('rainbowBrackets', String(rainbowBrackets));
+    writeStoredValue('rainbowBrackets', String(rainbowBrackets));
   }, [rainbowBrackets]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
-    localStorage.setItem('treeFontSize', String(treeFontSize));
+    writeStoredValue('treeFontSize', String(treeFontSize));
   }, [treeFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
-    localStorage.setItem('editorPadding', String(editorPadding));
+    writeStoredValue('editorPadding', String(editorPadding));
   }, [editorPadding]);
 
   useEffect(() => {
-    localStorage.setItem('tabSize', String(tabSize));
+    writeStoredValue('tabSize', String(tabSize));
   }, [tabSize]);
 
   useEffect(() => {
-    localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
+    writeStoredValue('recentVaultLimit', String(recentVaultLimit));
   }, [recentVaultLimit]);
 
   useEffect(() => {
-    localStorage.setItem('showVaultInTitle', String(showVaultInTitle));
+    writeStoredValue('showVaultInTitle', String(showVaultInTitle));
   }, [showVaultInTitle]);
 
   // The tab reads as the vault it holds, so tabs open on different vaults can
@@ -614,15 +614,15 @@ export default function App() {
       ? `left ${caretSpeed}ms ease-out, top ${caretSpeed}ms ease-out, height ${caretSpeed}ms ease-out`
       : 'none');
 
-    localStorage.setItem('caretStyle', caretStyle);
-    localStorage.setItem('caretThickness', String(caretThickness));
-    localStorage.setItem('smoothCaret', String(smoothCaret));
-    localStorage.setItem('caretSpeed', String(caretSpeed));
+    writeStoredValue('caretStyle', caretStyle);
+    writeStoredValue('caretThickness', String(caretThickness));
+    writeStoredValue('smoothCaret', String(smoothCaret));
+    writeStoredValue('caretSpeed', String(caretSpeed));
   }, [caretStyle, caretThickness, smoothCaret, caretSpeed]);
 
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
-    localStorage.setItem('fontFamily', fontFamily);
+    writeStoredValue('fontFamily', fontFamily);
     const linkId = 'google-font-link';
     let link = document.getElementById(linkId) as HTMLLinkElement | null;
     const family = fontFamily.trim();
@@ -659,7 +659,7 @@ export default function App() {
       root.removeProperty('--interactive-accent');
       root.removeProperty('--interactive-accent-hover');
     }
-    localStorage.setItem('accentColor', accentColor);
+    writeStoredValue('accentColor', accentColor);
   }, [accentColor]);
 
   // Same override trick for the plain-code-block ink; its stylesheet default
@@ -671,7 +671,7 @@ export default function App() {
     } else {
       root.removeProperty('--code-block-color');
     }
-    localStorage.setItem('codeBlockColor', codeBlockColor);
+    writeStoredValue('codeBlockColor', codeBlockColor);
   }, [codeBlockColor]);
 
   const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
@@ -1066,7 +1066,7 @@ export default function App() {
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
   useEffect(() => {
-    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+    writeStoredValue('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
   // Suppresses the collapse animation while drag-resizing, so the width
   // tracks the pointer instead of easing 150ms behind it.
@@ -1079,7 +1079,7 @@ export default function App() {
   // a window can shrink under a stored width.
   const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('agentPanelOpen', String(agentPanelOpen));
+    writeStoredValue('agentPanelOpen', String(agentPanelOpen));
   }, [agentPanelOpen]);
   const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
   // Whether the reader has opened the panel this session (⌘⇧X, the footer
@@ -1100,7 +1100,7 @@ export default function App() {
   // keyboard, as with the agent panel.
   const [terminalOpen, setTerminalOpen] = useState<boolean>(() => localStorage.getItem('terminalOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('terminalOpen', String(terminalOpen));
+    writeStoredValue('terminalOpen', String(terminalOpen));
   }, [terminalOpen]);
   const [terminalOpenedByUser, setTerminalOpenedByUser] = useState(false);
   const terminalOpenRef = useRef(terminalOpen);
@@ -4633,7 +4633,7 @@ export default function App() {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       // Once, at the end of the drag — not sixty writes a second.
-      localStorage.setItem('agentPanelWidth', String(width));
+      writeStoredValue('agentPanelWidth', String(width));
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };

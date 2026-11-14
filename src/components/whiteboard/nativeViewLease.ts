@@ -1,3 +1,4 @@
+import { getBoardPreferences } from '../../utils/boardPreferences';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -319,7 +320,7 @@ export function createNativeViewLease(options: {
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => parameters.mode === 'edit' && edit.canMutate()),
-        toolOptions: { runtime, engine: viewer, images, camera, token,
+        toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&

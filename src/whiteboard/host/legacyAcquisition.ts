@@ -27,6 +27,8 @@ export interface LegacyAcquisitionOptions {
     readonly memory: MemoryAllocator;
     readonly nativeReport: Pick<NativeLoadReply, 'format' | 'complete' | 'bytesRead'>;
     readonly identity: BoardJobIdentity;
+    /** App alone resolves local relative paths against this source document's folder. */
+    readAsset?(src: string, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(identity: BoardJobIdentity): boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
@@ -84,19 +86,38 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     const reservation = memory.reserve(16 * 1024 * 1024 + original.size * 12);
     if (!reservation) throw new Error('Insufficient shared memory for legacy conversion');
     let owned: NativeBoardAcquisition | undefined;
+    const resourceReservations: ReturnType<MemoryAllocator['reserve']>[] = [];
     try {
         const scanned = await scanLegacyBoard({ bytes: original, kind: options.kind, nativeReport: options.nativeReport,
             identity, isCurrent: options.isCurrent, signal }); check();
         if (scanned.status !== 'recognized') return { status: 'read-only', original, legacyReport: scanned.report, conversionPending: true, dispose() {} };
         const verified: InspectedMedia[] = [], verifiedById = new Map<MediaId, InspectedMedia>(), sourceBlobs = new Map<MediaId, Blob>();
+        const relativeAssets: NonNullable<import('../workers/legacyPrepare').LegacyPrepareRequest['relativeAssets']>[number][] = [];
+        const resolved = new Map<string, Blob>(), inspected = new Map<Blob, InspectedMedia>();
+        let relativeBytes = 0;
         for (const asset of scanned.assets) {
             check();
-            const blob = new Blob([asset.blob], { type: asset.blob.type });
-            const info = await inspectMedia(blob, { identity, memory, signal, isCurrent: options.isCurrent }); check();
+            let blob: Blob;
+            if (asset.src !== undefined) {
+                const cached = resolved.get(asset.src);
+                if (cached) blob = cached;
+                else {
+                    const read = await options.readAsset?.(asset.src, signal); check();
+                    if (!(read instanceof Blob)) throw new Error(`Relative legacy media is unavailable: ${asset.src}`);
+                    blob = new Blob([read], { type: read.type }); resolved.set(asset.src, blob);
+                }
+                if (blob.size > 10 * 1024 * 1024 || blob.size > 256 * 1024 * 1024 - relativeBytes) throw new RangeError('Legacy resource bytes exceed the source limits');
+                const resource = memory.reserve(blob.size * 12);
+                if (!resource) throw new Error('Insufficient shared memory for legacy resources');
+                resourceReservations.push(resource); relativeBytes += blob.size;
+                relativeAssets.push({ sourceOrdinal: asset.sourceOrdinal, src: asset.src, blob });
+            } else blob = new Blob([asset.blob], { type: asset.blob.type });
+            let info = inspected.get(blob);
+            if (!info) { info = await inspectMedia(blob, { identity, memory, signal, isCurrent: options.isCurrent }); check(); inspected.set(blob, info); }
             verified.push(info); verifiedById.set(info.id, info); sourceBlobs.set(info.id, blob); await cooperate();
         }
         const reply: unknown = await boardWorker('parse').request('legacyPrepare', { bytes: original, kind: options.kind,
-            host: options.host, token: options.token, zMax: options.zMax, media: verified }, identity,
+            host: options.host, token: options.token, zMax: options.zMax, media: verified, relativeAssets }, identity,
         { priority: 0, cpu: 'governed', deadlineMs: Math.max(30_000, importDeadline(original.size)), signal }, options.isCurrent);
         check();
         if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new TypeError('Invalid legacy preparation reply');
@@ -134,7 +155,12 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             legacyReport: value.report, media,
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
             nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
-    } finally { try { owned?.dispose(); } finally { memory.release(reservation); } }
+    } finally {
+        try { owned?.dispose(); } finally {
+            for (const resource of resourceReservations) if (resource) memory.release(resource);
+            memory.release(reservation);
+        }
+    }
 }
 
 /** Upgrade a genuine PDF preview HOST only after the PDF domain minted its final

@@ -15,7 +15,7 @@ import { backdropRole, readShape, shapeBase, type LegacyShape } from './common';
 import { readLegacyEnvelope, type LegacyEnvelope, type LegacyObject } from './envelope';
 import { unknownShapeFields, unknownShapeProperties } from './fields';
 import { readLabelledShape } from './labelled';
-import { readInlineAsset, type AdmitLegacyMedia, type ImportedMedia } from './media';
+import { readInlineAsset, relativeLegacyAssetSource, type AdmitLegacyMedia, type ImportedMedia } from './media';
 import { readPictureShape } from './pictures';
 import { readLegacySheet } from './sheets';
 import { readStroke } from './stroke';
@@ -24,6 +24,8 @@ export interface LegacyRecordOptions {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
     readonly samples: SampleStore;
     readonly admitMedia: AdmitLegacyMedia;
+    /** Copied bytes bound to this source record, never a filesystem or network port. */
+    readonly resolveAsset?: (asset: LegacyObject, sourceOrdinal: number, signal?: AbortSignal) => Promise<Blob | null>;
     readonly signal?: AbortSignal;
     readonly assertCurrent: () => void;
     // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
@@ -63,8 +65,11 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         const raw = parseJson(JSON.stringify({ type, id: preservedId, record })).raw();
         preservedRecords.push({ type, id: preservedId, raw });
     };
+    const assetOrdinals = new Map<LegacyObject, number>();
+    let ordinal = 0;
     try {
     for (const record of envelope.records) {
+        const sourceOrdinal = ordinal++;
         options.signal?.throwIfAborted();
         const id = typeof record.id === 'string' ? record.id : null;
         try {
@@ -75,7 +80,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                     bindings.push(readBinding(record));
                     if (id) preserve(record, id, 'binding');
                     break;
-                case 'asset': assets.push(record); break;
+                case 'asset': assets.push(record); assetOrdinals.set(record, sourceOrdinal); break;
                 case 'document': case 'user': {
                     if (!id) throw new Error('Metadata record has no identifier');
                     preserve(record, id, String(record.typeName));
@@ -106,7 +111,14 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (!id) throw new Error('Asset has no identifier');
             if (backdropAssets.has(id) && !ordinaryAssets.has(id)) continue;
             if (record.type === 'bookmark') { bookmarks.set(id, record); preserve(record, id, 'bookmark-asset'); continue; }
-            const imported = await readInlineAsset(record, options.admitMedia, options.signal);
+            let resolved: Blob | undefined;
+            if (relativeLegacyAssetSource(record) !== null) {
+                const blob = await options.resolveAsset?.(record, assetOrdinals.get(record)!, options.signal);
+                options.signal?.throwIfAborted(); options.assertCurrent();
+                if (!blob) throw new Error('Relative legacy media is unavailable');
+                resolved = blob;
+            }
+            const imported = await readInlineAsset(record, options.admitMedia, options.signal, resolved);
             options.assertCurrent();
             assetIds.set(id, imported.entry.id); media.push(imported);
             if (!ordinaryAssets.has(id)) preserve({ assetId: id, media: imported.entry.id }, id, 'orphan-asset');

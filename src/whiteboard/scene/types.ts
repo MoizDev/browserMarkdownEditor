@@ -28,6 +28,10 @@ export interface ScenePaintRequest {
     readonly world?: Readonly<Rect>;
     readonly theme: 'light' | 'dark';
     readonly includeWet?: boolean;
+    /** Frozen world-to-device scale; absent for non-raster callers without a capture scale. */
+    readonly deviceScale?: number;
+    readonly sensitiveNodes?: ReadonlySet<NodeId>;
+    readonly allowInkLod?: boolean;
 }
 
 /** Pin is synchronous. Its canonical values/geometry/sample leases never follow later edits.

@@ -20,7 +20,7 @@ export function encodeTiledPngInWorker(
       settled = true
       options.signal?.removeEventListener('abort', cancelled)
       worker.terminate()
-      void rows.return?.().catch(() => {})
+      void rows.return?.(undefined).catch(() => {})
       if (error !== undefined) reject(error)
       else resolve(result!)
     }

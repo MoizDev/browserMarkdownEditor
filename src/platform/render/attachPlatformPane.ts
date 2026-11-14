@@ -51,15 +51,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let disposed = false;
     let frameLease: ScheduledPaneLease | null = null;
     let lifecycle: PaneLifecycle<T> | null = null;
-    let compositor: PaneCompositor;
+    const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
     let lastInputAt = performance.now();
 
     const token = (): FrameToken | null => {
         const current = options.currentToken();
-        if (disposed || !current || !sameDocument(current, options.documentToken) || !compositor) return null;
-        return { ...current, viewLease: options.viewLease, deviceGeneration: compositor.target.generation };
+        if (disposed || !current || !sameDocument(current, options.documentToken) || !compositorRef.current) return null;
+        return { ...current, viewLease: options.viewLease, deviceGeneration: compositorRef.current.target.generation };
     };
     const mirrorView = (): MirrorView | null => {
         const current = options.currentToken();
@@ -100,7 +100,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
         mirrorCoverage: (view, entries) => options.mirrorCoverage?.(view, entries) ?? { complete: false, sharp: false },
     });
-    compositor = created.compositor;
+    const compositor = created.compositor;
+    compositorRef.current = compositor;
     compositor.setLayers(layerSet.compositorLayers);
     compositor.setLayout(options.layout);
     compositor.setAppearance(options.readAppearance());

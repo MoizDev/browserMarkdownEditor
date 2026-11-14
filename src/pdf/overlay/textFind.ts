@@ -1,12 +1,12 @@
 import type { Rect } from '../../platform/types';
 import type { PdfFindHit } from '../../utils/pdfFind';
-import type { PdfFindStart } from '../../components/PdfFindBar';
 import { selectionRange } from '../text/selection';
 import type { PdfSelection } from '../text/selection';
 import type { PdfSelectionGeometryCache, PdfSelectionReply } from '../text/selectionCache';
 import { pdfHighlightRuns } from './textHighlightRuns';
 import type { PdfHighlightRects } from './textHighlight';
 
+export interface PdfFindStart { page: number; y: number }
 export interface PdfTiledFindHost {
     pageRect(page: number): Readonly<Rect> | undefined;
     /** Move the camera to a page-space glyph box. */

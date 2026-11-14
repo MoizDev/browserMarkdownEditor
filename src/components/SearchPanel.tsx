@@ -5,6 +5,7 @@ import type { FileSearchResult, VaultSearchResults } from '../utils/vaultSearch'
 import type { SearchController, SearchRow } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import { getIndexProgress, getIndexUnavailable, subscribeIndexProgress } from '../utils/indexProgress';
+import { consumeSearchRequest, getSearchRequest, subscribeSearchRequest } from '../utils/searchRequest';
 
 interface SearchPanelProps {
     fileTree: FileTreeNode[];
@@ -44,6 +45,12 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
     const progress = useSyncExternalStore(subscribeIndexProgress, getIndexProgress);
     const unavailable = useSyncExternalStore(subscribeIndexProgress, getIndexUnavailable);
     const [query, setQuery] = useState('');
+    const requested = useSyncExternalStore(subscribeSearchRequest, getSearchRequest);
+    useEffect(() => {
+        if (!requested) return;
+        setQuery(requested.query);
+        consumeSearchRequest(requested.id);
+    }, [requested]);
     const deferredQuery = useDeferredValue(query);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);

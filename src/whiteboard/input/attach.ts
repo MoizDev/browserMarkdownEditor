@@ -256,10 +256,17 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.textInput?.cancelPending()
     if (!current()) return
     if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
+    let focusSurface = event.pointerType !== 'touch'
     if (event.pointerType === 'pen') services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp)
     else if (event.pointerType === 'touch') {
-      touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
-      try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }
+      const admitted = touch.touchDown(contact(event)); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
+      try { view.surface.setPointerCapture(event.pointerId) }
+      catch { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId); return }
+    }
+    const target = event.target
+    if (focusSurface && !services.editing() && target instanceof Element && view.surface.contains(target)
+      && !target.closest('button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="menu"], [role="dialog"], [role="listbox"]')) {
+      view.surface.focus({ preventScroll: true })
     }
   }
   const move = (event: PointerEvent) => {

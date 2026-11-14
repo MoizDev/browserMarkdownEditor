@@ -11,6 +11,14 @@ function pair(value: unknown): Readonly<{ x: number; y: number }> {
     if (!finite(point.x) || !finite(point.y)) throw new TypeError('Invalid projected point');
     return Object.freeze({ x: point.x, y: point.y });
 }
+function attachment(value: unknown): unknown {
+    if (value === null) return null;
+    if (!value || typeof value !== 'object') throw new TypeError('Invalid projected attachment');
+    const a = value as { target?: unknown; anchor?: unknown; exact?: unknown; precise?: unknown; snap?: unknown };
+    if (typeof a.target !== 'string' || !a.target || typeof a.exact !== 'boolean' || typeof a.precise !== 'boolean'
+        || !['none', 'center', 'edge-point', 'edge'].includes(a.snap as string)) throw new TypeError('Invalid projected attachment');
+    return Object.freeze({ target: a.target, anchor: pair(a.anchor), exact: a.exact, precise: a.precise, snap: a.snap });
+}
 /** Clone just the bounded geometry value, never a node or document graph. */
 export async function copyProjectedValue(op: NodeSetOp, tick: () => Promise<void>, due: () => boolean): Promise<unknown> {
     const { key, value } = op;
@@ -37,16 +45,11 @@ export async function copyProjectedValue(op: NodeSetOp, tick: () => Promise<void
         if (!finite(c.x0) || !finite(c.y0) || !finite(c.x1) || !finite(c.y1) || typeof c.circle !== 'boolean') throw new TypeError('Invalid projected crop');
         return Object.freeze({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, circle: c.circle });
     }
+    if (String(key) === 'startAttach' || String(key) === 'endAttach') return attachment(value);
     if (key === 'start' || key === 'end') {
         if (!value || typeof value !== 'object') throw new TypeError('Invalid projected connector end');
         const end = value as { x?: unknown; y?: unknown; attach?: unknown };
-        const p = pair(end);
-        if (end.attach === null) return Object.freeze({ ...p, attach: null });
-        if (!end.attach || typeof end.attach !== 'object') throw new TypeError('Invalid projected attachment');
-        const a = end.attach as { target?: unknown; anchor?: unknown; exact?: unknown; precise?: unknown; snap?: unknown };
-        if (typeof a.target !== 'string' || !a.target || typeof a.exact !== 'boolean' || typeof a.precise !== 'boolean'
-            || !['none', 'center', 'edge-point', 'edge'].includes(a.snap as string)) throw new TypeError('Invalid projected attachment');
-        return Object.freeze({ ...p, attach: Object.freeze({ target: a.target, anchor: pair(a.anchor), exact: a.exact, precise: a.precise, snap: a.snap }) });
+        return Object.freeze({ ...pair(end), attach: attachment(end.attach) });
     }
     throw new Error(`Unsupported projected node property: ${key}`);
 }

@@ -283,7 +283,7 @@ Your notes are ordinary files, so other programs can change them too — a \`git
 - **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
 - **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
 - **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
-- **After an interruption**, if this browser has recovered changes for the file you open, a bar offers **Recover** or **Discard**. Changes for a missing or changed file, and older changes from another window, appear under **Recovered changes available as copies**; choose **Save a copy** to keep them without replacing the file. These recovery records are stored in this browser, not in the vault, and can be lost if browser storage is cleared.
+- **After an interruption**, if this browser has recovered changes for the file you open, a bar offers **Recover** or **Discard**. Changes for a missing or changed file, and older changes from another window, appear under **Recovered changes available as copies**; choose **Save a copy** to keep them without replacing the file. Native drawing and notebook copies also restore the media bytes retained in their recovery record; an existing, different picture is kept and the recovered copy uses a free filename. These recovery records are stored in this browser, not in the vault, and can be lost if browser storage is cleared.
 - **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
 - **Changing a document’s kind by renaming its extension** first preserves pending source edits. Edits made during the move are kept in a \`(conflict)\` copy with the original extension before the destination is reopened. A failed preservation keeps the original editor open.
 - **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
@@ -314,15 +314,18 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 ## 5. Notebooks, Drawings, and PDFs
 
-Three kinds of file open on a canvas instead of in the text editor. All three
-are drawn with the same tools — pen, highlighter, shapes, text — and all three
-save themselves as you work, a second after you stop.
+Three kinds of file open on a canvas instead of in the text editor. The existing
+editable canvases offer pen, highlighter, shapes and text, and save themselves a
+second after you stop. The native drawing and notebook viewer described below is
+currently read-only.
 
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with **New Notebook**, in
-the pencil button's menu at the top of the sidebar.
+the pencil button's menu at the top of the sidebar. The paper and editing controls
+below describe editable legacy notebooks; native notebooks use the read-only
+viewer described under *Drawings*.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -390,6 +393,11 @@ direction, for diagrams and thinking rather than for a page you intend to hand
 in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
 otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
+Native drawings and notebooks currently open in a **read-only viewer**: you can
+pan the canvas, select a sheet when there is more than one, use the page box to
+jump through a notebook, zoom with − / +, and invert the view. These controls
+change the view only; drawing and editing are not available there.
+
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.
@@ -397,8 +405,8 @@ switch tabs, close the file or reload the app.
 A drawing or notebook this version cannot read safely — an unreadable file, one
 written in a newer format, or one that is not the kind its name says — **opens
 read-only**: neither drawing on it nor Save can overwrite the original file. An
-empty file is still a valid new board, and every supported drawing and notebook
-opens and saves as usual.
+empty file is still a valid new board. Supported legacy canvases remain editable;
+the native viewer does not write board edits.
 
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.

@@ -13,6 +13,7 @@ export interface BitmapAllocator {
 export interface PreviewTile {
     readonly bitmap: ImageBitmap;
     readonly destination: PreviewRect;
+    readonly source: PreviewRect;
     readonly bytes: number;
     readonly lease: BitmapLease;
 }
@@ -26,7 +27,7 @@ interface PendingCopy {
     cancelled: boolean;
 }
 
-// A 512×512 RGBA crop fits the scheduler's normal one-tile upload admission.
+// The 512px interior plus one real texel per side fits the scheduler's one-tile progress admission.
 const CROP_SIDE = 512;
 
 function closeTiles(tiles: readonly PreviewTile[], allocator: BitmapAllocator): void {
@@ -85,13 +86,16 @@ export class PreviewBitmapStore {
                 for (let x = x0; x < x1; x += CROP_SIDE) {
                     const w = Math.min(CROP_SIDE, x1 - x);
                     const h = Math.min(CROP_SIDE, y1 - y);
-                    const bytes = w * h * 4;
+                    const cropX = Math.max(0, x - 1), cropY = Math.max(0, y - 1);
+                    const cropRight = Math.min(width, x + w + 1), cropBottom = Math.min(height, y + h + 1);
+                    const cropWidth = cropRight - cropX, cropHeight = cropBottom - cropY;
+                    const bytes = cropWidth * cropHeight * 4;
                     const lease = this.allocator.reserve(bytes);
                     if (!lease) return false;
                     this.pendingBytes += bytes;
                     let bitmap: ImageBitmap;
                     try {
-                        bitmap = await createImageBitmap(canvas, x, y, w, h, { premultiplyAlpha: 'premultiply' });
+                        bitmap = await createImageBitmap(canvas, cropX, cropY, cropWidth, cropHeight, { premultiplyAlpha: 'premultiply' });
                     } catch (error) {
                         this.pendingBytes -= bytes;
                         this.allocator.release(lease);
@@ -100,6 +104,7 @@ export class PreviewBitmapStore {
                     tiles.push({
                         bitmap,
                         lease,
+                        source: { x: x - cropX, y: y - cropY, width: w, height: h },
                         destination: {
                             x: destination.x + destination.width * x / width,
                             y: destination.y + destination.height * y / height,

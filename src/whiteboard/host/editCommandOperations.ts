@@ -16,6 +16,8 @@ const disabled = (reason: string): State => ({ enabled: false, reason });
 export function createEditCommandOperations(options: {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
+    /** This view's own editable state; a mutating command re-checks it at run time, not only when shown. */
+    readonly canWrite: () => boolean;
     readonly frameName: () => string;
     readonly zoom: () => number;
 }) {
@@ -24,6 +26,7 @@ export function createEditCommandOperations(options: {
     const unavailable = (allowReadOnly = false): State | undefined => {
         if (!options.current()) return disabled('Board session has ended');
         if (!allowReadOnly && session.isReadOnly) return disabled(session.readOnlyReason ?? 'Board is read-only');
+        if (!allowReadOnly && !options.canWrite()) return disabled('Board view is read-only');
         if (session.isGestureActive) return disabled('Finish the current gesture first');
         return undefined;
     };

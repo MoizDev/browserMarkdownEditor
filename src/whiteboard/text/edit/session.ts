@@ -280,7 +280,6 @@ export class TextEditSession {
         if (!this.services.alive()) { this.close(false); return; }
         if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
         this.host.sync();
-        this.lastText = this.services.plainText();
         const layout = this.services.layout();
         const { a, b, c, d, e, f } = layout.localToClient;
         const container = this.host.element.parentElement?.getBoundingClientRect();

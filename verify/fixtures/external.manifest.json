@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "fixtures": [
+    {
+      "id": "OLD-A1",
+      "url": "https://arxiv.org/pdf/1706.03762",
+      "sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+      "bytes": 2215244,
+      "licence": "NOASSERTION",
+      "sourceNotice": "Historical investigation identity only. Public access does not establish this article's redistribution permission; per-file rights review outstanding.",
+      "admission": "hold",
+      "substitute": "GEN-23",
+      "gates": ["ENG-G1", "TXT-G1", "TXT-G2", "V-06"]
+    },
+    {
+      "id": "OLD-R1",
+      "url": "https://upload.wikimedia.org/wikiversity/en/4/4d/CalculusVolume1-OP.pdf",
+      "sha256": "405289c6dbb471cde120825c2a0ec6d5a6a32293be4c9c1b0c24292bcab3f90d",
+      "bytes": 67970286,
+      "licence": "NOASSERTION",
+      "sourceNotice": "Evidence reports CC BY-NC-SA 3.0, not a permissive grant. Exact edition/file notice, attribution, opt-in and permitted use still require review.",
+      "admission": "hold",
+      "substitute": "GEN-18/876",
+      "gates": ["ENG-G1", "TXT-G1", "V-06"]
+    },
+    {
+      "id": "OLD-R2",
+      "url": "https://archive.org/download/onoriginofspeci00darw/onoriginofspeci00darw.pdf",
+      "sha256": "4bf6ab65d0b40490f4ba2a8c97c7fb7d16dac1398943dddad54786bedd7a51f2",
+      "bytes": 25787799,
+      "licence": "NOASSERTION",
+      "sourceNotice": "Public-domain original/scan candidate in historical evidence. Exact scan/edition/source notice and jurisdiction review outstanding; not admitted merely from download availability.",
+      "admission": "hold",
+      "gates": ["ENG-G1", "TXT-G1", "V-06"]
+    },
+    {
+      "id": "OLD-R4",
+      "url": "https://pubs.usgs.gov/sim/3340/sim3340_sheet1.pdf",
+      "sha256": "3de0eb9dff883afd24e77a26e90743bbf422a6f3134a6acf1f2551b24ce54995",
+      "bytes": 22694327,
+      "licence": "NOASSERTION",
+      "sourceNotice": "US-government public-domain candidate in historical evidence. Exact map authorship, source notice, attribution and third-party inserts require per-file review before admission.",
+      "admission": "hold",
+      "gates": ["ENG-G1", "V-06", "X-BUDGET"]
+    }
+  ]
+}

@@ -1,12 +1,13 @@
-// Which editor a file opens in: `.tldraw` and `.notebook` files render as a
-// tldraw canvas, everything else textual goes to CodeMirror.
+// `.tldraw` and `.notebook` render as legacy canvases; `.drawing` is reserved
+// for native whiteboards and must never fall through to a text editor.
 //
-// Deliberately separate from vaultSearch's isTextFile(): both canvas kinds ARE
-// text on disk (they're JSON snapshots), so they must keep flowing through the
+// Deliberately separate from vaultSearch's isTextFile(): canvases ARE
+// text on disk (they're JSON), so they must keep flowing through the
 // normal readFile/writeFile/autosave path. They just must not be *shown* as
 // text, nor content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
+export const NATIVE_DRAWING_EXT = '.drawing';
 
 /** A notebook is a drawing on ruled pages, with an export to PDF. Its own
  *  extension rather than a flag inside a `.tldraw`, so the file tree can say
@@ -17,13 +18,17 @@ export function isDrawingFile(name: string): boolean {
     return name.toLowerCase().endsWith(DRAWING_EXT);
 }
 
+export function isNativeDrawingFile(name: string): boolean {
+    return name.toLowerCase().endsWith(NATIVE_DRAWING_EXT);
+}
+
 export function isNotebookFile(name: string): boolean {
     return name.toLowerCase().endsWith(NOTEBOOK_EXT);
 }
 
-/** Either kind of tldraw-backed document: a canvas rather than a text editor. */
+/** Canvas document, including native files this build cannot yet render. */
 export function isCanvasFile(name: string): boolean {
-    return isDrawingFile(name) || isNotebookFile(name);
+    return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
 }
 
 /** Append `.tldraw` unless the user already typed it. */

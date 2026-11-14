@@ -77,13 +77,17 @@ export function* deriveRichTextChangeSteps(before: RichText, after: RichText): G
     const suffix = yield* common(before, after, true, Math.min(oldLength - from, newLength - from));
     let oldTo = oldLength - suffix, newTo = newLength - suffix;
     for (;;) {
-        const next = Math.min(textBoundaries.snap(before, from, -1), textBoundaries.snap(after, from, -1));
+        const oldStart = yield* textBoundaries.snapSteps(before, from, -1);
+        const newStart = yield* textBoundaries.snapSteps(after, from, -1);
+        const next = Math.min(oldStart, newStart);
         if (next === from) break;
         from = next;
         yield;
     }
     for (;;) {
-        const extra = Math.max(textBoundaries.snap(before, oldTo, 1) - oldTo, textBoundaries.snap(after, newTo, 1) - newTo);
+        const oldEnd = yield* textBoundaries.snapSteps(before, oldTo, 1);
+        const newEnd = yield* textBoundaries.snapSteps(after, newTo, 1);
+        const extra = Math.max(oldEnd - oldTo, newEnd - newTo);
         if (!extra) break;
         oldTo += extra; newTo += extra;
         if (oldTo > oldLength || newTo > newLength) throw new RangeError('Cannot align text change boundaries');

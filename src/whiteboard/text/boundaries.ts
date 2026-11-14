@@ -38,8 +38,6 @@ function* endsWithCRSteps(block: Block): Generator<void, boolean> {
     }
     return false;
 }
-function endsWithCR(block: Block): boolean { return finishTextSteps(endsWithCRSteps(block)); }
-
 function* blockStringSteps(block: Block): Generator<void, string> {
     if (block.runs.length === 1) return block.runs[0].text;
     const parts: string[] = [];
@@ -101,27 +99,37 @@ export class TextBoundaries {
     }
 
     /** One extended grapheme in projection order, including a CR+separator pair. */
-    adjacent(text: RichText, offset: number, direction: BoundaryDirection): number {
+    *adjacentSteps(text: RichText, offset: number, direction: BoundaryDirection): Generator<void, number> {
+        yield* ensureProjectionSteps(text);
         const length = projectionLength(text), cursor = this.clamp(text, offset);
         if (direction < 0 && cursor === 0) return 0;
         if (direction > 0 && cursor === length) return length;
         const point = projectionPosition(text, cursor);
         if (direction < 0 && point.offset === 0) {
             if (!point.index) return 0;
-            return point.start - (endsWithCR(text.blocks[point.index - 1]) ? 2 : 1);
+            return point.start - ((yield* endsWithCRSteps(text.blocks[point.index - 1])) ? 2 : 1);
         }
         if (direction > 0 && point.offset === point.length)
             return point.index + 1 < text.blocks.length ? cursor + 1 : length;
-        const entry = this.entry(point.block), navigator = entry.graphemes ??= new GraphemeNavigator(entry.text);
+        const entry = yield* this.entrySteps(point.block);
+        const navigator = entry.graphemes ??= new GraphemeNavigator(entry.text);
         if (direction < 0) return point.start + navigator.previous(point.offset);
         const end = navigator.next(point.offset);
         return point.start + end + (end === entry.text.length && entry.text.endsWith('\r') && point.index + 1 < text.blocks.length ? 1 : 0);
     }
+    adjacent(text: RichText, offset: number, direction: BoundaryDirection): number {
+        return finishTextSteps(this.adjacentSteps(text, offset, direction));
+    }
 
     /** Expand an arbitrary UTF-16 offset to the nearest stop in the requested direction. */
-    snap(text: RichText, offset: number, direction: BoundaryDirection): number {
+    *snapSteps(text: RichText, offset: number, direction: BoundaryDirection): Generator<void, number> {
+        yield* ensureProjectionSteps(text);
         const cursor = this.clamp(text, offset);
-        return this.isBoundary(text, cursor) ? cursor : this.adjacent(text, cursor, direction);
+        return (yield* this.isBoundarySteps(text, cursor)) ? cursor : (yield* this.adjacentSteps(text, cursor, direction));
+    }
+    snap(text: RichText, offset: number, direction: BoundaryDirection): number { return finishTextSteps(this.snapSteps(text, offset, direction)); }
+    snapCooperative(text: RichText, offset: number, direction: BoundaryDirection, options: PlainTextOptions): Promise<number> {
+        return finishTextStepsCooperative(this.snapSteps(text, offset, direction), options);
     }
 
     selectWord(text: RichText, offset: number): BoundarySelection {

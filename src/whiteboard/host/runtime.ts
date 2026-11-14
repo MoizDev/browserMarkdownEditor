@@ -56,6 +56,7 @@ export interface BoardRuntime {
      */
     rebindPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation,
         adopt: (token: RenderToken) => void, isCurrent: () => boolean): PaintSourceAdmission;
+    adoptPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation, isCurrent: () => boolean): PaintSourceAdmission;
     bindView(sink: BoardRuntimeViewSink): () => void;
     /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
     registerOwned(dispose: () => void): () => void;
@@ -189,6 +190,16 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             try { adopt(admission.token); } finally { adopting = false; }
             if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
             paintToken = admission.token;
+            return admission;
+        },
+        adoptPaintSource(witness, expected, isCurrent) {
+            if (disposed || !scene || !scene.ready) throw new Error('Board paint source is not ready');
+            const target = scene;
+            const admission = runtime.rebindPaintSource(witness, expected, token => {
+                const binding = options.render.capturePaintBinding(token);
+                target.setPaintBinding(binding);
+            }, isCurrent);
+            if (!admission.unchanged) invalidate();
             return admission;
         },
         bindView(sink) {

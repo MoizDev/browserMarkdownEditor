@@ -34,8 +34,8 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
     isStandaloneText(): boolean;
-    // Joins deletion to the last text step, or cancels an empty creation.
-    removeEmptyText(): void;
+    /** The creation step token for a text node created by this edit session. */
+    readonly creationToken?: number;
     finish(): void;
 }
 
@@ -294,7 +294,22 @@ export class TextEditSession {
         this.closed = true;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
+            const history = this.services.history;
+            const tokens = this.typingHistory.stepTokens;
+            try {
+                const last = tokens[tokens.length - 1];
+                if (last === undefined || !history.reopenLast(last)) history.open('Delete empty text');
+                let deleted = false;
+                try { this.services.apply({ origin: 'tool', label: 'Delete empty text', ops: [{ t: 'delete', id: this.id }] }); deleted = true; }
+                finally {
+                    const deletion = history.close();
+                    if (deleted && this.services.creationToken !== undefined && deletion !== null) {
+                        history.forgetCreatedNode(this.id, this.services.creationToken, [...tokens, deletion]);
+                    }
+                }
+            } catch (error) { this.services.reportError(error); }
+        }
         this.services.finish();
     }
 }

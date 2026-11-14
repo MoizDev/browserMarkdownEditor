@@ -60,12 +60,20 @@ export function routeElbow(request: ElbowRequest): ElbowRoute {
     const startSide = Math.abs(start.x - left) <= Math.abs(start.x - right) ? left : right;
     const endSide = startSide === left ? right : left;
     const escapeY = Math.abs(start.y - top) + Math.abs(end.y - top) <= Math.abs(start.y - bottom) + Math.abs(end.y - bottom) ? top : bottom;
-    const candidates: readonly (readonly Vec2[])[] = [
+    const candidates: Vec2[][] = [
         [start, { x, y: start.y }, { x, y: end.y }, end],
         [start, { x: start.x, y }, { x: end.x, y }, end],
         [start, { x: startSide, y: start.y }, { x: startSide, y: escapeY },
             { x: endSide, y: escapeY }, { x: endSide, y: end.y }, end],
     ];
+    // Both ways around the terminal union must be admitted before ranking;
+    // the geometrically shorter side can be forbidden by a port or target.
+    for (const a of [left, right]) for (const b of [left, right]) for (const outside of [top, bottom])
+        candidates.push([start, { x: a, y: start.y }, { x: a, y: outside },
+            { x: b, y: outside }, { x: b, y: end.y }, end]);
+    for (const a of [top, bottom]) for (const b of [top, bottom]) for (const outside of [left, right])
+        candidates.push([start, { x: start.x, y: a }, { x: outside, y: a },
+            { x: outside, y: b }, { x: end.x, y: b }, end]);
     let best: { points: Vec2[]; bends: number; length: number; id: number } | undefined;
     for (let id = 0; id < candidates.length; id++) {
         const points = simplify(candidates[id]);

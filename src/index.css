@@ -3649,6 +3649,24 @@ body.is-resizing-panes * {
   z-index: 4;
   top: 8px;
   right: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pdf-pane-print:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.pdf-pane-print:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .pdf-viewer-controls {

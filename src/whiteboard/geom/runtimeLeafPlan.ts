@@ -176,6 +176,12 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                 if (pending?.generation === turn) { const failed = pending; pending = undefined; release(failed.leases); }
                 throw error;
             }
+            try { check(request); if (turn !== generation) throw new DOMException('Resize preview superseded', 'AbortError'); }
+            catch (error) { if (pending?.generation === turn) { const failed = pending; pending = undefined; release(failed.leases); } throw error; }
+            if (!value.ops.length && (!pending || pending.generation !== turn)) {
+                if (pending) { release(pending.leases); pending = undefined; }
+                pending = { doc, leases: [], generation: turn };
+            }
             const prepared = pending;
             if (!prepared || prepared.generation !== turn || turn !== generation) {
                 if (prepared?.generation === turn) { pending = undefined; release(prepared.leases); }

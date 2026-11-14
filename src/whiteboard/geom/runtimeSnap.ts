@@ -55,7 +55,7 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
     const state = runtime.selection.getSnapshot(), scene = runtime.scene, signal = options.signal ?? new AbortController().signal;
     const threshold = (options.thresholdCss ?? 8) / options.zoom, font = runtime.render.text.fonts.epoch;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    if (![bounds.x, bounds.y, bounds.width, bounds.height, options.zoom, threshold].every(Number.isFinite)
+    if (![bounds.x, bounds.y, bounds.width, bounds.height, bounds.x + bounds.width, bounds.y + bounds.height, options.zoom, threshold].every(Number.isFinite)
         || bounds.width < 0 || bounds.height < 0 || options.zoom <= 0 || threshold < 0) throw new RangeError('Invalid snapping bounds');
     const check = () => {
         signal.throwIfAborted();

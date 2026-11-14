@@ -35,6 +35,8 @@ export interface PdfPoolDocument {
     readonly source: 'outer' | 'original';
     readonly info: Readonly<DocInfo>;
     readonly closed: boolean;
+    /** Host-validated exact geometry already acquired; never triggers native work. */
+    peekGeometry(page: number): Readonly<PageGeometry> | undefined;
     /** Exact transforms are acquired on demand; document extents alone are layout estimates. */
     resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>>;
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;

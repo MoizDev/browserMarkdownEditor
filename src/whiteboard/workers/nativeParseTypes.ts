@@ -13,6 +13,7 @@ export interface ParseNativeRequest {
 }
 /** Unrepaired, non-authoritative worker data; only C5 repair can admit it to a session. */
 export interface ParsedNativeDraft {
+    readonly version: 1;
     readonly kind: BoardKind;
     readonly sheets: readonly JsonObject[];
     readonly nodes: readonly JsonObject[];

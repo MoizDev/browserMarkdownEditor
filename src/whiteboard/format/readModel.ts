@@ -279,12 +279,12 @@ async function endpoint(span: JsonSpan, context: ModelReadContext): Promise<{ va
         unknown ||= hasExtras(a, ['target', 'anchor', 'exact', 'precise', 'snap']) || hasExtras(anchor, ['x', 'y']);
         attach = {
             target: identifier(required(a, 'target')) as NodeId,
-            anchor: { x: number(required(anchor, 'x'), true), y: number(required(anchor, 'y'), true) },
+            anchor: { x: number(required(anchor, 'x')), y: number(required(anchor, 'y')) },
             exact: boolean(required(a, 'exact')), precise: boolean(required(a, 'precise')),
             snap: await enumeration(required(a, 'snap'), SNAPS, SNAPS[0], context, () => { unknown = true; }),
         };
     }
-    return { value: { x: number(required(fields, 'x'), true), y: number(required(fields, 'y'), true), attach }, unknown };
+    return { value: { x: number(required(fields, 'x')), y: number(required(fields, 'y')), attach }, unknown };
 }
 function bounds(fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext): Bounds | undefined {
     const span = fields.get('b');
@@ -302,6 +302,7 @@ function bounds(fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext
 }
 async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext): Promise<MappedRecord> {
     const nodeKind = required(fields, 'kind').string(FORMAT_LIMITS.idChars);
+    const knownNode = Object.hasOwn(NODE_PROPERTY_ORDER, nodeKind) && nodeKind !== 'opaque';
     const raw = new Map<string, RawJson>();
     const value: Record<string, unknown> = {
         id: identifier(required(fields, 'id')) as NodeId,
@@ -309,7 +310,8 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
         parent: identifier(required(fields, 'parent')) as ParentId,
         order: required(fields, 'order').string(256) as OrderKey,
         page: fields.has('page') ? number(fields.get('page')!) : -1,
-        x: number(required(fields, 'x'), true), y: number(required(fields, 'y'), true),
+        // Known nodes are range-repaired by the admission pass; opaque bytes cannot be rewritten.
+        x: number(required(fields, 'x'), !knownNode), y: number(required(fields, 'y'), !knownNode),
         rotation: fields.has('rot') ? number(fields.get('rot')!) : COMMON_NODE_DEFAULTS.rotation,
         locked: fields.has('locked') ? boolean(fields.get('locked')!) : COMMON_NODE_DEFAULTS.locked,
         opacity: fields.has('opacity') ? number(fields.get('opacity')!) : COMMON_NODE_DEFAULTS.opacity,
@@ -317,7 +319,7 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
     };
     if (!isValidKey(value.order as string)) note(context, 'repair', 'Order key needs model repair');
     const cachedBounds = bounds(fields, context);
-    if (!Object.hasOwn(NODE_PROPERTY_ORDER, nodeKind) || nodeKind === 'opaque') {
+    if (!knownNode) {
         note(context, 'approximation', 'An unknown node is retained as a locked placeholder');
         return {
             category: 'node', value: { ...value, kind: 'opaque', locked: true, raw: context.options.cooperate ? await root.rawIncremental(context.options.cooperate) : root.raw() } as unknown as NodeRecord,
@@ -367,7 +369,7 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
                 value.widthModel = { id };
                 if (hasExtras(model, ['id'])) await keep();
             } else if (id === 'pressure-linear-v1') {
-                value.widthModel = { id, rMin: number(required(model, 'rMin'), true), rMax: number(required(model, 'rMax'), true) };
+                value.widthModel = { id, rMin: number(required(model, 'rMin')), rMax: number(required(model, 'rMax')) };
                 if (hasExtras(model, ['id', 'rMin', 'rMax'])) await keep();
             } else { value.widthModel = { id: 'uniform' }; await keep(); note(context, 'approximation', 'A newer width model is retained'); }
         } else if (key === 'crop') {
@@ -397,7 +399,7 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
             const items = context.options.cooperate ? span.itemsIncremental(context.options.cooperate) : span.items();
             for await (const handle of items) {
                 const coordinates = await fieldMap(handle, context.options.cooperate);
-                handles.push({ x: number(required(coordinates, 'x'), true), y: number(required(coordinates, 'y'), true) });
+                handles.push({ x: number(required(coordinates, 'x')), y: number(required(coordinates, 'y')) });
                 if (hasExtras(coordinates, ['x', 'y'])) await keep();
             }
             value.points = handles;

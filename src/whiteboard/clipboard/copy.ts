@@ -5,7 +5,7 @@ import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type Clipboa
 import type { CopySnapshot } from './snapshot';
 
 interface HeldSnapshot { readonly snapshot: CopySnapshot; readonly memory: { release(): void }; count: number }
-interface Candidate { readonly held: HeldSnapshot; envelope: ClipboardEnvelope; readonly controller: AbortController }
+interface Candidate { readonly held: HeldSnapshot; envelope: ClipboardEnvelope; readonly controller: AbortController; timer: ReturnType<typeof setTimeout> | null }
 export interface CachedClipboard {
     readonly snapshot: CopySnapshot;
     readonly encoded: string;
@@ -82,9 +82,13 @@ export class ClipboardCopy {
         let envelope: ClipboardEnvelope;
         try { envelope = encodeClipboardNow(snapshot, new Map()); }
         catch (error) { release(held); throw error; }
-        const candidate: Candidate = { held, controller, envelope };
+        const candidate: Candidate = { held, controller, envelope, timer: null };
         this.candidate = candidate;
-        void this.host.runtime.jobs.run(async context => {
+        candidate.timer = setTimeout(() => {
+        candidate.timer = null;
+        if (this.candidate !== candidate || controller.signal.aborted) return;
+        held.count++;
+        try { void this.host.runtime.jobs.run(async context => {
             const inline = snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) > 48 * 1024 * 1024
                 ? new Map<MediaId, string>() : await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal);
             context.assertCurrent();
@@ -96,7 +100,9 @@ export class ClipboardCopy {
             if (this.candidate === candidate && this.host.isCurrent(snapshot)) candidate.envelope = compressed;
         }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => {
             // Copy still has the synchronous native records; missing bytes are resolved by hash on paste.
-        });
+        }).finally(() => release(held)); }
+        catch { release(held); }
+        }, 40);
     }
 
     match(encoded: string, plain: string): CachedClipboard | null {
@@ -153,7 +159,8 @@ export class ClipboardCopy {
             const snapshot = await capture(context.signal);
             const owner = hold(snapshot, this.host.memory);
             if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
-            held = owner;
+            held = owner; owner.count++;
+            try {
             context.assertCurrent();
             if (runtime.session !== session || !this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
@@ -173,6 +180,7 @@ export class ClipboardCopy {
             context.assertCurrent();
             if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
             return { owner, envelope, commitCut };
+            } finally { release(owner); }
         }, { signal: controller.signal, deadlineMs: 120_000 });
         const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
         const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));
@@ -242,7 +250,8 @@ export class ClipboardCopy {
         } };
         windowWritten = entry;
         // Retain Blob references while the source is alive; no decoded pixels or whole-batch byte copies.
-        void this.host.runtime.jobs.run(async context => {
+        held.count++;
+        try { void this.host.runtime.jobs.run(async context => {
             for (const media of held.snapshot.media) {
                 context.assertCurrent();
                 if (windowWritten !== entry) break;
@@ -251,11 +260,13 @@ export class ClipboardCopy {
                 if (windowWritten !== entry) break;
                 if (blob) blobs.set(media.id, new Blob([blob], { type: blob.type }));
             }
-        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => undefined);
+        }, { signal: controller.signal, deadlineMs: 120_000 }).catch(() => undefined).finally(() => release(held)); }
+        catch { release(held); }
     }
     private dropCandidate(): void {
         if (!this.candidate) return;
         this.candidate.controller.abort();
+        if (this.candidate.timer !== null) clearTimeout(this.candidate.timer);
         release(this.candidate.held);
         this.candidate = null;
     }

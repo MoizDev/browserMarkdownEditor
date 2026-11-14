@@ -69,6 +69,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let pendingInputAt: number | null = null;
     let healthyInputAt: number | null = null;
     let lastFrameInterval: number | null = null;
+    let layout = options.layout;
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
@@ -79,7 +80,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const current = options.currentToken();
         const drawing = drawCompositor();
         if (disposed || !current || !sameDocument(current, options.documentToken) || !drawing) return null;
-        return { ...current, viewLease: options.viewLease, deviceGeneration: drawing.target.generation };
+        // The CPU target reflects this token, so reading its target.generation here would recurse.
+        const deviceGeneration = drawing === compositorRef.current ? lifecycle?.surface.snapshot().gpuGeneration ?? 0 : drawing.target.generation;
+        return { ...current, viewLease: options.viewLease, deviceGeneration };
     };
     const mirrorView = (): MirrorView | null => {
         const current = options.currentToken();
@@ -120,7 +123,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         selectGpu: grant => {
             if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
             created.presenter.releaseSurface();
-            if (!gpu.backing.promote()) throw new Error('GPU backing promotion was refused');
+            if (!gpu.backing.promote()) {
+                const surface = lifecycle?.surface;
+                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
+                throw new Error('GPU backing promotion was refused');
+            }
             surfaceHost.select(gpu.bundle.compositor);
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
@@ -148,11 +155,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const memory = layerSet.layers.map(layer => layer.memory());
             const requestedPixels = size ? size.physical.width * size.physical.height : 0;
             return { paneId: options.paneId, visible, focused, requestedPixels,
-                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
+                // CPU's detached complete-frame buffer and a staged GPU backing can coexist.
+                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + 2 * requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
                 cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0),
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,
+        windowVisibility: (windowVisible: boolean) => {
+            if (!windowVisible) { options.onPresentation(null); return; }
+            const state = lifecycle?.surface.snapshot().state;
+            if (state !== 'gpu-visible' && state !== 'rebuilding') {
+                gpu = null;
+                cpuPresented = false;
+                gpuRequested = false;
+                surfaceHost.clearStaged();
+            }
+        },
         notice: () => options.onNotice('memory-pressure'),
         error: options.onError,
     };
@@ -173,7 +191,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed || !visible) return;
             gpu = ready;
             gpu.bundle.compositor.setLayers(layerSet.compositorLayers);
-            gpu.bundle.compositor.setLayout(options.layout);
+            gpu.bundle.compositor.setLayout(layout);
             gpu.bundle.compositor.setAppearance(options.readAppearance());
             surfaceHost.stage(gpu.bundle.compositor);
             lifecycle?.invalidate('gpu-ready');
@@ -241,7 +259,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         camera.setCamera(options.readCamera());
                     },
                     isInteracting: options.isInteracting,
-                    snapshotScene: (view: ViewState) => { lastView = view; const drawing = drawCompositor(); drawing?.setAppearance(options.readAppearance()); drawing?.snapshot(view); },
+                    snapshotScene: (view: ViewState) => {
+                        lastView = view;
+                        const nextLayout = options.readLayout ? options.readLayout() : options.layout;
+                        if (nextLayout !== layout) {
+                            layout = nextLayout;
+                            compositor.setLayout(layout);
+                            gpu?.bundle.compositor.setLayout(layout);
+                        }
+                        const drawing = drawCompositor();
+                        drawing?.setAppearance(options.readAppearance());
+                        drawing?.snapshot(view);
+                    },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (view: ViewState, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {

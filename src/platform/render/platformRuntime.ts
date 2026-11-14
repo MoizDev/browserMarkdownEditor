@@ -9,6 +9,7 @@ import { surfaceBroker } from './surfaceBroker';
 export interface RuntimePane {
     demand(): PaneMemoryDemand;
     interacting(): boolean;
+    windowVisibility?(visible: boolean): void;
     notice(message: 'memory-pressure'): void;
     error(error: unknown): void;
 }
@@ -48,7 +49,10 @@ export class PlatformRuntime {
         this.scheduler = new FrameScheduler({
             reducedMotion: false,
             uploadAllowance: interval => defaultUploadAllowance(interval, this.bandwidth),
-            windowVisibility: visible => this.lifecycles.windowVisibility(visible),
+            windowVisibility: visible => {
+                this.lifecycles.windowVisibility(visible);
+                for (const pane of this.panes.values()) pane.windowVisibility?.(visible);
+            },
             releaseRetained: reason => this.lifecycles.releaseRetained(reason),
             onPressure: pressure => {
                 if (pressure.uploadMeasurementsComplete && pressure.reportedUploadBytes > 0 && pressure.uploadCallMs > 0) {

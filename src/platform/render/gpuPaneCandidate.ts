@@ -54,19 +54,32 @@ export class GpuPaneCandidate {
         const now = performance.now();
         const backing = new SurfaceBacking({ governor: this.options.runtime.governor, paneId: this.options.paneId,
             owner: this.options.owner, id, canvas: preparation.canvas, displayed: false, now });
+        const generationRef: { current: Generation | null } = { current: null };
+        const defer = (action: () => void): void => {
+            const expected = generationRef.current;
+            if (!expected) return;
+            queueMicrotask(() => {
+                if (this.current === expected && !expected.disposed && !preparation.signal.aborted) action();
+            });
+        };
         let services: GpuPaneServices;
         try {
             services = new GpuPaneServices({ id, paneId: this.options.paneId, owner: this.options.owner,
                 governor: this.options.runtime.governor, scheduler: this.options.runtime.scheduler, now,
-                onFailure: code => this.failure(preparation.generation, code),
-                onFenceAge: age => this.options.runtime.observeFence(this.options.paneId, age, this.options.inputHealthy()),
+                onFailure: code => defer(() => this.failure(preparation.generation, code)),
+                onFenceAge: age => {
+                    const healthy = this.options.inputHealthy();
+                    defer(() => this.options.runtime.observeFence(this.options.paneId, age, healthy));
+                },
                 onGpuTiming: (p95, samples, disjoint) => {
                     const interval = this.options.frameInterval();
-                    if (interval !== null) this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint);
+                    if (interval !== null) defer(() => this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint));
                 },
-                evict: this.options.onEvict });
+                onFramebufferFailure: () => defer(() => this.options.runtime.trouble('framebuffer')),
+                evict: () => defer(this.options.onEvict) });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
+        generationRef.current = generation;
         this.current = generation;
         try {
             const bundle = await factory({ preparation, services: services.services,
@@ -78,7 +91,15 @@ export class GpuPaneCandidate {
                     return backing.resize(width, height, grant.resizeSurface) ??
                         { width: 0, height: 0, complete: false, generation: preparation.generation };
                 },
-                invalidate: this.options.invalidate, onError: this.options.onError,
+                invalidate: this.options.invalidate,
+                onError: error => defer(() => {
+                    try { this.options.onError(error); }
+                    finally {
+                        const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+                        this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
+                            code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
+                    }
+                }),
                 onDeferred: () => this.options.invalidate('gpu-deferred'),
             });
             generation.bundle = bundle;

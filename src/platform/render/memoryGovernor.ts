@@ -196,6 +196,8 @@ export class MemoryGovernor {
     private belowRecoverySince: number | null = null;
     private now = 0;
     private workerHeapBytes = 0;
+    private readonly workerHeaps = new Map<object, number>();
+    private readonly legacyWorker = {};
     private sourceBytes = 0;
 
     constructor(deviceMemory: unknown, private readonly onPressureChange?: () => void) {
@@ -355,10 +357,27 @@ export class MemoryGovernor {
         return true;
     }
 
+    /** Estimates are owned/WASM bytes, not the browser's unobservable real JS heap. */
+    reportWorkerMemory(worker: object, ownedBytes: number): void {
+        if (typeof worker !== 'object' || worker === null) throw new MemoryAdmissionError('invalid-input');
+        count(ownedBytes);
+        const previous = this.workerHeaps.get(worker) ?? 0;
+        const total = this.workerHeapBytes - previous + ownedBytes;
+        const charged = this.charged.cpu - previous + ownedBytes;
+        count(total);
+        count(charged);
+        if (ownedBytes) this.workerHeaps.set(worker, ownedBytes);
+        else this.workerHeaps.delete(worker);
+        this.workerHeapBytes = total;
+        this.charged.cpu = charged;
+        if (previous !== ownedBytes) this.onPressureChange?.();
+    }
+
+    releaseWorkerMemory(worker: object): void { this.reportWorkerMemory(worker, 0); }
+
     reportExternalHeaps(workerHeapBytes: number, sourceBytes: number): void {
-        count(workerHeapBytes);
         count(sourceBytes);
-        this.workerHeapBytes = workerHeapBytes;
+        this.reportWorkerMemory(this.legacyWorker, workerHeapBytes);
         this.sourceBytes = sourceBytes;
     }
 
@@ -433,9 +452,9 @@ export class MemoryGovernor {
     }
 
     private poolReadout(pool: MemoryPool): PoolMemoryReadout {
-        let workingBytes = 0;
+        let workingBytes = pool === 'cpu' ? this.workerHeapBytes : 0;
         let retiringBytes = 0;
-        let attributed = 0;
+        let attributed = workingBytes;
         let contextReserveBytes = 0;
         let surfaceReserveBytes = 0;
         let programAllocationBytes = 0;
@@ -476,7 +495,12 @@ export class MemoryGovernor {
             this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
-            if (!allowed()) { this.degrade(); this.onPressureChange?.(); return null; }
+            if (!allowed()) {
+                this.lastTrouble = 'allocation';
+                this.degrade();
+                this.onPressureChange?.();
+                return null;
+            }
         }
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });

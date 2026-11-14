@@ -50,6 +50,14 @@
     min-width: 0;
 }
 
+.board-chrome-header > * {
+    min-width: 0;
+}
+
+.board-chrome-header .board-chrome-tool-row {
+    overflow-x: auto;
+}
+
 .board-chrome-action-popup {
     position: absolute;
     z-index: 1;
@@ -111,6 +119,8 @@
     background: transparent;
     color: inherit;
     cursor: pointer;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .board-chrome-tool:hover,

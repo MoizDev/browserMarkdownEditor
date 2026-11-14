@@ -1,5 +1,6 @@
 import type { Affine } from '../../platform/types';
 import { multiplyAffine, transformBox, validBox, type Box } from '../geom/bounds';
+import { figureWorldSemanticBounds } from '../geom/providers';
 import type { Node } from '../model/nodes';
 import type { ParentId, SheetId } from '../model/ids';
 import type { TextLayoutEngine, TextLayoutRequest } from '../text/paint';
@@ -57,7 +58,7 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
     for (const root of nodes) {
         const parent = byId.get(root.parent as Node['id']);
         if (!sheets.has(root.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
-        let box: Box | undefined;
+        let box: Box | undefined, errorWorld = 0;
         const pending: { node: Node; parent: Affine; depth: number }[] = [{ node: root, parent: IDENTITY, depth: 0 }];
         const seen = new Set<Node>();
         while (pending.length) {
@@ -69,8 +70,13 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
-            else if (current.node.kind === 'figure') part = transformed([0, 0, current.node.w, current.node.h + current.node.growY], transform);
-            else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
+            else if (current.node.kind === 'figure') {
+                const result = figureWorldSemanticBounds(current.node, transform,
+                    { kernelVersion: 1, pathError: 1 / 1024, lengthError: 1 / 1024, maxPieces: 262144 });
+                const r = result.bounds;
+                part = [r.x, r.y, r.x + r.width, r.y + r.height];
+                errorWorld = Math.max(errorWorld, result.errorWorld);
+            } else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
                 || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
                 part = transformed([0, 0, current.node.w, current.node.h], transform);
             } else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
@@ -83,7 +89,7 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             }
         }
         if (!box) box = [root.x, root.y, root.x, root.y];
-        result.set(root, { x: box[0], y: box[1], w: box[2] - box[0], h: box[3] - box[1] });
+        result.set(root, { x: box[0], y: box[1], w: box[2] - box[0], h: box[3] - box[1], errorWorld });
     }
     return node => {
         const bounds = result.get(node);

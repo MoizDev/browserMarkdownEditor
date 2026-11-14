@@ -62,6 +62,14 @@ export class ClipboardCopy {
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly };
     }
 
+    /** The event path captures the current selection synchronously; it never waits for a warm cache. */
+    copyEventNow(event: ClipboardEvent, capture: () => CopySnapshot, cut = false): boolean {
+        if (!event.clipboardData || this.disposed) return false;
+        try { this.setSelection(capture()); }
+        catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not capture selection.'); return false; }
+        return this.copyEvent(event, cut);
+    }
+
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;

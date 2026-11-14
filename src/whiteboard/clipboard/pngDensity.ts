@@ -2,7 +2,7 @@ import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: clipboard §2.4 private PNG pHYs convention and PNG chunk
 // grammar; independent bounded extraction, no upstream engine source.
-function crc32(bytes: Uint8Array): number {
+export function pngCrc32(bytes: Uint8Array): number {
     let crc = 0xffffffff;
     for (const value of bytes) {
         crc ^= value;
@@ -27,7 +27,7 @@ export async function privatePngDensity(blob: Blob, signal: AbortSignal): Promis
         if (type === 'pHYs') {
             if (length !== 9 || density !== undefined) return undefined;
             const record = new Uint8Array(await blob.slice(offset + 4, offset + 4 + 4 + 9 + 4).arrayBuffer()); signal.throwIfAborted();
-            if (record.length !== 17 || crc32(record.subarray(0, 13)) !== new DataView(record.buffer).getUint32(13)) return undefined;
+            if (record.length !== 17 || pngCrc32(record.subarray(0, 13)) !== new DataView(record.buffer).getUint32(13)) return undefined;
             const data = new DataView(record.buffer), x = data.getUint32(4), y = data.getUint32(8), unit = record[12];
             if (unit !== 1 || !x || x !== y) return undefined;
             density = x * 0.0254 / 72;

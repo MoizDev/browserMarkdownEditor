@@ -66,6 +66,10 @@ workspace cycles through all of it.
 
 - **Autosave is per-tab**, via a `Map<path, timer>` (`saveTimersRef`, 1s debounce). Switching or
   closing one tab must never cancel another tab's pending write.
+- **Browser exit protection tracks synchronous document revisions and pending canvas serializers.**
+  `beforeunload` is armed as soon as work appears, until its actual write is acknowledged or the
+  user discards it. Hidden/pagehide checkpoints drain serializers first, then use the versioned
+  save funnel; they are best effort, not crash recovery. An old write cannot clean a newer revision.
 - **The save funnel `updateTabContent(path, content, opts?)` is path-explicit and the only one there is:**
   several documents are editable at once in a split tab, and the drawing/PDF canvases serialize on
   their own debounce that can fire *after* their pane has gone away — either way the text must land

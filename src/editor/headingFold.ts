@@ -1,4 +1,5 @@
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 import type { DecorationSet } from '@codemirror/view';
 import { MapMode, StateEffect, StateField } from '@codemirror/state';
 import type { EditorSelection, EditorState, Extension, Range, Text, Transaction } from '@codemirror/state';
@@ -268,6 +269,7 @@ function dressToggle(button: HTMLElement, folded: boolean): void {
 class HeadingFoldToggle extends WidgetType {
     constructor(readonly folded: boolean) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     override eq(other: HeadingFoldToggle): boolean {
@@ -315,6 +317,11 @@ class HeadingFoldToggle extends WidgetType {
 
 /** The "…" pill after a collapsed heading's text — a second way to expand it. */
 class HeadingFoldPlaceholder extends WidgetType {
+    constructor() {
+        super();
+        if (__BME_BENCH__) { countEditorWidget(); }
+    }
+
     override eq(): boolean {
         return true;
     }

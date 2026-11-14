@@ -6,6 +6,8 @@ export function classifyRequestedKind(name:string,isHelp=false):LoadedDocumentKi
  if(isHelp||isMarkdownFile(name))return 'markdown';
  if(isEpubFile(name))return 'epub';if(isPdfFile(name))return 'pdf';
  if(isDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
+ // Native canvases must not inherit text write authority in the guard build.
+ if(isCanvasFile(name))return 'unsupported';
  if(isTexFile(name))return 'tex';if(isCodeFile(name))return 'code';return isTextFile(name)?'text':'unsupported';
 }
 export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFile(name)||isEpubFile(name)}

@@ -41,7 +41,7 @@ import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sh
 import { formatShape, summarizeCanvasFile, type FileShape } from './canvasFileSummary';
 import { createVaultTextCache, isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
-import { isEpubFile, isCanvasFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
+import { isEpubFile, isCanvasFile, isNativeDrawingFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { ASSETS_DIR, TRASH_DIR } from './assets';
 import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
@@ -297,10 +297,15 @@ function assertDecodedText(path: string, text: string): void {
     }
 }
 
+function assertSupportedCanvasFormat(path: string): void {
+    if (isNativeDrawingFile(path)) throw new ToolError(`"${path}" is a native .drawing whiteboard; this build cannot read or change it with text or canvas tools.`);
+}
+
 /** Text files the agent may edit as text: not a PDF/image/binary, and not a
  *  drawing or notebook (JSON on disk, but edited through canvas_apply so the
  *  open canvas and its undo history stay the source of truth). */
 function assertEditableText(path: string): void {
+    assertSupportedCanvasFormat(path);
     const name = baseName(path);
     if (isCanvasFile(name)) throw new ToolError(`"${path}" is a ${isNotebookFile(name) ? 'notebook' : 'drawing'}; change it with canvas_apply, not as text.`);
     if (isPdfFile(name)) throw new ToolError(`"${path}" is a PDF; its text cannot be edited. Annotate it with canvas_apply.`);
@@ -514,6 +519,7 @@ const COORDS_DRAWING = 'Coordinates are the canvas\'s own units.';
 
 /** Shapes of a drawing/notebook from its live pane, or failing that its file. */
 async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | undefined): Promise<{ lines: string[]; head: string[] }> {
+    assertSupportedCanvasFormat(path);
     const name = baseName(path);
     const notebook = isNotebookFile(name);
     const view = getView(path);
@@ -603,6 +609,7 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
 
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
+    assertSupportedCanvasFormat(path);
     await requireFile(ctx, path);
     const name = baseName(path);
     const page = typeof a.page === 'number' ? a.page : undefined;
@@ -828,6 +835,7 @@ async function requireParentFolder(ctx: Ctx, path: string): Promise<void> {
 
 async function vaultCreate(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.writablePath(a.path);
+    if (isNativeDrawingFile(path)) throw new ToolError('This build cannot create native .drawing whiteboards. Create an empty .tldraw drawing instead.');
     const name = baseName(path);
     const content = normalizeNewlines(typeof a.content === 'string' ? a.content : '');
     if (isCanvasFile(name)) {
@@ -897,6 +905,7 @@ async function vaultTrash(a: Args, ctx: Ctx): Promise<ToolExecution> {
 /* ───────────────────────── canvas ───────────────────────── */
 
 function assertCanvasPath(path: string): void {
+    assertSupportedCanvasFormat(path);
     const name = baseName(path);
     if (!isCanvasFile(name) && !isPdfFile(name)) {
         throw new ToolError(`"${path}" is not a drawing (.tldraw), notebook (.notebook) or PDF; canvas tools work only on those.`);

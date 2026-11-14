@@ -37,6 +37,7 @@ export interface SampleLease {
 export interface SampleStoreReader {
     has(ref: SampleRef): boolean;
     count(ref: SampleRef): number;
+    pressureMode(ref: SampleRef): 'real' | 'none'; // Sealed metadata; no view allocation or decode.
     read(ref: SampleRef, first: number, count: number): SampleBlockView;
     retain(ref: SampleRef): SampleLease;
 }

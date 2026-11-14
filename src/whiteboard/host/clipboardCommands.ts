@@ -155,16 +155,18 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         const prepared = options.prepareExport('copy', signal);
         // ClipboardItem receives this promise immediately, while activation is
         // still live. The frozen producer—not a later live revision—owns pixels.
-        return prepared.then(async job => {
+        const pending = prepared.then(async job => {
             try { return await job[extension](signal); } finally { job.release(); }
         });
+        void pending.catch(() => {}); // Permission denial can reject before ClipboardItem consumes its data.
+        return pending;
     };
     const download = async (extension: 'png' | 'svg', route: 'context' | 'menu', signal: AbortSignal) => {
         guard();
         const job = await options.prepareExport(route, signal);
         try {
             const blob = await job[extension](signal);
-            guard(); options.download(blob, job.filename(extension));
+            signal.throwIfAborted(); options.download(blob, job.filename(extension));
         } finally { job.release(); }
     };
     const withController = async (work: (signal: AbortSignal) => Promise<void>) => {
@@ -181,7 +183,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             catch (error) { options.onError(error); return false; }
         },
         copyAsPng: () => run(() => withController(signal => options.copyPng(capture('png', signal)))),
-        copyAsSvg: () => run(() => withController(signal => options.copySvg(capture('svg', signal)))), 
+        copyAsSvg: () => run(() => withController(signal => options.copySvg(capture('svg', signal)))),
         copyAsJson: () => run(async () => {
             guard();
             const state = runtime.selection.getSnapshot();
@@ -196,6 +198,8 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),
         exportSvg: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('svg', route, signal))),
         dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry();
-            selectedProduct = undefined; for (const owned of active) owned.abort(); active.clear(); copy.dispose(); } },
+            // Captured read-only jobs own their source leases. Retiring the
+            // document stops new work, not a clipboard write already in flight.
+            selectedProduct = undefined; copy.dispose(); } },
     };
 }

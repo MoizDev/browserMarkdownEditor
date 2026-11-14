@@ -8,7 +8,7 @@ export interface DrawingBoardHostProps<T extends object, S extends BoardSessionP
     readonly adapter: HostedBoardAdapter<S>;
     /** The representation policy is frozen at acquisition, not a live preference. */
     readonly emergencyReadOnly: boolean;
-    readonly chrome: Omit<SessionBoardChromeProps, 'kind' | 'openSheets' | 'readOnly'>;
+    readonly chrome: Omit<SessionBoardChromeProps, 'kind' | 'openSheets' | 'readOnly' | 'isVisible'>;
 }
 
 export default function DrawingBoardHost<T extends object, S extends BoardSessionPort>({
@@ -17,5 +17,5 @@ export default function DrawingBoardHost<T extends object, S extends BoardSessio
     if (emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Native read-only policy is not enforced by the board session');
     const readOnly = emergencyReadOnly || adapter.board.isReadOnly;
     return <BoardHost {...view} readOnly={readOnly} renderChrome={openSheets =>
-        <SessionBoardChrome {...chrome} kind="whiteboard" openSheets={openSheets} readOnly={readOnly} />} />;
+        <SessionBoardChrome {...chrome} kind="whiteboard" openSheets={openSheets} readOnly={readOnly} isVisible={view.isVisible} />} />;
 }

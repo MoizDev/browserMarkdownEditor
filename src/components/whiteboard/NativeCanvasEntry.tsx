@@ -1,0 +1,118 @@
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
+import type { ActiveFile, Theme } from '../../types';
+import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import type { NativeCanvasReady } from '../../types/reading';
+import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
+import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
+import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
+import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
+import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
+import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
+import ViewerHost from './ViewerHost';
+
+const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
+
+export interface NativeCanvasEntryProps {
+    readonly file: ActiveFile;
+    readonly documentId: string;
+    readonly identity: NativeCanvasIdentity;
+    readonly nativeCanvasHost: NativeCanvasHost;
+    readonly attachCanvasSession: AttachCanvasSession;
+    readonly onNativeCanvasReady: NativeCanvasReady;
+    readonly isVisible: boolean;
+    readonly isFocused: boolean;
+    readonly theme: Theme;
+    readonly emergencyReadOnly: boolean;
+    readonly zoomLimits: ZoomLimits;
+    readonly insets: ViewportInsets;
+    readonly zMax: number;
+    readonly deadlineMs: number;
+    readonly registerKeyboardTarget: (path: string, focus: () => void) => () => void;
+    readonly onFocusPane: (path: string) => void;
+}
+
+function NativeViewer({ props, identity, board, onError }: {
+    props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; board: ComposedBoardSession; onError(error: unknown): void;
+}) {
+    const latest = useRef(props);
+    latest.current = props;
+    const [inverted, setInverted] = useState(false);
+    const [notice, setNotice] = useState<string | null>(null);
+    const [lease, setLease] = useState<NativeViewLease | null>(null);
+    const { nativeCanvasHost, zoomLimits, insets } = props;
+    useEffect(() => {
+        let view: NativeViewLease;
+        try {
+            const current = latest.current;
+            view = createNativeViewLease({ host: nativeCanvasHost, identity, board,
+                parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
+                limits: zoomLimits, insets, onError, onNotice: setNotice });
+        } catch (error) { onError(error); return; }
+        setLease(view);
+        return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
+    }, [board, identity, nativeCanvasHost, zoomLimits.min, zoomLimits.max, insets.left, insets.right, insets.top, insets.bottom, onError]);
+    if (!lease) return <div role="status">Preparing canvas view…</div>;
+    return <AttachedViewer props={props} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} />;
+}
+
+function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
+    props: NativeCanvasEntryProps; lease: NativeViewLease; inverted: boolean;
+    setInverted(value: boolean): void; notice: string | null;
+}) {
+    const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
+    const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
+    const selection = lease.runtime.selection;
+    const selected = useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
+    const board = lease.runtime.session;
+    const onFocus = useCallback(() => props.onFocusPane(props.file.path), [props.onFocusPane, props.file.path]);
+    const register = useCallback((focus: () => void) => props.registerKeyboardTarget(props.file.path, focus), [props.registerKeyboardTarget, props.file.path]);
+    const sheets = board.doc.sheetOrder;
+    return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
+        isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
+        view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
+        readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+        chrome={<div role="toolbar" aria-label="Canvas navigation">
+            {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
+                const sheet = sheets.find(item => item.id === event.currentTarget.value);
+                if (sheet) selection.setSheet(sheet.id);
+            }}>{sheets.map(sheet => <option key={sheet.id} value={sheet.id}>{sheet.name}</option>)}</select></label>}
+            {board.doc.kind === 'notebook' && board.doc.host.kind === 'notebook' && <label>Page <input type="number" min={1}
+                max={board.doc.host.paper.pageCount} value={navigation.page + 1} onChange={event => {
+                    const page = event.currentTarget.valueAsNumber;
+                    if (Number.isFinite(page)) lease.jump(Math.max(0, Math.min(board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount - 1 : 0, Math.floor(page) - 1)));
+                }} /> / {board.doc.host.paper.pageCount}</label>}
+            <button type="button" onClick={() => lease.zoomBy(1 / 1.2)} aria-label="Zoom out">−</button>
+            <span>{Math.round(navigation.zoom * 100)}%</span>
+            <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
+            <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
+            {notice && <span role="status">{notice}</span>}
+        </div>} />;
+}
+
+export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
+    const latest = useRef(props);
+    latest.current = props;
+    const { identity: incoming, nativeCanvasHost, documentId } = props;
+    const identity = useMemo(() => incoming, [incoming.documentId, incoming.session, incoming.vaultActivation, incoming.bytesGeneration, incoming.kind]);
+    const [error, setError] = useState<string | null>(null);
+    const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
+    const attach = useCallback<AttachCanvasSession>((id, create) => latest.current.attachCanvasSession(id, create), []);
+    const ready = useCallback<NativeCanvasReady>(value => latest.current.onNativeCanvasReady(value), []);
+    const prepare = useCallback((signal: AbortSignal) => {
+        const current = latest.current;
+        if (identity.documentId !== documentId || identity.kind === 'pdfInk') throw new Error('Canvas identity does not match this entry');
+        return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: identity.kind, signal,
+            deadlineMs: current.deadlineMs, zMax: current.zMax, readOnlyReason: VIEW_REASON,
+            onError, onHistoryLimit: () => setError('The board history limit was reached.') });
+    }, [identity, documentId, nativeCanvasHost, onError]);
+    const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,
+        identity, attachCanvasSession: attach, onNativeCanvasReady: ready, prepare, onError,
+        emergencyReadOnly: () => latest.current.emergencyReadOnly, emergencyReadOnlyReason: VIEW_REASON,
+    }), [nativeCanvasHost, identity, attach, ready, prepare, onError]);
+    const acquired = useNativeBoardAcquisition(acquisition);
+    if (error) return <div role="alert">Could not open canvas: {error}</div>;
+    if (!acquired) return <div role="status">Preparing canvas…</div>;
+    if (!acquired.adapter.board.isReadOnly) return <div role="alert">This canvas cannot be opened safely in read-only mode.</div>;
+    return <NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />;
+}

@@ -7,7 +7,7 @@ export function applyBoardViewFlags(
     session: BoardSession,
     next: BoardViewFlags,
     persistPdfView: (flags: BoardViewFlags) => void,
-): void {
+): boolean {
     const current = session.doc.view;
     const ops: BoardOp[] = [];
     if (current.grid !== next.grid) ops.push({ t: 'board', key: 'view.grid', value: next.grid });
@@ -15,8 +15,10 @@ export function applyBoardViewFlags(
     if (current.toolLock !== next.toolLock) ops.push({ t: 'board', key: 'view.toolLock', value: next.toolLock });
     if (current.transparent !== next.transparent) ops.push({ t: 'board', key: 'view.transparent', value: next.transparent });
     if (current.debugMode !== next.debugMode) ops.push({ t: 'board', key: 'view.debugMode', value: next.debugMode });
-    if (!ops.length) return;
+    if (!ops.length) return false;
     const applied = session.apply({ ops, origin: 'host', label: 'Change board view' });
+    const dirtying = applied.dirtying;
     applied.release();
     if (session.doc.kind === 'pdf-ink') persistPdfView(next);
+    return dirtying;
 }

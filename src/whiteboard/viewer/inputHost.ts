@@ -50,9 +50,11 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     let presentedAt = 0;
     const contacts = new Set<number>();
     const scheduled = new Set<() => void>();
+    const attachmentListeners = new Set<(attached: boolean) => void>();
     const current = () => !disposed && options.visible() && options.current(token);
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot block cleanup */ } };
     const safe = (fn: () => void) => { try { fn(); } catch (error) { report(error); } };
+    const notifyAttachment = () => { for (const listener of [...attachmentListeners]) safe(() => listener(attached !== null)); };
     const wet = createBoardWetLayer({ token, palette: () => options.engine.getSnapshot().palette,
         readyFrame: () => options.engine.readyPaintFrame(), current,
         exists: identity => options.session.doc.rev < identity.nodeRevision || options.session.doc.nodes.has(identity.nodeId as import('../model/ids').NodeId),
@@ -68,7 +70,11 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         presented: (revision, actual, frame) => wet.presented(revision, actual, frame),
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
-    const stopAttachment = () => { const stop = attached; attached = null; if (stop) safe(stop); contacts.clear(); flush = null; };
+    const stopAttachment = () => {
+        const stop = attached; attached = null;
+        if (stop) { safe(stop); notifyAttachment(); }
+        contacts.clear(); flush = null;
+    };
     const clientToSurface = (x: number, y: number): Point => {
         if (!binding) throw new Error('Input surface is not attached');
         const box = binding.surface.getBoundingClientRect(), viewport = options.viewport();
@@ -116,6 +122,9 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
                 surface.removeEventListener('pointercancel', end); surface.removeEventListener('lostpointercapture', end);
             }
         };
+        // Constructing services is not input readiness: the browser listeners,
+        // router and session gesture bridge must all have attached successfully.
+        notifyAttachment();
     };
     const attachInput = (surface: HTMLElement, overlay: HTMLElement): (() => void) => {
         if (disposed) throw new Error('Input host disposed');
@@ -125,6 +134,12 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     };
     return {
         attachInput, mappings, sampleToSurface, clientToSurface,
+        isAttached: () => attached !== null && !disposed,
+        subscribeAttachment(listener: (attached: boolean) => void) {
+            if (disposed) return () => {};
+            attachmentListeners.add(listener);
+            return () => { attachmentListeners.delete(listener); };
+        },
         layers: wet.layers,
         schedule(callback: () => void) {
             if (disposed) return () => {};
@@ -156,7 +171,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         },
         dispose() {
             if (disposed) return;
-            stopAttachment(); scheduled.clear(); disposed = true; binding = null; presented = null;
+            stopAttachment(); attachmentListeners.clear(); scheduled.clear(); disposed = true; binding = null; presented = null;
             safe(stopInteraction); safe(() => options.engine.setInteractionLayers(null)); safe(() => wet.dispose()); safe(() => options.overlays?.dispose?.());
         },
     };

@@ -14,6 +14,7 @@ import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
 import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
+import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 
 export type BoardInputMode = 'edit' | 'view'
 export type Detach = () => void
@@ -51,6 +52,7 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
+  keyboardNavigation?(): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void

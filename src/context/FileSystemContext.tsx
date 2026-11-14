@@ -4,7 +4,8 @@ import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { get, set } from 'idb-keyval';
-import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from '../utils/recentVaults';
+import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from './recentVaults';
+import { ensureVaultId } from './agentVault';
 import { requestPersistentStorage } from '../utils/storagePersistence';
 import { findLinkedVault, readLocation } from '../utils/appUrl';
 import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
@@ -30,14 +31,34 @@ const FileSystemContext = createContext<FileSystemContextValue | null>(null);
 
 const IDB_KEY = 'vault-directory-handle';
 
-/**
- * Whether `dir` already holds an entry called `name` — of EITHER kind.
- *
- * Two positive lookups rather than one lookup and a reading of the failure:
- * `getFileHandle` does reject with TypeMismatchError when the name belongs to a
- * directory, but keying "this name is taken" on an exact DOMException name is a
- * more brittle thing to rest a delete on than simply asking both questions.
- */
+// Snapshot and directory operations stay here even when a cache or agent uses them.
+const handleIO: FileSystemContextValue['handleIO'] = {
+    file: handle => handle.getFile(),
+    fileIn: (dir, name, create = false) => dir.getFileHandle(name, { create }),
+    dirIn: (dir, name, create = false) => dir.getDirectoryHandle(name, { create }),
+    entries: dir => dir.entries(),
+    remove: (dir, name) => dir.removeEntry(name),
+    relativeTo: (dir, handle) => dir.resolve(handle),
+};
+
+async function resolveVaultDir(root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle> {
+    let dir = root;
+    if (path) for (const segment of path.split('/')) dir = await dir.getDirectoryHandle(segment);
+    return dir;
+}
+
+async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
+    const segments = path.split('/');
+    const name = segments.pop()!;
+    const parentHandle = await resolveVaultDir(root, segments.join('/'));
+    return { handle: await parentHandle.getFileHandle(name), parentHandle };
+}
+
+async function vaultDirExists(root: FileSystemDirectoryHandle, path: string): Promise<boolean> {
+    try { await resolveVaultDir(root, path); return true; } catch { return false; }
+}
+
+/** Both kinds count; exception names are less reliable than two positive lookups. */
 async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
     try { await dir.getFileHandle(name); return true; } catch { /* not a file here */ }
     try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a directory */ }
@@ -875,7 +896,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * differ, while the picker mints a fresh handle for the same folder every
      * time — so picking the folder you already have open would otherwise close
      * every tab. `isSameEntry` is the only identity test the platform offers
-     * (see utils/recentVaults.ts).
+     * (see context/recentVaults.ts).
      */
     const isCurrentVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
         const current = rootHandleRef.current;
@@ -1132,7 +1153,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
 
     /**
      * Pin or unpin a vault, so the menu keeps it at the top and the stored cap
-     * never trims it away (utils/recentVaults.ts). Reports like
+     * never trims it away (context/recentVaults.ts). Reports like
      * `forgetRecentVault`: an IndexedDB write can fail, and a pin that silently
      * did not take would be worse than one that says so.
      */
@@ -2615,8 +2636,14 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
        and PdfPane, both memoized precisely so they do not re-render while the
        reader types, re-rendered anyway. */
     const value: FileSystemContextValue = useMemo(() => ({
+        handleIO,
+        ensureVaultId,
         rootHandle,
         getVaultActivation,
+        resolveVaultDir,
+        resolveVaultFile,
+        vaultDirExists,
+        nameTaken: entryExists,
         fileTree,
         isLoading,
         previousVault,

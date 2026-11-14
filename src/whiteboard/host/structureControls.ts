@@ -91,6 +91,18 @@ export function createStructureControls(options: StructureControlsOptions) {
             if (changed && options.current()) clampPage();
             return changed;
         },
+        /** The viewer follows its page through a move: the page that was current stays current. */
+        reorderPage(from: number, to: number) {
+            editable();
+            const page = options.readPage();
+            const changed = commands.reorderPage(from, to);
+            if (changed && options.current()) {
+                const moved = page === from ? to : from < to && page > from && page <= to ? page - 1
+                    : from > to && page >= to && page < from ? page + 1 : page;
+                if (moved !== page) options.jump(moved);
+            }
+            return changed;
+        },
         async deleteLastPage() {
             editable();
             const last = paper().pageCount - 1;

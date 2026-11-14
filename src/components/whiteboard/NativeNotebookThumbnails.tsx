@@ -12,6 +12,8 @@ interface NativeNotebookThumbnailsBaseProps {
     capturePng(rect: PageRect, maxSide: number, signal: AbortSignal): Promise<Blob>;
     jump(page: number): void;
     onError(error: unknown): void;
+    /** Moves page `from` so it ends at index `to`. Absent when the view cannot write. */
+    reorder?(from: number, to: number): void;
 }
 export type NativeNotebookThumbnailsProps = NativeNotebookThumbnailsBaseProps & (
     | { readonly open: boolean; readonly onOpenChange: (open: boolean) => void }
@@ -23,7 +25,7 @@ type Image = { readonly page: number; readonly revision: number; readonly url: s
 
 /** Captures only the displayed page window, one pinned source at a time. */
 export default function NativeNotebookThumbnails(props: NativeNotebookThumbnailsProps) {
-    const { pages, revision, page, isVisible, current, currentRevision, capturePng, jump, onError } = props;
+    const { pages, revision, page, isVisible, current, currentRevision, capturePng, jump, onError, reorder } = props;
     const [ownOpen, setOwnOpen] = useState(false), [offset, setOffset] = useState(0);
     const controlled = props.open !== undefined, open = props.open ?? ownOpen;
     const setOpen = (value: boolean) => { if (controlled) props.onOpenChange(value); else setOwnOpen(value); };
@@ -65,13 +67,21 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
                 {controlled && <button type="button" onClick={() => setOpen(false)}>Close thumbnails</button>}</div>
             {Array.from({ length: Math.min(WINDOW, pages.length - start) }, (_, index) => {
                 const number = start + index, image = images.find(item => item.page === number && item.revision === revision);
-                return <button key={number} type="button" aria-label={`Go to page ${number + 1}`}
-                    aria-current={page === number ? 'page' : undefined} onClick={() => { if (current()) jump(number); }}
-                    style={{ display: 'grid', justifyItems: 'center', gap: 4 }}>
-                    {image ? <img src={image.url} alt="" draggable={false} style={{ maxWidth: 160, maxHeight: 192 }} />
-                        : <span>{failed ? 'Preview unavailable' : 'Preparing preview…'}</span>}
-                    <span>Page {number + 1}</span>
-                </button>;
+                return <div key={number} style={{ display: 'grid', justifyItems: 'center', gap: 4 }}>
+                    <button type="button" aria-label={`Go to page ${number + 1}`}
+                        aria-current={page === number ? 'page' : undefined} onClick={() => { if (current()) jump(number); }}
+                        style={{ display: 'grid', justifyItems: 'center', gap: 4 }}>
+                        {image ? <img src={image.url} alt="" draggable={false} style={{ maxWidth: 160, maxHeight: 192 }} />
+                            : <span>{failed ? 'Preview unavailable' : 'Preparing preview…'}</span>}
+                        <span>Page {number + 1}</span>
+                    </button>
+                    {reorder && <div role="group" aria-label={`Reorder page ${number + 1}`}>
+                        <button type="button" disabled={number === 0} aria-label={`Move page ${number + 1} earlier`}
+                            onClick={() => reorder(number, number - 1)}>Earlier</button>{' '}
+                        <button type="button" disabled={number >= pages.length - 1} aria-label={`Move page ${number + 1} later`}
+                            onClick={() => reorder(number, number + 1)}>Later</button>
+                    </div>}
+                </div>;
             })}
         </div>}
     </>;

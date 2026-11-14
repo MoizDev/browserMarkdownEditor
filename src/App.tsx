@@ -4723,14 +4723,15 @@ export default function App() {
     if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
     createInFlightRef.current = true;
     const where = parentPath || parentHandle.name || 'this folder';
-    const root = rootHandleRef.current;
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    const current = () => root === rootHandleRef.current && activation === getVaultActivation();
+    const nativeKind = isNativeDrawingFile(name) || isDrawingFile(name) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
+      : isNotebookFile(name) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
     try {
-      // Nothing here overwrites a file by accident — the rule the rest of the
-      // app keeps with freeEntryName, kept here with a refusal instead,
-      // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either. Native drawings use the unique-name
-      // creation path below instead.
+      // Explicit names refuse collisions; native drawing imports keep their existing
+      // unique-name behavior and carry the actual freeEntryName result forward.
       if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
+        if (!current()) return;
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -4738,25 +4739,30 @@ export default function App() {
         });
         return;
       }
+      let nativeBytes: Blob | undefined;
+      if (nativeKind) {
+        const { createEmptyNativeBytes } = await import('./whiteboard/host/emptyNative');
+        nativeBytes = createEmptyNativeBytes(nativeKind);
+      }
+      // Encode before fresh-file creation. A failed native encoder never creates
+      // a blank artifact or authorizes a Classic writer; once IO starts, finish
+      // this immutable payload even if its vault goes out of view.
+      if (!current()) return;
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      // An empty native drawing is the format's defined new-board state. Use
-      // the import path's freeEntryName (files AND folders) rather than the
-      // truncating createFile primitive, and carry its actual name forward.
       let createdName = name;
       let newFileHandle: FileSystemFileHandle | null;
-      if (isNativeDrawingFile(name)) {
-        const created = await importFiles([new File([], name)], parentHandle);
-        if (!created.length || !root) throw new Error('Could not create the drawing.');
+      if (nativeBytes) {
+        const created = await importFiles([new File([nativeBytes], name)], parentHandle);
+        if (!created.length) throw new Error('Could not create the native canvas.');
         createdName = created[0];
+        if (!current()) return;
         ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
       } else {
         newFileHandle = await createFile(parentHandle, name);
       }
-      // A vault switch during creation must not open the old folder's file in
-      // the new workspace, even if the path exists in both.
-      if (root !== rootHandleRef.current) return;
+      if (!current()) return;
       if (newFileHandle) {
         const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
@@ -4767,6 +4773,7 @@ export default function App() {
           path: newPath,
         };
         await handleFileClick(newNode);
+        if (!current()) return;
         setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {
@@ -4774,14 +4781,14 @@ export default function App() {
       // is indistinguishable from one that worked and left the tree alone.
       console.error('Failed to create file:', err);
       await tell({
-        title: 'Could not create the note',
+        title: 'Could not create the file',
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
     } finally {
       createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
+  }, [createFile, getVaultActivation, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -6306,13 +6313,29 @@ export default function App() {
     signal.throwIfAborted();
     const tab = tabsRef.current.find(item => item.file.path === path);
     const kind = tab?.representation.loadedKind;
-    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook')) {
+    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook' && kind !== 'pdf')) {
       throw new Error('The open canvas representation is not available for native reading.');
     }
     ensureCanvasBridge(tab);
     const identity = nativeCanvasHost.identity(tab.id);
-    if (!identity || identity.kind !== kind) throw new DOMException('Canvas session ended', 'AbortError');
-    const pinned = nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    if (!identity || identity.kind !== (kind === 'pdf' ? 'pdfInk' : kind)) throw new DOMException('Canvas session ended', 'AbortError');
+    // pinBoardSource is a drawing/notebook buffer pin; a PDF cold source never uses it (the host refuses pdfInk).
+    const pinned = kind === 'pdf' || nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    // Cold PDF source: one synchronous snapshot before the first await (buffer identity, revision, source and the
+    // verified disk baseline object). pdfPinHolds rechecks it after the import, after prepare and inside take;
+    // any change disposes the prepared source and refuses. A dirty or changed buffer is never read from disk.
+    const pinCleanPdf = () => {
+      const buffer = documentBuffers.get(tab.id), baseline = getBaseline(tab.id);
+      if (buffer && buffer.revision > buffer.savedRevision) return { ok: false as const, message: 'Save the PDF before the agent reads or edits its ink.' };
+      if (!baseline) return { ok: false as const, message: 'The PDF has no verified disk baseline, so the agent cannot read it.' };
+      return { ok: true as const, buffer, revision: buffer?.revision, source: buffer?.source, baseline };
+    };
+    const pdfPin = kind === 'pdf' ? pinCleanPdf() : undefined;
+    const pdfPinHolds = (pin: Extract<ReturnType<typeof pinCleanPdf>, { ok: true }>) => {
+      const buffer = documentBuffers.get(tab.id);
+      return nativeCanvasHost.isCurrent(identity) && buffer === pin.buffer && buffer?.revision === pin.revision
+        && buffer?.source === pin.source && getBaseline(tab.id) === pin.baseline && !(buffer && buffer.revision > buffer.savedRevision);
+    };
     let pinTransferred = false;
     try {
     const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
@@ -6323,13 +6346,33 @@ export default function App() {
     if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
     const reason = 'This native canvas is currently available in read-only mode.';
     const onError = (error: unknown) => console.error('Native canvas session failed:', error);
+    // Cold PDF source: only the already-native ink is admitted (a plain PDF is refused, never annotated),
+    // no legacy conversion, and no notebook handoff. A dirty document is refused rather than read from disk.
+    const preparePdfAgentSource = async (prepareSignal: AbortSignal) => {
+      if (!pdfPin?.ok) throw new Error(pdfPin?.message ?? 'The PDF source is unavailable.');
+      const pin = pdfPin;
+      const changed = () => new Error('The PDF changed while the agent was reading it; try again.');
+      const { preparePdfInkAttempt } = await import('./components/whiteboard/preparePdfInkAttempt');
+      if (!pdfPinHolds(pin)) throw changed();
+      const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: 100,
+        legacyConversion: false, requireExistingNative: true, onError,
+        onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.') }, prepareSignal);
+      if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
+      // ensureNativeBoard calls take inside attachCanvasSession, so this covers the attachment too.
+      return { ...prepared, take(owner: Parameters<typeof prepared.take>[0], isLiveOwner: Parameters<typeof prepared.take>[1], readOnlyReason: Parameters<typeof prepared.take>[2]) {
+        // No dispose here: ensureNativeBoard's finally awaits prepared.dispose when take never ran.
+        if (!pdfPinHolds(pin)) throw changed();
+        return prepared.take(owner, isLiveOwner, readOnlyReason);
+      } };
+    };
     const options = createNativeAcquisitionOptions({ host: nativeCanvasHost, identity,
       attachCanvasSession: attachNativeCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason: reason,
       emergencyReadOnly: () => !!nativePoliciesRef.current.get(tab.id)?.emergencyReadOnly,
       onError, prepare: prepareSignal => {
+        if (kind === 'pdf') return preparePdfAgentSource(prepareSignal);
         pinTransferred = true;
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
-          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, readOnlyReason: reason, onError,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, onError,
           onHistoryLimit: () => announce('The board history limit was reached.') });
       },
     });
@@ -6352,6 +6395,17 @@ export default function App() {
         if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
         const pending = runtime.media.get(entry.id);
         if (pending) return pending;
+        if (kind === 'pdf') {
+          // A PDF's embedded media lives only in its owned source, read through the lease-checked facade
+          // (same as the view and clipboard). It never goes through the drawing asset path below.
+          const { getPdfInkSourceState } = await import('./whiteboard/host/preparePdfInkSession');
+          const state = getPdfInkSourceState(identity.documentId);
+          if (!state) throw new DOMException('Canvas session ended', 'AbortError');
+          const blob = await state.readMedia(entry.id, mediaSignal);
+          mediaSignal.throwIfAborted();
+          if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+          return blob;
+        }
         const result = await nativeCanvasHost.readMedia(identity, { hash: entry.id.slice(7), preferredName: entry.file }, mediaSignal);
         mediaSignal.throwIfAborted();
         if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');

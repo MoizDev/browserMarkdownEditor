@@ -55,7 +55,7 @@ function releaseAll(leases: readonly ClipboardLease[]): void {
 export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): BoardCopySnapshotNowResult {
     const { runtime } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
-    const signal = options.signal ?? new AbortController().signal, fontEpoch = runtime.render.text.fonts.epoch;
+    const signal = options.signal ?? new AbortController().signal, fontEpoch = runtime.render.text.fonts.epoch, paintBinding = runtime.paintBinding;
     // Synchronous capture reads the current document directly; no Scene/AABB cache can lag a just-made selection.
     const held: ClipboardLease[] = [];
     let output: CopySnapshot | undefined, transferred = false, released = false;
@@ -189,7 +189,7 @@ export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): B
         };
         const rootBounds = new Map<NodeId, ClipboardBounds>();
         for (const id of roots) {
-            check(); const paint = runtime.render.prepareOverlayNow(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
+            check(); const paint = paintBinding.prepareOverlayNow(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
             const measured = measureBoardPaintBoundsNow(paint, { memory: options.memory, signal, toleranceWorld: options.toleranceWorld, includeInvisible: true });
             const b = measured.bounds; if (!b) throw new Error(`Clipboard root has no measurable paint: ${id}`);
             rootBounds.set(id, { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] });

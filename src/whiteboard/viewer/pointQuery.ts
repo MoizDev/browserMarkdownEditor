@@ -130,11 +130,14 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
-                    let parent = doc.nodes.get(node.parent as NodeId), clipped = false;
+                    let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
                     for (let depth = 0; parent && depth < 64; depth++) {
                         if (parent.kind === 'frame') {
                             const local = worldToLocal(doc, parent, point);
                             if (local.x < 0 || local.y < 0 || local.x > parent.w || local.y > parent.h) { clipped = true; break; }
+                            // A halo witness near the clip edge can belong entirely to hidden geometry.
+                            const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
+                            if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                         }
                         parent = doc.nodes.get(parent.parent as NodeId);
                     }
@@ -178,6 +181,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     }
                     check();
                     if (result.hit) {
+                        ambiguous ||= clipUncertain;
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
                         if (ambiguous) uncertain.push(candidate);
                         else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;

@@ -1,6 +1,7 @@
 import type { Affine, PathCommand, Rect } from '../types';
 import type { EmbedContainment } from '../embedContainment.types';
 import type { PlatformLayerDefinition, PlatformPresentation } from './attachPlatformPane.types';
+import type { FrameToken } from './types';
 
 /** Filled coverage from the actual paint, not a model/file bounding box. Stroke, glyph and
  * image-alpha coverage must already be resolved by their canonical producer. */
@@ -71,15 +72,26 @@ export interface EmbedHostingLease {
     dispose(): Promise<void>;
 }
 
+/** Same-compositor draw witness, not a claim that an unaccepted frame was presented. */
+export interface EmbedDrawnPaint {
+    readonly token: FrameToken;
+    readonly frameId: number;
+    readonly cameraEpoch: number;
+    readonly sceneRevision: number;
+    readonly omittedNodeIds: ReadonlySet<string> | null;
+}
+
 export interface EmbedPresentationPort {
     /** Append once to the pane's existing shared-compositor layers; no new context or scheduler. */
     readonly layer: PlatformLayerDefinition;
     /** Adopts an owned actual-presentation packet; never accepts speculative model geometry. */
     present(frame: EmbedPresentationFrame): void;
+    /** Renderer-only, at the actual band draw. Blocks stale geometry/poster state before commit. */
+    drawn(paint: EmbedDrawnPaint): void;
     /** Call only for the semantic per-node Load action. Resolves after actual facts/admission. */
     acquire(nodeId: string, signal?: AbortSignal): Promise<EmbedHostingLease>;
     /** Desired card omissions for this view ONLY. Captures/exports keep the static poster. */
-    inlineNodeIds(): ReadonlySet<string>;
+    inlineNodeIds(sceneRevision?: number): ReadonlySet<string>;
     setVisible(visible: boolean): void;
     dispose(): Promise<void>;
 }

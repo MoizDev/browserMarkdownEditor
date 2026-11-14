@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
 import { MAX_PAGES, type NotebookPaper, type PaperRuling, type PaperSize } from '../../utils/paper';
+import { PagedNavigation } from './PagedNavigation';
 import './notebookControls.css';
 
 export interface NotebookControlsProps {
@@ -21,17 +21,6 @@ export interface NotebookControlsProps {
 /** This is physical paper; logical sheets have a separate menu in the header. */
 export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOpen, dir, t, changePaper,
     addPage, deleteLastPage, jump, toggleInversion, toggleThumbnails }: NotebookControlsProps) {
-    const [draft, setDraft] = useState<string | null>(null);
-    const [initial, setInitial] = useState('');
-    const cancelled = useRef(false);
-    const applyPage = () => {
-        if (!cancelled.current && draft !== null && draft !== initial) {
-            const parsed = Number.parseInt(draft, 10);
-            if (Number.isFinite(parsed)) jump(Math.min(paper.pageCount, Math.max(1, parsed)) - 1);
-        }
-        cancelled.current = false;
-        setDraft(null);
-    };
     return <div className="notebook-controls" role="toolbar" dir={dir} aria-label={t('paper.name')}>
         <label>{t('paper.size')} <select aria-label={t('paper.size')} disabled={readOnly} value={paper.size}
             onChange={event => changePaper({ ...paper, size: event.currentTarget.value as PaperSize })}>
@@ -49,17 +38,7 @@ export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOp
             aria-label={t('paper.addPage')} data-tooltip={t('paper.addPage')}>{t('paper.addPage')}</button>
         <button type="button" disabled={readOnly || paper.pageCount <= 1} onClick={deleteLastPage}
             aria-label={t('paper.deletePage')} data-tooltip={t('paper.deletePage')}>{t('paper.deletePage')}</button>
-        <button type="button" aria-pressed={thumbnailsOpen} onClick={toggleThumbnails}
-            aria-label={t(thumbnailsOpen ? 'paper.hideThumbnails' : 'paper.showThumbnails')}>{t('paper.thumbnails')}</button>
-        <button type="button" aria-pressed={inverted} onClick={toggleInversion}
-            aria-label={t('paper.invert')} data-tooltip={t(inverted ? 'paper.showColours' : 'paper.invertColours')}>{t('paper.invert')}</button>
-        <span className="notebook-page-number"><input aria-label={t('paper.pageNumber', { page: page + 1, count: paper.pageCount })} inputMode="numeric" value={draft ?? String(page + 1)}
-            data-tooltip={t('paper.pageNumber', { page: page + 1, count: paper.pageCount })}
-            onFocus={event => { const value = String(page + 1); cancelled.current = false; setInitial(value); setDraft(value); event.currentTarget.select(); }}
-            onChange={event => setDraft(event.currentTarget.value)} onBlur={applyPage}
-            onKeyDown={event => {
-                if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
-                else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelled.current = true; event.currentTarget.blur(); }
-            }} /> / {paper.pageCount}</span>
+        <PagedNavigation page={page} count={paper.pageCount} inverted={inverted} thumbnailsOpen={thumbnailsOpen} t={t}
+            jump={jump} toggleInversion={toggleInversion} toggleThumbnails={toggleThumbnails} />
     </div>;
 }

@@ -2,11 +2,13 @@ import type { Affine, PageDisplayItem, PageDisplayList, PathCommand } from '../.
 import { coverageOutline } from '../ink/outline'
 import type { PaintFrame, PaintImageItem, PaintItem } from '../render/paintStream'
 
-/** The image resolver returns a pinned, export-ready PNG/JPEG: crop and inversion are baked
- * into its bytes. The caller owns any image leases until this promise settles. */
+/** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
+ * Dimensions are the original image pixels; the caller owns leases until this settles. */
 export type ExportImage = (item: PaintImageItem, signal?: AbortSignal) => Promise<{
   bytes: Uint8Array
   mime: 'image/png' | 'image/jpeg'
+  width: number
+  height: number
 }>
 
 function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCommand[] {
@@ -27,7 +29,18 @@ async function displayItem(item: PaintItem, scale: number, image: ExportImage, s
   if (item.kind === 'image') {
     const data = await image(item, signal)
     signal?.throwIfAborted()
-    leaf = { kind: 'image', rect: { ...item.rect }, transform: item.localToWorld, ...data, opacity: item.opacity, blend: item.blend }
+    if (!Number.isFinite(data.width) || !Number.isFinite(data.height) || data.width <= 0 || data.height <= 0) throw new RangeError('Invalid export image dimensions')
+    const source = item.sourceRect, target = item.rect
+    if (source) {
+      if (source.width <= 0 || source.height <= 0) throw new RangeError('Invalid export image crop')
+      const sx = target.width / source.width, sy = target.height / source.height
+      const rect = { x: target.x - source.x * sx, y: target.y - source.y * sy, width: data.width * sx, height: data.height * sy }
+      const d: PathCommand[] = [['M', target.x, target.y], ['L', target.x + target.width, target.y],
+        ['L', target.x + target.width, target.y + target.height], ['L', target.x, target.y + target.height], ['Z']]
+      leaf = { kind: 'group', transform: item.localToWorld, clip: { d }, items: [{ kind: 'image', rect,
+        transform: [1, 0, 0, 1, 0, 0], bytes: data.bytes, mime: data.mime, opacity: item.opacity, blend: item.blend }] }
+    } else leaf = { kind: 'image', rect: { ...target }, transform: item.localToWorld,
+      bytes: data.bytes, mime: data.mime, opacity: item.opacity, blend: item.blend }
   } else {
     const [a, b, c, d0] = item.localToWorld
     const effectiveScale = Math.max(Number.MIN_VALUE, scale * Math.hypot(a, b, c, d0))

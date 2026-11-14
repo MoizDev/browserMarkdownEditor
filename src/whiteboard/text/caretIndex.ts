@@ -19,7 +19,7 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
                 if (i) clusters.push({ src: [fragment.src[0] + boundaries[i - 1], fragment.src[0] + boundaries[i]], bounds: { x: Math.min(positions[i - 1], positions[i]), y: line.top, width: Math.abs(positions[i] - positions[i - 1]), height: line.bottom - line.top }, rtl: fragment.rtl, line: lineIndex });
             }
         }
-        if (!stops.length) stops.push({ offset: line.src[0], affinity: 'downstream', x: request.style.padding.left, top: line.top, bottom: line.bottom, line: lineIndex });
+        if (!stops.length) stops.push({ offset: line.src[0], affinity: 'downstream', x: line.x, top: line.top, bottom: line.bottom, line: lineIndex });
         stops.sort((a, b) => a.x - b.x || a.offset - b.offset);
         clusters.sort((a, b) => a.bounds.x - b.bounds.x);
         return { top: line.top, bottom: line.bottom, stops, clusters };

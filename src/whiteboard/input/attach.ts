@@ -14,7 +14,7 @@ import { predictedTail, type PredictedPoint, type PredictionMapping } from './pr
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
-import type { GestureOwner, InputToken, Modifiers, RealSample, Tool } from './tool'
+import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
 
@@ -56,7 +56,7 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
-  keyboardNavigation?(): KeyboardNavigationPriority
+  keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void
@@ -65,7 +65,7 @@ export interface BoardInputServices {
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
-  continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
+  continueInk?(sample: RealSample): ((endpoint: RealSample, signal: AbortSignal) => Promise<boolean>) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
@@ -74,9 +74,6 @@ export interface BoardInputServices {
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
-const gestureOwner = new WeakMap<BoardSession, symbol>()
-const syncingSessions = new WeakSet<BoardSession>()
-const sessionPenMode = new WeakMap<BoardSession, { enabled: boolean; listeners: Set<(enabled: boolean) => void> }>()
 
 // View generations own listeners only. The session owns history, gesture queue and
 // tool choice; replacing a view first flushes its prefix, then installs a new one.
@@ -84,9 +81,6 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   attached.get(view.surface)?.()
   const owner = Symbol('board-input-view')
   let live = true
-  let penMode = sessionPenMode.get(session)
-  if (!penMode) { penMode = { enabled: false, listeners: new Set() }; sessionPenMode.set(session, penMode) }
-  const sharedPenMode = penMode
   const current = () => live && view.visible() && view.current(view.token)
   const editable = () => mode === 'edit' && !session.isReadOnly
   const handover = new WetInkHandover()
@@ -100,8 +94,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let pendingPrediction: readonly PredictedPoint[] | undefined
   let suppressMenu = false
   const touchAdmission = new Map<number, boolean>()
+  const pendingContinuations = new Set<() => void>()
+  const cancelContinuations = (): boolean => {
+    const pending = [...pendingContinuations]
+    for (const cancel of pending) cancel()
+    return pending.length > 0
+  }
+  const physicalSurface = (sample: RealSample) => sampleSurface(sample, view.sampleToSurface)
   const handContext: HandContext = {
-    toSurface: view.sampleToSurface,
+    toSurface: physicalSurface,
     panBy: delta => view.camera.panBy(delta),
     invalidate: services.cameraChanged,
   }
@@ -109,7 +110,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const secondaryPan: Tool<unknown> = {
     id: 'secondary-pan',
     begin(sample, modifiers) {
-      const origin = view.sampleToSurface(sample)
+      const origin = physicalSurface(sample)
       const pan = handTool.begin(sample, modifiers, handContext)
       if (!pan) return null
       let dragging = false
@@ -117,7 +118,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         kind: 'pan', pointerIds: pan.pointerIds,
         update(samples, nextModifiers) {
           for (const point of samples) {
-            const surface = view.sampleToSurface(point)
+            const surface = physicalSurface(point)
             if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) { dragging = true; suppressMenu = true }
             if (dragging) pan.update([point], nextModifiers)
           }
@@ -131,12 +132,28 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
   }
-  const claim = (): boolean => {
-    if (gestureOwner.has(session) || session.isGestureActive) return false
-    gestureOwner.set(session, owner)
-    return true
-  }
-  const releaseClaim = (): void => { if (gestureOwner.get(session) === owner) gestureOwner.delete(session) }
+  const continuationTool = (sample: RealSample, commit: (endpoint: RealSample, signal: AbortSignal) => Promise<boolean>): Tool<unknown> => ({
+    id: 'continue-ink', begin: () => {
+      let endpoint = sample, ended = false, running = false, cleaned = false
+      const controller = new AbortController(), release = session.beginGesture()
+      const cleanup = () => { if (cleaned) return; cleaned = true; pendingContinuations.delete(cancel); release() }
+      const cancel = () => { if (cleaned) return; ended = true; controller.abort(); if (!running) cleanup() }
+      pendingContinuations.add(cancel)
+      return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
+        update: samples => { if (!ended) for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
+        finish: reason => {
+          if (ended) return
+          if (reason !== 'up') { cancel(); return }
+          ended = true; running = true
+          void commit(endpoint, controller.signal).catch(error => {
+            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) services.error(error)
+          }).finally(cleanup)
+        },
+        cancel, discard: cancel }
+    },
+  })
+  const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
+  const releaseClaim = (): void => { services.tools.releaseInput(owner) }
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: services.pointerChanged,
@@ -156,7 +173,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
-        const context = services.zoomBrush()
+        const source = services.zoomBrush()
+        const context = { ...source, toSurface: (point: RealSample) => sampleSurface(point, source.toSurface) }
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
       }
       if (editable() && services.editing() && services.textInput) {
@@ -166,7 +184,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {
         const open = services.linkAt?.(sample)
         if (open) {
-          const origin = view.sampleToSurface(sample)
+          const origin = physicalSurface(sample)
           const fallback = mode === 'view' ? { tool: hand, context: undefined } : services.resolveTool(choice, sample, modifiers, event)
           const link: Tool<unknown> = { id: 'view-link', begin: (_point, keys) => {
             let dragged = false
@@ -174,7 +192,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
             return {
               kind: mode === 'view' ? 'pan' : 'node-edit', pointerIds: new Set([sample.pointerId]),
               update: (samples, nextKeys) => { for (const point of samples) {
-                const next = view.sampleToSurface(point)
+                const next = physicalSurface(point)
                 if (!dragged && Math.hypot(next.x - origin.x, next.y - origin.y) >= 4) {
                   dragged = true
                   owner = fallback?.tool.begin(sample, keys, fallback.context) ?? null
@@ -192,21 +210,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       completeTool = true
       if (choice.id === 'pen' && modifiers.shift) {
         const commit = services.continueInk?.(sample)
-        if (commit) {
-          const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
-            let endpoint = sample, ended = false
-            services.history.clearRedo()
-            return { kind: 'ink', pointerIds: new Set([sample.pointerId]),
-              update: samples => { for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
-              finish: reason => {
-                if (ended) return
-                ended = true
-                try { if (commit(endpoint) && reason === 'undo') services.history.undo() } catch (error) { services.error(error) }
-              },
-              cancel: () => { ended = true }, discard: () => { ended = true }, }
-          } }
-          return { tool: continuation, context: undefined }
-        }
+        if (commit) return { tool: continuationTool(sample, commit), context: undefined }
       }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
       return services.resolveTool(choice, sample, modifiers, event)
@@ -220,32 +224,45 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       activeSource = null
     },
     prediction(id, event) {
-      if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk) || !router.activeOwner.pointerIds.has(id)) return
+      if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk)
+        || !router.activeOwner.allowsPrediction || !router.activeOwner.pointerIds.has(id)) return
       pendingPrediction = event ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
     contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
     error: services.error,
   })
+  let cancelKeyboardGesture = () => false
+  const cancelForCamera = () => {
+    cancelContinuations(); services.cancelPendingGestures()
+    const active = router.activeOwner
+    if (!active || !['node-edit', 'erase', 'marquee', 'zoom-brush'].includes(active.kind)) return
+    if (active.pointerIds.has(-1)) cancelKeyboardGesture()
+    else pointer.interrupt('os-cancel')
+  }
   const touch = new TouchArbiter(view.camera, {
     cancelTouchPreview: () => { if (activeSource === 'touch') pointer.discardPreview() },
     endTouchCamera: services.cameraChanged,
-    changed: services.cameraChanged,
-    penModeChanged: enabled => {
-      if (sharedPenMode.enabled === enabled) return
-      sharedPenMode.enabled = enabled
-      for (const listener of sharedPenMode.listeners) listener(enabled)
-    },
-  }, sharedPenMode.enabled)
-  const onPenMode = (enabled: boolean) => { touch.setPenMode(enabled); services.penModeChanged?.(enabled) }
-  sharedPenMode.listeners.add(onPenMode)
+    changed: () => { cancelForCamera(); services.cameraChanged() },
+    penModeChanged: enabled => services.tools.setPenMode(enabled),
+  }, services.tools.penMode)
+  const onPenMode = (enabled: boolean) => {
+    try { touch.setPenMode(enabled); services.penModeChanged?.(enabled) }
+    catch (error) { try { services.error(error) } catch { /* Other views must still receive the state. */ } }
+  }
+  const stopSharedPenMode = services.tools.subscribePenMode(onPenMode)
   services.penModeChanged?.(touch.penMode)
+  const stopPenContacts = services.tools.subscribePenContacts((id, down, direct, time) => {
+    try { if (down) touch.penDown(id, direct); else touch.penUp(id, time) }
+    catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
+  })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
-  const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
+  const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
+    id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
-    if (event.pointerType === 'pen') touch.penDown(event.pointerId, services.isDirectPen(event))
+    if (event.pointerType === 'pen') services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp)
     else if (event.pointerType === 'touch') {
       touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
       try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }
@@ -258,7 +275,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
   }
   const up = (event: PointerEvent) => {
-    if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp)
+    if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
   // Deferred text hits must also stop before non-tool keys, touch navigation and wheel changes.
@@ -289,7 +306,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
     if (current() && router.activeOwner instanceof LiveInk) {
-      if (pendingPrediction) router.activeOwner.publishPrediction(pendingPrediction)
+      if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
       else router.activeOwner.publish()
     }
     pendingPrediction = undefined
@@ -297,7 +314,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopWheel = installWheel(view.surface, {
     camera: view.camera, paged: view.paged, toSurface: view.clientToSurface,
     owns: event => current() && services.ownsWheel(event),
-    changed: () => { if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }; services.cameraChanged() },
+    changed: () => {
+      cancelForCamera()
+      if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }
+      services.cameraChanged()
+    },
   })
   let keyboardStart: ToolStateSnapshot | null = null
   const cursor = createKeyboardCursor({
@@ -316,9 +337,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       keyboardStart = services.tools.getSnapshot()
       try {
         const choice = keyboardStart.active
-        const route = choice.id === 'pen' || choice.id === 'highlighter'
-          ? { tool: ink(choice.id), context: undefined }
-          : services.resolveKeyboardTool?.(choice, sample, modifiers)
+        const continued = choice.id === 'pen' && modifiers.shift ? services.continueInk?.(sample) : null
+        const route = continued ? { tool: continuationTool(sample, continued), context: undefined }
+          : choice.id === 'pen' || choice.id === 'highlighter'
+            ? { tool: ink(choice.id), context: undefined }
+            : services.resolveKeyboardTool?.(choice, sample, modifiers)
         if (!route || !router.begin(view.token, route.tool, sample, modifiers, route.context)) { keyboardStart = null; releaseClaim(); return false }
         return true
       } catch (error) { keyboardStart = null; releaseClaim(); services.error(error); return false }
@@ -331,9 +354,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
+  cancelKeyboardGesture = () => cursor.active && cursor.escape()
   const flush = () => {
+    cancelContinuations()
     services.cancelPendingGestures()
-    if (cursor.active) cursor.escape()
+    cursor.escape()
     pointer.interrupt('flush')
     services.textInput?.flush()
   }
@@ -349,22 +374,27 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
-    cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
+    cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {
-        const cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('escape') || cancelled) return true
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
       }
       if (id === 'undo') {
-        const cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('undo') || cancelled) return true
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('undo') || cancelled || continuationCancelled) return true
         if (editable()) { services.history.undo(); return true }
       }
-      if (id === 'redo' && editable()) { services.history.redo(); return true }
+      if (id === 'redo' && editable()) {
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (cursor.active && router.activeOwner) { cursor.escape(); return true }
+        if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
+        services.history.redo(); return true
+      }
       if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
       if (id.startsWith('style.')) flush()
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
@@ -373,8 +403,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (!(router.activeOwner instanceof LiveInk)) return true
         let previous: Point
         return router.suspendInk(view.token, {
-          begin: sample => { previous = view.sampleToSurface(sample) },
-          update: samples => { for (const sample of samples) { const point = view.sampleToSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
+          begin: sample => { previous = physicalSurface(sample) },
+          update: samples => { for (const sample of samples) { const point = physicalSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
           end: () => {},
         })
       }
@@ -387,7 +417,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (id === 'zoom.hold') { zoomHeld = true; return true }
       if (id === 'zoom.release') { zoomHeld = false; return true }
       if (id.startsWith('tool.') && editable()) {
-        services.cancelPendingGestures()
+        cancelContinuations(); services.cancelPendingGestures()
         const tool = id.slice(5)
         if (services.tools.getRegistration(tool)) { services.tools.setTool(tool); return true }
       }
@@ -400,11 +430,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
       services.textInput?.cancelPending()
-      services.cancelPendingGestures()
+      cancelContinuations(); services.cancelPendingGestures()
       if (cursor.active) cursor.escape()
       pointer.interrupt('flush')
     }
-    if (current() && editable() && !syncingSessions.has(session)) {
+    if (current() && editable() && !services.tools.syncingDocument) {
       const ops: Op[] = []
       const tool = TOOLS.find(id => id === snapshot.active.id)
       if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
@@ -421,15 +451,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopSession = session.subscribe(() => {
     if (!current() || !editable()) return
     const snapshot = services.tools.getSnapshot()
-    syncingSessions.add(session)
-    try {
+    services.tools.withDocumentSync(() => {
       if (snapshot.locked !== session.doc.view.toolLock) {
         services.tools.setLocked(session.doc.view.toolLock)
         services.persistToolLock?.(session.doc.view.toolLock)
       }
       const tool = session.doc.ui.tool
       if (snapshot.active.id !== tool && services.tools.getRegistration(tool)) services.tools.setTool(tool)
-    } finally { syncingSessions.delete(session) }
+    })
   })
   updateMirror()
   const detach = () => {
@@ -450,11 +479,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointerup', up, true)
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)
-    sharedPenMode.listeners.delete(onPenMode)
+    services.tools.releasePenOwner(owner, performance.now()); stopPenContacts(); stopSharedPenMode()
     stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror()
     try { stopWet() } finally { handover.dispose() }
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
-    if (gestureOwner.get(session) === owner) gestureOwner.delete(session)
+    services.tools.releaseInput(owner)
   }
   attached.set(view.surface, detach)
   return detach

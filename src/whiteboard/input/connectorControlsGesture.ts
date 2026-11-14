@@ -12,6 +12,10 @@ export interface ConnectorControlGestureOptions {
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
     readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly armCommit: () => void;
+    readonly finishCommit: () => void;
+    readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly error: (error: unknown) => void;
     readonly cooperate?: () => Promise<void>;
@@ -37,9 +41,17 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             result = await prepareConnectorControl({ runtime: options.runtime, id: options.id, control: options.control,
                 point, signal: request.signal, current: () => !cleaned && options.current() && turn === sequence,
                 cooperate: options.cooperate });
-            if (cleaned || request.signal.aborted || turn !== sequence || !options.current()) { result.release(); return; }
-            if (commit) { result.commit(); result = undefined; cleanup(); }
-            else { preview = result; result = undefined; options.show(preview.ops); }
+            if (cleaned || request.signal.aborted || turn !== sequence) return;
+            if (!options.current()) { cancel(); return; }
+            if (commit) {
+                options.show(result.ops); await options.waitUntilReady(request.signal);
+                if (cleaned || request.signal.aborted || turn !== sequence) return;
+                if (!options.current()) { cancel(); return; }
+                options.armCommit();
+                try { result.commit(); result = undefined; options.finishCommit(); }
+                catch (error) { options.cancelCommit(); throw error; }
+                cleanup();
+            } else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {
             if (!cleaned && !request.signal.aborted && turn === sequence) { try { options.error(error); } finally { cancel(); } }
         } finally { result?.release(); }

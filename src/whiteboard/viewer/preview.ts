@@ -29,6 +29,11 @@ export interface BoardPreviewOptions {
 export interface BoardPreview {
     show(nodes: readonly Node[]): void;
     showOps(ops: readonly Op[]): void;
+    waitUntilReady(signal: AbortSignal): Promise<void>;
+    armCommit(): void;
+    finishCommit(): void;
+    cancelCommit(): void;
+    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintFrame): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
     dispose(): void;
@@ -80,24 +85,39 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
     let controller: AbortController | null = null, pendingRelease: (() => void) | null = null, pair: BoardLayerPair | null = null;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
-    let requestedIds: ReadonlySet<string> | null = null;
-    const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>();
+    let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1;
+    let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
+    const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintFrame, number>();
+    const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
+    const settle = (error?: unknown) => {
+        for (const waiter of [...waiters]) {
+            waiters.delete(waiter); waiter.signal.removeEventListener('abort', waiter.abort);
+            if (error !== undefined) waiter.reject(error); else waiter.resolve();
+        }
+    };
+    const interrupted = () => new DOMException('Board preview was superseded', 'AbortError');
     const held = new Set<{ release(): void }>();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not prevent release */ } };
     const release = (lease: { release(): void }) => { if (held.delete(lease)) { try { lease.release(); } catch (error) { report(error); } } };
-    const clear = () => {
-        generation++; controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
+    const clearNow = () => {
+        generation++; settle(interrupted()); controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
+        const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
         for (const lease of [...held]) release(lease);
         const oldPin = pin; pin = null; document = null;
         try { oldPin?.release(); } catch (error) { report(error); }
-        engine.setPreviewLayers(null);
+        try { engine.setPreviewLayers(null); } finally { releaseCommit?.(); }
+    };
+    const clear = () => {
+        if (commitRevision !== null && options.current() && engine.getView().visible && runtime.session.doc.rev <= commitRevision) return;
+        clearNow();
     };
     const unbind = engine.bindPreviewClear(clear);
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>) => {
         if (disposed) throw new Error('Preview is disposed');
         if (!changes.size) { clear(); return; }
+        if (commitRevision !== null) throw new Error('A committed preview is awaiting presentation');
         if (!options.current() || !engine.getView().visible) throw new Error('Preview view is not current and visible');
         const live = runtime.session.doc, scene = runtime.scene;
         for (const node of changes.values()) {
@@ -111,7 +131,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const view = engine.getView(), selection = runtime.selection.getSnapshot();
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
-        controller?.abort(); pendingRelease?.(); pendingRelease = null; controller = job;
+        settle(interrupted()); controller?.abort(); pendingRelease?.(); pendingRelease = null; controller = job;
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -121,7 +141,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         pendingRelease = releaseLeases;
         const check = () => {
             job.signal.throwIfAborted();
-            if (disposed || !options.current() || generation !== seq || pin !== pinned || live.rev !== pinned.revision
+            if (disposed || !options.current() || generation !== seq || pin !== pinned
+                || (live.rev !== pinned.revision && live.rev !== commitRevision)
                 || !engine.getView().visible || (engine.getView().sheetId ?? runtime.selection.getSnapshot().sheet) !== sheet
                 || engine.getView().theme !== view.theme) throw new DOMException('Preview superseded', 'AbortError');
         };
@@ -235,7 +256,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     const assembler: typeof inner = { ...inner, prepare(budget) {
                         inner.prepare(budget);
                         const frame = inner.readFrame();
-                        if (frame && !frameIds.has(frame) && requestedIds) frameIds.set(frame, requestedIds);
+                        if (frame && !frameIds.has(frame) && requestedIds) {
+                            frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration);
+                        }
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision });
                     frames = assembler; pair = layers;
@@ -243,10 +266,14 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
                         const frame = layers.readyFrame();
                         const ids = frame && frameIds.get(frame);
-                        return frame && ids && assembler.isCurrent(frame) ? { frame, nodeIds: ids } : null;
+                        if (frame && ids && assembler.isCurrent(frame)) {
+                            if (frameGenerations.get(frame) === generation) settle();
+                            return { frame, nodeIds: ids };
+                        }
+                        return null;
                     });
                 }
-                requestedIds = candidates;
+                requestedIds = candidates; requestedGeneration = seq;
                 frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
                 if (pendingRelease === releaseLeases) pendingRelease = null;
             } catch (error) {
@@ -269,11 +296,42 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             } catch (error) { clear(); report(error); }
         },
         showOps(ops) { try { start(operationNodes(runtime.session.doc, ops)); } catch (error) { clear(); report(error); } },
+        waitUntilReady(signal) {
+            if (disposed || signal.aborted || !pin || !controller) return Promise.reject(interrupted());
+            const frame = pair?.readyFrame();
+            if (frame && frames?.isCurrent(frame) && frameGenerations.get(frame) === generation) return Promise.resolve();
+            return new Promise<void>((resolve, reject) => {
+                const waiter = { generation, resolve, reject, signal, abort: () => {} };
+                waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };
+                waiters.add(waiter); signal.addEventListener('abort', waiter.abort, { once: true });
+                if (signal.aborted) waiter.abort();
+            });
+        },
+        armCommit() {
+            if (disposed || commitRevision !== null || !pin || !options.current()) throw new Error('Preview cannot be committed');
+            commitRelease = runtime.session.beginGesture();
+            commitRevision = runtime.session.doc.rev + 1;
+        },
+        finishCommit() { if (commitRevision !== null && runtime.session.doc.rev !== commitRevision) clearNow(); },
+        cancelCommit() {
+            // An apply can succeed before a later release reports an error; retain its visible preview.
+            if (commitRevision !== null && runtime.session.doc.rev === commitRevision) return;
+            clearNow();
+        },
+        presented(revision, token, frame) {
+            if (commitRevision === null || revision < commitRevision || !frame || frame.sceneRevision !== revision || !pin) return;
+            const expected = pin.token, actual = frame.token;
+            if (token.vaultEpoch !== expected.vaultEpoch || token.documentId !== expected.documentId
+                || token.bytesGeneration !== expected.bytesGeneration || token.session !== expected.session
+                || actual.vaultEpoch !== expected.vaultEpoch || actual.documentId !== expected.documentId
+                || actual.bytesGeneration !== expected.bytesGeneration || actual.session !== expected.session) return;
+            clearNow();
+        },
         showTextPaint(node, paint, faces, localToWorld) {
             try { const copy = copyNode(node); start(new Map([[copy.id, copy]]), { node: copy.id, paint, faces, localToWorld: [...localToWorld] as unknown as Affine }); }
             catch (error) { clear(); report(error); }
         },
         clear,
-        dispose() { if (!disposed) { clear(); disposed = true; unbind(); } },
+        dispose() { if (!disposed) { clearNow(); disposed = true; unbind(); } },
     };
 }

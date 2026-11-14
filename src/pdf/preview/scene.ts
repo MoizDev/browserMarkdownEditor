@@ -85,6 +85,7 @@ export class PreviewScene {
     }
 
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
+        if (!this.visible || !this.snapshotValue) return { complete: false, sharp: false };
         return this.layer.coverage(view, gpu);
     }
 

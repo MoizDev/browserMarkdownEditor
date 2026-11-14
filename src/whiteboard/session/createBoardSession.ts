@@ -217,7 +217,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         checkpoint() { guard(); try { scheduler.flushNow(); return capture(); } finally { notifyPending(); } },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
-            if (disposed || outcome !== 'written' || revision <= savedRevision || revision > contentRevision) return;
+            // A first format conversion can write admitted revision zero without a model edit.
+            // Its built checkpoint is still the durable baseline; pruning makes repeats inert.
+            if (disposed || outcome !== 'written' || revision < savedRevision || revision > contentRevision) return;
             const captured = checkpoints.get(revision);
             if (!captured?.checkpoint.product()) return;
             savedRevision = revision;

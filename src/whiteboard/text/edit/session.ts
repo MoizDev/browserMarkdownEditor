@@ -161,13 +161,14 @@ export class TextEditSession {
         this.blinkTimer = setTimeout(tick, 530);
     }
 
-    private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
+    private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): boolean {
         this.resetBlink();
         try { this.selection = this.controller.replace(change, kind, this.selection); this.lastText = this.services.plainText(); }
-        catch (error) { this.services.reportError(error); return; }
+        catch (error) { this.services.reportError(error); return false; }
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
+        return true;
     }
 
     private select(next: EditSelection, moving = false): void {
@@ -279,7 +280,6 @@ export class TextEditSession {
         if (!this.services.alive()) { this.close(false); return; }
         if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
         this.host.sync();
-        this.lastText = this.services.plainText();
         const layout = this.services.layout();
         const { a, b, c, d, e, f } = layout.localToClient;
         const container = this.host.element.parentElement?.getBoundingClientRect();
@@ -358,16 +358,16 @@ export class TextEditSession {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
     }
 
-    deleteSelection(): void {
+    deleteSelection(): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
-        if (from === to) return;
+        if (from === to) return false;
         this.typingHistory.close();
         this.services.history.open('Cut text');
-        try { this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); }
+        try { const deleted = this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); return deleted; }
         finally { this.services.history.close(); }
     }
 
-    replaceSelection(fragment: RichFragment): void {
+    replaceSelection(fragment: RichFragment): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
@@ -377,7 +377,8 @@ export class TextEditSession {
             this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
             this.lastText = this.services.plainText();
             this.select(next);
-        } catch (error) { this.services.reportError(error); }
+            return true;
+        } catch (error) { this.services.reportError(error); return false; }
         finally { this.services.history.close(); }
     }
 

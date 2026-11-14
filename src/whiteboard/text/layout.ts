@@ -6,7 +6,7 @@ import { ReferenceMeasurer } from './measure';
 import { CaretLineCache, makeCaretIndex } from './caretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
-import type { Marks } from './richText';
+import type { Marks, RichText } from './richText';
 
 interface Piece { readonly from: number; readonly to: number; readonly item: TextItem; readonly face: number; readonly ink: InkRef; readonly text: string; readonly width: number; readonly fallback: boolean }
 interface LineDraft { readonly block: ItemizedBlock; readonly from: number; readonly to: number; readonly height: number; readonly heading: boolean; readonly pieces: readonly Piece[]; readonly width: number; readonly marker: string; readonly markerFace: number; readonly markerWidth: number; readonly indent: number }
@@ -25,6 +25,9 @@ export class BoardTextLayout implements TextLayoutEngine {
     private readonly faceIds = new Map<string, number>();
     readonly faceTable: FaceTable = { faces: this.faces };
     private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement }>();
+    private readonly textIds = new WeakMap<RichText, number>();
+    private readonly instanceId = crypto.randomUUID();
+    private nextTextId = 1;
     private readonly caretLines = new CaretLineCache();
     constructor(private readonly measurer: ReferenceMeasurer, private readonly fonts: BoardFonts) {}
     async prepare(request: TextLayoutRequest): Promise<void> {
@@ -103,7 +106,9 @@ export class BoardTextLayout implements TextLayoutEngine {
             const font = faceKey(request.style.font, {}, heading);
             states.set(JSON.stringify(font), this.fonts.isLoaded(font));
         }
-        const key = sha256(new TextEncoder().encode(JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch, [...states].sort()])));
+        let textId = this.textIds.get(request.text);
+        if (textId === undefined) { textId = this.nextTextId++; this.textIds.set(request.text, textId); }
+        const key = sha256(new TextEncoder().encode(JSON.stringify([this.instanceId, request.revision, textId, request.style, request.width, request.fontEpoch, [...states].sort()])));
         const old = this.layouts.get(key);
         if (old) return old;
         const style = request.style, pad = style.padding;
@@ -179,7 +184,9 @@ export class BoardTextLayout implements TextLayoutEngine {
                 }
                 const pieces = this.visual(last.block, last.from, fit, this.pieces(last.block, last.from, fit, request, size, last.heading));
                 const item: TextItem = { from: fit, to: fit, level: last.block.bidi.level, marks: {} };
-                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth, fallback: true };
+                const ellipsisFace = this.faces[face];
+                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth,
+                    fallback: !ellipsisFace.loaded || !fontSupports(ellipsisFace.key, ellipsis) };
                 if (last.block.bidi.level & 1) pieces.unshift(marker); else pieces.push(marker);
                 drafts[drafts.length - 1] = { ...last, to: fit, pieces, width: pieces.reduce((sum, piece) => sum + piece.width, 0) };
             }
@@ -213,7 +220,8 @@ export class BoardTextLayout implements TextLayoutEngine {
                 const markerWidth = metric.width * scale;
                 left = Math.min(left, markerX - metric.left * scale); right = Math.max(right, markerX + metric.right * scale);
                 top = Math.min(top, baseline - metric.ascent * scale); bottom = Math.max(bottom, baseline + metric.descent * scale);
-                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink, systemFallback: true, src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
+                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink,
+                    systemFallback: !markerFace.loaded || !fontSupports(markerFace.key, draft.marker), src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
             }
             for (const piece of draft.pieces) {
                 const f = this.faces[piece.face], scale = f.size / 64;

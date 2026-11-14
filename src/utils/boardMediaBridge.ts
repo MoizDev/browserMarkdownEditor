@@ -5,12 +5,13 @@ import { fingerprintSnapshot } from './snapshotFingerprint';
  * tab retires this bridge, rather than redirecting an in-flight write. */
 export interface BoardMediaOwner {
     documentId: string;
+    session: number;
     vaultActivation: number;
     root: FileSystemDirectoryHandle;
     parent: FileSystemDirectoryHandle;
     owner: FileSystemFileHandle;
     lifetime: AbortSignal;
-    isCurrent: (documentId: string, vaultActivation: number) => boolean;
+    isCurrent: (documentId: string, session: number, vaultActivation: number) => boolean;
 }
 
 export interface BoardMediaDescriptor {
@@ -39,7 +40,7 @@ export function createBoardMediaBridge(
     owner: BoardMediaOwner,
     pdf?: PdfMediaStaging,
 ) {
-    const isCurrent = () => !owner.lifetime.aborted && owner.isCurrent(owner.documentId, owner.vaultActivation);
+    const isCurrent = () => !owner.lifetime.aborted && owner.isCurrent(owner.documentId, owner.session, owner.vaultActivation);
     const request = (entry: BoardMediaDescriptor, signal: AbortSignal): BoardAssetAccess => {
         if (!/^sha256:[a-f0-9]{64}$/.test(entry.id) || !Object.hasOwn(EXTENSIONS, entry.mime)) {
             throw new Error('Invalid board media descriptor');

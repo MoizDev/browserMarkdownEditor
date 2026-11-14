@@ -75,7 +75,7 @@ export async function findFrameMembershipTargets(options: {
         groups.set(parent, values);
     }
     const cursor = scene.spatialCursor({ sheetId: options.sheet, purpose: 'selectable', includeLocked: true,
-        request: { kind: 'box', box: [x0, y0, x1, y1] } });
+        request: { kind: 'box', box: [x0, y0, x1, y1], order: 'forward' } });
     let complete = false, index = 0; const refs: SpatialRef[] = [];
     try {
         while (!complete || index < refs.length) {

@@ -71,7 +71,7 @@ export async function loadPdfiumModule(options: PdfiumLoadOptions): Promise<Pdfi
     if (typeof window !== 'undefined' || typeof location === 'undefined' || location.origin !== 'null' ||
         !options.glueUrl.startsWith('blob:null/')) throw broken('PDFium glue requires an opaque worker blob');
     const wasmExports = WebAssembly.Module.exports(options.wasm);
-    if (nativeSet.size !== 136 || wasmExports.length !== expectedWasm.size ||
+    if (nativeSet.size !== 138 || wasmExports.length !== expectedWasm.size ||
         wasmExports.some(entry => !expectedWasm.has(entry.name) || entry.kind !== (entry.name === 'memory' ? 'memory' : entry.name === '__indirect_function_table' ? 'table' : 'function'))) {
         throw broken('PDFium WASM export surface does not match its operation map');
     }

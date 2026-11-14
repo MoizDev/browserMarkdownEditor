@@ -2284,15 +2284,16 @@ export default function App() {
     trashInFlightRef.current = true;
     const activation = getVaultActivation();
     const controller = new AbortController();
-    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
-    const current = () => getVaultActivation() === activation && (!pdfTab || (pdfTab.representation.nativeCanvasKind === 'pdfInk'
-      && pdfTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(pdfTab.id)?.serial === pdfTab.representation.nativeCanvasSession
-      && tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256)));
+    const nativeKind = isPdfFile(node.name) ? 'pdfInk' : isNativeDrawingFile(node.name) ? 'drawing' : null;
+    const nativeTab = nativeKind ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => getVaultActivation() === activation && (!nativeTab || (nativeTab.representation.nativeCanvasKind === nativeKind
+      && nativeTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(nativeTab.id)?.serial === nativeTab.representation.nativeCanvasSession
+      && tabsRef.current.some(t => t.id === nativeTab.id && t.file.path === node.path && t.representation.generation === nativeTab.representation.generation && t.representation.legacyOriginalSha256 === nativeTab.representation.legacyOriginalSha256)));
     try {
       await reconcileQueueRef.current;
-      if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
-      const source = pdfTab ? null : await readFileVersioned(node.handle);
-      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (nativeKind && (!nativeTab || !current())) { notify('Open the converted document first to locate its pre-conversion copy.'); return; }
+      const source = nativeKind ? null : await readFileVersioned(node.handle);
+      const digest = nativeTab ? nativeTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
       if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
         notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
         return;
@@ -4284,13 +4285,14 @@ export default function App() {
    */
   useEffect(() => {
     if (!fileTree.length) return;
-    const kinds = { epub: false, pdf: false, drawing: false, notebook: false };
+    const kinds = { epub: false, pdf: false, drawing: false, nativeDrawing: false, notebook: false };
     for (const file of collectFiles(fileTree)) {
       if (isEpubFile(file.name)) kinds.epub = true;
       else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
       else if (isDrawingFile(file.name)) kinds.drawing = true;
-      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
+      else if (isNativeDrawingFile(file.name)) kinds.nativeDrawing = true;
+      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.nativeDrawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
   }, [fileTree]);

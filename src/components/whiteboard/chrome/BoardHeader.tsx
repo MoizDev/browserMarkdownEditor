@@ -6,6 +6,8 @@ import './chrome.css';
 
 export interface BoardHeaderProps {
     readonly commands: BoardCommandSource;
+    readonly locale: string;
+    readonly direction: 'ltr' | 'rtl';
     readonly menuLabel: string;
     readonly menuEntries: ContextMenuEntry[];
     readonly sheetName: string;
@@ -13,7 +15,7 @@ export interface BoardHeaderProps {
     readonly actionsLabel: string;
 }
 
-export function BoardHeader({ commands, menuLabel, menuEntries, sheetName, openSheets, actionsLabel }: BoardHeaderProps) {
+export function BoardHeader({ commands, locale, direction, menuLabel, menuEntries, sheetName, openSheets, actionsLabel }: BoardHeaderProps) {
     const [actionsOpen, setActionsOpen] = useState(false);
     const actionButton = useRef<HTMLButtonElement>(null);
     const actions = useRef<HTMLDivElement>(null);
@@ -50,7 +52,7 @@ export function BoardHeader({ commands, menuLabel, menuEntries, sheetName, openS
                     const anchor = event.currentTarget;
                     const rect = anchor.getBoundingClientRect();
                     openContextMenu({ x: rect.left, y: rect.bottom, entries: menuEntries,
-                        label: menuLabel, opener: anchor, anchor });
+                        label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor });
                 }}>{menuLabel}</button>
             <button type="button" className="board-chrome-tool" onClick={event => openSheets(event.currentTarget)}>{sheetName}</button>
         </nav>

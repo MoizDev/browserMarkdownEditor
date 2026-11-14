@@ -23,10 +23,12 @@ export function createSvgAdmissionProfile(frames: SvgFrameFactory): SvgAdmission
         async header(blob, signal) {
             const result = await request('svg-xml', 'header', blob, signal);
             if (!result || typeof result !== 'object') throw new Error('Invalid SVG decoder response');
-            const { width, height } = result as { width?: unknown; height?: unknown };
+            const { width, height, rgbaBytes } = result as { width?: unknown; height?: unknown; rgbaBytes?: unknown };
             if (typeof width !== 'number' || typeof height !== 'number' || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
-                || width < 1 || height < 1 || width > (2 ** 26) / height) throw new Error('Invalid SVG decoder response');
-            return { width, height };
+                || width < 1 || height < 1 || width > (2 ** 26) / height
+                || typeof rgbaBytes !== 'number' || !Number.isSafeInteger(rgbaBytes)
+                || rgbaBytes < width * height * 4 || rgbaBytes > 4 * (2 ** 26)) throw new Error('Invalid SVG decoder response');
+            return { width, height, rgbaBytes };
         },
         async probe(blob, signal) {
             const result = await request('svg-image', 'probe', blob, signal);

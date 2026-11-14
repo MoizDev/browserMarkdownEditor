@@ -1,6 +1,7 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import { countEditorTransaction, measureEditorRender } from './editorPerf';
 import type { SyntaxNode } from '@lezer/common';
 import { EditorSelection, Facet, Prec, RangeSet, RangeValue } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
@@ -1153,9 +1154,13 @@ export function createLivePreviewPlugin(
     const field = StateField.define<LivePreview>({
         create(state: EditorState) {
             const viewShim = { state };
+            if (__BME_BENCH__) {
+                return measureEditorRender(state, true, () => buildDecorations(viewShim, imageCtx, editorMode));
+            }
             return buildDecorations(viewShim, imageCtx, editorMode);
         },
         update(decorations: LivePreview, tr: Transaction) {
+            if (__BME_BENCH__) { countEditorTransaction(tr.state); }
             // Markdown parses asynchronously: on a large document the tree only
             // covers a prefix when the file opens, and the parser keeps advancing
             // in idle time, dispatching otherwise-empty transactions as it goes.
@@ -1168,6 +1173,9 @@ export function createLivePreviewPlugin(
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
             if (tr.docChanged || treeAdvanced || (tr.selection && editorMode !== 'read')) {
                 const viewShim = { state: tr.state };
+                if (__BME_BENCH__) {
+                    return measureEditorRender(tr.state, false, () => buildDecorations(viewShim, imageCtx, editorMode));
+                }
                 return buildDecorations(viewShim, imageCtx, editorMode);
             }
             if (tr.state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) {

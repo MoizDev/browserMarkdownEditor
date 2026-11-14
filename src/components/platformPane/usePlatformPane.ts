@@ -30,14 +30,16 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
     useLayoutEffect(() => {
         current.current = { isVisible, isFocused, layers };
     }, [isVisible, isFocused, layers]);
-    useLayoutEffect(() => { pane.current?.setLayers(layers); }, [layers]);
+    // Hide before a simultaneous layer replacement can schedule any more view work.
     useLayoutEffect(() => { pane.current?.setVisible(isVisible); }, [isVisible]);
     useLayoutEffect(() => { pane.current?.setFocused(isFocused); }, [isFocused]);
+    useLayoutEffect(() => { pane.current?.setLayers(layers); }, [layers]);
 
     useLayoutEffect(() => {
         if (!host || identity === null) return;
         const [session, bytesGeneration] = identity.split(':').map(Number);
         let cancelled = false;
+        let owned: PlatformPane | null = null;
         void import('../../platform/render/cpuEntry').then(({ attachPlatformPane }) => {
             if (cancelled) return;
             const state = current.current;
@@ -49,15 +51,18 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
                 layers: state.layers,
             });
             if (cancelled) attached.dispose();
-            else pane.current = attached;
+            else {
+                owned = attached;
+                pane.current = attached;
+            }
         }).catch(error => {
             if (!cancelled) services.onError(error);
         });
         return () => {
             cancelled = true;
-            const attached = pane.current;
-            pane.current = null;
-            attached?.dispose();
+            if (pane.current === owned) pane.current = null;
+            owned?.dispose();
+            owned = null;
         };
     }, [host, identity, vaultEpoch, documentId, services]);
 

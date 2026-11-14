@@ -49,16 +49,19 @@ export class PreviewScene {
         this.sceneRevision++;
         // Viewer sync can precede ResizeObserver and the actor's first grant. Copy only from
         // the scheduled preparation phase, after that observation has installed pane demand.
-        this.layer.queueCpuPrepare(() => this.copyVisible(snapshot));
+        this.layer.setExpected(new Map(snapshot.pages.map(page => [page.index, {
+            rect: page.pageRect, key: page.rasterKey === null ? '' : JSON.stringify([page.rasterKey, page.canvasRect]),
+        }])));
+        this.layer.queueCpuPrepare(view => this.copyVisible(snapshot, view));
         this.invalidate();
     }
 
-    private copyVisible(snapshot: PreviewSnapshot): void {
+    private copyVisible(snapshot: PreviewSnapshot, frame: ViewState): void {
         if (this.disposed || !this.visible || this.snapshotValue !== snapshot) return;
-        const view = snapshot.camera;
+        const view = frame.camera;
         const viewport: PreviewRect = {
             x: view.x, y: view.y,
-            width: snapshot.scroll.clientWidth / view.z, height: snapshot.scroll.clientHeight / view.z,
+            width: frame.viewport.width / view.z, height: frame.viewport.height / view.z,
         };
         const expected = new Map<number, PreviewExpectedPage>();
         const live = new Set<number>();

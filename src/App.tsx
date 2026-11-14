@@ -23,7 +23,9 @@ import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
 import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
-import { hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
+import { decodeDocumentText, hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
+import { VaultIndexSession } from './utils/vaultIndexSession';
+import { IndexSessionGuard } from './utils/indexSessionGuard';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -403,6 +405,28 @@ export default function App() {
     subscribeVaultChanges,
     liveDetection,
   } = useFileSystem();
+
+  const searchActivation = getVaultActivation();
+  const searchIndex = useMemo(() => new VaultIndexSession(async node => {
+    const file = await handleIO.file(node.handle);
+    return {
+      version: { lastModified: file.lastModified, size: file.size },
+      read: async () => {
+        const bytes = await file.arrayBuffer();
+        try { return decodeDocumentText(bytes).replace(/\r\n?/g, '\n'); }
+        catch { return undefined; }
+      },
+    };
+  }, new IndexSessionGuard(searchActivation, () => getVaultActivation() === searchActivation)),
+  [searchActivation, handleIO, getVaultActivation]);
+  const searchIndexRef = useRef({ index: searchIndex, activation: getVaultActivation(), root: rootHandle });
+  const searchWriteRevisionRef = useRef(0);
+  useLayoutEffect(() => {
+    const previous = searchIndexRef.current;
+    const activation = getVaultActivation();
+    if (previous.index !== searchIndex) previous.index.dispose();
+    searchIndexRef.current = { index: searchIndex, activation, root: rootHandle };
+  }, [searchIndex, getVaultActivation, rootHandle]);
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
@@ -2076,6 +2100,8 @@ export default function App() {
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
+    const indexAtCall = searchIndexRef.current;
+    const searchWriteRevision = ++searchWriteRevisionRef.current;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
     // going away keeps its text beside it rather than taking it along.
@@ -2171,9 +2197,10 @@ export default function App() {
         const linksMoved = isMarkdownFile(file.name)
           && primeLinks(path, result.version.lastModified, result.version.size, snapshot);
         if (linksMoved) rebuildGraphRef.current(false);
-        // Notifies the vault-search index (see utils/saveEpoch.ts) so a file that
-        // was edited, saved and then closed is re-read from disk. Deliberately not
-        // React state: as a prop it re-rendered the whole file tree every save.
+        if (!isPdf && !isCanvasFile(file.name) && isTextFile(file.name)
+          && rootAtCall === indexAtCall.root && indexAtCall.activation === getVaultActivation()) {
+          indexAtCall.index.primeWritten(path, result.version, snapshot, searchWriteRevision);
+        }
         bumpSaveEpoch();
         return 'written';
       } catch (err) {
@@ -2201,7 +2228,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard]);
+  }, [clearSaveTimer, contentOf, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -4358,6 +4385,7 @@ export default function App() {
           if (held) lift(id, path);
           continue;
         }
+        searchIndexRef.current.index.invalidate(path);
         if (diskStateRef.current.get(id) === 'conflict') continue;
         if (flushingRef.current.has(id)) { retry.add(path); continue; }
         contentChanged = true;
@@ -4430,6 +4458,8 @@ export default function App() {
     // comes back here as `modified`, and nudging on that echo doubled the
     // graph's vault-wide stat pass per save.
     const open = new Set(tabsRef.current.map(t => t.file.path));
+    if (batch.rescan) searchIndexRef.current.index.revalidate();
+    else for (const path of batch.modified) if (!open.has(path)) searchIndexRef.current.index.invalidate(path);
     if (batch.rescan || [...batch.modified].some(p => !open.has(p))) {
       rebuildGraphRef.current();
       bumpSaveEpoch();
@@ -4478,6 +4508,8 @@ export default function App() {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || resolvingRef.current.has(tab.id)) return;
     const { id, file } = tab;
+    const indexAtCall = searchIndexRef.current;
+    const searchWriteRevision = ++searchWriteRevisionRef.current;
     if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
       if (action === 'close') removeTab(path, false);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
@@ -4538,6 +4570,10 @@ export default function App() {
         syncExitGuard();
         clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
+        if (typeof data === 'string' && !isCanvasFile(file.name) && isTextFile(file.name)
+          && indexAtCall.activation === getVaultActivation()) {
+          indexAtCall.index.primeWritten(path, result.version, data, searchWriteRevision);
+        }
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
@@ -4592,7 +4628,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -4676,14 +4712,19 @@ export default function App() {
       readFile,
       readFileBytes,
       readFileVersioned,
+      statFile,
       writeFileVersioned,
       writeFile,
       createFile,
       createFolder,
       nameTaken,
       updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
-      afterWrite: (file, before, after) => {
+      afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
+        if (activation === getVaultActivation()) {
+          if (version && isTextFile(file.name) && !isCanvasFile(file.name)) searchIndexRef.current.index.primeWritten(file.path, version, after, ++searchWriteRevisionRef.current);
+          else searchIndexRef.current.index.invalidate(file.path);
+        }
         recordFileWritten(file.path);
         requeueAssetsAffected(file.path);
         if (isCanvasFile(file.name)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
@@ -4989,6 +5030,7 @@ export default function App() {
         <FileExplorer
           readSnapshot={handleIO.file}
           rootHandle={rootHandle}
+          searchIndex={searchIndex}
           fileTree={fileTree}
           onFileClick={handleFileClick}
           onCreateFile={handleCreateFile}

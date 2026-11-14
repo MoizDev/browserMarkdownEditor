@@ -143,7 +143,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const requestedPixels = size ? size.physical.width * size.physical.height : 0;
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
-                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0), cpuPinned: false };
+                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0),
+                cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,
         notice: () => options.onNotice('memory-pressure'),
@@ -317,6 +318,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const setVisible = (next: boolean): void => {
         if (disposed || visible === next) return;
         visible = next;
+        if (!next) {
+            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
+            lifecycle?.hidePane();
+            surfaceHost.clearStaged();
+            gpu = null;
+        }
         const now = performance.now();
         for (const cache of caches) for (const handle of [cache.cpu, cache.gpu]) {
             handle.updateActivity({ hiddenAt: next ? null : now, lastVisibleAt: now, lastUsedAt: now });
@@ -327,11 +334,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const size = observer.current;
             lifecycle?.showPane({ visible: true, focused, cssWidth: size?.cssWidth ?? 0, cssHeight: size?.cssHeight ?? 0, lastInputAt });
             observer.refresh();
-        } else {
-            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
-            lifecycle?.hidePane();
-            surfaceHost.clearStaged();
-            gpu = null;
         }
     };
     setVisible(options.initialVisible);

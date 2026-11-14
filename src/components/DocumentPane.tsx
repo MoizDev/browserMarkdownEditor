@@ -18,6 +18,7 @@ import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
 import { createLivePreviewPlugin } from '../editor/livePreview';
+import { markEditorModeRender } from '../editor/editorPerf';
 import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
 import { indentSettings, listIndentKeymap } from '../editor/lists';
@@ -1087,6 +1088,7 @@ function DocumentPane({
                 const restoreSelection = captureReadingSelection(view);
                 if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
                 const wasReadOnly = view.state.readOnly;
+                if (__BME_BENCH__) { if (!isCode && !isTex && wasReadOnly !== (mode === 'read')) markEditorModeRender(); }
                 view.dispatch({
                     effects: [
                         themeCompartment.reconfigure(themeExtensions(theme, isCode)),
@@ -1192,6 +1194,7 @@ function DocumentPane({
                 if (restoreSelection) queueTableReadingSelection(view, restoreSelection);
                 const wasReadOnly = view.state.readOnly;
                 const modeChanged = wasReadOnly !== (mode === 'read');
+                if (__BME_BENCH__) { if (modeChanged && !isCode && !isTex) markEditorModeRender(); }
                 view.dispatch({ effects: [
                     ...(modeChanged ? [readOnlyCompartment.reconfigure(modeExtensions(mode)),livePreviewCompartment.reconfigure(livePreviewFor(mode))] : []),
                     ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),

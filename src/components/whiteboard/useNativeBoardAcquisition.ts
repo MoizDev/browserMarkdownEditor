@@ -14,10 +14,23 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
     const [entry, setEntry] = useState<{ documentId: string; vaultActivation: number; bytesGeneration: number;
         kind: NativeBoardAcquisitionOptions<S>['kind']; value: AcquiredNativeBoard<S> } | null>(null);
     const { documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
-        emergencyReadOnlyReason, prepare } = options;
+        emergencyReadOnlyReason, prepare, existing } = options;
     useEffect(() => {
         const abort = new AbortController();
         let alive = true;
+        try {
+            const value = existing?.();
+            if (value) {
+                const identity = getSessionIdentity(documentId);
+                if (!identity || identity.bytesGeneration !== bytesGeneration || value.adapter.owner.documentId !== documentId
+                    || value.adapter.owner.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
+                setEntry({ documentId, vaultActivation, bytesGeneration, kind, value });
+                return () => { alive = false; abort.abort(); };
+            }
+        } catch (cause) {
+            if (!(cause instanceof DOMException && cause.name === 'AbortError')) error.current(cause);
+            return () => { alive = false; abort.abort(); };
+        }
         void (async () => {
             let prepared: PreparedNativeBoard<S> | undefined;
             let taken = false;
@@ -62,7 +75,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
             } finally { if (prepared && !taken) prepared.dispose(); }
         })();
         return () => { alive = false; abort.abort(); };
-    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare]);
+    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare, existing]);
     return entry && entry.documentId === documentId && entry.vaultActivation === vaultActivation
         && entry.bytesGeneration === bytesGeneration && entry.kind === kind ? entry.value : null;
 }

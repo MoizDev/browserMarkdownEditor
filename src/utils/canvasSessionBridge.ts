@@ -5,6 +5,7 @@ import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 export interface CanvasSessionBridge extends SessionAdapter {
     /** StrictMode and additional panes attach to the same engine session. */
     attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A;
+    peek<A extends SessionAdapter>(): A | undefined;
     dispose(): Promise<void>;
 }
 
@@ -53,6 +54,7 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         for (const listener of [...listeners]) listener(source);
     };
     return {
+        peek<A extends SessionAdapter>() { return disposed ? undefined : adapter as A | undefined; },
         attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A {
             if (disposed) throw new Error('Cannot attach a released canvas session');
             if (adapter) return adapter as A;

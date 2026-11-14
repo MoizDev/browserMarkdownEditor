@@ -1,0 +1,13 @@
+.pdf-tiled-link {
+    display: block;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+.pdf-tiled-link:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: -2px;
+    background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+}

@@ -128,5 +128,85 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             record(list[i], 'order');
         }
     }
-    return result(items, null);
+    // Build parent buckets once; a chain of dissolving groups is linear rather
+    // than rescanning every node on each removal. An opaque descendant pins all
+    // of its ancestors: its byte-preserved parent cannot be rewritten.
+    const opaqueAncestors = new Set<ParentId>();
+    for (const item of items) {
+        if (item.node.kind !== 'opaque') continue;
+        let parent = item.node.parent;
+        for (let depth = 0; depth <= 64; depth++) {
+            opaqueAncestors.add(parent);
+            const ancestor = byId.get(parent as NodeId);
+            if (!ancestor) break;
+            parent = ancestor.node.parent;
+        }
+    }
+    const live = new Set(items.map(item => item.node.id));
+    const groups = items.filter(item => item.node.kind === 'group').map(item => item.node.id);
+    for (let index = 0; index < groups.length; index++) {
+        if ((index & 1023) === 0) await tick();
+        const item = byId.get(groups[index]);
+        if (!item || !live.has(item.node.id) || item.node.kind !== 'group' || opaqueAncestors.has(item.node.id)) continue;
+        const group = item.node;
+        const direct = children.get(group.id) ?? [];
+        if (direct.length >= 2) continue;
+        // Removing unknown group fields or silently overriding preserved raw
+        // child properties would destroy newer-format content. Keep original.
+        if (group.ext && (group.ext.fields.size || group.ext.raw.size)) return result(items, 'A group with preserved metadata cannot be dissolved safely');
+        if (direct[0]?.node.ext?.raw.size) return result(items, 'A group child has preserved properties that prevent safe dissolution');
+        const parentChildren = children.get(group.parent);
+        const parentIndex = parentChildren?.indexOf(item) ?? -1;
+        const child = direct[0];
+        if (child) {
+            if (child.node.kind === 'opaque') return result(items, 'Repair would move an opaque record');
+            const c = Math.cos(group.rotation), s = Math.sin(group.rotation);
+            const angle = (group.rotation + child.node.rotation) % (Math.PI * 2);
+            child.node = { ...child.node, parent: group.parent, order: group.order,
+                x: group.x + c * child.node.x - s * child.node.y,
+                y: group.y + s * child.node.x + c * child.node.y,
+                rotation: angle < 0 ? angle + Math.PI * 2 : angle,
+                page: sheets.has(group.parent) ? group.page : -1,
+                opacity: group.opacity * child.node.opacity,
+                locked: group.locked || child.node.locked };
+            record(child, 'dissolved-group-child');
+        }
+        if (parentChildren && parentIndex >= 0) {
+            if (child) parentChildren.splice(parentIndex, 1, child);
+            else parentChildren.splice(parentIndex, 1);
+        }
+        live.delete(group.id); children.delete(group.id);
+        record(item, 'dissolved-group');
+        const parent = byId.get(group.parent as NodeId);
+        if (parent?.node.kind === 'group') groups.push(parent.node.id);
+    }
+    const sheetCache = new Map<NodeId, ParentId | null>();
+    const sheetFor = (item: Item): ParentId | null => {
+        const path: NodeId[] = [];
+        let current: Item | undefined = item, sheet: ParentId | null = null;
+        while (current) {
+            if (sheetCache.has(current.node.id)) { sheet = sheetCache.get(current.node.id)!; break; }
+            path.push(current.node.id);
+            if (sheets.has(current.node.parent)) { sheet = current.node.parent; break; }
+            current = byId.get(current.node.parent as NodeId);
+        }
+        for (const id of path) sheetCache.set(id, sheet);
+        return sheet;
+    };
+    for (let i = 0; i < items.length; i++) {
+        if ((i & 1023) === 0) await tick();
+        const item = items[i], node = item.node;
+        if (!live.has(node.id) || node.kind !== 'connector') continue;
+        const sheet = sheetFor(item);
+        const detach = (end: typeof node.start) => {
+            if (!end.attach) return end;
+            const target = byId.get(end.attach.target);
+            if (target && live.has(target.node.id) && target.node.id !== node.id && target.node.kind !== 'connector'
+                && target.node.kind !== 'group' && target.node.kind !== 'opaque' && sheet !== null && sheetFor(target) === sheet) return end;
+            return { x: end.x, y: end.y, attach: null };
+        };
+        const start = detach(node.start), end = detach(node.end);
+        if (start !== node.start || end !== node.end) { item.node = { ...node, start, end }; record(item, 'detached-attachment'); }
+    }
+    return result(items.filter(item => live.has(item.node.id)), null);
 }

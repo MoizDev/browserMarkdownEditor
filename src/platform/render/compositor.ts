@@ -224,14 +224,19 @@ export class GpuCompositor implements PaneCompositor {
             snapshot.layers.some(layer => layer.isolation?.blend === 'multiply'));
         for (const shortfall of this.#shortfalls) plan.shortfall(shortfall);
         this.#isolationPlan = plan;
-        try { this.#options.owner.prepareFrameResources(); this.#prepareQuad(); }
-        catch (error) { this.#failure(error); }
+        try {
+            if (!this.#options.owner.frameResourcesReady && !budget.claimUpload(1)) {
+                this.#options.invalidate('gpu-frame-resources-deferred'); return;
+            }
+            this.#options.owner.prepareFrameResources(); this.#prepareQuad();
+        } catch (error) { this.#failure(error); }
     }
 
     finishPrepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         const plan = this.#isolationPlan;
         this.#isolationPlan = null;
-        if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token)) return;
+        if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token) ||
+            !this.#options.owner.frameResourcesReady) return;
         if (budget.shouldYield()) { this.#options.invalidate('isolation-admission-deferred'); return; }
         try {
             if (!this.#options.owner.admitIsolation(plan.finish())) {
@@ -456,7 +461,16 @@ export class GpuCompositor implements PaneCompositor {
     }
     #failure(error: unknown): void {
         if (error instanceof IsolationShortfall) {
-            this.#shortfalls.push(error);
+            const request = error.request;
+            const existing = this.#shortfalls.findIndex(item => item.request.format === request.format &&
+                item.request.samples === request.samples && item.request.stencil === request.stencil);
+            if (existing < 0) this.#shortfalls.push(error);
+            else {
+                const previous = this.#shortfalls[existing];
+                this.#shortfalls[existing] = new IsolationShortfall({ ...request,
+                    width: Math.max(previous.request.width, request.width), height: Math.max(previous.request.height, request.height) },
+                Math.max(previous.simultaneous, error.simultaneous), previous.external || error.external);
+            }
             this.#retryPending = true;
             this.#options.invalidate('isolation-shortfall');
             return;

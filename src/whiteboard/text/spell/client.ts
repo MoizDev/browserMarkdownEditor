@@ -1,6 +1,7 @@
 import affUrl from '../../../../node_modules/dictionary-en/index.aff?url';
 import dicUrl from '../../../../node_modules/dictionary-en/index.dic?url';
 import type { Misspelling } from './menu';
+import { normalizeUserDictionary } from './dictionary';
 
 type Payload = { kind: 'init'; aff: string; dic: string; custom: readonly string[] }
     | { kind: 'check'; text: string }
@@ -20,16 +21,6 @@ function misspellings(value: unknown, text: string): readonly Misspelling[] {
     return result;
 }
 
-function clampDictionary(input: readonly string[]): readonly string[] {
-    const words: string[] = [], seen = new Set<string>();
-    for (const word of input) {
-        if (typeof word !== 'string' || !word.length || word.length > 64 || !/^[\p{L}\p{M}'’\-]+$/u.test(word) || seen.has(word)) continue;
-        seen.add(word); words.push(word);
-        if (words.length === 10_000) break;
-    }
-    return words;
-}
-
 /** Loaded on first text edit; dictionaries survive worker failure without another fetch. */
 export class BoardSpellClient {
     private worker: Worker | null = null;
@@ -43,7 +34,7 @@ export class BoardSpellClient {
     private debounce: ReturnType<typeof setTimeout> | null = null;
     private generation = 0;
 
-    constructor(custom: readonly string[]) { this.custom = clampDictionary(custom); }
+    constructor(custom: readonly string[]) { this.custom = normalizeUserDictionary(custom); }
 
     private request<T>(payload: Payload, deadline = 0, terminateOnDeadline = false): Promise<T> {
         const worker = this.worker;
@@ -126,7 +117,7 @@ export class BoardSpellClient {
 
     async setDictionary(words: readonly string[]): Promise<void> {
         this.cancelCheck();
-        this.custom = clampDictionary(words);
+        this.custom = normalizeUserDictionary(words);
         const worker = this.worker;
         if (!this.ready || !worker) return;
         await this.ready;

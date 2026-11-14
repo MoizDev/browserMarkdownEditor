@@ -28,6 +28,7 @@ import { editableTextRequest } from '../text/edit/request';
 import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
+import { validUserWord } from '../text/spell/dictionary';
 import { spellingAtOffset, visibleSpellingPaths } from '../text/spell/visible';
 import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
 import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
@@ -145,7 +146,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const request = new SpellingMenuRequest({
             revision: () => doc.rev,
             suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
-            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’\-]+$/u.test(word),
+            canAdd: validUserWord,
             add: word => { options.spelling.add(word); manager.current?.editor.focus(); },
             replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
             open: rows => options.ui.spellingMenu(x, y, rows),

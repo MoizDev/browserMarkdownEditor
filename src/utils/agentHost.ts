@@ -601,6 +601,13 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 tabs,
                 focusedPath: focusedPathOf(deps.layout),
                 remembered: path => rememberedPosition(getDeps(), path),
+                // The same native read the tools use, guarded to this vault for its whole duration.
+                nativeView: (path, signal) => {
+                    const root = deps.root;
+                    return toolHost.nativeCanvasView
+                        ? toolHost.nativeCanvasView(path, { signal, isCurrent: () => getDeps().root === root })
+                        : Promise.resolve(null);
+                },
             };
         },
 

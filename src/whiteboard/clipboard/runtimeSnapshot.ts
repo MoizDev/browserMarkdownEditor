@@ -28,7 +28,8 @@ export interface BoardCopySnapshotOptions {
 export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions): Promise<CopySnapshot> {
     const { runtime } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
-    const signal = options.signal ?? new AbortController().signal, scene = runtime.scene;
+    // Captured before the first await: this copy's paint uses its own start binding, never a later rebind.
+    const signal = options.signal ?? new AbortController().signal, scene = runtime.scene, paintBinding = runtime.paintBinding;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     if (!scene || !scene.ready || scene.revision !== revision) throw new Error('Clipboard scene is not ready');
     const pin = scene.pin(), held: ClipboardLease[] = [pin];
@@ -143,7 +144,7 @@ export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions)
         check(); await encoderBounds.prepare(allIds, signal); check();
         const rootBounds = new Map<NodeId, ClipboardBounds>();
         for (const id of roots) {
-            const paint = await runtime.render.prepareOverlay(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
+            const paint = await paintBinding.prepareOverlay(projection, { sheetId: state.sheet, theme: 'light' }, ordered.get(id)!, signal);
             check();
             const measured = await measureBoardPaintBounds(paint, { memory: options.memory, signal, cooperate: tick,
                 toleranceWorld: options.toleranceWorld, includeInvisible: true }); check();

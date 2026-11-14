@@ -13,6 +13,8 @@ export interface EdgeScrollOptions {
     current(): boolean;
     enabled(): boolean;
     cameraChanged(): void;
+    onInputFrame(callback: () => void): () => void;
+    invalidate(): void;
 }
 interface Contact { readonly id: number; x: number; y: number; modifiers: Modifiers; sample: RealSample | null }
 const EDGE = 8, DWELL = 200, RAMP = 200, SPEED = 800;
@@ -21,13 +23,18 @@ const EDGE = 8, DWELL = 200, RAMP = 200, SPEED = 800;
  * selection is reprojected only when the panned frame has actually presented. */
 export class EdgeScroll {
     private contact: Contact | null = null;
-    private frame = 0;
+    private scheduled = false;
+    private readonly unsubscribe: () => void;
     private entered = 0;
     private last = 0;
     private pending: PresentedMapping | null = null;
     private disposed = false;
     constructor(private readonly options: EdgeScrollOptions) {
         const root = options.surface;
+        this.unsubscribe = options.onInputFrame(() => {
+            if (!this.scheduled || this.disposed) return;
+            this.scheduled = false; this.tick(performance.now());
+        });
         root.addEventListener('pointerdown', this.down, true);
         root.addEventListener('pointermove', this.move, true);
         root.addEventListener('pointerup', this.up, true);
@@ -61,10 +68,9 @@ export class EdgeScroll {
         this.contact.sample = sample; this.schedule();
     }
     private schedule(): void {
-        if (!this.frame && !this.disposed && this.contact) this.frame = requestAnimationFrame(this.tick);
+        if (!this.scheduled && !this.disposed && this.contact) { this.scheduled = true; this.options.invalidate(); }
     }
     private tick = (now: number): void => {
-        this.frame = 0;
         const contact = this.contact, { router, token, surface, camera, mappings } = this.options;
         if (!contact || !this.options.current() || !this.options.enabled()) { this.stop(); return; }
         const owner = router.activeOwner;
@@ -98,12 +104,11 @@ export class EdgeScroll {
         this.schedule();
     };
     private stop(): void {
-        if (this.frame) cancelAnimationFrame(this.frame);
-        this.frame = 0; this.entered = 0; this.last = 0; this.pending = null; this.contact = null;
+        this.scheduled = false; this.entered = 0; this.last = 0; this.pending = null; this.contact = null;
     }
     dispose(): void {
         if (this.disposed) return;
-        this.disposed = true; this.stop();
+        this.disposed = true; this.stop(); this.unsubscribe();
         const root = this.options.surface;
         root.removeEventListener('pointerdown', this.down, true);
         root.removeEventListener('pointermove', this.move, true);

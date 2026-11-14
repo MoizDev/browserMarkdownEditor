@@ -149,7 +149,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
   const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
-    mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged })
+    mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged,
+    onInputFrame: callback => view.wet.onInputFrame(callback), invalidate: () => view.wet.invalidate() })
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },

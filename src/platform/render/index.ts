@@ -15,3 +15,4 @@ export { pageStack, pageAt } from './pageStack';
 export { cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint, pagePresentation } from './camera';
 export type { PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
 export { attachPlatformPane } from './attachPlatformPane';
+export { reportWorkerMemory, releaseWorkerMemory } from './workerMemory';

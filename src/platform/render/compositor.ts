@@ -309,6 +309,18 @@ export class GpuCompositor implements PaneCompositor {
         paintPageScope(ctx, this.page(view, index), paint);
     }
 
+    /** Capture uses the same generation/ring and layer-host helpers as an onscreen frame,
+     * but never touches its surface or presentation state (C4.5; design §4.6).
+     */
+    withCapturePass(encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void): void {
+        this.#check();
+        if (this.#active || !this.#available || !this.#quad || !this.#linear || !this.#nearest) throw new ArenaError('out-of-budget');
+        const scoped = layerPass(pass);
+        this.#active = { encoder, view, passes: new Set([scoped.pass]) };
+        try { paint(scoped.pass); }
+        finally { this.#active = null; scoped.finish(); }
+    }
+
     /** Host methods are scoped capabilities, not retained access to a previous frame's ring (C4.3). */
     uniforms(bytes: ArrayBufferView): UniformSlice {
         if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');

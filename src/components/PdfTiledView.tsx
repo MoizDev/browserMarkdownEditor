@@ -427,8 +427,11 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
                 if (stack.rects[index].y >= bottom) break;
                 visiblePages.push(index + 1);
             }
+            const selected = selectedText().trim();
             return { kind: 'pdf', surface: 'original', pageCount: pdf.pages.length, page: position.page + 1,
-                offset: position.offset, zoom: position.zoom, visiblePages, selectedText: null, inverted: getPdfInverted() };
+                offset: position.offset, zoom: position.zoom, visiblePages,
+                selectedText: selected ? selected.length > 20_000 ? `${selected.slice(0, 20_000)}…` : selected : null,
+                inverted: getPdfInverted() };
         },
         async capture(maxSide) {
             const pane = platformPane.current, current = camera.current, size = viewport.current;
@@ -455,7 +458,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },
-    }), [filePath, pdf, platformPane, session, stack]);
+    }), [filePath, pdf, platformPane, selectedText, session, stack]);
     useEffect(() => { platformPane.current?.invalidate('pdf-invert'); }, [inverted, platformPane]);
     useEffect(() => {
         const observer = new MutationObserver(() => platformPane.current?.invalidate('pdf-theme'));

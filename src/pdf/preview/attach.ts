@@ -1,4 +1,4 @@
-import { attachPlatformPane } from '../../platform/render';
+import { attachPlatformPane } from '../../platform/render/cpuEntry';
 import type { PlatformLayerDefinition, PlatformPane, RenderToken } from '../../platform/render';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { PreviewBitmapLayer } from './bitmapLayer';

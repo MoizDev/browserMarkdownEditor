@@ -318,6 +318,12 @@ should spell `'.Assets'`.**
   second apart, so they overlap easily — and raced, the classic sequence loses a picture: remove an
   embed (a long scan starts), undo (the next save restores the asset at once), then the first scan's
   retire lands on top and the note points at a file in `.Garbage`.
+- **A reconcile belongs to one activation, not a reusable directory handle.** Capture the synchronous
+  `getVaultActivation()` before save/agent IO; A→B→A invalidates the first A job. Both `retireAsset`
+  and `restoreAsset` require a guard, checked before copying and immediately before source removal.
+  A copy finishing after cancellation may leave both copies; it must not delete either source or
+  revoke another activation's blob. Reference proofs also validate the edit/tree revision and open
+  readable buffers; undecided drops retry only on a later actual save, never a per-keystroke scan.
 - **The diff is taken against the last SAVED text, not per keystroke** (`assetRefsRef`, seeded when a
   tab opens). Until a removal reaches the disk it isn't one; the 1s save debounce doubles as the undo
   grace period; and it is one regex pass per second instead of one per character. `flushTab` reads

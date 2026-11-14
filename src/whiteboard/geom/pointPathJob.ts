@@ -1,6 +1,8 @@
 import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
-import { exactPointIntervals } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
+import { createCurveDiskCertificate } from './curveDiskCertificate';
+import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 import type { PathOp, Vec2 } from './path';
@@ -81,8 +83,12 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
         ? createFillPointJob(options.interiorPaths, query.point, 'nonzero', { localToWorld: matrix, maxCommands: options.maxSegments }) : undefined;
     let fillPending = !!fill, fillUncertain = false, curveUncertain = false, pathIndex = 0, commandIndex = 0;
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, bestUpper = Infinity;
+    let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
+    let certificate: ReturnType<typeof createCurveDiskCertificate> | undefined, certificatePhase: 'inner' | 'outer' = 'inner';
+    let exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
+    let deferred: Curve['points'] | undefined;
+    const centre = exactPoint(query.point), innerRadius = Math.max(0, radius.lo), outerRadius = Math.max(0, radius.hi);
     const stack: Curve[] = [];
-    const mapped = (point: Vec2): BoundsPoint => exactPointIntervals(exactAffinePoint(matrix, point));
     const finish = (value: PointPathJobResult): PointPathJobResult => { finished = Object.freeze(value); return finished; };
     const push = (points: Curve['points']) => {
         if (++nodes > maxNodes) return false;
@@ -103,6 +109,19 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (state.status === 'uncertain') fillUncertain = true;
                     continue;
                 }
+                if (certificate) {
+                    const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    certificate.cancel(); certificate = undefined;
+                    if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
+                    if (certificatePhase === 'inner' && result.status === 'miss' && innerRadius === outerRadius) { deferred = undefined; exactCurve = undefined; continue; }
+                    if (certificatePhase === 'inner' && result.status === 'miss') {
+                        certificatePhase = 'outer'; certificate = createCurveDiskCertificate(exactCurve!, centre, outerRadius); continue;
+                    }
+                    if (certificatePhase === 'outer' && result.status === 'miss') { deferred = undefined; exactCurve = undefined; continue; }
+                    if (!push(deferred!)) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
+                    deferred = undefined; exactCurve = undefined; continue;
+                }
                 const curve = stack.pop();
                 if (curve) {
                     const lower = lowerPointHullDistance(query.point, curve.points);
@@ -119,18 +138,21 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     ? { status: 'uncertain', reason: 'Point lies on or too near a path boundary' }
                     : { status: 'miss', distanceCss: bestUpper });
                 const path = paths[pathIndex];
-                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; continue; }
+                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue; }
                 if (++commands > options.maxSegments) return finish({ status: 'uncertain', reason: 'Point path command limit exhausted' });
                 const op = path[commandIndex++];
-                if (op.op === 'M') { start = previous = mapped(op.p); continue; }
-                if (!start || !previous) throw new RangeError('Point path must begin with M');
-                const end = op.op === 'Z' ? start : mapped(op.p);
-                const points: Curve['points'] = op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end];
-                if (!push(points)) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
-                previous = end;
+                if (op.op === 'M') { startExact = previousExact = exactAffinePoint(matrix, op.p); start = previous = exactPointIntervals(startExact); continue; }
+                if (!start || !previous || !previousExact || !startExact) throw new RangeError('Point path must begin with M');
+                const endExact = op.op === 'Z' ? startExact : exactAffinePoint(matrix, op.p), end = exactPointIntervals(endExact);
+                if (op.op === 'C') {
+                    const c1 = exactAffinePoint(matrix, op.c1), c2 = exactAffinePoint(matrix, op.c2);
+                    exactCurve = [previousExact, c1, c2, endExact]; deferred = [previous, exactPointIntervals(c1), exactPointIntervals(c2), end];
+                } else { exactCurve = [previousExact, endExact]; deferred = [previous, end]; }
+                previous = end; previousExact = endExact; certificatePhase = 'inner';
+                certificate = createCurveDiskCertificate(exactCurve, centre, innerRadius);
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; exactCurve = undefined; deferred = undefined; stack.length = 0; },
     };
 }

@@ -68,7 +68,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false);
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
-    const [embedPort] = useState<EmbedPresentationPort | null>(null);
+    const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
@@ -81,7 +81,12 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
         void (async () => {
         try {
             const service = documentClipboard(runtime, host, identity);
-            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView, onAttachment(value) { if (live) setAttached(value); },
+            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView,
+                onEmbedInfrastructure(value) {
+                    embedControllerRef.current = value?.controller ?? null;
+                    if (!value) { embedPortRef.current = null; if (live) setEmbedPort(null); }
+                },
+                onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
                         modalOpen: () => !!getContextMenu() || !!document.querySelector('[aria-modal="true"]'),
@@ -174,11 +179,11 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
-            embed: () => embedControllerRef.current, current, canWrite, notice: setNotice });
+            embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
-    }, [commandRef, contextMenuRef, embedControllerRef, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
+    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
     const registerShortcuts = useCallback((open: () => void) => { shortcutRef.current = open; return () => { if (shortcutRef.current === open) shortcutRef.current = null; }; }, []);
     const onStyles = useCallback((value: Styles | null) => { styleRef.current = value; }, []);
     const handleChromeReady = useCallback((ready: boolean) => { onChromeReady(ready); setChromeReady(ready); }, [onChromeReady]);

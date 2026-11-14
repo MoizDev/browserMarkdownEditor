@@ -21,7 +21,7 @@ import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHos
 import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
 import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
-import { createNativeEditingLease, type NativeEditingToolOptions } from './nativeEditingLease';
+import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
 import type { NativeClipboardService } from './useNativeClipboard';
 
 export interface NativePdfBackdrop {
@@ -107,6 +107,7 @@ export function createNativeViewLease(options: {
         readonly commands: NativeEditingToolOptions['commands'];
         /** Actual per-view services, not the document-wide promotion, authorize input. */
         canMutate(): boolean;
+        onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
         onAttachment(attached: boolean): void;
     };
     onError(error: unknown): void;
@@ -193,7 +194,8 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
+        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure,
+        bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },

@@ -226,7 +226,7 @@ function externalLinkMark(href: string): Decoration {
 function linkTextMark(state: EditorState, url: SyntaxNode | null, readMode: boolean): Decoration {
     if (!readMode || !url) return LINK_MARK;
     // CommonMark allows an angle-bracket wrapper on the destination: [a](<b c>).
-    const dest = state.doc.sliceString(url.from, url.to).replace(/^<([^]*)>$/, '$1');
+    const dest = previewSlice(state, url.from, url.to).replace(/^<([^]*)>$/, '$1');
     const href = externalHref(dest);
     return href ? externalLinkMark(href) : LINK_MARK;
 }

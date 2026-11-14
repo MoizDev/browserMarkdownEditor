@@ -11,7 +11,7 @@ import { PDFDict, PDFDocument, PDFName, PDFString, ParseSpeeds, degrees, rgb, pu
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { NOTEBOOK_SOURCE_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
-import type { PageOverlay } from './pdfOverlay';
+import { isEmptyOverlay, type PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
@@ -176,7 +176,8 @@ export async function buildAnnotatedPdf(
 
     for (let i = 0; i < pages.length; i++) {
         const overlay = overlays[i];
-        if (!overlay || (!overlay.raster?.length && !overlay.vector?.length)) continue;
+        if (isEmptyOverlay(overlay)) continue;
+        if (!overlay) continue;
         const geometry = overlay.geometry;
         if (!geometry || geometry.pageIndex !== i || !geometry.engine.startsWith('pdfjs/') ||
             ![geometry.width, geometry.height, ...geometry.toUserSpace].every(Number.isFinite) ||
@@ -190,8 +191,10 @@ export async function buildAnnotatedPdf(
         // of ink use the very same inverse viewport when the Form is placed.
         const ink = await PDFDocument.create();
         const inkPage = ink.addPage([geometry.width, geometry.height]);
-        if (overlay.raster?.length) stampRaster(inkPage, await ink.embedPng(overlay.raster.slice()));
-        if (overlay.vector?.length) stampVector(inkPage, overlay.vector);
+        for (const layer of overlay.layers ?? [overlay]) {
+            if (layer.raster?.length) stampRaster(inkPage, await ink.embedPng(layer.raster.slice()));
+            if (layer.vector?.length) stampVector(inkPage, layer.vector);
+        }
         const embedded = await doc.embedPage(inkPage);
         const page = pages[i];
         // pdf-lib normalizes inherited resources in place. Fork both the outer
@@ -289,8 +292,10 @@ export async function buildNotebookPdf(
         // identity, so the two canvases share one stamping path.
         const overlay = overlays[i];
         if (!overlay) continue;
-        if (overlay.raster?.length) stampRaster(page, await doc.embedPng(overlay.raster.slice()));
-        if (overlay.vector?.length) stampVector(page, overlay.vector);
+        for (const layer of overlay.layers ?? [overlay]) {
+            if (layer.raster?.length) stampRaster(page, await doc.embedPng(layer.raster.slice()));
+            if (layer.vector?.length) stampVector(page, layer.vector);
+        }
     }
 
     if (source) {

@@ -23,6 +23,7 @@ export interface BenchmarkGpuState {
     textures: WeakMap<WebGLTexture, TextureHandle>;
     tickets: Map<number, { commit(): void; cancel(): void }>;
     counter: Webgl2Coverage | null;
+    retiredCounters: Set<Webgl2Coverage>;
     programs: { classify: WebGLProgram; reduce: WebGLProgram } | null;
     programHandles: readonly PipelineHandle[];
     compiling: boolean;
@@ -35,6 +36,6 @@ export interface BenchmarkGpuState {
 export const states = new WeakMap<object, BenchmarkGpuState>();
 
 export function createState(working: MemoryAllocator, program: MemoryAllocator): BenchmarkGpuState {
-    return { textures: new WeakMap(), tickets: new Map(), counter: null, programs: null, programHandles: [],
+    return { textures: new WeakMap(), tickets: new Map(), counter: null, retiredCounters: new Set(), programs: null, programHandles: [],
         compiling: false, root: null, plan: null, working, program };
 }

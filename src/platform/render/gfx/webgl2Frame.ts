@@ -17,7 +17,7 @@ export interface FrameBuffer {
 export interface FrameTexture {
     readonly handle: TextureHandle;
     readonly texture: WebGLTexture;
-    readonly coverage: WebGLTexture | null;
+    readonly coverage?: WebGLTexture | null;
     readonly width: number;
     readonly height: number;
     readonly format: TextureFormat;
@@ -28,7 +28,7 @@ export interface FrameTarget {
     readonly handle: TargetHandle | 'surface';
     readonly framebuffer: WebGLFramebuffer | null;
     readonly resolveFramebuffer: WebGLFramebuffer | null;
-    readonly coverage: WebGLTexture | null;
+    readonly coverage?: WebGLTexture | null;
     readonly width: number;
     readonly height: number;
     readonly format: TextureFormat;
@@ -105,7 +105,7 @@ export interface FrameBackend {
     finish(serial: number | null): void;
     failure(error: unknown): ArenaError;
     onPass(surface: boolean): void;
-    afterClear(target: FrameTarget): void;
+    afterClear?(target: FrameTarget): void;
 }
 export interface ControlledFrame extends FrameEncoder { cancel(): void; }
 
@@ -330,7 +330,7 @@ class DeviceFrame implements ControlledFrame {
                     gl.clearBufferfv(gl.COLOR, 1, new Float32Array([0, 0, 0, 0]));
                     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
                 }
-                if (desc.load.kind === 'clear') this.#backend.afterClear(target);
+                if (__BME_BENCH__ && desc.load.kind === 'clear') this.#backend.afterClear?.(target);
             } finally { this.#backend.reset(); }
         });
     }

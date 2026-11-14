@@ -1018,6 +1018,7 @@ export default function App() {
       documentBuffers.open(id, tab.content, true);
       const entry = documentSessions.ensure(id, 'markdown', bytesGenerationsRef.current.get(id) ?? 0, create);
       documentBuffers.setOwner(id, { documentId: id, session: entry.serial });
+      entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, entry.adapter), dispose => dispose());
       return entry.adapter;
     };
     return {
@@ -2763,6 +2764,7 @@ export default function App() {
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
     documentBuffers.open(target.id, target.content, canReadTabText(target));
+    const wasDirty = documentBuffers.isDirty(target.id);
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk);
     if (!buffer) return;
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
@@ -2791,21 +2793,15 @@ export default function App() {
       }
     }
     notifySearchChanges();
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    if (!wasDirty || typeof content === 'string' || target.representation.loadedKind === 'pdf' && target.representation.bufferKind !== 'annotationSnapshot') {
+      setTabs(prev => prev.map(t => t.id === target.id && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    }
     scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, reportRevision, scheduleSave]);
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
   };
-
-  const updateAgentTabContent = useCallback((path: string, content: string) => {
-    if (__BME_BENCH__) {
-      const previous = agentContentReportRef.current;
-      agentContentReportRef.current = true;
-      try { updateTabContent(path, content); } finally { agentContentReportRef.current = previous; }
-    }
-  }, [updateTabContent]);
 
   /**
    * Buffer an edit and write it NOW, skipping the save debounce.
@@ -3059,6 +3055,7 @@ export default function App() {
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       documentSessions.release(doc.id, 'tab-close');
+      editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
       void documentSessions.settled(doc.id).then(() => documentBuffers.remove(doc.id));
       bytesGenerationsRef.current.delete(doc.id);
@@ -3086,7 +3083,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-  }, [clearSaveTimer, documentBuffers, documentSessions, recoveryEvent, syncExitGuard]);
+  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, recoveryEvent, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -4897,7 +4894,7 @@ export default function App() {
         setLayout(l => renamePath(l, from, dest));
         });
         if (changedKind) {
-          editorStates.delete(`${doc.id}|${from}`);
+          editorStates.delete(doc.id);
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
@@ -5062,19 +5059,17 @@ export default function App() {
         : t)));
       return;
     }
-    if (!getView(path)?.replaceFromDisk?.(text)) {
-      const key = `${id}|${path}`;
-      const cached = editorStates.get(key);
-      if (cached) {
-        const spec = reloadSpec(cached, text);
-        if (spec) editorStates.set(key, cached.update(spec).state);
-      }
-      updateTabContent(path, text, { fromDisk: true });
-    }
+    const markdown = markdownSessions.get(id);
+    if (markdown) {
+      const spec = reloadSpec(markdown.state, text);
+      if (spec) markdown.dispatch(spec);
+      else updateTabContent(path, markdown.checkpoint(), { fromDisk: true });
+      editorStates.set(id, markdown.state);
+    } else updateTabContent(path, text, { fromDisk: true });
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -5602,7 +5597,7 @@ export default function App() {
       tabs,
       layout,
       mainView,
-      stateCache: editorStates,
+      markdownSessions,
       readFile,
       readFileBytes,
       readFileVersioned,
@@ -5614,7 +5609,6 @@ export default function App() {
       nameTaken,
       contentOf,
       snapshotOf: documentBuffers.snapshotOf,
-      updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
         notifySearchChanges();
@@ -5875,7 +5869,7 @@ export default function App() {
     if (adapter?.recover) { await adapter.recover(entry.payload); return; }
     if (typeof entry.payload !== 'string' || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
     if (!getView(entry.path)?.replaceFromDisk?.(entry.payload)) {
-      const key = `${tab.id}|${entry.path}`;
+      const key = tab.id;
       const cached = editorStates.get(key);
       if (cached) { const spec = reloadSpec(cached, entry.payload); if (spec) editorStates.set(key, cached.update(spec).state); }
     }

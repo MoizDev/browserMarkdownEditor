@@ -102,7 +102,7 @@ interface EditorPaneProps {
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
     /** E4's App-owned editor host; DocumentPane adoption is the next wiring step. */
-    markdownSessions?: import('../editor/markdownSession.types').MarkdownSessionHost;
+    markdownSessions: import('../editor/markdownSession.types').MarkdownSessionHost;
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
@@ -255,7 +255,7 @@ const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
  * a pane carried across a rename would go on reporting the old one and every
  * edit after it would land nowhere. Injective either way — an id holds no '|'.
  */
-const paneKey = (tab: OpenTab) => `${tab.id}|${tab.file.path}`;
+const paneKey = (tab: OpenTab) => tab.id;
 
 /** The least a pane may be left holding, as a percentage of the editor. */
 function paneFloorPct(totalPx: number): number {
@@ -316,7 +316,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -974,6 +974,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         stateCache={stateCache}
                         contentOf={contentOf}
                         documentBuffers={documentBuffers}
+                        markdownSessions={markdownSessions}
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}

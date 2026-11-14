@@ -66,6 +66,115 @@
       "args": []
     },
     {
+      "invocation": "core/save-path",
+      "id": "core/save-path/.Assets/save-only.png",
+      "file": ".Assets/save-only.png",
+      "sha256": "9912019a2013253a862ee5f7517f057042b78ff162a838c0647e225e20af435d",
+      "bytes": 115,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Separate 10000-line save-path workload: one visible line-4 embed, unique save-only.png asset, and independent before/after edit hashes for autosave plus completed retirement",
+      "gates": [
+        "V-05",
+        "V-08/save-main-thread-time",
+        "SAVE-PATH/today-plus-1ms",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/save-path.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "core/save-path",
+      "id": "core/save-path/Mixed 10000 save-path.md",
+      "file": "Mixed 10000 save-path.md",
+      "sha256": "ceed65ac676bd2573953c8414a173a6053edf8f10ad03dac22996b8cc723182b",
+      "bytes": 294232,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Separate 10000-line save-path workload: one visible line-4 embed, unique save-only.png asset, and independent before/after edit hashes for autosave plus completed retirement",
+      "gates": [
+        "V-05",
+        "V-08/save-main-thread-time",
+        "SAVE-PATH/today-plus-1ms",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/save-path.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "expected": "save-path.oracle.json"
+    },
+    {
+      "invocation": "core/save-path",
+      "id": "core/save-path/save-path.oracle.json",
+      "file": "save-path.oracle.json",
+      "sha256": "6f46db62f2168a83a34c4a4a385193b31152c6ddff6212b7e1ef5500a86fddb8",
+      "bytes": 952,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Separate 10000-line save-path workload: one visible line-4 embed, unique save-only.png asset, and independent before/after edit hashes for autosave plus completed retirement",
+      "gates": [
+        "V-05",
+        "V-08/save-main-thread-time",
+        "SAVE-PATH/today-plus-1ms",
+        "X-FUNNEL"
+      ],
+      "generator": "verify/fixtures/core/generators/save-path.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "core/startup-v08",
+      "id": "core/startup-v08/startup-mixed-v08.json",
+      "file": "startup-mixed-v08.json",
+      "sha256": "a2c796aecb376953cd2d6c0ce6a791b49b646d8d918ec4acc4d7b50501316a34",
+      "bytes": 660121,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "V-08 mixed startup composition: frozen vault-1000 + GEN-01 geometry PDF + frozen 10000-line note; restores Welcome.md or geometry.pdf for cold/warm first-pixels/readable, bytes/requests, long-task and worker-start baselines",
+      "gates": [
+        "V-05",
+        "V-08",
+        "V-08/startup-cold-warm-restored-note-pdf",
+        "V-08/first-pixels-readable-bytes-requests-long-tasks-workers",
+        "X-START"
+      ],
+      "generator": "verify/fixtures/core/generators/startup.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--vault",
+        "$ROOT/core/vault-1000/vault-1000.json",
+        "--pdf",
+        "$ROOT/platform/geometry/geometry.pdf",
+        "--note",
+        "$ROOT/core/notes/Mixed 10000.md"
+      ],
+      "composition": [
+        "core/vault-1000/vault-1000.json",
+        "GEN-01/geometry.pdf",
+        "core/notes/Mixed 10000.md"
+      ],
+      "expected": {
+        "noteCount": 1001,
+        "restorePaths": [
+          "Welcome.md",
+          "geometry.pdf"
+        ]
+      }
+    },
+    {
       "invocation": "core/vault-100",
       "id": "core/vault-100/vault-100.json",
       "file": "vault-100.json",

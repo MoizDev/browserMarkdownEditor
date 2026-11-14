@@ -22,6 +22,7 @@ import { boardPageStack, pageOrigin } from '../model/pages';
 import type { FigureShape } from '../model/styles';
 import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
+import type { AttachmentRequest } from './attachments';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
 const lastPolyline = new WeakMap<BoardSession, NodeId>();
@@ -35,7 +36,7 @@ export interface BoardCreationContext {
     readonly preview: { show(nodes: readonly Node[]): void; showOps(ops: readonly Op[]): void; clear(): void };
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
-    resolveAttachment(point: { x: number; y: number }, signal: AbortSignal): Promise<Attachment | null>;
+    resolveAttachment(point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest): Promise<Attachment | null>;
     onError(error: unknown): void;
 }
 class CreationGesture implements GestureOwner {
@@ -55,12 +56,13 @@ class CreationGesture implements GestureOwner {
     private readonly style;
     private fontEpoch: number | undefined;
     private sample: RealSample;
+    private readonly downModifiers: Modifiers;
     private modifiers: Modifiers;
     private ended = false;
     private released = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
-        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.modifiers = modifiers;
+        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame'))) throw new Error('Creation focus is not a live container');
@@ -183,9 +185,16 @@ class CreationGesture implements GestureOwner {
         let node = this.node();
         const { render, runtime } = this.context, signal = this.controller.signal;
         if (node.kind === 'connector') {
-            const start = await this.context.resolveAttachment(this.down, signal);
+            const request = (sample: RealSample, keys: Modifiers): AttachmentRequest => ({ precise: keys.shift, exact: keys.alt,
+                input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+            const world = (point: { x: number; y: number }) => {
+                const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                const x = node.x + point.x, y = node.y + point.y;
+                return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
+            };
+            const start = this.downModifiers.accel ? null : await this.context.resolveAttachment(world(node.start), signal, request(this.down, this.downModifiers));
             if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-            const end = await this.context.resolveAttachment(this.sample, signal);
+            const end = this.modifiers.accel ? null : await this.context.resolveAttachment(world(node.end), signal, request(this.sample, this.modifiers));
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');

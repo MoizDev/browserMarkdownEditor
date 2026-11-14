@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 
 /* ── KaTeX, fetched when a formula first needs it ───────────────────────────
  * KaTeX is ~250KB of the main bundle — the largest single library in it, bigger
@@ -122,6 +123,7 @@ export class MathWidget extends WidgetType {
 
     constructor(latex: string, displayMode: boolean = false) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
         this.latex = latex;
         this.displayMode = displayMode;
     }

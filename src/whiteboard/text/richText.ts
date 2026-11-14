@@ -1,4 +1,4 @@
-import type { JsonValue, RawJson } from '../model/json';
+import type { RawJson } from '../model/json';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -27,5 +27,5 @@ export interface Marks {
     readonly code?: true;
     readonly hl?: true;
     readonly link?: string;
-    readonly x?: JsonValue;
+    readonly x?: RawJson; // R-W25: unknown marks use the same opaque preservation channel.
 }

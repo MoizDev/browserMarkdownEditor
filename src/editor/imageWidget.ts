@@ -1,4 +1,5 @@
 import { EditorView, WidgetType, keymap } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 import { EditorSelection, Facet, Prec } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { embedPattern, embedText } from '../utils/assets';
@@ -272,6 +273,7 @@ export class ImageWidget extends WidgetType {
         readonly selected: boolean,
     ) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     eq(other: ImageWidget): boolean {

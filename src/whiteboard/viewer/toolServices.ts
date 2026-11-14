@@ -29,6 +29,7 @@ import type { ViewerEngine } from './types';
 export interface BoardToolServicesOptions {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
+    readonly spelling: BoardTextEditorOptions['spelling'];
     readonly images: PaintImageProvider;
     readonly camera: CameraController;
     readonly view: () => ViewState;
@@ -96,9 +97,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
     const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error });
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, point, region, preview,
-        overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames, onError: ui.error });
+        overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames,
+        editSticky: async id => { await text.editText(id); }, onError: ui.error });
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
-        overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac, ui: ui.text, onError: ui.error });
+        overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
+        spelling: options.spelling, ui: ui.text, onError: ui.error });
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point, camera: options.view, current });
     const ink = createBoardInkServices({ runtime, samples: runtime.samples, token: inputToken, current: t => current()
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration

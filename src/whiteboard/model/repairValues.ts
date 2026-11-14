@@ -126,11 +126,19 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         }
         if ((node.kind === 'picture' || node.kind === 'clip') && node.media !== null && !mediaIds.has(node.media)) {
             const raw = new Map(node.ext?.raw);
-            if (raw.has('media')) refusal = `Repair would override preserved media on node ${node.id}`;
-            else {
-                // This token is generated from the already decoded, typed media id.
-                raw.set('media', JSON.stringify(node.media) as RawJson);
-                node = { ...node, media: null, ext: { fields: node.ext?.fields ?? new Map(), raw } };
+            // An existing raw token remains the write authority; only its in-memory projection changes.
+            if (!raw.has('media')) raw.set('media', JSON.stringify(node.media) as RawJson);
+            node = { ...node, media: null, ext: { fields: node.ext?.fields ?? new Map(), raw } };
+            mediaChanged = true;
+        }
+        if (node.kind === 'linkcard' && node.preview) {
+            const preview = node.preview;
+            const image = preview.image !== null && !mediaIds.has(preview.image) ? null : preview.image;
+            const favicon = preview.favicon !== null && !mediaIds.has(preview.favicon) ? null : preview.favicon;
+            if (image !== preview.image || favicon !== preview.favicon) {
+                const raw = new Map(node.ext?.raw);
+                if (!raw.has('preview')) raw.set('preview', JSON.stringify(preview) as RawJson);
+                node = { ...node, preview: { ...preview, image, favicon }, ext: { fields: node.ext?.fields ?? new Map(), raw } };
                 mediaChanged = true;
             }
         }

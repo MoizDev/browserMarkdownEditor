@@ -1,6 +1,7 @@
 import type { RawJson } from '../model/json';
 import { blockTextLength, isBlockRange } from '../model/textOffsets';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
+import { projectionPosition } from './projection';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -78,14 +79,8 @@ export function normalizeRichText(text: RichText): RichText {
 
 interface TextPoint { readonly block: number; readonly offset: number; readonly start: number }
 function locate(text: RichText, offset: number): TextPoint {
-    if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError('Invalid rich-text offset');
-    let start = 0;
-    for (let i = 0; i < text.blocks.length; i++) {
-        const length = blockTextLength(text.blocks[i]);
-        if (offset <= start + length) return { block: i, offset: offset - start, start };
-        start += length + 1;
-    }
-    throw new RangeError('Rich-text offset exceeds its projection');
+    const point = projectionPosition(text, offset);
+    return { block: point.index, offset: point.offset, start: point.start };
 }
 
 function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean): Run[] {
@@ -155,6 +150,9 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     else {
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
+        // A merged-away future block has no lossless carrier in the surviving tuple.
+        if (first.block !== last.block && endBlock.tail !== undefined && endBlock.tail !== '[]')
+            throw new Error('This edit would discard future block formatting');
         const prefix = sliceRuns(startBlock, 0, first.offset, false);
         const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to);
         const blocks: Block[] = [];

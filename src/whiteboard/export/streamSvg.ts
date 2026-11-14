@@ -7,6 +7,13 @@ import { paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
 import { createExportTextResolver } from './textResolver'
 
+function transferBytes(item: PageDisplayItem): number {
+  if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
+  if (item.kind === 'image') return item.bytes.byteLength
+  if (item.kind === 'raster') return item.png.byteLength
+  return item.d.length * 64
+}
+
 function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDisplayItem {
   if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers)) }
   if (item.kind === 'image') {
@@ -38,10 +45,20 @@ export async function streamSvg(
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   let started = false, finished = false
   async function send(items: PageDisplayItem[]): Promise<void> {
-    if (!items.length) return
-    const transfer: Transferable[] = []
-    const owned = items.map(item => transferable(item, transfer))
-    await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+    let offset = 0
+    while (offset < items.length) {
+      signal.throwIfAborted()
+      let end = offset, bytes = 0
+      while (end < items.length && end - offset < 64) {
+        const next = transferBytes(items[end])
+        if (end > offset && bytes + next > 16 * 1024 * 1024) break
+        bytes += next; end++
+      }
+      const transfer: Transferable[] = []
+      const owned = items.slice(offset, end).map(item => transferable(item, transfer))
+      await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+      offset = end
+    }
   }
   try {
     started = true

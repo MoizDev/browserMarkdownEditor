@@ -63,7 +63,8 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         cancelPending();
         const binding = manager.current;
         if (!ports.isCurrent() || !binding) return null;
-        if (!ports.containsActive(event.clientX, event.clientY)) { manager.close(); return null; }
+        const handle = event.pointerType === 'touch' ? ports.hitHandle(event.clientX, event.clientY) : null;
+        if (!handle && !ports.containsActive(event.clientX, event.clientY)) { manager.close(); return null; }
         const convert = (point: RealSample, keys: Modifiers): TextPointer => {
             const client = ports.worldToClient(point.x, point.y);
             return { id: point.pointerId, kind: point.source === 'touch' ? 'touch' : point.source === 'pen' ? 'pen' : 'mouse',
@@ -72,7 +73,7 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         const tool: Tool<unknown> = {
             id: 'text-selection',
             begin(first, keys): GestureOwner {
-                binding.editor.pointerDown(convert(first, keys));
+                binding.editor.pointerDown(convert(first, keys), handle ?? undefined);
                 return {
                     kind: 'node-edit', pointerIds: new Set([first.pointerId]),
                     update(samples, nextKeys) { for (const point of samples) if (point.pointerId === first.pointerId) binding.editor.pointerMove(convert(point, nextKeys)); },

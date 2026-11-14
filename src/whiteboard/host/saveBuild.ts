@@ -24,6 +24,8 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
             const release = () => {
                 if (released) return;
                 released = true;
+                // No asynchronous build may publish after its pinned resources retire.
+                lifetime.abort();
                 pending.delete(cancel);
                 try { media.release(); } finally { pdf?.release(); }
             };

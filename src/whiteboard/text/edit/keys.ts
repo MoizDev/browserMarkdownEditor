@@ -37,11 +37,17 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     if (mod && !event.altKey && lower === 'a') {
         consume(event); services.setSelection({ anchor: 0, focus: text.length }); return true;
     }
-    if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z', 'c', 'x', 'v'].includes(lower)) {
+    // Ordinary clipboard chords must reach the browser's synchronous copy/cut/paste events.
+    if (mod && !event.altKey && !event.shiftKey && (lower === 'c' || lower === 'x' || lower === 'v')) return false;
+    if (mod && lower === 'v' && (event.shiftKey || event.altKey)) {
+        consume(event);
+        services.command(event.shiftKey ? event.altKey ? 'paste-plain-inverted' : 'paste-plain' : 'paste-inverted');
+        return true;
+    }
+    if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z'].includes(lower)) {
         const command = lower === 'b' ? 'bold' : lower === 'i' ? 'italic' : lower === 'u' ? 'underline'
             : lower === 'e' ? 'code' : lower === 'k' ? 'link' : lower === 'h' && event.shiftKey ? 'highlight'
-            : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo'
-            : lower === 'c' ? 'copy' : lower === 'x' ? 'cut' : lower === 'v' ? event.shiftKey ? 'paste-plain' : 'paste' : null;
+            : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo' : null;
         if (command) { consume(event); services.command(command); return true; }
     }
     if (mod && event.altKey && (/^[0-6]$/.test(event.key) || /^Digit[0-6]$/.test(event.code))) {

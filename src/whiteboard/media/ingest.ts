@@ -6,6 +6,11 @@ import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '
 import { createClip, createPicture, type Crop } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
+import { pageAt } from '../../platform/render/pageStack';
+import { worldPose } from '../change/coordinates';
+import { notebookGrowthOp } from '../commands/pagesAndSheets';
+import { isSheetParent } from '../model/doc';
+import { boardPageStack, pageOrigin } from '../model/pages';
 import { checkMediaBytes, checkMediaDimensions, SECURITY_LIMITS } from '../security/limits';
 import type { JobAuthority, JobContext } from '../security/admission';
 import type { BoardJobIdentity } from '../workers/protocol';
@@ -79,12 +84,13 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
-function box(info: InspectedMedia, density?: number): { w: number; h: number } {
-    const scale = density === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / density;
+function box(info: InspectedMedia, pixelsPerWorldUnit?: number): { w: number; h: number } {
+    if (pixelsPerWorldUnit !== undefined && (info.mime !== 'image/png' || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid private PNG density');
+    const scale = pixelsPerWorldUnit === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / pixelsPerWorldUnit;
     return { w: info.width * scale, h: info.height * scale };
 }
 
-interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly density?: number }
+interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly pixelsPerWorldUnit?: number }
 export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
 function setMediaFile(id: MediaId, file: string | null): Op {
@@ -155,6 +161,8 @@ export class MediaIngestor {
         if (!info.mime.startsWith('image/')) throw new Error('Replacement must be a picture');
         if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         const priorEntry = this.session.doc.media.get(info.id);
+        if (priorEntry && (priorEntry.mime !== info.mime || priorEntry.bytes !== source.blob.size || priorEntry.w !== info.width || priorEntry.h !== info.height
+            || priorEntry.duration !== info.duration || priorEntry.animated !== info.animated)) throw new Error('Existing media metadata conflicts with verified bytes');
         const entry: MediaEntry = priorEntry ?? {
             id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
             duration: null, animated: info.animated, name: source.name, file: null, ext: null,
@@ -211,6 +219,9 @@ export class MediaIngestor {
                     if (source.pixelsPerWorldUnit !== undefined && info.mime !== 'image/png') throw new TypeError('Density requires a PNG');
                     if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
                     const old = this.session.doc.media.get(info.id);
+                    if (old && (old.mime !== info.mime || old.bytes !== source.blob.size || old.w !== info.width || old.h !== info.height
+                        || old.duration !== info.duration || old.animated !== info.animated)) throw new Error('Existing media metadata conflicts with verified bytes');
+                    box(info, source.pixelsPerWorldUnit);
                     const entry: MediaEntry = old ?? {
                         id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
                         duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
@@ -218,7 +229,8 @@ export class MediaIngestor {
                     const file = await this.host.storeMedia(entry, source.blob, signal);
                     current();
                     if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
-                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file, density: source.pixelsPerWorldUnit });
+                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file,
+                        ...(source.pixelsPerWorldUnit === undefined ? {} : { pixelsPerWorldUnit: source.pixelsPerWorldUnit }) });
                 } catch (error) {
                     current();
                     refused.push({ name: source.name, reason: error instanceof Error ? error.message : 'Media could not be read' });
@@ -227,15 +239,37 @@ export class MediaIngestor {
             current();
             if (refused.length) this.host.noticeRefused(refused);
             if (!staged.length) return [];
-            const { parent, page, x, y } = options.placement, angle = options.placement.rotation ?? 0;
-            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(angle)) throw new RangeError('Invalid placement');
-            const rotation = normalizedRotation(angle), c = Math.cos(rotation), s = Math.sin(rotation);
-            const sizes = staged.map(item => box(item.info, item.density));
-            let left = -sizes.reduce((sum, size) => sum + size.w, 0) / 2;
-            const siblings = this.session.doc.children.get(parent) ?? [];
+            const { parent, page, x, y } = options.placement;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
+            const doc = this.session.doc, sizes = staged.map(item => box(item.info, item.pixelsPerWorldUnit));
+            const totalWidth = sizes.reduce((sum, size) => sum + size.w, 0), angle = normalizedRotation(options.placement.rotation ?? 0);
+            if (!Number.isFinite(angle)) throw new RangeError('Invalid media placement rotation');
+            let left = x - totalWidth / 2;
+            const originalLeft = left, root = isSheetParent(doc, parent), stack = boardPageStack(doc.host);
+            const origin = root && stack ? pageOrigin(stack, page) : undefined;
+            if (root && stack && !origin) throw new Error('Media placement page is unavailable');
+            const pose = root ? null : worldPose(doc, parent);
+            const localPosition = (rowLeft: number, width: number, height: number) => {
+                const distance = rowLeft - originalLeft + width / 2 - totalWidth / 2, cos = Math.cos(angle), sin = Math.sin(angle);
+                return { x: x + cos * distance - cos * width / 2 + sin * height / 2,
+                    y: y + sin * distance - sin * width / 2 - cos * height / 2 };
+            };
+            let deepest = -Infinity, cursor = originalLeft;
+            for (const size of sizes) {
+                const position = localPosition(cursor, size.w, size.h), localCos = Math.cos(angle), localSin = Math.sin(angle);
+                for (const dx of [0, size.w]) for (const dy of [0, size.h]) {
+                    const px = position.x + localCos * dx - localSin * dy, py = position.y + localSin * dx + localCos * dy;
+                    deepest = Math.max(deepest, pose ? pose.y + Math.sin(pose.rotation) * px + Math.cos(pose.rotation) * py : (origin?.y ?? 0) + py);
+                }
+                cursor += size.w;
+            }
+            const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, deepest) : undefined;
+            const grownHost = growth?.key === 'host.paper' && doc.host.kind === 'notebook' ? { ...doc.host, paper: growth.value } : doc.host;
+            const grownStack = boardPageStack(grownHost);
+            const siblings = doc.children.get(parent) ?? [];
             const orders = keysBetween(siblings.at(-1)?.order ?? null, null, staged.length);
-            const ids: NodeId[] = [];
-            const ops: Op[] = [];
+            const ids: NodeId[] = [], reserved = new Set<NodeId>();
+            const ops: Op[] = growth ? [growth] : [];
             const added = new Set<MediaId>();
             const files = new Map<MediaId, string | null>();
             for (let i = 0; i < staged.length; i++) {
@@ -251,10 +285,18 @@ export class MediaIngestor {
                     ops.push({ t: 'media', op: 'add', entry });
                     added.add(info.id);
                 }
-                const id = newNodeId({ nodes: { has: candidate => this.session.doc.nodes.has(candidate) || ids.includes(candidate) }, sheets: this.session.doc.sheets });
-                ids.push(id);
-                const common = { id, parent, order: orders[i], page, x: x + c * left + s * h / 2,
-                    y: y + s * left - c * h / 2, rotation, ext: null, w, h, media: info.id, alt: '' };
+                const id = newNodeId({ nodes: { has: candidate => doc.nodes.has(candidate) || reserved.has(candidate) }, sheets: doc.sheets });
+                ids.push(id); reserved.add(id);
+                const position = localPosition(left, w, h);
+                let targetPage = page, px = position.x, py = position.y;
+                if (root && grownStack && origin) {
+                    const centreY = position.y + Math.sin(angle) * w / 2 + Math.cos(angle) * h / 2;
+                    targetPage = pageAt(grownStack, origin.y + centreY);
+                    const target = grownStack.rects[targetPage];
+                    if (!target) throw new Error('Media destination page is unavailable');
+                    px += origin.x - target.x; py += origin.y - target.y;
+                } else if (!root) targetPage = -1;
+                const common = { id, parent, order: orders[i], page: targetPage, x: px, y: py, rotation: angle, ext: null, w, h, media: info.id, alt: '' };
                 const node = info.mime.startsWith('video/')
                     ? createClip({ ...common, time: 0, playing: true, autoplay: true })
                     : createPicture({ ...common, crop: null, flipX: false, flipY: false, inverted: false, playing: true, url: null });
@@ -268,8 +310,8 @@ export class MediaIngestor {
                 this.session.history.open('Insert media');
                 try {
                     const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
-                    for (const item of staged) this.locations.setFile(item.info.id, item.file);
-                    applied.release();
+                    try { for (const item of staged) this.locations.setFile(item.info.id, item.file); }
+                    finally { applied.release(); }
                     this.host.select(ids);
                     return ids;
                 } finally { this.session.history.close(); }

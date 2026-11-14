@@ -7,7 +7,9 @@ import type { BoardRuntime } from '../host/runtime';
 import { isSheetParent } from '../model/doc';
 import { newNodeId } from '../model/ids';
 import type { MediaId } from '../model/media';
-import { createLinkcard, createText, type Node } from '../model/nodes';
+import { createEmbed, createLinkcard, createText, type Node } from '../model/nodes';
+import { resolveEmbedCandidate } from '../media/embed';
+import type { UrlEnvironment } from '../security/urlPolicy';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { keyBetween } from '../model/orderKey';
 import { boardPageStack } from '../model/pages';
@@ -32,6 +34,7 @@ export interface InsertClipboardTextOptions {
     current(target: Readonly<ClipboardTarget>): boolean;
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
+    readonly embedEnvironment?: UrlEnvironment;
     readonly intent: ClipboardIntent;
     readonly content: ExternalClipboardContent;
     readonly signal?: AbortSignal;
@@ -104,8 +107,9 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
         const base = { id, parent: target.sheet, order: initialOrder, page: stack ? 0 : -1, x: -(first?.x ?? 0), y: -(first?.y ?? 0), ext: null };
         // These are persisted card dimensions, not a placement estimate; the renderer
         // supplies the actual painted geometry used below and never fetches a preview.
-        let node: Node = url !== undefined ? createLinkcard({ ...base, w: 320, h: 180, url, preview: null })
-            : createText({ ...base, text: text!, color: style.color, size: style.size, font: style.font,
+        const embed = url !== undefined && options.embedEnvironment ? resolveEmbedCandidate(url, options.embedEnvironment) : null;
+        let node: Node = url !== undefined ? embed ? createEmbed({ ...base, w: 800, h: 450, url })
+            : createLinkcard({ ...base, w: 320, h: 180, url, preview: null }) : createText({ ...base, text: text!, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: true, w: 1, scale: 1 });
         const preserved = new Map<MediaId, number>();
         for (const raw of nodeRawValues(node)) {

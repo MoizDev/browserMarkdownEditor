@@ -149,12 +149,10 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     for (const bucket of children.values()) {
         if ((work++ & 1023) === 0) await tick();
         let bad = false, protectedOrder = false;
-        const seen = new Set<string>();
         for (const item of bucket) {
             if ((work++ & 1023) === 0) await tick();
-            const order = item.node.order;
-            if (!isValidKey(order) || seen.has(order)) bad = true;
-            seen.add(order);
+            // Equal valid keys are ordered by id; load must not renumber them.
+            if (!isValidKey(item.node.order)) bad = true;
             if (item.node.kind === 'opaque' || NODE_FILE_FIELDS.order.some(token => item.node.ext?.raw.has(token))) protectedOrder = true;
         }
         if (!bad) continue;

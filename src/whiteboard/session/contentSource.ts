@@ -33,7 +33,12 @@ export function boardContentSource(owner: SessionOwner, snapshot: PinnedBoardBui
         kind: 'build', revision,
         run(signal: AbortSignal) {
             if (signal.aborted) return Promise.reject(new DOMException('Board build cancelled', 'AbortError'));
-            return snapshot.build(signal);
+            // A running build owns its pin even if the producer retires its cached source.
+            let lease: ReturnType<typeof retain>;
+            try { lease = retain(); }
+            catch (error) { return Promise.reject(error); }
+            try { return Promise.resolve(snapshot.build(signal)).finally(() => lease.release()); }
+            catch (error) { lease.release(); return Promise.reject(error); }
         },
     });
     const source: BoardContentSource = Object.freeze({ kind: 'deferred', owner: stableOwner, revision, retain, read: () => job });

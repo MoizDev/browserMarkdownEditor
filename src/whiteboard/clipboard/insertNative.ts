@@ -110,6 +110,17 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                     return { ...end, attach: { ...end.attach, target } };
                 };
                 node = { ...node, start: remap(node.start), end: remap(node.end) };
+            } else if (node.kind === 'polyline') {
+                // Endpoint attachments are remapped with their polyline, never detached by changing its geometry.
+                const line = node as typeof node & { readonly startAttach?: ConnectorNode['start']['attach']; readonly endAttach?: ConnectorNode['end']['attach'] };
+                const remap = (attachment: ConnectorNode['start']['attach']) => {
+                    if (!attachment) return null;
+                    const target = ids.get(attachment.target);
+                    if (!target) throw new Error('Clipboard contains an external polyline binding');
+                    return { ...attachment, target };
+                };
+                node = { ...line, ...(line.startAttach === undefined ? {} : { startAttach: remap(line.startAttach) }),
+                    ...(line.endAttach === undefined ? {} : { endAttach: remap(line.endAttach) }) };
             }
             additions.push(node);
             if ((++count & 127) === 0) await cooperate();

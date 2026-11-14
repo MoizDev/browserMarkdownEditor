@@ -1,7 +1,7 @@
 import { SWATCHES, type Dash, type Fill, type Font, type Size, type Swatch, type TextAlign } from '../model/styles';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { newNodeId, type NodeId, type SheetId } from '../model/ids';
-import { createConnector, createFigure, createPicture, createPolyline, createStroke, createText, type Attachment, type ConnectorNode, type Node } from '../model/nodes';
+import { createConnector, createFigure, createGroup, createPicture, createPolyline, createStroke, createText, type Attachment, type ConnectorNode, type Node } from '../model/nodes';
 import { createBoardDoc, type BoardDoc } from '../model/doc';
 import { UI_DEFAULTS, VIEW_DEFAULTS } from '../model/defaults';
 import { NATIVE_VERSION } from '../format/schema';
@@ -75,6 +75,15 @@ export interface ExcalidrawShapeDraft {
     readonly deferred: readonly Readonly<{ index: number; element: Readonly<Record<string, unknown>> }>[];
     readonly skipped: number;
 }
+async function externalOrders(count: number, yieldHost: () => Promise<void>): Promise<string[]> {
+    const result: string[] = [];
+    while (result.length < count) {
+        const next = keysBetween(result.at(-1) ?? null, null, Math.min(512, count - result.length));
+        result.push(...next);
+        if (result.length < count) await yieldHost();
+    }
+    return result;
+}
 function finite(value: unknown, min: number, max: number): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
@@ -146,15 +155,19 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         }
         if ((i & 255) === 255) await yieldHost();
     }
-    const orders = keysBetween(null, null, elements.length), nodes: Node[] = [], deferred: { index: number; element: Readonly<Record<string, unknown>> }[] = [];
+    const orders = await externalOrders(elements.length, yieldHost), nodes: Node[] = [], deferred: { index: number; element: Readonly<Record<string, unknown>> }[] = [];
     const absorbed = new Set<string>(); let skipped = 0;
     for (let i = 0; i < elements.length; i++) {
         const element = elements[i], sourceId = element.id;
         if (element.isDeleted === true) continue;
         if (typeof sourceId !== 'string' || !ids.has(sourceId)) { skipped++; continue; }
         if (element.type !== 'rectangle' && element.type !== 'ellipse' && element.type !== 'diamond') continue;
-        const geometry = elementGeometry(element), stroke = colour(element.strokeColor);
-        if (!geometry || !stroke || !finite(element.strokeWidth, 0.05, 500)) { skipped++; ids.delete(sourceId); continue; }
+        const geometry = elementGeometry(element);
+        const background = element.backgroundColor === 'transparent' ? null : colour(element.backgroundColor);
+        const stroke = element.strokeColor === 'transparent' ? background : colour(element.strokeColor);
+        if (!geometry || !stroke || element.backgroundColor !== 'transparent' && !background || !finite(element.strokeWidth, 0.05, 500)) {
+            skipped++; ids.delete(sourceId); continue;
+        }
         let label: RichText | null = null, labelColor = stroke, font: Font = 'draw', size: Size = 's', labelScale = 1;
         let align: 'start' | 'middle' | 'end' = 'middle', valign: 'start' | 'middle' | 'end' = 'middle';
         const bound = [...(Array.isArray(element.boundElements) ? element.boundElements : []),
@@ -165,16 +178,31 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
             if (!source || source.type !== 'text' || source.containerId !== sourceId || source.isDeleted === true || typeof source.text !== 'string') continue;
             const style = textStyle(source, true), textColor = colour(source.strokeColor);
             if (!style || !textColor) continue;
-            label = await plainText(source.text, options.cooperate, options.signal); labelColor = textColor; font = style.font; size = style.size; labelScale = style.scale;
+            label = await plainText(typeof source.originalText === 'string' ? source.originalText : source.text, options.cooperate, options.signal);
+            labelColor = textColor; font = style.font; size = style.size; labelScale = style.scale;
             align = style.align; valign = source.verticalAlign === 'top' ? 'start' : source.verticalAlign === 'bottom' ? 'end' : 'middle';
             absorbed.add(labelId as string); ids.set(labelId as string, ids.get(sourceId)!); break;
         }
         const dash: Dash = element.roughness !== 0 ? 'draw' : element.strokeStyle === 'dashed' ? 'dashed' : element.strokeStyle === 'dotted' ? 'dotted' : 'solid';
         const fill: Fill = element.backgroundColor === 'transparent' ? 'none' : element.fillStyle === 'solid' ? 'fill' : 'pattern';
-        nodes.push(createFigure({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1,
+        const figure = createFigure({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1,
             x: geometry.x, y: geometry.y, rotation: geometry.rotation, opacity: geometry.opacity, ext: null,
             shape: element.type, w: geometry.w, h: geometry.h, growY: 0, color: stroke, labelColor, fill, dash, size, font,
-            align, valign, label, width: element.strokeWidth, labelScale, flipX: false, flipY: false, url: null }));
+            align, valign, label, width: element.strokeWidth, labelScale, flipX: false, flipY: false, url: null });
+        if (background && background !== stroke) {
+            // A native figure has one paint swatch. A derived group preserves a distinct
+            // source fill and outline while keeping the actual foreground binding target.
+            const groupId = newNodeId(tables); allocated.add(groupId);
+            const backgroundId = newNodeId(tables); allocated.add(backgroundId);
+            const childOrders = keysBetween(null, null, 2);
+            nodes.push(createGroup({ id: groupId, parent: options.sheet, order: orders[i], page: -1,
+                x: geometry.x, y: geometry.y, rotation: geometry.rotation, opacity: geometry.opacity, ext: null }));
+            nodes.push(createFigure({ ...figure, id: backgroundId, parent: groupId, order: childOrders[0],
+                x: 0, y: 0, rotation: 0, opacity: 1, color: background, label: null, dash: 'solid' }));
+            nodes.push(createFigure({ ...figure, parent: groupId, order: childOrders[1],
+                x: 0, y: 0, rotation: 0, opacity: 1, fill: 'none' }));
+        } else nodes.push(figure);
+        if (nodes.length > SECURITY_LIMITS.clipboardNodes) throw new RangeError('Converted Excalidraw node count exceeds limits');
         if ((i & 63) === 63) await yieldHost();
     }
     for (let i = 0; i < elements.length; i++) {
@@ -184,7 +212,7 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         if (element.type !== 'text') { deferred.push({ index: i, element }); continue; }
         const geometry = elementGeometry(element), stroke = colour(element.strokeColor), style = textStyle(element, false);
         if (!geometry || !stroke || !style || typeof element.text !== 'string' || !ids.has(sourceId)) { skipped++; ids.delete(sourceId); continue; }
-        const text = await plainText(element.text, options.cooperate, options.signal), width = geometry.w / style.scale;
+        const text = await plainText(typeof element.originalText === 'string' ? element.originalText : element.text, options.cooperate, options.signal), width = geometry.w / style.scale;
         if (!finite(width, 1, 1_000_000)) { skipped++; ids.delete(sourceId); continue; }
         nodes.push(createText({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1, x: geometry.x, y: geometry.y,
             rotation: geometry.rotation, opacity: geometry.opacity, ext: null, text, color: stroke, size: style.size, font: style.font,
@@ -206,6 +234,7 @@ export interface ExcalidrawBindingRequest {
     readonly binding: Readonly<Record<string, unknown>>;
 }
 export interface FinalExcalidrawDraft {
+    readonly sheet: SheetId;
     readonly nodes: readonly Node[];
     readonly samples: SampleStore;
     readonly media: readonly MediaEntry[];
@@ -223,8 +252,12 @@ function pointGeometry(element: Readonly<Record<string, unknown>>): { x: number;
         ? { x, y, rotation, opacity: element.opacity / 100 } : null;
 }
 function arrowhead(value: unknown): ConnectorNode['headStart'] | null {
-    if (value === null || value === undefined) return 'none';
-    if (value === 'arrow' || value === 'triangle' || value === 'diamond' || value === 'dot' || value === 'bar') return value;
+    if (value === null || value === undefined || value === 'none') return 'none';
+    if (value === 'arrow' || value === 'triangle' || value === 'diamond' || value === 'dot') return value;
+    if (value === 'bar') return 'pipe';
+    if (value === 'triangle_outline') return 'triangle';
+    if (value === 'diamond_outline') return 'diamond';
+    if (value === 'circle' || value === 'circle_outline') return 'dot';
     return null;
 }
 function visibleDash(element: Readonly<Record<string, unknown>>): Dash | null {
@@ -246,11 +279,19 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
     const check = () => { options.signal.throwIfAborted(); if (!options.current()) throw new DOMException('Excalidraw conversion became stale', 'AbortError'); };
     const yieldHost = async () => { check(); await options.cooperate(); check(); };
     const samples = new SampleStore(), leases: SampleLease[] = [], media = new Map<MediaId, MediaEntry>(), blobs = new Map<MediaId, Blob>();
-    const ids = new Map(draft.ids), nodes = [...draft.nodes], orders = keysBetween(null, null, options.elements.length);
-    const files = new Map(options.files.map(file => [file.fileId, file]));
+    const ids = new Map<string, NodeId>(), nodes: Node[] = [];
+    let copied = 0;
+    for (const [source, id] of draft.ids) { ids.set(source, id); if ((++copied & 511) === 0) await yieldHost(); }
+    for (const node of draft.nodes) { nodes.push(node); if ((++copied & 511) === 0) await yieldHost(); }
+    const orders = await externalOrders(options.elements.length, yieldHost);
+    const files = new Map(options.files.map(file => [file.fileId, file])), inspected = new Map<string, InspectedMedia | null>();
     const labelsByContainer = new Map<string, Readonly<Record<string, unknown>>[]>(), removed = new Set<NodeId>();
-    for (const element of options.elements) if (element.type === 'text' && typeof element.containerId === 'string') {
-        let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
+    for (let index = 0; index < options.elements.length; index++) {
+        const element = options.elements[index];
+        if (element.type === 'text' && typeof element.containerId === 'string') {
+            let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
+        }
+        if ((index & 255) === 255) await yieldHost();
     }
     const bindings: { id: NodeId; terminal: 'start' | 'end'; source: Readonly<Record<string, unknown>> }[] = [];
     let skipped = draft.skipped, held = true;
@@ -266,9 +307,13 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
             if (element.type === 'image') {
                 const geometry = elementGeometry(element), file = typeof element.fileId === 'string' ? files.get(element.fileId) : undefined;
                 if (!geometry || !file) { skipped++; ids.delete(sourceId); continue; }
-                let info: InspectedMedia;
-                try { info = await options.inspectImage(file, options.signal); check(); }
-                catch { check(); skipped++; ids.delete(sourceId); continue; }
+                let info = inspected.get(file.fileId);
+                if (info === undefined) {
+                    try { info = await options.inspectImage(file, options.signal); check(); }
+                    catch { check(); info = null; }
+                    inspected.set(file.fileId, info);
+                }
+                if (!info) { skipped++; ids.delete(sourceId); continue; }
                 if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !info.mime.startsWith('image/') || !finite(info.width, 1, 2 ** 26)
                     || !finite(info.height, 1, 2 ** 26) || info.width * info.height > SECURITY_LIMITS.mediaPixels || info.duration !== null
                     || typeof info.animated !== 'boolean') throw new TypeError('Invalid inspected Excalidraw image');
@@ -278,7 +323,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 if (prior && (prior.bytes !== entry.bytes || prior.mime !== entry.mime || prior.w !== entry.w || prior.h !== entry.h || prior.animated !== entry.animated)) throw new Error('Conflicting Excalidraw image metadata');
                 const scale = Array.isArray(element.scale) ? element.scale : [1, 1];
                 if (scale.length !== 2 || ![1, -1].includes(scale[0] as number) || ![1, -1].includes(scale[1] as number)) { skipped++; ids.delete(sourceId); continue; }
-                media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime }));
+                if (!prior) { media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime })); }
                 nodes.push(createPicture({ id, parent: options.sheet, order: orders[index], page: -1, x: geometry.x, y: geometry.y,
                     rotation: geometry.rotation, opacity: geometry.opacity, ext: null, w: geometry.w, h: geometry.h, media: info.id, crop: null,
                     flipX: scale[0] === -1, flipY: scale[1] === -1, alt: '', inverted: false, playing: false, url: null }));
@@ -297,7 +342,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 const base = { id, parent: options.sheet, order: orders[index], page: -1, x: pos.x, y: pos.y,
                     rotation: pos.rotation, opacity: pos.opacity, ext: null };
                 if (element.type === 'freedraw') {
-                    const pressures = element.pressures, real = element.simulatePressure === false && Array.isArray(pressures);
+                    const pressures = element.pressures, real = Array.isArray(pressures) && pressures.length > 0;
                     if (element.simulatePressure === false && !real || real && pressures.length !== points.length) throw new TypeError('Invalid Excalidraw pressure count');
                     const builder = new SampleBuilder({ pressure: real, declaredMaxScale: 1, precision: 'float64' });
                     for (let i = 0; i < points.length; i++) {
@@ -325,7 +370,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                         if (entry.isDeleted === true || typeof entry.id !== 'string' || typeof entry.text !== 'string') continue;
                         const style = textStyle(entry, true), color = colour(entry.strokeColor);
                         if (!style || !color) continue;
-                        label = await plainText(entry.text, options.cooperate, options.signal); check();
+                        label = await plainText(typeof entry.originalText === 'string' ? entry.originalText : entry.text, options.cooperate, options.signal); check();
                         labelColor = color; font = style.font; size = style.size; labelScale = style.scale;
                         const oldId = ids.get(entry.id); if (oldId) removed.add(oldId);
                         ids.set(entry.id, id); break;
@@ -336,9 +381,14 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                     if (element.endBinding && typeof element.endBinding === 'object' && !Array.isArray(element.endBinding)) bindings.push({ id, terminal: 'end', source: element.endBinding as Record<string, unknown> });
                 }
             } else { skipped++; ids.delete(sourceId); }
+            if (nodes.length - removed.size > SECURITY_LIMITS.clipboardNodes) throw new RangeError('Converted Excalidraw node count exceeds limits');
             if ((index & 63) === 63) await yieldHost();
         }
-        const retainedNodes = nodes.filter(node => !removed.has(node.id));
+        const retainedNodes: Node[] = [];
+        for (let i = 0; i < nodes.length; i++) {
+            if (!removed.has(nodes[i].id)) retainedNodes.push(nodes[i]);
+            if ((i & 511) === 511) await yieldHost();
+        }
         const actualDraftDoc = createBoardDoc({ kind: 'whiteboard', sheets: [{ id: options.sheet, name: 'External clipboard', order: 'a0', ext: null }],
             nodes: retainedNodes, media: media.values(), host: { kind: 'whiteboard' }, ui: UI_DEFAULTS, view: VIEW_DEFAULTS,
             preserved: { version: NATIVE_VERSION, fields: new Map(), records: [], end: null }, preservedMediaRefs: new Map() });
@@ -371,8 +421,12 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 ? { ...connector, [binding.terminal]: { ...endpoint, attach: attached } }
                 : { ...connector, [binding.terminal === 'start' ? 'startAttach' : 'endAttach']: attached });
         }
-        const output = retainedNodes.map(node => replacements.get(node.id) ?? node);
+        const output: Node[] = [];
+        for (let i = 0; i < retainedNodes.length; i++) {
+            const node = retainedNodes[i]; output.push(replacements.get(node.id) ?? node);
+            if ((i & 511) === 511) await yieldHost();
+        }
         check();
-        return { nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
+        return { sheet: options.sheet, nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
     } catch (error) { release(); throw error; }
 }

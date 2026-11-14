@@ -239,6 +239,8 @@ export class EditHost {
             this.pending = null;
             this.compositionBase = null;
             this.callbacks.composition(null);
+            // Restore the input window as well as the canvas after a cancelled IME edit.
+            this.sync();
             return;
         }
         this.endComposition();

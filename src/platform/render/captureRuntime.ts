@@ -4,7 +4,7 @@ import type { Webgl2Owner } from './gfx/webgl2';
 import type { MemoryAllocator, MemorySessionOwner } from './memoryGovernor';
 import { getPlatformRuntime } from './platformRuntime';
 import { PaneCapturer } from './capture';
-import type { CaptureGpuOwner, CaptureOptions, CaptureRequest, CaptureSnapshot } from './capture';
+import type { CaptureExportOptions, CaptureGpuOwner, CaptureOptions, CapturePngEncoder, CaptureRequest, CaptureSnapshot } from './capture';
 import { CaptureQueue } from './captureQueue';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import type { RenderToken } from './types';
@@ -49,6 +49,7 @@ export interface PlatformCapturerOptions {
     readonly owner: MemorySessionOwner;
     /** Synchronously retain one immutable revision and its resources. */
     snapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
+    readonly encodePngTiles?: CapturePngEncoder;
 }
 
 /** Session-owned, never view-owned: a hide/unmount removes only the optional GPU route.
@@ -57,6 +58,7 @@ export interface PlatformCapturerOptions {
 export function createPlatformCapturer(options: PlatformCapturerOptions): {
     captureRegion(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob>;
+    captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
     dispose(): void;
 } {
     const now = performance.now();
@@ -69,6 +71,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
         release: lease => { cache.release(lease); live -= lease.bytes; },
     };
     const capturer = new PaneCapturer({ paneId: options.paneId, queue, memory, snapshot: request => options.snapshot(request, memory),
+        encodePngTiles: options.encodePngTiles,
         tryGpu: snapshot => {
             for (const route of gpuOwners.values()) {
                 const a = route.token, b = snapshot.token;
@@ -83,6 +86,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
     return {
         captureRegion: (rect, maxSide, request) => capturer.captureRegion(rect, maxSide, request),
         captureBlob: (rect, maxSide, request) => capturer.captureBlob(rect, maxSide, request),
+        captureExportBlob: (rect, maxSide, request) => capturer.captureExportBlob(rect, maxSide, request),
         dispose: () => { if (!disposed) { disposed = true; capturer.dispose(); cache.close(); } },
     };
 }

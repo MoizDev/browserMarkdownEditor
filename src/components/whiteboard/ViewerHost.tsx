@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { PlatformLayerDefinition, PlatformPaneOptions } from '../../platform/render';
-import { usePlatformPane } from '../platformPane/usePlatformPane';
+import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/usePlatformPane';
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
 import './viewerHost.css';
 
@@ -22,10 +21,11 @@ export interface ViewerHostProps<T extends object> {
     readonly theme: 'light' | 'dark';
     readonly inverted: boolean;
     readonly reason: string | null;
+    readonly readOnlyNotice: string;
     readonly view: ViewerViewHandle;
     /** Session-owned definitions and services are stable for this view lease. */
-    readonly layers: readonly PlatformLayerDefinition[];
-    readonly platform: Omit<PlatformPaneOptions<T>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
+    readonly layers: UsePlatformPaneOptions<T>['layers'];
+    readonly platform: UsePlatformPaneOptions<T>['services'];
     readonly registerKeyboardTarget: (focus: () => void) => () => void;
     readonly onFocus: () => void;
     readonly chrome?: ReactNode;
@@ -33,7 +33,7 @@ export interface ViewerHostProps<T extends object> {
 
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
-    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason,
+    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice,
     view, layers, platform, registerKeyboardTarget, onFocus, chrome,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
@@ -66,7 +66,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
-        <div className="board-viewer-notice" role="status">{reason ?? 'This board is open read-only.'}</div>
+        <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>
         {chrome}
     </div>;
 }

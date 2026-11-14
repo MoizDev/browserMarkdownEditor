@@ -566,14 +566,15 @@ locked backdrop image shapes, but the pages come from a `paper` block instead of
 - **Re-papering reaches the store as a `mergeRemoteChanges`**, so the save listener does NOT see it;
   `changePaper` calls `persist()` itself. One `persist` writes paper + snapshot + pickers together,
   because they share a file.
-- **Export writes a sibling `.pdf` and deliberately OVERWRITES it** — the app's one exception to
-  never-overwrite, since the name is derived from the notebook's and can only be its own export.
-  App asks first unless this session already wrote that name. The ruling is drawn with `drawLine`,
-  mirroring `paperSvg` by hand: `paper.ts` is in the main bundle and must stay free of pdf-lib.
+- **Export stages the PDF before touching its sibling target.** `App.commitNotebookPdf` binds consent
+  to vault, source document, full path and disk version; a changed target asks again. It refuses an
+  open target, serializes with Trash and preserves the exact replaced bytes in the folder's Trash.
+  `writeNotebookExport` rechecks the baseline after the copy and uses versioned IO. The legacy ruling
+  still mirrors `paperSvg`; the new display-list writer takes the same paper lists the screen uses.
 - Colours in `pdfBuild`'s ruling constants and `paper.ts`'s SVG are **two copies of one palette** —
   change both.
-- **An exported PDF carries a pointer back** (`NOTEBOOK_SOURCE_ATTACHMENT`, plus a human-readable
-  `Producer`), and `App.handleAnnotatePdf` follows it: pressing the pen on a notebook's export opens
+- **An exported PDF carries a pointer back** (`NOTEBOOK_SOURCE_ATTACHMENT`), and `App.handleAnnotatePdf`
+  follows it: pressing the pen on a notebook's export opens
   the NOTEBOOK. Without that it fell into the ordinary PDF flow and forked a third file whose strokes
   the notebook could neither see nor overwrite. Resolution is the stored path first, then a notebook
   beside the PDF answering to its name (which covers renaming either); when neither resolves it says

@@ -1737,72 +1737,69 @@ export default function App() {
   const notebookExportInFlightRef = useRef(false);
   const trashInFlightRef = useRef<boolean>(false);
 
-  /**
-   * Write the open notebook out as a PDF beside it.
-   *
-   * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting uses the same name rather than piling up copies. A previous
-   * target is preserved in Trash, and a changed or unfamiliar target needs
-   * confirmation before it can be replaced.
-   */
-  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle || notebookExportInFlightRef.current || trashInFlightRef.current) return;
-    const targetName = notebookPdfName(file.name);
+  // Shared destination transaction for a staged notebook PDF. The source owner
+  // is pinned before rendering; no worker receives a filesystem handle.
+  const commitNotebookPdf = useCallback(async (file: ActiveFile, bytes: Uint8Array, sourceId: string, isCurrent: () => boolean): Promise<boolean> => {
+    if (!file.parentHandle || trashInFlightRef.current || !isCurrent()) return false;
     const vault = currentVaultIdRef.current;
-    const root = rootHandleRef.current;
-    if (!vault || !root) { notify('The vault is not ready for export.'); return; }
-    const parentPath = parentVaultPath(file.path);
+    const parentPath = parentVaultPath(file.path), targetName = notebookPdfName(file.name);
     const targetPath = joinVaultPath(parentPath, targetName);
-    const key = JSON.stringify([vault, file.path, targetPath]);
-
-    const exporter = getNotebookExporter(file.path);
-    if (!exporter) {
-      notify(`Open "${file.name}" before exporting it.`);
-      return;
-    }
-
-    notebookExportInFlightRef.current = true;
+    const key = JSON.stringify([vault, sourceId, file.path, targetPath]);
+    const targetClosed = () => !tabsRef.current.some(tab => tab.file.path === targetPath);
+    if (!targetClosed()) { notify(`Close "${targetName}" before replacing it.`); return false; }
     trashInFlightRef.current = true;
     try {
+      await reconcileQueueRef.current;
+      while (isCurrent() && targetClosed()) {
+        const observed = await inspectExportTarget(file.parentHandle, targetName);
+        if (!isCurrent() || !targetClosed()) return false;
+        const trusted = exportedNotebooksRef.current.get(key);
+        if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
+          const replace = await ask({
+            title: `Replace "${targetName}"?`,
+            body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
+            confirmLabel: 'Replace', danger: true,
+          });
+          if (!replace || !isCurrent() || !targetClosed()) return false;
+        }
+        const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed, () => isCurrent() && targetClosed());
+        if (result.status === 'cancelled') return false;
+        if (result.status === 'changed') continue;
+        exportedNotebooksRef.current.set(key, result.version);
+        return true;
+      }
+      return false;
+    } finally { trashInFlightRef.current = false; }
+  }, [ask, inspectExportTarget, notify, writeNotebookExport]);
+
+  /** Export the notebook's frozen render; destination consent is a separate transaction. */
+  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
+    if (!file.parentHandle || notebookExportInFlightRef.current) return;
+    const vault = currentVaultIdRef.current, root = rootHandleRef.current;
+    const source = tabsRef.current.find(tab => tab.file.path === file.path);
+    const exporter = getNotebookExporter(file.path);
+    if (!vault || !root || !source || !exporter) { notify(`Open "${file.name}" before exporting it.`); return; }
+    const epoch = readerEpochRef.current.epoch, generation = source.representation.generation, diskRev = source.diskRev;
+    const isCurrent = () => rootHandleRef.current === root && currentVaultIdRef.current === vault && readerEpochRef.current.epoch === epoch &&
+      tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path && tab.representation.generation === generation && tab.diskRev === diskRev);
+    notebookExportInFlightRef.current = true;
+    try {
       const exported = await exporter();
-      if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
+      if (!exported || !isCurrent()) return;
       const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
-        path: file.path,
-        exportedAt: Date.now(),
-      });
-      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
-      const observed = await inspectExportTarget(file.parentHandle, targetName);
-      const trusted = exportedNotebooksRef.current.get(key);
-      if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
-          confirmLabel: 'Replace', danger: true,
-        });
-        if (!replace) return;
-      }
-      if (rootHandleRef.current !== root || currentVaultIdRef.current !== vault) return;
-      const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed);
-      if (result.status !== 'written') {
-        notify(`"${targetName}" changed while exporting. Export again to review it.`);
-        return;
-      }
-      exportedNotebooksRef.current.set(key, result.version);
+      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      if (!isCurrent() || !await commitNotebookPdf(file, bytes, source.id, isCurrent)) return;
       void tell({
-        title: 'Exported to PDF',
-        confirmLabel: 'OK',
-        body: `"${targetName}" is in the same folder — ${exported.paper.pageCount} `
+        title: 'Exported to PDF', confirmLabel: 'OK',
+        body: `"${notebookPdfName(file.name)}" is in the same folder — ${exported.paper.pageCount} `
           + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
       console.error('Could not export the notebook:', err);
-      notify(`Could not export "${file.name}".`);
-    } finally {
-      notebookExportInFlightRef.current = false;
-      trashInFlightRef.current = false;
-    }
-  }, [ask, inspectExportTarget, notify, tell, writeNotebookExport]);
+      notify(err instanceof DOMException && err.name === 'TypeMismatchError'
+        ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
+    } finally { notebookExportInFlightRef.current = false; }
+  }, [commitNotebookPdf, notify, tell]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached

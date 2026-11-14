@@ -9,6 +9,7 @@ export type RichFragment = RichText;
 export interface Block {
     readonly kind: 'p' | 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
     readonly level: number;
+    /** Semantic only for ol; a future tuple tail may retain this otherwise inert slot. */
     readonly start?: number;
     readonly dir: 'auto' | 'ltr' | 'rtl';
     readonly runs: readonly Run[];

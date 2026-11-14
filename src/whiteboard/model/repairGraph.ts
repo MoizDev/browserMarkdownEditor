@@ -237,8 +237,23 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     for (let i = 0; i < items.length; i++) {
         if ((i & 1023) === 0) await tick();
         const item = items[i], node = item.node;
-        if (!live.has(node.id) || node.kind !== 'connector') continue;
+        if (!live.has(node.id) || (node.kind !== 'connector' && node.kind !== 'polyline')) continue;
         const sheet = sheetFor(item);
+        if (node.kind === 'polyline') {
+            const detach = (attach: typeof node.startAttach) => {
+                if (!attach) return attach;
+                const target = byId.get(attach.target);
+                return target && live.has(target.node.id) && target.node.id !== node.id && target.node.kind !== 'connector'
+                    && target.node.kind !== 'group' && target.node.kind !== 'opaque' && sheet !== null && sheetFor(target) === sheet ? attach : null;
+            };
+            const startAttach = detach(node.startAttach), endAttach = detach(node.endAttach);
+            if (startAttach !== node.startAttach || endAttach !== node.endAttach) {
+                if ((startAttach !== node.startAttach && node.ext?.raw.has('startAttach'))
+                    || (endAttach !== node.endAttach && node.ext?.raw.has('endAttach'))) return result(items, 'Repair would override a preserved polyline attachment');
+                item.node = { ...node, startAttach, endAttach }; record(item, 'detached-attachment');
+            }
+            continue;
+        }
         const detach = (end: typeof node.start) => {
             if (!end.attach) return end;
             const target = byId.get(end.attach.target);
@@ -251,6 +266,28 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             if ((start !== node.start && NODE_FILE_FIELDS.start.some(token => node.ext?.raw.has(token)))
                 || (end !== node.end && NODE_FILE_FIELDS.end.some(token => node.ext?.raw.has(token)))) return result(items, 'Repair would override a preserved connector endpoint');
             item.node = { ...node, start, end }; record(item, 'detached-attachment');
+        }
+    }
+    // A bound path may target another bound path. Cut only DFS back-edges in
+    // source order; the stored free endpoint remains, rather than guessing a cycle's geometry.
+    const states = new Map<NodeId, 1 | 2>();
+    for (const root of items) {
+        if (!live.has(root.node.id) || root.node.kind !== 'polyline' || states.has(root.node.id)) continue;
+        const pending: { item: Item; next: number }[] = [{ item: root, next: 0 }]; states.set(root.node.id, 1);
+        while (pending.length) {
+            if ((work++ & 1023) === 0) await tick();
+            const frame = pending[pending.length - 1], node = frame.item.node;
+            if (node.kind !== 'polyline' || frame.next === 2) { states.set(node.id, 2); pending.pop(); continue; }
+            const key = frame.next++ === 0 ? 'startAttach' : 'endAttach', attach = node[key];
+            if (!attach) continue;
+            const target = byId.get(attach.target);
+            if (!target || target.node.kind !== 'polyline') continue;
+            if (states.get(target.node.id) === 1) {
+                if (node.ext?.raw.has(key)) return result(items, 'Cycle repair would override a preserved polyline attachment');
+                frame.item.node = { ...node, [key]: null }; record(frame.item, 'detached-attachment-cycle');
+            } else if (!states.has(target.node.id)) {
+                states.set(target.node.id, 1); pending.push({ item: target, next: 0 });
+            }
         }
     }
     const retained: Item[] = [];

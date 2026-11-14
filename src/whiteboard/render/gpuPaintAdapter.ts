@@ -20,7 +20,7 @@ interface AnalyticGroup {
     band: PaintBand; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
 }
 interface Plan {
-    frame: PaintFrame; sourceFrame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number;
+    frame: PaintFrame; sourceFrame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
     x0: number; y0: number; x1: number; y1: number;
     band: PaintBand; item: number; x: number; y: number; tiles: Record<PaintBand, Tile[]>;
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
@@ -135,7 +135,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
-                staged = { frame: prepared.frame, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale,
+                staged = { frame: prepared.frame, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
                     x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
                     parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
                     groups: [], groupAt: { underlay: new Map(), content: new Map() }, scanBand: 'underlay', scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
@@ -279,7 +279,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
             const complete = ready.projection === projection(view);
-            return { complete, sharp: complete && ready.scale >= view.camera.z * view.viewport.dpr,
+            return { complete, sharp: complete && ready.sharp && ready.scale >= view.camera.z * view.viewport.dpr,
                 ...(ready.sourceFrame !== reference.readyFrame() ? { staleVersion: true } : {}) };
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
@@ -327,7 +327,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
-            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame();
+            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame() || ready.frame !== reference.borrowPrepared()?.frame;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const batches = analytic.memory();

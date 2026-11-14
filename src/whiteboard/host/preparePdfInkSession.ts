@@ -92,7 +92,15 @@ export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSession
         signal.throwIfAborted();
         if (!current()) throw stale();
         controller = createPdfInkRebind({ host, documentId, admittedIdentity: identity, initialSource: accepted,
-            sources: prepared.sources, rebind: options.rebind, onError: options.onError, onReadOnly: options.onReadOnly });
+            sources: prepared.sources, rebind: options.rebind,
+            adoptPaint(witness, isCurrent) {
+                const runtime = prepared.runtime();
+                if (!runtime || !current() || !isCurrent()) throw stale();
+                runtime.adoptPaintSource(witness, { documentId, session: identity.session,
+                    pristineFingerprint: accepted.source.pristineFingerprint },
+                () => current() && isCurrent() && prepared.runtime() === runtime);
+            },
+            onError: options.onError, onReadOnly: options.onReadOnly });
     } catch (error) { await prepared.dispose(); throw error; }
     const rebind = controller;
     let transferred = false, stagingDisposed = false;

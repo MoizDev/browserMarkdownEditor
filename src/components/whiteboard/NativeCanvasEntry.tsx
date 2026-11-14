@@ -10,6 +10,7 @@ import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
+import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
 
@@ -74,7 +75,7 @@ function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
         readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-        chrome={<div role="toolbar" aria-label="Canvas navigation">
+        chrome={<div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
                 const sheet = sheets.find(item => item.id === event.currentTarget.value);
                 if (sheet) selection.setSheet(sheet.id);

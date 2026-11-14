@@ -314,15 +314,18 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 ## 5. Notebooks, Drawings, and PDFs
 
-Three kinds of file open on a canvas instead of in the text editor. All three
-are drawn with the same tools — pen, highlighter, shapes, text — and all three
-save themselves as you work, a second after you stop.
+Three kinds of file open on a canvas instead of in the text editor. The existing
+editable canvases offer pen, highlighter, shapes and text, and save themselves a
+second after you stop. The native drawing and notebook viewer described below is
+currently read-only.
 
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with **New Notebook**, in
-the pencil button's menu at the top of the sidebar.
+the pencil button's menu at the top of the sidebar. The paper and editing controls
+below describe editable legacy notebooks; native notebooks use the read-only
+viewer described under *Drawings*.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -390,6 +393,11 @@ direction, for diagrams and thinking rather than for a page you intend to hand
 in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
 otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
+Native drawings and notebooks currently open in a **read-only viewer**: you can
+pan the canvas, select a sheet when there is more than one, use the page box to
+jump through a notebook, zoom with − / +, and invert the view. These controls
+change the view only; drawing and editing are not available there.
+
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.
@@ -397,8 +405,8 @@ switch tabs, close the file or reload the app.
 A drawing or notebook this version cannot read safely — an unreadable file, one
 written in a newer format, or one that is not the kind its name says — **opens
 read-only**: neither drawing on it nor Save can overwrite the original file. An
-empty file is still a valid new board, and every supported drawing and notebook
-opens and saves as usual.
+empty file is still a valid new board. Supported legacy canvases remain editable;
+the native viewer does not write board edits.
 
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.

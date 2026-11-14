@@ -1,21 +1,16 @@
 import type { Affine } from '../../platform/types';
-import { worldPose, worldToLocal } from '../change/coordinates';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Attachment, Node, Point, PolylineNode } from '../model/nodes';
-import { transformPoint } from './affine';
-import { connectorBody } from './connectors';
-import { bodyCrossings, pointAtLength } from './connectorPath';
 import type { AttachmentSurface } from './connectorTypes';
 import type { PathOp } from './path';
 import { preparePolylineGeometry } from './providers';
 import { prepareBoardAttachmentSurface } from '../render/attachmentSurfaces';
 import { boardFrameAncestors } from './ancestorFrames';
+import { polylineMatrix, polylinePointSteps, POLYLINE_TOLERANCE_WORLD, type AttachedPolyline } from './polylinePoints';
 
-/** H4 owns the persisted fields; this reader also accepts documents predating them. */
-type AttachedPolyline = Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
 export interface PolylineAttachmentOptions {
     readonly runtime: BoardRuntime;
     readonly doc?: BoardDoc;
@@ -29,11 +24,6 @@ export interface ResolvedPolylineAttachments {
     readonly fontEpoch: number;
     release(): void;
 }
-function matrix(doc: BoardDoc, id: NodeId): Affine {
-    const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-    if (![pose.x, pose.y, pose.rotation, c, s].every(Number.isFinite)) throw new RangeError('Polyline attachment pose is invalid');
-    return [c, s, -s, c, pose.x, pose.y];
-}
 function rectangle(w: number, h: number): readonly PathOp[] {
     if (![w, h].every(Number.isFinite) || w < 0 || h < 0) throw new RangeError('Polyline attachment frame is invalid');
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
@@ -42,7 +32,7 @@ function rectangle(w: number, h: number): readonly PathOp[] {
 export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
     const result: AttachmentSurface['clips'][number][] = [];
     for (const ancestor of boardFrameAncestors(doc, node))
-        result.push({ outline: rectangle(ancestor.w, ancestor.h), localToWorld: matrix(doc, ancestor.id) });
+        result.push({ outline: rectangle(ancestor.w, ancestor.h), localToWorld: polylineMatrix(doc, ancestor.id) });
     return result.reverse();
 }
 
@@ -50,40 +40,18 @@ export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): Attac
 export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDoc, surfaces: ReadonlyMap<NodeId, AttachmentSurface>, options: {
     readonly tolerance: number; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>; readonly check: () => void;
 }): Promise<readonly Point[]> {
-    options.check();
-    if (!Number.isFinite(options.tolerance) || options.tolerance <= 0 || options.tolerance / 2 === 0) throw new RangeError('Invalid polyline attachment tolerance');
-    const entries = [node.startAttach ?? null, node.endAttach ?? null] as const;
-    const localToWorld = matrix(doc, node.id), points = node.points.map(point => ({ ...point }));
-    if (points.length < 2) throw new RangeError('Invalid attached polyline');
-    const world = points.map(point => transformPoint(localToWorld, point));
-    const aim = (attachment: Attachment, surface: AttachmentSurface) => {
-        const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 }; // default, calibration cut by owner
-        if (![box.x, box.y, box.width, box.height, anchor.x, anchor.y].every(Number.isFinite) || box.width < 0 || box.height < 0
-            || anchor.x < 0 || anchor.x > 1 || anchor.y < 0 || anchor.y > 1) throw new RangeError('Polyline attachment anchor is invalid');
-        const point = transformPoint(surface.localToWorld, { x: box.x + box.width * anchor.x, y: box.y + box.height * anchor.y });
-        if (![point.x, point.y].every(Number.isFinite)) throw new RangeError('Polyline attachment anchor overflows');
-        return point;
-    };
-    for (let side = 0; side < 2; side++) {
-        const entry = entries[side]; if (!entry) continue;
-        const surface = surfaces.get(entry.target); if (!surface) throw new Error('Polyline attachment surface disappeared');
-        world[side === 0 ? 0 : world.length - 1] = aim(entry, surface);
-    }
-    for (let side = 0; side < 2; side++) {
-        const entry = entries[side]; if (!entry) continue;
-        const index = side === 0 ? 0 : world.length - 1, neighbour = side === 0 ? 1 : world.length - 2;
-        let point = world[index];
-        if (!entry.exact) {
-            const body = connectorBody(point, world[neighbour], 0, options.tolerance);
-            const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, options.tolerance / 2, 65_536, options.cooperate, options.signal);
-            options.check(); const exit = crossings[0];
-            if (exit && !exit.entering) point = pointAtLength(body, exit.distance);
+    const steps = polylinePointSteps(node, doc, surfaces, options.tolerance, options.check);
+    let count = 0, started = performance.now();
+    options.signal.throwIfAborted();
+    for (;;) {
+        const next = steps.next();
+        if (next.done) { options.signal.throwIfAborted(); return next.value; }
+        if (++count >= 256 || performance.now() - started >= 3) {
+            options.signal.throwIfAborted();
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            options.signal.throwIfAborted(); count = 0; started = performance.now();
         }
-        const local = worldToLocal(doc, node, point);
-        if (![local.x, local.y].every(Number.isFinite)) throw new RangeError('Polyline attachment point overflows');
-        points[index] = local;
     }
-    options.check(); return Object.freeze(points.map(point => Object.freeze(point)));
 }
 
 /** Resolve both bindings against one staged document and the renderer's actual attachment surfaces. */
@@ -97,7 +65,7 @@ async function resolvePolylineAttachmentChain(node: AttachedPolyline, options: P
     const chain = new Set(ancestors); chain.add(node.id);
     const { runtime } = options, session = runtime.session, live = session.doc, doc = options.doc ?? live;
     const revision = doc.rev, liveRevision = live.rev, owner = session.owner, signal = options.signal ?? new AbortController().signal;
-    const tolerance = options.toleranceWorld ?? 0.01;
+    const tolerance = options.toleranceWorld ?? POLYLINE_TOLERANCE_WORLD;
     let released = false, epoch: number | undefined;
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === live
         && live.rev === liveRevision && doc.rev === revision && (epoch === undefined || runtime.render.text.fonts.epoch === epoch);
@@ -129,7 +97,7 @@ async function resolvePolylineAttachmentChain(node: AttachedPolyline, options: P
             if ('boundaryErrorWorld' in surface && surface.boundaryErrorWorld !== 0)
                 throw new Error(`Polyline attachment target boundary is not exact: ${id}`);
             surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
-                localToWorld: matrix(doc, id), clips: polylineSurfaceClips(doc, target), revision });
+                localToWorld: polylineMatrix(doc, id), clips: polylineSurfaceClips(doc, target), revision });
         }
         const points = await resolvePolylinePoints(node, doc, surfaces, { tolerance, signal, cooperate: options.cooperate, check });
         check();

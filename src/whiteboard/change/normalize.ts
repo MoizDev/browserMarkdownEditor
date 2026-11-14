@@ -1,9 +1,10 @@
 import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
-import type { Attachment, ConnectorNode, Node, Point } from '../model/nodes';
+import type { Attachment, ConnectorNode, Node, Point, PolylineNode } from '../model/nodes';
 import { needsRekey } from '../model/orderKey';
 import type { Op, OpSink, TouchedSet } from './ops';
 import { finitePoint, requireGeometry, worldToLocal, type ChangeGeometry } from './coordinates';
+import { ApplyFailed } from './errors';
 import { rekeyParent, rekeySheets, stageReparent, setIfChanged } from './commands';
 
 export interface CapturedEnd {
@@ -19,6 +20,11 @@ export interface NormalizationStep {
 }
 const NO_ENDS: readonly CapturedEnd[] = Object.freeze([]);
 
+/** A connector end or a polyline end: both carry one Attachment per terminal, stored differently. */
+function attachmentOf(node: ConnectorNode | PolylineNode, terminal: 'start' | 'end'): Attachment | null | undefined {
+    return node.kind === 'connector' ? node[terminal].attach : terminal === 'start' ? node.startAttach : node.endAttach;
+}
+
 // The last painted tip is captured WHILE the target still exists and its sheet
 // still agrees with the connector (geometry §8.5). Captures live on ordinary staged
 // entries, so savepoint rollback discards them without another restoration journal.
@@ -32,10 +38,10 @@ export function captureBeforeChange(doc: BoardDoc, op: Op, geometry?: ChangeGeom
         // root page is a temporary state, not an origin on page zero to capture.
         if (op.key === 'page' && !(doc.kind !== 'whiteboard' && isSheetParent(doc, root.parent) && op.value === -1)) return NO_ENDS;
     }
-    const connectors = new Set<NodeId>();
+    const attached = new Set<NodeId>();
     const visit = (node: Node) => {
-        if (node.kind === 'connector') connectors.add(node.id);
-        for (const id of doc.attachedTo.get(node.id) ?? []) connectors.add(id);
+        if (node.kind === 'connector' || node.kind === 'polyline') attached.add(node.id);
+        for (const id of doc.attachedTo.get(node.id) ?? []) attached.add(id);
         const children = childrenOf(doc, node.id);
         for (let i = 0; i < children.length; i++) visit(children[i]);
     };
@@ -50,15 +56,18 @@ export function captureBeforeChange(doc: BoardDoc, op: Op, geometry?: ChangeGeom
         }
         return false;
     };
-    for (const id of connectors) {
+    for (const id of attached) {
         const node = doc.nodes.get(id);
-        if (!node || node.kind !== 'connector' || !usableOrigin(node)) continue;
+        if (!node || (node.kind !== 'connector' && node.kind !== 'polyline') || !usableOrigin(node)) continue;
         for (const terminal of ['start', 'end'] as const) {
-            const attachment = node[terminal].attach;
+            const attachment = attachmentOf(node, terminal);
             if (!attachment) continue;
             const target = doc.nodes.get(attachment.target);
             if (!target || !usableOrigin(target) || sheetOf(doc, target.id) !== sheetOf(doc, node.id)) continue;
-            captured.push({ id, terminal, attachment, world: finitePoint(requireGeometry(geometry).resolvedTip(doc, node, terminal)) });
+            const reader = requireGeometry(geometry);
+            if (node.kind === 'polyline' && !reader.resolvedPolylineTip) throw new ApplyFailed('geometry-required', 'Polyline attachments need the session polyline reader');
+            const tip = node.kind === 'connector' ? reader.resolvedTip(doc, node, terminal) : reader.resolvedPolylineTip!(doc, node, terminal);
+            captured.push({ id, terminal, attachment, world: finitePoint(tip) });
         }
     }
     return captured.length ? captured : NO_ENDS;
@@ -121,9 +130,10 @@ export function normalizeChanges(doc: BoardDoc, builder: OpSink, steps: readonly
     // the FINAL sheet membership, never detach just because one moved first.
     for (const [id, pair] of ends) {
         const node = doc.nodes.get(id);
-        if (!node || node.kind !== 'connector') continue;
-        detach(node, 'start', pair.start);
-        detach(node, 'end', pair.end);
+        if (node?.kind === 'connector') {
+            detach(node, 'start', pair.start);
+            detach(node, 'end', pair.end);
+        } else if (node?.kind === 'polyline') detachPolyline(node, pair);
     }
     function detach(node: ConnectorNode, terminal: 'start' | 'end', captured: CapturedEnd | undefined): void {
         const attachment = node[terminal].attach;
@@ -131,5 +141,21 @@ export function normalizeChanges(doc: BoardDoc, builder: OpSink, steps: readonly
         if (doc.nodes.has(attachment.target) && sheetOf(doc, node.id) === sheetOf(doc, attachment.target)) return;
         const point = worldToLocal(doc, node, captured.world);
         builder.push({ t: 'set', id: node.id, key: terminal, value: { x: point.x, y: point.y, attach: null } });
+    }
+    // A polyline's ends live in its points array, so both moved ends share one points write.
+    function detachPolyline(node: PolylineNode, pair: { start?: CapturedEnd; end?: CapturedEnd }): void {
+        const points = node.points.map(point => ({ ...point }));
+        let moved = false;
+        for (const terminal of ['start', 'end'] as const) {
+            const attachment = attachmentOf(node, terminal), captured = pair[terminal];
+            if (!attachment || captured?.attachment !== attachment) continue;
+            if (doc.nodes.has(attachment.target) && sheetOf(doc, node.id) === sheetOf(doc, attachment.target)) continue;
+            const index = terminal === 'start' ? 0 : points.length - 1;
+            if (index < 0) continue;
+            const point = worldToLocal(doc, node, captured.world);
+            points[index] = { x: point.x, y: point.y }; moved = true;
+            builder.push({ t: 'set', id: node.id, key: terminal === 'start' ? 'startAttach' : 'endAttach', value: null });
+        }
+        if (moved) builder.push({ t: 'set', id: node.id, key: 'points', value: points });
     }
 }

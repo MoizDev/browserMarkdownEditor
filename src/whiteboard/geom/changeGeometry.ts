@@ -4,7 +4,7 @@ import type { ChangeGeometry } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
-import type { ConnectorNode, Node } from '../model/nodes';
+import type { ConnectorNode, Node, Point, PolylineNode } from '../model/nodes';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
 import type { LocalGeometryBounds } from '../scene/bounds';
 import { transformBox, validBox } from './bounds';
@@ -12,6 +12,9 @@ import type { Box } from './bounds';
 import type { AttachmentSurface, ConnectorLabelPaint } from './connectorTypes';
 import type { PathOp, Vec2 } from './path';
 import { resolveConnectorGeometryNow } from './resolveConnector';
+import { transformPoint } from './affine';
+import { drainPolylinePoints, POLYLINE_TOLERANCE_WORLD, polylineMatrix, type AttachedPolyline } from './polylinePoints';
+import { prepareBoardAttachmentSurfaceNow } from '../render/attachmentSurfaces';
 
 // Provenance: staged-change world pose and shared connector attachment/geometry
 // contracts; independent composition, no third-party source.
@@ -74,7 +77,42 @@ export function createBoardChangeGeometry(options: {
         transformBox(out, 0, local.ink, 0, matrix(doc, node.id));
         return [out[0], out[1], out[2], out[3]];
     };
+    // Synchronous mirror of the cooperative polyline reader: a chained polyline target
+    // is resolved first, from its own bindings, so a surface never reads unresolved points.
+    const resolvePolylineNow = (doc: BoardDoc, line: AttachedPolyline, chain: ReadonlySet<NodeId>): readonly Point[] => {
+        if (chain.has(line.id)) return unavailable(line.id, 'polyline attachment cycle');
+        if (chain.size >= 64) return unavailable(line.id, 'polyline attachment chain is too deep');
+        const inner = new Set(chain); inner.add(line.id);
+        const surfaces = new Map<NodeId, AttachmentSurface>();
+        for (const attachment of [line.startAttach, line.endAttach]) {
+            if (!attachment || surfaces.has(attachment.target)) continue;
+            const id = attachment.target, target = doc.nodes.get(id);
+            if (!target) return unavailable(id, 'polyline attachment target is missing');
+            if (target.kind === 'polyline') {
+                const bound = target as AttachedPolyline;
+                const points = bound.startAttach || bound.endAttach ? resolvePolylineNow(doc, bound, inner) : bound.points;
+                const shape = prepareBoardAttachmentSurfaceNow({ ...bound, points: [...points] }, { signal: new AbortController().signal, toleranceWorld: POLYLINE_TOLERANCE_WORLD / 2 });
+                if (!shape) return unavailable(id, 'polyline attachment contour is not prepared');
+                if (shape.boundaryErrorWorld !== 0) return unavailable(id, 'polyline attachment boundary is not exact');
+                surfaces.set(id, { target: id, outline: shape.outline, logicalBox: shape.logicalBox,
+                    localToWorld: polylineMatrix(doc, id), clips: clips(doc, bound), revision: doc.rev });
+            } else {
+                const shape = surface(doc, id); if (shape) surfaces.set(id, shape);
+            }
+        }
+        return drainPolylinePoints(line, doc, surfaces, POLYLINE_TOLERANCE_WORLD);
+    };
     return {
+        resolvedPolylineTip(doc, node, terminal) {
+            const current = doc.nodes.get(node.id);
+            if (!current || current.kind !== 'polyline') return unavailable(node.id, 'polyline is missing');
+            const bound = terminal === 'start' ? current.startAttach : current.endAttach;
+            const index = terminal === 'start' ? 0 : current.points.length - 1;
+            const local = bound ? resolvePolylineNow(doc, current, new Set()) : current.points;
+            const end = local[index];
+            if (!end) return unavailable(node.id, 'polyline end is missing');
+            return transformPoint(matrix(doc, current.id), end);
+        },
         resolvedTip(doc, node, terminal) {
             const current = doc.nodes.get(node.id);
             if (!current || current.kind !== 'connector') return unavailable(node.id, 'connector is missing');

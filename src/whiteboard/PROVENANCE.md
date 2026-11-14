@@ -102,6 +102,8 @@ third-party code included (normally "none") · date.
 | `render/material.ts` | lane w-e | W-E4 shared contract; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
+| `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4 | rendering §§2,10,12; integration §2 | Public LayerHost and model kinds; w-b accessibility source agreement; host-only pages/backdrops, lifecycle-owned layer disposal and React-free open contract | none | 2026-11-13 |
+| `session/gestureQueue.ts` | lane w-e | Session mutation serialisation | input gestures; integration §2 | Direct w-c/w-p/w-f synchronous after-gesture port; own FIFO admission, abort cleanup and readiness checks immediately before transaction task, independent of history | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
 

@@ -249,10 +249,18 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
     error: services.error,
   })
+  let cancelKeyboardGesture = () => false
+  const cancelForCamera = () => {
+    cancelContinuations(); services.cancelPendingGestures()
+    const active = router.activeOwner
+    if (!active || !['node-edit', 'erase', 'marquee', 'zoom-brush'].includes(active.kind)) return
+    if (active.pointerIds.has(-1)) cancelKeyboardGesture()
+    else pointer.interrupt('os-cancel')
+  }
   const touch = new TouchArbiter(view.camera, {
     cancelTouchPreview: () => { if (activeSource === 'touch') pointer.discardPreview() },
     endTouchCamera: services.cameraChanged,
-    changed: services.cameraChanged,
+    changed: () => { cancelForCamera(); services.cameraChanged() },
     penModeChanged: enabled => {
       if (sharedPenMode.enabled === enabled) return
       sharedPenMode.enabled = enabled
@@ -340,7 +348,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopWheel = installWheel(view.surface, {
     camera: view.camera, paged: view.paged, toSurface: view.clientToSurface,
     owns: event => current() && services.ownsWheel(event),
-    changed: () => { if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }; services.cameraChanged() },
+    changed: () => {
+      cancelForCamera()
+      if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }
+      services.cameraChanged()
+    },
   })
   let keyboardStart: ToolStateSnapshot | null = null
   const cursor = createKeyboardCursor({
@@ -376,6 +388,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
+  cancelKeyboardGesture = () => cursor.active && cursor.escape()
   const flush = () => {
     cancelContinuations()
     services.cancelPendingGestures()

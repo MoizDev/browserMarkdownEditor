@@ -1249,6 +1249,10 @@ export default function App() {
     return {
       clipboard: nativeClipboard,
       embeds: nativeEmbeds,
+      async createEditingCapabilities(context) {
+        const { createNativeEditingCapabilities } = await import('./components/whiteboard/nativeEditingCapabilityFactory');
+        return createNativeEditingCapabilities(context);
+      },
       identity(id) {
         const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
         if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;

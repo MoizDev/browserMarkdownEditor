@@ -59,7 +59,7 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
                 || bounds.width < 1 || bounds.height < 1 || bounds.width > 1_000_000 || bounds.height > 1_000_000) throw new Error('Invalid flatten capture');
             const blob = new Blob([captured.blob], { type: 'image/png' });
             const info = await inspectMedia(blob, { memory: options.memory, identity, isCurrent: current, signal: context.signal }); check();
-            if (info.mime !== 'image/png' || info.duration !== null) throw new Error('Flatten capture is not a PNG');
+            if (info.mime !== 'image/png' || info.duration !== null || info.animated) throw new Error('Flatten capture is not a still PNG');
             const old = doc.media.get(info.id);
             if (old && (old.mime !== info.mime || old.bytes !== blob.size || old.w !== info.width || old.h !== info.height || old.animated !== info.animated)) throw new Error('Existing media metadata conflicts with flatten capture');
             const entry: MediaEntry = old ?? { id: info.id, mime: info.mime, bytes: blob.size, w: info.width, h: info.height,

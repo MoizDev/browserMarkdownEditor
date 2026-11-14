@@ -7,7 +7,7 @@ export type PdfViewer = 'classic' | 'tiled';
 
 // Add an engine here only when its host and lazy import are in this build.
 // The same availability list drives the controls and the synchronous router.
-export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw'];
+export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw', 'board'];
 // This lazy host reads native drawing/notebook bytes only. Do not offer it as
 // a legacy converter or as a PDF-ink/edit engine before those hosts are wired.
 const NATIVE_VIEWER_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook'];

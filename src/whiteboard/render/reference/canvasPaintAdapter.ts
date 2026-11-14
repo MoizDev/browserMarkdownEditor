@@ -10,10 +10,9 @@ import type { PaintResources2d, PreparedPath2d } from './paint2d';
 
 export interface CanvasPaintAdapter {
     prepare(view: ViewState, budget: FrameBudget): void;
-    /** Only a fully prepared, still-current source frame can be atomically presented. */
+    /** The complete shared frame actually available to both band wrappers. */
     readyFrame(): PaintFrame | null;
-    present(frame: PaintFrame): boolean;
-    draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void;
+    draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand): void;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -26,7 +25,8 @@ type PathJob = Path2dJob | InkPath2dJob;
 type Snapshot = {
     frame: PaintFrame;
     scale: number;
-    items: readonly PaintItem[];
+    band: PaintBand;
+    finished: boolean;
     index: number;
     clipIndex: number;
     paths: WeakMap<PaintItem, PreparedPath2d>;
@@ -66,17 +66,16 @@ function releaseSnapshot(s: Snapshot): void {
     s.clips.clear();
 }
 
-/** A band retains its old complete frame until its owner atomically presents both bands. */
+/** Both bands share a snapshot and become visible together, never by separate commits. */
 export function createCanvasPaintAdapter(
-    band: PaintBand, resources: PaintLayerResources, project: PaintProjection2d,
-    onError: (error: unknown) => void,
+    resources: PaintLayerResources, project: PaintProjection2d, onError: (error: unknown) => void,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
     let disposed = false;
-    let lastScale = 0;
+    let lastFrameId: number | null = null;
 
     function start(frame: PaintFrame, scale: number): Snapshot {
-        return { frame, scale, items: frame[band], index: 0, clipIndex: 0, paths: new WeakMap(),
+        return { frame, scale, band: 'underlay', finished: false, index: 0, clipIndex: 0, paths: new WeakMap(),
             clips: new Map(), geometry: new Map(), images: new Map(), abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false, bytes: 0, job: null };
     }
@@ -118,11 +117,13 @@ export function createCanvasPaintAdapter(
             }
             return;
         }
-        if (s.index >= s.items.length) {
-            if (!s.pending) s.complete = true;
+        const items = s.frame[s.band];
+        if (s.index >= items.length) {
+            if (s.band === 'underlay') { s.band = 'content'; s.index = 0; }
+            else { s.finished = true; if (!s.pending) s.complete = true; }
             return;
         }
-        const item = s.items[s.index];
+        const item = items[s.index];
         if (s.clipIndex < item.clips.length) {
             const clip = item.clips[s.clipIndex++];
             if (!s.clips.has(clip.key)) {
@@ -154,11 +155,14 @@ export function createCanvasPaintAdapter(
     }
     return {
         prepare(view, budget) {
-            if (disposed) return;
+            if (disposed || budget.frameId === lastFrameId) return;
+            lastFrameId = budget.frameId;
             const frame = resources.frames.readFrame();
             const scale = view.camera.z * view.viewport.dpr;
-            if (!frame || !resources.frames.isCurrent(frame) || !Number.isFinite(scale) || scale <= 0) return;
-            lastScale = scale;
+            if (!frame || !resources.frames.isCurrent(frame) || !Number.isFinite(scale) || scale <= 0) {
+                if (staged) { releaseSnapshot(staged); staged = null; }
+                return;
+            }
             if (staged && (staged.frame !== frame || staged.scale !== scale)) { releaseSnapshot(staged); staged = null; }
             if (!staged && (!presented || presented.frame !== frame || presented.scale !== scale)) staged = start(frame, scale);
             const s = staged;
@@ -166,26 +170,17 @@ export function createCanvasPaintAdapter(
             try {
                 while (!budget.shouldYield() && !s.complete && !s.failed) {
                     if (!resources.frames.isCurrent(frame)) { releaseSnapshot(s); staged = null; break; }
-                    if (!s.job && s.index >= s.items.length && s.pending) break;
+                    if (!s.job && s.finished && s.pending) break;
                     step(s);
+                }
+                if (s.complete && resources.frames.isCurrent(s.frame)) {
+                    if (presented) releaseSnapshot(presented);
+                    presented = s; staged = null;
                 }
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
         },
-        readyFrame() {
-            if (disposed) return null;
-            if (staged?.complete && staged.scale === lastScale && resources.frames.isCurrent(staged.frame)) return staged.frame;
-            if (!staged && presented && presented.scale === lastScale && resources.frames.isCurrent(presented.frame)) return presented.frame;
-            return null;
-        },
-        present(frame) {
-            if (disposed || !resources.frames.isCurrent(frame)) return false;
-            if (!staged) return presented?.frame === frame && presented.scale === lastScale;
-            if (!staged.complete || staged.frame !== frame || staged.scale !== lastScale) return false;
-            if (presented) releaseSnapshot(presented);
-            presented = staged; staged = null;
-            return true;
-        },
-        draw2d(ctx, view) {
+        readyFrame() { return disposed ? null : presented?.frame ?? null; },
+        draw2d(ctx, view, band) {
             const s = presented;
             if (disposed || !s) return;
             const prepared: PaintResources2d = {
@@ -193,7 +188,7 @@ export function createCanvasPaintAdapter(
                 clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
                 image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
             };
-            project(ctx, view, () => { for (const item of s.items) paintItem2d(ctx, item, prepared); });
+            project(ctx, view, () => { for (const item of s.frame[band]) paintItem2d(ctx, item, prepared); });
         },
         release(reason) {
             if (reason === 'context-lost') return;
@@ -205,7 +200,7 @@ export function createCanvasPaintAdapter(
             if (disposed) return false;
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) return false;
-            if (staged && staged.frame === frame) return !staged.complete && !staged.failed && !(!staged.job && staged.index >= staged.items.length && staged.pending > 0);
+            if (staged && staged.frame === frame) return !staged.complete && !staged.failed && !(!staged.job && staged.finished && staged.pending > 0);
             return !presented || presented.frame !== frame;
         },
         memory() { return { gpuBytes: 0, cpuBytes: (staged?.bytes ?? 0) + (presented?.bytes ?? 0) }; },

@@ -5,7 +5,7 @@ import type { EditSelection } from './host';
 
 interface Entry {
     readonly text: string;
-    readonly segments: ReturnType<Intl.Segmenter['segment']>;
+    segments?: ReturnType<Intl.Segmenter['segment']>;
     graphemes?: ReturnType<Intl.Segmenter['segment']>;
     readonly bytes: number;
 }
@@ -33,7 +33,7 @@ export class RichWordNavigation {
         }
         if (chunk) chunks.push(chunk);
         const text = chunks.join(''), bytes = 512 + text.length * 8;
-        const entry = { text, segments: this.segmenter.segment(text), bytes };
+        const entry: Entry = { text, bytes };
         if (bytes <= WORD_CACHE_BYTES) {
             while (this.entries.size && (this.entries.size >= 1024 || this.bytes + bytes > WORD_CACHE_BYTES)) {
                 const oldest = this.entries.keys().next().value!, removed = this.entries.get(oldest)!;
@@ -58,7 +58,7 @@ export class RichWordNavigation {
             return { anchor: entry.text.endsWith('\r') ? cursor - 1 : cursor, focus: cursor + 1 };
         if (followedByBreak && point.offset === entry.text.length - 1 && entry.text.endsWith('\r'))
             return { anchor: cursor, focus: cursor + 2 };
-        const part = entry.segments.containing(point.offset);
+        const part = (entry.segments ??= this.segmenter.segment(entry.text)).containing(point.offset);
         return part ? { anchor: point.start + part.index, focus: point.start + part.index + part.segment.length }
             : { anchor: cursor, focus: cursor };
     }
@@ -102,7 +102,7 @@ export class RichWordNavigation {
             if (direction < 0) {
                 local = Math.min(local, entry.text.length);
                 while (local > 0) {
-                    const part = entry.segments.containing(local - 1);
+                    const part = (entry.segments ??= this.segmenter.segment(entry.text)).containing(local - 1);
                     if (!part) break;
                     if (part.isWordLike) return start + part.index;
                     if (part.index >= local) break;
@@ -114,7 +114,7 @@ export class RichWordNavigation {
                 start -= previousLength + 1; local = previousLength;
             } else {
                 while (local < entry.text.length) {
-                    const part = entry.segments.containing(local);
+                    const part = (entry.segments ??= this.segmenter.segment(entry.text)).containing(local);
                     if (!part) break;
                     const end = part.index + part.segment.length;
                     if (part.isWordLike) return start + end;

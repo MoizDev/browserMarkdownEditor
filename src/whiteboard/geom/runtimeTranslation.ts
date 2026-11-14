@@ -87,11 +87,14 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
+                    const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
                     const result = await snapBoardBounds({ runtime, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
-                        selected: roots.map(node => node.id), zoom: options.zoom(), current: active, signal: request, cooperate: options.cooperate });
-                    assert(); const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
+                        selected: roots.map(node => node.id), zoom: options.zoom(), allowX: useX, allowY: useY,
+                        current: active, signal: request, cooperate: options.cooperate });
+                    assert();
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;
-                    guides = result.guides.filter(guide => guide.axis === 'x' ? useX : useY);
+                    guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY).map(guide =>
+                        guide.kind === 'equal-gap' ? { ...guide, value: guide.value + (guide.featureAxis === 'x' ? snapY : snapX) } : guide);
                     if (snapX || snapY) { delta = { x: delta.x + snapX, y: delta.y + snapY }; staged.scope.release(); staged = await stage(delta); }
                 }
                 assert(); const ops: NodeSetOp[] = [...staged.compensation];

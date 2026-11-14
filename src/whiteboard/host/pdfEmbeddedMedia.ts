@@ -41,10 +41,10 @@ export function createPdfEmbeddedMediaStorage(options: {
         try {
             const token = Object.freeze({ ...source.source.token });
             const assertWritable = () => {
-                signal.throwIfAborted();
                 proof.context.signal.throwIfAborted();
                 if (!isCurrent(source) || !host.canWrite(identity)) throw stale();
             };
+            signal.throwIfAborted();
             assertWritable();
             const captureCurrentBytes = async (captureSignal: AbortSignal): Promise<CurrentDocumentBytes> => {
                 captureSignal.throwIfAborted();

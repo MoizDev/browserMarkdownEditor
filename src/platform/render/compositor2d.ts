@@ -213,6 +213,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     snapshot(view: ViewState): void {
         this.check();
+        if (this.scene && this.scene.view.epoch !== view.epoch) this.cancelJob();
         this.scene = { view, layers: this.layers, layout: this.layout, appearance: this.appearance, metrics: this.metrics, serial: this.serial };
         this.budget = null;
     }
@@ -267,19 +268,24 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (this.missing) { this.options.invalidate('2d-prepare-required'); return null; }
                 }
             }
+            // Another pane's admission may trim caches between encode and submit. Pin this complete
+            // detached frame until consumed; eviction must not turn it into a zero-size display copy.
+            this.busy++;
             let done = false;
+            const release = () => { done = true; this.busy--; };
             return {
                 submit: () => {
                     if (done) throw new Error('Canvas encoding already consumed');
-                    done = true;
+                    try {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token)) return null;
                     if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
                     this.presentedKey = key;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
                         complete: true, sharp: availability.every(item => item.sharp), qualityScale: snapshot.metrics!.qualityScale });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })) } satisfies ScheduledSubmission;
+                    } finally { release(); }
                 },
-                discard: () => { done = true; },
+                discard: () => { if (!done) release(); },
             };
         } finally { this.busy--; }
     }
@@ -289,7 +295,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, sharp: false,
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
-    page(view: ViewState, index: number) { return projectPage(this.scene?.layout ?? this.layout, view, index); }
+    page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void { paintWorldScope(ctx, view, paint); }
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void { paintPageScope(ctx, this.page(view, index), paint); }
 
@@ -394,10 +400,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const common = { paneId: this.options.paneId, owner, class: 'critical' as const, hiddenAt: null, lastUsedAt: now, lastVisibleAt: now };
         this.working ??= this.options.governor.register({ ...common, id: `${id}:working`, pool: 'gpu', kind: 'canvas-working',
             memory: () => ({ live: this.gpuBytes, retiring: 0 }),
-            evict: () => { if (!this.busy) this.dropWork(); } });
+            evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
         this.cpu ??= this.options.governor.register({ ...common, id: `${id}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: this.cpuBytes, retiring: 0 }),
-            evict: () => { if (!this.busy) this.dropWork(); } });
+            evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
         this.backing ??= new SurfaceBacking({ governor: this.options.governor, paneId: this.options.paneId,
             owner, id: `${id}:surface`, canvas: this.surface, displayed: true, now });
         return true;
@@ -433,6 +439,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 this.displayReserved = bytes;
             }
             const old = this.buffers.get('back');
+            if (old && (old.canvas.width !== width || old.canvas.height !== height)) this.dropWork();
             if (!this.allocate('back', width, height, false)) return result(false);
             if (old !== this.buffers.get('back')) { this.cancelJob(); this.generation = allocateSurfaceGeneration(); }
             return result(true);
@@ -494,7 +501,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!isolated) continue;
             this.clear(isolated, left, top);
             isolated.context.save();
-            try { binding.layer.draw2d(isolated.context, snapshot.view); }
+            try { isolated.context.beginPath(); binding.layer.draw2d(isolated.context, snapshot.view); }
             finally { isolated.context.restore(); }
             target.native.save();
             try {
@@ -533,7 +540,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             return false;
         }
         this.paintBindings(snapshot.layers.filter(layer => layer.group === 'chrome'), back, snapshot, frame);
-        if (this.missing) { this.options.invalidate('2d-chrome-prepare'); return false; }
+        if (this.missing) {
+            // Retry from clean document pixels: replaying translucent chrome onto its own incomplete
+            // attempt would accumulate alpha even though the underlying document revision is unchanged.
+            this.cancelJob(); this.options.invalidate('2d-chrome-prepare'); return false;
+        }
         return true;
     }
     private scheduleColour(job: ColourJob): void {
@@ -589,7 +600,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         finally { this.options.recordUpload(bytes, performance.now() - start); }
     }
     private publish(back: Buffer2D, metrics: ReadySurfaceMetrics): boolean {
-        if (back.native.isContextLost() || this.display.isContextLost() || !this.backing ||
+        if (back.canvas.width !== metrics.backingWidth || back.canvas.height !== metrics.backingHeight ||
+            back.native.isContextLost() || this.display.isContextLost() || !this.backing ||
             this.displayReserved < back.canvas.width * back.canvas.height * POLICY.surfaceReserveBytesPerPixel) return false;
         // All content/leases are ready before this first write to the displayed surface. The final
         // operation is one whole-frame copy, never a sequence of layer writes to visible pixels.
@@ -678,9 +690,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!lease) return;
             crop.lease = lease; crop.pending = true; this.cropsPending++;
             const epoch = this.asyncEpoch;
+            const token = budget.token;
             const r = crop.rect;
             void createImageBitmap(state.source, r.x, r.y, r.width, r.height, { colorSpaceConversion: 'none', premultiplyAlpha: 'premultiply' }).then(image => {
-                if (this.disposed || epoch !== this.asyncEpoch || this.sources.get(state.source) !== state) { image.close(); this.releaseCpuLease(lease); return; }
+                const current = this.options.currentToken();
+                if (this.disposed || epoch !== this.asyncEpoch || this.sources.get(state.source) !== state || !current ||
+                    current.vaultEpoch !== token.vaultEpoch || current.documentId !== token.documentId ||
+                    current.bytesGeneration !== token.bytesGeneration || current.session !== token.session) {
+                    image.close(); this.releaseCpuLease(lease); crop.lease = null; crop.pending = false; return;
+                }
                 crop.image = image; crop.pending = false;
                 this.options.invalidate('2d-image-crop-ready');
             }, error => {

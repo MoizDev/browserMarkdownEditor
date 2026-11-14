@@ -1,10 +1,29 @@
 import type { ContentSource, SourceOwner } from './documentBuffers';
-import type { SessionAdapter } from './documentSessions';
+import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 
 /** The identity belongs to App even before an editable canvas host is ready. */
 export interface CanvasSessionBridge extends SessionAdapter {
     /** StrictMode and additional panes attach to the same engine session. */
     attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A;
+}
+
+/** Attach only through App's already-created entry, never from a parallel pane-owned store. */
+export function attachCanvasSession<A extends SessionAdapter>(
+    sessions: DocumentSessionStore,
+    documentId: string,
+    create: (owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) => A,
+): A {
+    const entry = sessions.get(documentId);
+    if (!entry || !('attach' in entry.adapter) || typeof entry.adapter.attach !== 'function') {
+        throw new Error('Canvas session identity is not ready');
+    }
+    const isLiveOwner = (owner: SourceOwner) => sessions.isLiveOwner(documentId, owner);
+    return (entry.adapter as CanvasSessionBridge).attach(owner => {
+        if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
+        const adapter = create(owner, isLiveOwner);
+        if (!isLiveOwner(owner)) throw new DOMException('Canvas session ended', 'AbortError');
+        return adapter;
+    });
 }
 
 /**

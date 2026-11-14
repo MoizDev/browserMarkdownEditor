@@ -414,6 +414,8 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
 export interface FileSystemContextValue {
   // ── state ──
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
+  /** Synchronous ownership token; A→B→A has three distinct activations. */
+  getVaultActivation: () => number;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
@@ -459,11 +461,11 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
-  /** Move an asset out of a folder's .Assets and into its .Garbage, once no
-   *  note in that folder refers to it any more. Returns whether it moved. */
-  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  /** Move an asset into the folder's .Garbage only while its activation and
+   *  reference proof remain valid, including after the copy. */
+  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
-  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Preserve supplied bytes in this folder's `.Garbage`, never touching the

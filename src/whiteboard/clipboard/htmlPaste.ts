@@ -89,7 +89,8 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
                 const scale = Math.min(1, 5000 / Math.max(info.width, info.height));
                 images.push({ id: info.id, alt: image.alt.slice(0, 10_000), width: info.width * scale, height: info.height * scale });
             } catch (error) {
-                check(); refused.push({ name: image.alt || 'Clipboard image', reason: error instanceof Error ? error.message : 'Image could not be read' });
+                check(); refused.push({ name: image.alt.slice(0, 10_000) || 'Clipboard image',
+                    reason: error instanceof Error ? error.message.slice(0, 500) : 'Image could not be read' });
             }
             await cooperate();
         }

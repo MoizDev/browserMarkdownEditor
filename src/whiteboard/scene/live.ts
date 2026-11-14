@@ -84,6 +84,10 @@ export class LiveSceneView {
         this.check();
         return this.scene.index.alive(slot) && this.scene.index.generation(slot) === generation ? this.scene.ids[slot] : undefined;
     }
+    resolveSpatial(ref: SpatialRef): { readonly id: NodeId; readonly rank: number } | undefined {
+        const id = this.id(ref.slot, ref.generation);
+        return id === undefined ? undefined : { id, rank: this.scene.order.rank(ref.slot) };
+    }
     sheetSize(sheet: SheetId): number {
         this.check();
         const id = this.scene.sheets.get(sheet);

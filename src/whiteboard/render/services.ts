@@ -190,14 +190,14 @@ export function createBoardRenderServices(options: {
         const key = `${options.token.session}:${node.id}:change:${++serial}`;
         if (node.kind !== 'opaque') requireLoadedText(text.prepareNow(node, { revision: key }));
         const hit = cached.get(node.id);
-        if (hit?.signature === signature(node, doc) && hit.vector) return hit.vector;
+        if (hit && sameGeometrySignature(hit.signature, signature(node, doc)) && hit.vector) return hit.vector;
         return node.kind === 'opaque' ? undefined : prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
     };
     const changeGeometry = createBoardChangeGeometry({ vector: changeVector,
         local(doc, node) {
             if (node.kind === 'stroke') {
                 const hit = cached.get(node.id);
-                return hit?.signature === signature(node, doc) ? hit.bounds : undefined;
+                return hit && sameGeometrySignature(hit.signature, signature(node, doc)) ? hit.bounds : undefined;
             }
             const vector = changeVector(doc, node);
             return vector ? geometrySceneBounds(vector) : undefined;
@@ -210,6 +210,7 @@ export function createBoardRenderServices(options: {
     });
     return {
         text, bounds, changeGeometry,
+        prepareForPick(node: Readonly<Node>, signal: AbortSignal) { return prepare(node, options.doc, signal); },
         /** Preflight actual font/ink inputs outside the synchronous writer.
          * Staged transforms still resolve through the doc passed by apply. */
         async prepareChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal): Promise<void> {

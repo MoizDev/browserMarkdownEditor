@@ -5,7 +5,7 @@ import type { NodeId, SheetId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
 import type { PaintNodeSource } from '../render/paintStream';
-import type { SpatialCursor } from '../pick';
+import type { SpatialCursor, SpatialRef } from '../pick';
 import { BoundsQuality, type BoundsProvider, type LocalGeometryBounds } from './bounds';
 import { SceneBootstrapJob, type BootstrappedScene } from './bootstrap';
 import { BoundsVersions } from './boundsVersions';
@@ -213,6 +213,10 @@ export class SessionScene implements SceneSpatial {
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery {
         if (!this.ready) throw new Error('Scene publication is pending');
         return this.live.query(options, output, visitor);
+    }
+    resolveSpatial(ref: SpatialRef): { readonly id: NodeId; readonly rank: number } | undefined {
+        if (!this.ready) throw new Error('Scene publication is pending');
+        return this.live.resolveSpatial(ref);
     }
     spatialCursor(options: SceneQueryOptions): SpatialCursor {
         if (!this.ready) throw new Error('Scene publication is pending');

@@ -5,7 +5,7 @@ import type { PdfPageQualitySnapshot } from './pageQuality';
 
 const quality = createPdfPageQuality();
 const unknown: Readonly<PdfPageQualitySnapshot> = Object.freeze({ state: 'unknown', complete: false });
-// Only non-default snapshots are held. The controller admits at most 256 pages.
+// Compact verdicts live until document release; the separate sampler window is bounded.
 const snapshots = new Map<string, Map<number, Readonly<PdfPageQualitySnapshot>>>();
 const listeners = new Set<() => void>();
 
@@ -15,8 +15,14 @@ function notify(): void {
     }
 }
 function update(docKey: string, page: number): void {
-    const value = quality.snapshot(docKey, page), group = snapshots.get(docKey);
+    const observed = quality.snapshot(docKey, page), group = snapshots.get(docKey);
     const previous = group?.get(page) ?? unknown;
+    // Losing or resetting sample coverage is not a new verdict. A real suspect
+    // observation may upgrade a prior clean page; degradation never heals here.
+    if (previous.state === 'degraded' && observed.state !== 'degraded' ||
+        previous.state === 'clean' && observed.state === 'unknown') return;
+    const value = previous.state === 'degraded' && observed.state === 'degraded' && previous.complete && !observed.complete
+        ? previous : observed;
     if (previous.state === value.state && previous.complete === value.complete && previous.reason === value.reason) return;
     if (value.state === 'unknown' && !value.complete && value.reason === undefined) {
         group?.delete(page);
@@ -29,6 +35,7 @@ function update(docKey: string, page: number): void {
     notify();
 }
 
+export function needsPdfPageRegions(docKey: string, page: number): boolean { return quality.needsRegions(docKey, page); }
 export function setPdfPageRegions(docKey: string, page: number, regions: PdfiumJbig2Regions): void {
     quality.setRegions(docKey, page, regions);
     update(docKey, page);

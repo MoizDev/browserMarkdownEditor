@@ -18,7 +18,8 @@ function markdownTarget(raw: string): string | null {
     let path: string;
     try { path = decodeURIComponent(raw.trim()); } catch { return null; }
     if (!path || [...path].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
-        || /[\\?#]/.test(path) || path.startsWith('//')
+        || /[\\?#]/.test(path) || path.startsWith('//') || /^www\.[^\s<>]+$/i.test(path)
+        || /^[^\s@<>:]+@[^\s@<>:]+\.[^\s@<>]+$/.test(path)
         || /^[a-z][a-z\d+.-]*:/i.test(path) || !/\.md$/i.test(path)) return null;
     return path;
 }

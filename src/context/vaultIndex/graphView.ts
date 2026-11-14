@@ -1,10 +1,16 @@
 import { collectFiles } from '../../utils/tree';
-import type { FileTreeNode, GraphData, GraphNode } from '../../types';
+import type { FileTreeFileNode, FileTreeNode, GraphData, GraphNode } from '../../types';
 import type { IndexGraph } from '../../utils/vaultIndex/types';
+
+const filesByTree = new WeakMap<FileTreeNode[], Map<string, FileTreeFileNode>>();
 
 /** Attach the app's tree nodes to the worker's already-assembled graph. */
 export function graphForTree(snapshot: IndexGraph, tree: FileTreeNode[]): GraphData | null {
-    const files = new Map(collectFiles(tree).map(file => [file.path, file]));
+    let files = filesByTree.get(tree);
+    if (!files) {
+        files = new Map(collectFiles(tree).map(file => [file.path, file]));
+        filesByTree.set(tree, files);
+    }
     const nodes: GraphNode[] = [];
     for (let i = 0; i < snapshot.paths.length; i++) {
         const file = files.get(snapshot.paths[i]);

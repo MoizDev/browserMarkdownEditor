@@ -38,10 +38,9 @@ export class IndexEngine {
         if (this.stopped || this.store.revision(path) !== rev) return;
         try {
             const facts = await noteFactsSliced(text, () => context.slice());
-            if (!this.stopped && this.store.prime(path, rev, mtime, size, facts)) {
-                this.store.releasePrime(path, rev);
-                await this.publishGraph(context);
-            }
+            const result = !this.stopped && this.store.prime(path, rev, mtime, size, facts);
+            if (result) this.store.releasePrime(path, rev);
+            if (result === 'changed') await this.publishGraph(context);
         } finally { this.store.releasePrime(path, rev); }
     }
     private async acquireIO(context: WorkerContext): Promise<boolean> {

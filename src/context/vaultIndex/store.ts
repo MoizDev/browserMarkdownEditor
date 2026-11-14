@@ -64,11 +64,14 @@ export class IndexStore {
     releasePrime(path: string, rev: number): void {
         if (this.primes.get(path) === rev) this.primes.delete(path);
     }
-    prime(path: string, rev: number, mtime: number, size: number, facts: NoteFacts): boolean {
+    prime(path: string, rev: number, mtime: number, size: number, facts: NoteFacts): 'changed' | 'unchanged' | false {
         const file = this.byPath.get(path);
         if (!file || this.revision(path) !== rev) return false;
+        const previous = this.records.get(path)?.facts;
+        const equal = (a: string[], b: string[]) => a.length === b.length && a.every((value, i) => value === b[i]);
+        const changed = !previous || !equal(previous.wikilinks, facts.wikilinks) || !equal(previous.mdLinks, facts.mdLinks);
         this.records.set(path, { ...file, rev, mtime, size, status: 'ready', facts });
-        return true;
+        return changed ? 'changed' : 'unchanged';
     }
     commitRead(file: IndexFile, startedRev: number, mtime: number, size: number, facts: NoteFacts | null): boolean {
         if (startedRev !== this.revision(file.path) || this.primes.has(file.path) || !this.byPath.has(file.path)) return false;

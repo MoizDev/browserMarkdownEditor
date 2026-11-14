@@ -70,6 +70,9 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `text/graphemes.ts` | lane w-n | T-1, T-5 | text §§2, 4, 9 | Design; Intl.Segmenter browser API; no tldraw source | none | 2026-11-13 |
+| `text/unicodeTables.ts` | lane w-n | T-1 | text §§2, 9, 13 | Generated from Unicode 17.0.0 UCD, Unicode License v3; hashes and full notice under tools/whiteboard-unicode/data/17.0.0 | Unicode data | 2026-11-13 |
+| `tools/whiteboard-unicode/generate.mjs` | lane w-n | T-1 | text §§2, 9, 13 | UCD data format; no tldraw source | none | 2026-11-13 |
+| `tools/whiteboard-unicode/data/17.0.0/*` | lane w-n | T-1 | text §§2, 9, 13 | unicode.org/Public/17.0.0/ucd; exact file hashes and Unicode License v3 notice alongside | Unicode data | 2026-11-13 |
 
 ## Editing lanes (w-f to w-j), export and hosts (w-k, w-l)
 

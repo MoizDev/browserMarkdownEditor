@@ -1,10 +1,12 @@
 import { styleGeometryMetrics } from '../geom/styleMetrics';
-import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveParameters, materializeCurveRange } from '../ink/curve';
+import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveParameters, materializeCurveRange, type CurveParameters, type CurveRange } from '../ink/curve';
 import { InkCoverageJob, type CoverageOptions, type InkCoverage } from '../ink/outline';
 import type { SampleSequence, SegmentKind } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL, radiusAtSample, realizeStrokePoints, validateInkWidth, type InkWidth } from '../ink/width';
 import type { StrokeNode } from '../model/nodes';
 import type { SampleChunk, SampleStoreReader } from '../model/samples';
+import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 // The scene pin owns the sample lease. This adapter borrows chunk views, not a
 // point-sized object/array copy, and respects the store's exact chunk endpoints.
@@ -45,9 +47,12 @@ function sequence(reader: SampleStoreReader, node: StrokeNode): SampleSequence {
     };
 }
 
+type CoverageWorker = (samples: SampleSequence, parameters: CurveParameters, style: InkWidth,
+    range: CurveRange, options: CoverageOptions) => Promise<InkCoverage>;
+
 function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
-    deviceScale: number; signal?: AbortSignal;
-}): Generator<void, readonly InkCoverage[]> {
+    deviceScale: number; signal?: AbortSignal; worker?: CoverageWorker;
+}): Generator<void | Promise<InkCoverage>, readonly InkCoverage[], InkCoverage | undefined> {
     const check = () => options.signal?.throwIfAborted();
     check();
     if (!Number.isFinite(options.deviceScale) || options.deviceScale <= 0 || node.geomVersion !== CURVE_VERSION) {
@@ -97,10 +102,19 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
     do {
         check();
         const count = Math.min(CURVE_CHUNK_SPANS, total - first);
-        const geometry = materializeCurveRange(points, { firstSpan: first, spanCount: count }, parameters);
-        const job = new InkCoverageJob(points, geometry, width, { deviceScale: options.deviceScale, closed: false,
+        const range = { firstSpan: first, spanCount: count };
+        const coverageOptions: CoverageOptions = { deviceScale: options.deviceScale, closed: false,
             dot: dotValue, dotMetric: DOT_METRIC_PROVISIONAL, ...pattern,
-            ...(metric ? { arcPrefix: { distanceWorld: distance, errorWorld: error }, radiusSlopeBound: slope } : {}) });
+            ...(metric ? { arcPrefix: { distanceWorld: distance, errorWorld: error }, radiusSlopeBound: slope } : {}) };
+        if (options.worker) {
+            const coverage = yield options.worker(points, parameters, width, range, coverageOptions);
+            if (!coverage) throw new Error('Ink worker returned no coverage');
+            chunks.push(coverage);
+            distance += coverage.lengthWorld;
+            error = coverage.dashPhaseErrorWorld;
+        } else {
+        const geometry = materializeCurveRange(points, range, parameters);
+        const job = new InkCoverageJob(points, geometry, width, coverageOptions);
         try {
             let status: 'pending' | 'complete' | 'cancelled';
             do {
@@ -114,6 +128,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
             distance += coverage.lengthWorld;
             error = coverage.dashPhaseErrorWorld;
         } finally { job.cancel(); }
+        }
         first += count;
         if (first < total) { yield; check(); reset(); }
     } while (first < total);
@@ -123,15 +138,23 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
 
 /** Chunks are one stroke's union, not independently composited alpha bands. */
 export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
-    deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal;
+    deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal; worker?: CoverageWorker;
+    lod?: { identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean };
 }): Promise<readonly InkCoverage[]> {
-    const job = strokeCoverage(node, samples, options);
+    const lod = options.lod;
+    const chunkCount = Math.max(1, Math.ceil((samples.count(node.samples) - 1) / CURVE_CHUNK_SPANS));
+    const worker: CoverageWorker | undefined = lod ? (points, parameters, width, range, coverageOptions) =>
+        prepareInkCoverageInWorker(points, parameters, width, range, coverageOptions, lod.identity, options.signal,
+            lod.isCurrent, { chunkCount }) : options.worker;
+    const job = strokeCoverage(node, samples, { ...options, worker });
     try {
+        let value: InkCoverage | undefined;
         for (;;) {
             options.signal?.throwIfAborted();
-            const next = job.next();
+            const next = job.next(value);
             if (next.done) return next.value;
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            value = next.value ? await next.value : undefined;
+            if (!next.value) await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
             options.signal?.throwIfAborted();
         }
     } finally { job.return(undefined as never); }
@@ -145,7 +168,7 @@ export function buildStrokeCoverageNow(node: StrokeNode, samples: SampleStoreRea
     try {
         for (;;) {
             options.signal?.throwIfAborted();
-            const next = job.next();
+            const next = job.next(undefined);
             if (next.done) return next.value;
         }
     } finally { job.return(undefined as never); }

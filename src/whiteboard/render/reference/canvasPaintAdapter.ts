@@ -12,11 +12,18 @@ export interface CanvasPaintAdapter {
     prepare(view: ViewState, budget: FrameBudget): void;
     /** The complete shared frame actually available to both band wrappers. */
     readyFrame(): PaintFrame | null;
+    /** Borrow is valid only until the next prepare, release or dispose. */
+    borrowPrepared(): PreparedPaint2d | null;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     dispose(): void;
+}
+
+export interface PreparedPaint2d {
+    readonly frame: PaintFrame;
+    readonly resources: PaintResources2d;
 }
 
 export type PaintProjection2d = (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => void;
@@ -159,6 +166,15 @@ export function createCanvasPaintAdapter(
         s.index++;
         s.clipIndex = 0;
     }
+    function borrowPrepared(): PreparedPaint2d | null {
+        const s = presented;
+        if (disposed || !s) return null;
+        return { frame: s.frame, resources: {
+            path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
+            clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
+            image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
+        } };
+    }
     return {
         prepare(view, budget) {
             if (disposed || budget.frameId === lastFrameId) return;
@@ -187,15 +203,11 @@ export function createCanvasPaintAdapter(
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
         },
         readyFrame() { return disposed ? null : presented?.frame ?? null; },
+        borrowPrepared,
         draw2d(ctx, view, band, omitNodes) {
-            const s = presented;
-            if (disposed || !s) return;
-            const prepared: PaintResources2d = {
-                path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
-                clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
-                image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
-            };
-            project(ctx, view, () => { for (const item of s.frame[band]) if (!omitNodes?.has(item.nodeId)) paintItem2d(ctx, item, prepared); });
+            const prepared = borrowPrepared();
+            if (!prepared) return;
+            project(ctx, view, () => { for (const item of prepared.frame[band]) if (!omitNodes?.has(item.nodeId)) paintItem2d(ctx, item, prepared.resources); });
         },
         release(reason) {
             if (reason === 'context-lost') return;

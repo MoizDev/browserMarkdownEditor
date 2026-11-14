@@ -5,6 +5,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { createPdfInkBuildCapture } from './pdfInkBuildCapture';
 import type { createPdfInkSourceOwner } from './pdfInkSourceOwner';
+import type { PaintSourceWitness } from './paintSourceRebind';
 
 export interface PdfInkRebindOptions {
     readonly host: NativeCanvasHost;
@@ -16,6 +17,11 @@ export interface PdfInkRebindOptions {
     onError(error: unknown): void;
     /** Must revoke authoritative write policy while preserving the live session and undo. */
     onReadOnly(reason: string): void;
+    /**
+     * Adopts the verified source as the paint token of future pins on the live runtime. It runs after the
+     * source owner accepted the replacement and before `ready` is published; a throw fails closed to read-only.
+     */
+    adoptPaint?(witness: PaintSourceWitness, isCurrent: () => boolean): void;
 }
 
 export type PdfInkWrittenContext = ReturnType<ReturnType<typeof createPdfInkBuildCapture>['writtenContext']>;
@@ -109,6 +115,8 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                     if (!sameToken(acquired.source.token, tokenOf(target))) throw new Error('PDF rebind returned a different outer generation');
                     sources.replace(acquired, tokenOf(target));
                     const accepted = acquired; acquired = undefined;
+                    options.adoptPaint?.({ token: accepted.source.token, pristineFingerprint: accepted.source.pristineFingerprint,
+                        writeId: accepted.kind === 'native' ? accepted.writeId : null }, liveOwner);
                     publish({ source: accepted, token: accepted.source.token, status: 'ready' });
                 } finally {
                     if (pending === controller) pending = undefined;

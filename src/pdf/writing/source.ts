@@ -22,6 +22,7 @@ async function hashBlob(blob: Blob, cooperate: () => Promise<void>): Promise<str
  * pathname or a fingerprint supplied by an untrusted message. */
 export async function validateWriterSource(source: WriterSource, cooperate: () => Promise<void>): Promise<void> {
     if (!source || !(source.pristine instanceof Blob) || !(source.outer instanceof Blob) ||
+        (typeof File !== 'undefined' && (source.pristine instanceof File || source.outer instanceof File)) ||
         source.pristine.size < 1 || source.outer.size < 1 || source.pristine.size >= 0x80000000 || source.outer.size >= 0x80000000) {
         throw new PdfEngineError('ResourceLimit', 'PDF source exceeds the supported byte range');
     }

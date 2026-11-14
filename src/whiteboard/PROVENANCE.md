@@ -136,8 +136,25 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; no tldraw source | none | 2026-11-13 |
-| `geom/figures.ts` | lane w-h | F-FIG-001 | geometry §3 | Independent shape recipes from the design; no tldraw source | none | 2026-11-13 |
+| `geom/figures.ts` | lane w-h | F-FIG-001 | geometry §3 | Independent shape recipes from the design; fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe; no tldraw source | none | 2026-11-13 |
+
+## Media and clipboard (lane w-q)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `media/sha256.ts` | lane w-q | F-MEDIA-003/004; SEC-4 | media §1.2; security §3.2 | FIPS 180-4 §6.2 algorithm as specified in the design; independently implemented; no tldraw source | none | 2026-11-13 |
+| `media/sniff.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §6 | Format signatures from security §6, independent implementation | none | 2026-11-13 |
+| `media/headers.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §1; security §6 | Image container header structures, independently implemented; no tldraw source | none | 2026-11-13 |
+| `media/isoHeaders.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | ISO-BMFF bounded boxes and AVIF primary-property association, independently implemented | none | 2026-11-13 |
+| `media/webmHeader.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | EBML bounded element encoding and WebM track fields, independently implemented | none | 2026-11-13 |
+| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004; SEC-4 | media §1; threading §2; security §6 | Platform worker contract and browser bitmap API; no tldraw source | none | 2026-11-13 |
+| `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | Platform worker and memory allocator contracts; isolated SVG profile injection; browser APIs | none | 2026-11-13 |
+| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | Board model/apply public contracts and media architecture; no tldraw source | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session ownership, history and clipboard lifetime requirements | none | 2026-11-13 |
+| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
+| `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | XML preflight and SVG dimensions, isolated realm only | none | 2026-11-13 |
+| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
 
 ## Editing lanes (w-f to w-j)
 

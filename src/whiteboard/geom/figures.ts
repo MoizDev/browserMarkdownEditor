@@ -171,3 +171,29 @@ export function cloudPoint(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, thet
     return P(cloud.width * (r * Math.cos(theta) / 1.08 + 1) / 2,
         cloud.height * (r * Math.sin(theta) / cloud.yExtent + 1) / 2);
 }
+
+/** Hermite cubics with an explicit fourth-derivative error bound, emitted lazily. */
+export function* cloudPath(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, tolerance: number,
+    maxPieces: number): Generator<PathOp> {
+    if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) {
+        throw new RangeError('Invalid cloud realization budget');
+    }
+    // Product-to-sum gives frequencies 1, 9 and 11; this bounds both fourth derivatives.
+    const fourth = 1 + .04 * (11 ** 4 + 9 ** 4);
+    const scale = Math.max(cloud.width / (2 * 1.08), cloud.height / (2 * cloud.yExtent));
+    const step = scale === 0 ? 2 * Math.PI : (384 * tolerance / (fourth * scale)) ** .25;
+    const count = Math.max(1, Math.ceil(2 * Math.PI / step));
+    if (!Number.isSafeInteger(count) || count > maxPieces) throw new RangeError('Cloud realization budget exhausted');
+    const derivative = (t: number): Vec2 => {
+        const r = 1 + .08 * Math.cos(10 * t), dr = -.8 * Math.sin(10 * t);
+        return P(cloud.width * (dr * Math.cos(t) - r * Math.sin(t)) / (2 * 1.08),
+            cloud.height * (dr * Math.sin(t) + r * Math.cos(t)) / (2 * cloud.yExtent));
+    };
+    yield { op: 'M', p: cloudPoint(cloud, 0) };
+    for (let i = 0; i < count; i++) {
+        const a = i * 2 * Math.PI / count, b = (i + 1) * 2 * Math.PI / count;
+        const p0 = cloudPoint(cloud, a), p1 = cloudPoint(cloud, b), d0 = derivative(a), d1 = derivative(b), dt = (b - a) / 3;
+        yield { op: 'C', c1: P(p0.x + d0.x * dt, p0.y + d0.y * dt), c2: P(p1.x - d1.x * dt, p1.y - d1.y * dt), p: p1 };
+    }
+    yield { op: 'Z' };
+}

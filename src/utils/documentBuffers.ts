@@ -122,7 +122,12 @@ export function createDocumentBuffers(
     const readSnapshot = (documentId: string, buffer: Readonly<DocumentBuffer>): BufferSnapshot => {
         const cached = snapshots.get(documentId);
         if (cached?.revision === buffer.revision) return cached;
-        const data = typeof buffer.source === 'string' ? buffer.source : buffer.source.read();
+        const source = buffer.source;
+        const data = typeof source === 'string' ? source : source.read();
+        if (typeof source !== 'string' && typeof data === 'object' && data !== null
+            && 'kind' in data && data.kind === 'build' && (data as BuildJob).revision !== source.revision) {
+            throw new Error('A build job must belong to its captured source revision');
+        }
         const snapshot = Object.freeze({ revision: buffer.revision, data });
         snapshots.set(documentId, snapshot);
         return snapshot;

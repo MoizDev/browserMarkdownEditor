@@ -1,4 +1,4 @@
-import { serve, type WorkerContext } from '../../platform/workers';
+import type { WorkerContext } from '../../platform/workers';
 import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import { ReferenceMeasurer } from './measure';
@@ -17,7 +17,8 @@ function getEngine(): BoardTextLayout {
     engine = new BoardTextLayout(new ReferenceMeasurer(context), fonts);
     return engine;
 }
-async function layout(args: unknown, context: WorkerContext) {
+/** Handler for the shared parse worker; no text resources are allocated until first use. */
+export async function layout(args: unknown, context: WorkerContext) {
     const request = args as TextLayoutRequest;
     const current = getEngine();
     notify = (epoch, key) => context.emit('fontEpoch', { epoch, key });
@@ -27,4 +28,3 @@ async function layout(args: unknown, context: WorkerContext) {
     const paint = current.layout(resolved);
     return { paint, measurement: current.measure(resolved), faces: current.faceTable.faces.slice() };
 }
-serve({ protocol: 1, buildId: 'whiteboard-text-1', capabilities: ['layout'], handlers: { layout } });

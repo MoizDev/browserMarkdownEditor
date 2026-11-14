@@ -34,6 +34,9 @@ export class PdfSelectionGeometryCache {
         this.pages.delete(page); this.pages.set(page, found);
         return found.value;
     }
+    cachedTextPages(): ReadonlyMap<number, string> {
+        return new Map([...this.pages].map(([page, entry]) => [page, entry.value.text]));
+    }
     setEndpoints(pages: readonly number[]): void {
         this.pinned = new Set(pages.filter(page => Number.isInteger(page) && page >= 0 && page < this.document.info.pageCount));
         if (!this.visible) this.dropUnpinned();

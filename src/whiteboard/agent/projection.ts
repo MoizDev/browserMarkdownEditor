@@ -42,6 +42,8 @@ export function createAgentProjection(doc: BoardDoc, source: AgentProjectionSour
         changeGeometry: {
             worldBoundsCenter: (_doc, node) => center(node),
             resolvedTip: (current, connector, end) => source.resolvedTip(current, connector, end),
+            // The C2 detach path reads a polyline's actual resolved end, never a fixed or scope-cached bound.
+            resolvedPolylineTip: (current, polyline, end) => source.resolvedPolylineTip(current, polyline, end),
         },
         localBox: node => source.localBox(node),
         target(node, destinationPage) {

@@ -16,10 +16,10 @@ function setParameter(runtime: PdfiumRuntime, attachment: number, key: string, v
 
 /** Add one app-owned attachment. The caller has already checked its bytes,
  * content hash, role and collision-free name. */
-export async function addNativeAttachment(document: WriterNativeDocument, name: string, bytes: Blob, marker: string): Promise<void> {
+export async function addNativeAttachment(document: WriterNativeDocument, name: string, bytes: Blob, marker: string, writeMark?: string): Promise<void> {
     if (!(bytes instanceof Blob) || bytes.size >= MAX_OUTPUT) throw new PdfEngineError('ResourceLimit', 'PDF attachment is too large');
     const data = new Uint8Array(await bytes.arrayBuffer());
-    addNativeBytes(document, name, data, marker);
+    addNativeBytes(document, name, data, marker, writeMark);
 }
 
 function addNativeBytes(document: WriterNativeDocument, name: string, data: Uint8Array, marker: string, writeMark?: string): void {

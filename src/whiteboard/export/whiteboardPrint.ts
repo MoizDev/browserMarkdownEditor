@@ -7,24 +7,24 @@ import { measureBoardPaintBounds } from '../render/worldBounds';
 import { createBoardExportSnapshot } from './boardSnapshot';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
+import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
+import { createLazyIncrementalPdfWriter } from './lazyPdfWriter';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
-import { streamIncrementalPdf } from './incrementalPdf';
-import type { IncrementalPdfWriter } from './incrementalPdf';
 import { streamRasterPng } from './streamRaster';
 
 export interface NativeWhiteboardPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter | IncrementalPdfWriter;
+    readonly writer?: DisplayPdfWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
 
 /** Print is always light; this captures the selected roots or current sheet before any await. */
 export function pinNativeWhiteboardPrint(options: NativeWhiteboardPrintOptions): BoardPrintSource {
-    const { runtime, memory, writer } = options, doc = runtime.session.doc, scene = runtime.scene;
+    const { runtime, memory } = options, writer = options.writer ?? createLazyIncrementalPdfWriter(), doc = runtime.session.doc, scene = runtime.scene;
     if (doc.host.kind !== 'whiteboard' || !scene || !scene.ready || scene.revision !== doc.rev)
         throw new Error('Whiteboard print scene is not ready');
     const selection = runtime.selection.getSnapshot();
@@ -58,15 +58,14 @@ export function pinNativeWhiteboardPrint(options: NativeWhiteboardPrintOptions):
             combined.throwIfAborted();
             const images = createExportImageResolver(snapshot.token, snapshot.images, snapshot.readImage, combined);
             let bytes: Uint8Array;
-            if (typeof writer === 'function') {
+            if (typeof writer !== 'function' && writer.kind === 'incremental-pdf') {
+                bytes = await streamIncrementalPdf({ revision: snapshot.revision, pageCount: 1,
+                    async page() { return { source: paint, world, outputScale: 0.75 }; } }, 0.75, images, writer, combined);
+            } else if (typeof writer === 'function') {
                 const page = await streamPageDisplayList(paint, 0, world, 0.75, images, combined);
                 bytes = await writer({ schema: 1, pages: [{ width: world.width * 0.75, height: world.height * 0.75,
                     displayList: { page: 0, items: [{ kind: 'group', transform: [0.75, 0, 0, 0.75, 0, 0], items: page.items }] } }] }, { signal: combined });
-            } else {
-                bytes = await streamIncrementalPdf({ revision: snapshot.revision, pageCount: 1,
-                    async page(_index, active) { active.throwIfAborted(); return { source: paint, world, outputScale: 0.75 }; },
-                }, 0.75, images, writer, combined);
-            }
+            } else throw new TypeError('Unsupported whiteboard print writer');
             combined.throwIfAborted();
             return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
         },

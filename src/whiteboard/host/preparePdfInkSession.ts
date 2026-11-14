@@ -95,10 +95,16 @@ export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSession
             sources: prepared.sources, rebind: options.rebind,
             adoptPaint(witness, isCurrent) {
                 const runtime = prepared.runtime();
-                if (!runtime || !current() || !isCurrent()) throw stale();
+                const live = () => {
+                    const outer = host.outerIdentity(documentId), token = witness.token;
+                    return !!runtime && current() && isCurrent() && prepared.runtime() === runtime && !!outer
+                        && outer.kind === 'pdfInk' && host.isCurrent(outer) && outer.documentId === token.documentId
+                        && outer.session === token.session && outer.vaultActivation === token.vaultEpoch
+                        && outer.bytesGeneration === token.bytesGeneration;
+                };
+                if (!runtime || !live()) throw stale();
                 runtime.adoptPaintSource(witness, { documentId, session: identity.session,
-                    pristineFingerprint: accepted.source.pristineFingerprint },
-                () => current() && isCurrent() && prepared.runtime() === runtime);
+                    pristineFingerprint: accepted.source.pristineFingerprint }, live);
             },
             onError: options.onError, onReadOnly: options.onReadOnly });
     } catch (error) { await prepared.dispose(); throw error; }

@@ -40,6 +40,8 @@ async function raster(fragment: PaintFragment, face: Face, baseline: number, col
     const probe = new OffscreenCanvas(1, 1), context = probe.getContext('2d');
     if (!context) throw new Error('Export canvas is unavailable');
     context.font = face.css; context.direction = fragment.rtl ? 'rtl' : 'ltr'; context.textAlign = 'left';
+    context.textBaseline = 'alphabetic'; context.fontKerning = 'normal'; context.textRendering = 'geometricPrecision';
+    context.letterSpacing = '0px'; context.wordSpacing = '0px'; context.fontVariantCaps = 'normal';
     const metrics = context.measureText(fragment.text), factor = face.size / 64;
     const left = fragment.x - Math.max(0, metrics.actualBoundingBoxLeft * factor) - factor * 2;
     const top = baseline - metrics.actualBoundingBoxAscent * factor - factor * 2;

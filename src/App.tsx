@@ -21,6 +21,7 @@ import { nameTaken } from './utils/entryNames';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
+import { clearPdfRotation, publishPdfRotation, takePdfRotation } from './utils/pdfRotationPreview';
 import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
 import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
 import { sameStat, type DiskVersion } from './utils/diskVersion';
@@ -2277,6 +2278,7 @@ export default function App() {
   const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
     const handle = tab?.file.handle as FileSystemFileHandle | undefined;
+    const preview = tab ? takePdfRotation(tab.id) : undefined;
     if (!tab || !handle) return;
     if (diskStateRef.current.get(tab.id)) {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
@@ -2320,6 +2322,7 @@ export default function App() {
           return;
         }
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (tabsRef.current.some(t => t.id === id)) publishPdfRotation(id, preview, expected?.hash, result.version.hash);
         recordFileWritten(path, result.version.lastModified);
         // The parked original predates the rotation, and the next annotation
         // save would rebuild the old orientation over this one.
@@ -2402,6 +2405,7 @@ export default function App() {
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
+      clearPdfRotation(doc.id);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
       dropBaseline(doc.id);

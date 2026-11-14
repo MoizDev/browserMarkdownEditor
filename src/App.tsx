@@ -7,7 +7,7 @@ import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMe
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
-import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
+import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
@@ -64,7 +64,6 @@ import {
 } from './utils/entryStyle';
 import { getEntryStyles, setEntryStyles } from './utils/entryStyleStore';
 import { findDirNode } from './utils/treeShare';
-import { onIdle } from './utils/pool';
 import {
   collapsePaths as collapsePathsInStore, expandPaths as expandPathsInStore,
   retargetExpandedPaths as retargetExpandedPathsInStore, toggleExpanded,
@@ -461,6 +460,12 @@ export default function App() {
 
   // The link graph powering the Neural Brain view and backlinks panel
   const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  const publishIndexGraph = useCallback((next: GraphData | null) => {
+    const value = next ?? EMPTY_GRAPH;
+    setGraph(previous => sameGraph(previous, value) ? previous : value);
+  }, []);
+  const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
+    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile, publish: publishIndexGraph });
 
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
@@ -1809,10 +1814,6 @@ export default function App() {
   const noteResolverRef = useRef(noteResolver);
   useEffect(() => { noteResolverRef.current = noteResolver; }, [noteResolver]);
 
-  // A different vault may reuse paths — never resolve links from the old one's
-  // cached extractions (mirrors FileExplorer clearing the search cache).
-  useEffect(() => { clearLinkCache(); }, [rootHandle]);
-
   // Same reasoning for the window.open blob URLs: a different vault can hold the
   // same path, and (mtime, size) alone could match, so drop them with the vault
   // rather than risk serving the old file's bytes (and pinning them all session).
@@ -1821,56 +1822,10 @@ export default function App() {
     externalUrls.clear();
   }, [rootHandle]);
 
-  /**
-   * Rebuild the link graph.
-   *
-   * `revalidate` is whether the vault may have moved under us. TRUE for a tree
-   * change, a watcher rescan or a vault open — anything that could have been
-   * somebody else's edit. FALSE after one of our own saves, which has just
-   * primed the one note it touched (`primeLinks`): the rebuild is then pure
-   * arithmetic over what is already in memory.
-   *
-   * That distinction is the difference between 0 and N file handles per save.
-   * Measured on a 1,000-note vault: typing twelve characters cost 1,004
-   * `getFile()` round trips, one per note, every time the autosave landed —
-   * because a cache HIT still had to open the file to find out it was a hit.
-   */
-  const rebuildGraph = useCallback(async (revalidate = true) => {
-    if (!fileTree || fileTree.length === 0) {
-      // Through the same identity guard as the built graph below: a fresh empty
-      // object here would re-seed GraphView on every tree change just as surely.
-      setGraph(prev => sameGraph(prev, EMPTY_GRAPH) ? prev : EMPTY_GRAPH);
-      return;
-    }
-    try {
-      const g = await buildGraph(fileTree, revalidate, handleIO.file);
-      // Keep the OLD object when nothing about the graph changed. A fresh
-      // identity on every save propagates all the way into GraphView's effects,
-      // which re-seed the simulation (alpha = 1) and tear down and rebuild the
-      // RAF loop and ResizeObserver — so an unrelated tab autosaving used to
-      // visibly re-heat the Neural Brain view while the user was looking at it.
-      setGraph(prev => sameGraph(prev, g) ? prev : g);
-    } catch (err) {
-      console.error('Failed to build link graph:', err);
-    }
-  }, [fileTree, handleIO]);
-
-  // AT IDLE, not the moment a tree lands. The first build reads every note in
-  // the vault (nothing is cached yet) — measured at 1,000 reads and 2.6MB on a
-  // 1,000-note vault — and it was racing the session restore for the same file
-  // thread, so the notes the reader actually asked for arrived behind an index
-  // nobody had looked at yet. Nothing on screen waits for the graph: the Neural
-  // Brain view and the backlinks count fill in when it lands.
-  useEffect(() => onIdle(() => { void rebuildGraph(); }), [rebuildGraph]);
-
   // ── Per-tab autosave ────────────────────────────────────────────────────
-  // rebuildGraph/writeFile are read through refs so the save helpers keep a
-  // stable identity (no re-armed timers / re-subscribed listeners on every
-  // graph rebuild) while never going stale.
-  const rebuildGraphRef = useRef(rebuildGraph);
+  // Write callbacks stay stable across pane and graph updates.
   const writeFileRef = useRef(writeFile);
   const writeFileBytesRef = useRef(writeFileBytes);
-  useEffect(() => { rebuildGraphRef.current = rebuildGraph; }, [rebuildGraph]);
   useEffect(() => { writeFileRef.current = writeFile; }, [writeFile]);
   useEffect(() => { writeFileBytesRef.current = writeFileBytes; }, [writeFileBytes]);
 
@@ -2043,6 +1998,7 @@ export default function App() {
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const indexAtCall = searchIndexRef.current;
+    const graphAtCall = indexGraphRef.current;
     const searchWriteRevision = ++searchWriteRevisionRef.current;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
@@ -2123,15 +2079,11 @@ export default function App() {
           if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
           saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 2000);
         }
-        // The graph's reading of this note, from the text we just wrote — the
-        // one file a rebuild would have had to open. `primeLinks` answers
-        // whether the note's links actually MOVED; for the ordinary keystroke
-        // they did not, and then the graph on screen is already the right one
-        // and no rebuild runs at all. When they did, the rebuild is told not to
-        // revalidate: nothing else on disk has changed, so it needs no handles.
-        const linksMoved = isMarkdownFile(file.name)
-          && primeLinks(path, result.version.lastModified, result.version.size, snapshot);
-        if (linksMoved) rebuildGraphRef.current(false);
+        if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.root === rootAtCall
+          && graphAtCall.activation === getVaultActivation()) {
+          graphAtCall.echo.remember(path, result.version.lastModified, result.version.size);
+          if (isMarkdownFile(file.name)) void graphAtCall.client.prime(path, result.version.lastModified, result.version.size, snapshot).catch(() => {});
+        }
         if (!isPdf && !isCanvasFile(file.name) && isTextFile(file.name)
           && rootAtCall === indexAtCall.root && indexAtCall.activation === getVaultActivation()) {
           indexAtCall.index.primeWritten(path, result.version, snapshot, searchWriteRevision);
@@ -2570,7 +2522,7 @@ export default function App() {
     }
   }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState]);
   // handleFileClick is declared long before this, and reads it through a ref
-  // (the rebuildGraphRef pattern) rather than growing a dependency.
+  // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
 
   /**
@@ -4313,6 +4265,10 @@ export default function App() {
           continue;
         }
         searchIndexRef.current.index.invalidate(path);
+        const graphOwner = indexGraphRef.current;
+        if (graphOwner?.root === root && graphOwner.activation === getVaultActivation()) {
+          void graphOwner.client.invalidate([path]).catch(() => {});
+        }
         if (diskStateRef.current.get(id) === 'conflict') continue;
         if (flushingRef.current.has(id)) { retry.add(path); continue; }
         contentChanged = true;
@@ -4361,10 +4317,7 @@ export default function App() {
         }
       }
 
-      if (contentChanged) {
-        rebuildGraphRef.current();
-        bumpSaveEpoch();
-      }
+      if (contentChanged) bumpSaveEpoch();
       if (retry.size) setTimeout(() => { void checkOpenDocs(retry); }, 750);
     };
   });
@@ -4384,10 +4337,12 @@ export default function App() {
     const open = new Set(tabsRef.current.map(t => t.file.path));
     if (batch.rescan) searchIndexRef.current.index.revalidate();
     else for (const path of batch.modified) if (!open.has(path)) searchIndexRef.current.index.invalidate(path);
-    if (batch.rescan || [...batch.modified].some(p => !open.has(p))) {
-      rebuildGraphRef.current();
-      bumpSaveEpoch();
+    const graphOwner = indexGraphRef.current;
+    if (graphOwner && graphOwner.activation === getVaultActivation()) {
+      if (batch.rescan) void graphOwner.client.sweep('rescan').catch(() => {});
+      else graphOwner.echo.hints([...batch.modified]);
     }
+    if (batch.rescan || [...batch.modified].some(p => !open.has(p))) bumpSaveEpoch();
     // The Modified-time sort, without re-statting the vault: only the files the
     // batch names, and only while a time sort has loaded any times at all.
     if (batch.modified.size && getFileTimes().size) {
@@ -4433,6 +4388,7 @@ export default function App() {
     if (!tab || resolvingRef.current.has(tab.id)) return;
     const { id, file } = tab;
     const indexAtCall = searchIndexRef.current;
+    const graphAtCall = indexGraphRef.current;
     const searchWriteRevision = ++searchWriteRevisionRef.current;
     if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
       if (action === 'close') removeTab(path, false);
@@ -4504,7 +4460,10 @@ export default function App() {
           dirty: typeof data === 'string' && t.content !== data ? t.dirty : false,
           disk: undefined,
         } : t)));
-        rebuildGraphRef.current();
+        if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
+          graphAtCall.echo.remember(path, result.version.lastModified, result.version.size);
+          if (typeof data === 'string' && isMarkdownFile(file.name)) void graphAtCall.client.prime(path, result.version.lastModified, result.version.size, data).catch(() => {});
+        }
         bumpSaveEpoch();
         return;
       }
@@ -4653,7 +4612,13 @@ export default function App() {
         recordFileWritten(file.path);
         if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
           text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
-        rebuildGraphRef.current();
+        const graphOwner = indexGraphRef.current;
+        if (graphOwner && graphOwner.root === rootHandle && graphOwner.activation === activation && activation === getVaultActivation()) {
+          if (version) {
+            graphOwner.echo.remember(file.path, version.lastModified, version.size);
+            if (isMarkdownFile(file.name)) void graphOwner.client.prime(file.path, version.lastModified, version.size, after).catch(() => {});
+          } else void graphOwner.client.invalidate([file.path]).catch(() => {});
+        }
         bumpSaveEpoch();
       },
       renameEntry: handleRenameFile,

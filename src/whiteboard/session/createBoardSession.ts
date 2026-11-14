@@ -73,9 +73,12 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         return work;
     };
     const readonlyReason = () => options.readOnlyReason() ?? (applyController.isReadOnly ? 'The board cannot be saved safely; reload to continue.' : null);
-    const guardOwnership = () => {
+    const guardLive = () => {
         if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
         if (disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
+    };
+    const guardOwnership = () => {
+        guardLive();
         if (readonlyReason()) throw new ApplyFailed('read-only', readonlyReason()!);
     };
     const guard = () => {
@@ -231,7 +234,13 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         subscribe: channel.subscribe.bind(channel),
         hasPendingEdits: pendingState,
         onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
-        checkpoint() { guard(); try { scheduler.flushNow(); return capture(); } finally { notifyPending(); } },
+        checkpoint() {
+            // Acquisition pins the pristine source before view promotion; a clean read must not require that promotion.
+            // Pending edits still require write authority: never flush a gesture or encode dirty work through this branch.
+            if (readonlyReason() && !pendingState()) { guardLive(); return capture(); }
+            guard();
+            try { scheduler.flushNow(); return capture(); } finally { notifyPending(); }
+        },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
             // A first format conversion can write admitted revision zero without a model edit.

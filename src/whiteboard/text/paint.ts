@@ -110,6 +110,9 @@ export interface TextLayoutStyle {
     readonly minHeight: number;
     /** Overflow policy for a word wider than the available line. */
     readonly overflow: 'allow' | 'grapheme' | 'shrink';
+    /** Frame titles use one line with an ellipsis instead of growing. */
+    readonly maxLines?: number;
+    readonly ellipsis?: boolean;
 }
 export interface TextLayoutRequest {
     readonly text: RichText;

@@ -1561,7 +1561,9 @@ export default function App() {
         return retired ? 'retired' : 'kept';
       };
       const own = proofTabs.find(tab => tab.file.path === path);
-      const ownText = own ? proofContents.get(path) ?? null : job.text;
+      const ownFile = treeFiles.find(file => file.path === path);
+      const ownText = own ? proofContents.get(path) ?? null
+        : ownFile ? await readFile(ownFile.handle).catch(() => null) : null;
       const candidates = treeFiles.filter(f =>
         f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
@@ -1570,7 +1572,6 @@ export default function App() {
       ];
       // The saved note may have replaced an embed with a plain link; its
       // newer unsaved buffer also counts, but must not erase that disk proof.
-      const ownFile = treeFiles.find(file => file.path === path);
       const notes = [async () => ownFile ? await readFile(ownFile.handle).catch(() => null) : null, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
         if (open) return proofContents.get(note.path) ?? null;

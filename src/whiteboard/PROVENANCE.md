@@ -41,6 +41,7 @@ third-party code included (normally "none") · date.
 | `model/textLimits.ts` | lane w-c | V-11, H-2 | text §4; document-model §9 | Design/rulings; shared one-million UTF-16 and hundred-thousand block caps | none | 2026-11-13 |
 | `model/loadTypes.ts` | w-d | W-C5, M-11 | document-model §§9.1–9.3; threading §2 | Types-only ordered repair draft, inert projection, sample wire and rehydration lease ownership; no tldraw source/package | none | 2026-11-13 |
 | `model/rawMedia.ts` | lane w-c, w-d | M-3/9, R-W25/30/37; THR-3 | document-model §9.3; preserved-media rulings | Independent escaped-string/key scan; 64-hex runs plus first/last candidates in longer runs, bounded ring and per-raw dedup; w-d added resumable scan and carrier iteration with unchanged visitor semantics; no upstream read or registry | none | 2026-11-13 |
+| `workers/nativeLoad.ts` | lane w-c | DM-4, FMT-4, M-10 | document-model §§9–10; native-format §7; threading §2 | Design only; streaming native read and graph repair in the parse worker, worker-local sample leases and inert encoded projection; no upstream code | none | 2026-11-13 |
 | `model/loadRepair.ts` | lane w-c | DM-4, V-1..V-12, M-9/10 | document-model §§9–10; native-format §7 | Design only; ordered graph repair, retained-carrier media recount, loaded-node validation and source re-encode marks before inert projection; no source code from upstream | none | 2026-11-13 |
 | `model/loadProjection.ts` | lane w-c | DM-4, M-10, SEC-1 | document-model §§9–10; native-format §7 | Design only; inert tagged map-pair projection, encoded sample handles re-admitted in receiving store with explicit creator leases, bounded cooperation and cleanup | none | 2026-11-13 |
 | `model/repairGraph.ts` | lane w-c | DM-4, V-1/2/3, RV-22 | document-model §§9.2–9.3 | Design only; ordered duplicate/parent/cycle/depth/order repair, opaque preservation and cooperative admission; no upstream source | none | 2026-11-13 |
@@ -111,7 +112,7 @@ third-party code included (normally "none") · date.
 | `workers/protocol.ts`, `workers/client.ts` | w-d | THR-1, THR-3 | threading §§2–3, platform C5 | App-owned identity envelopes, stale-result disposal, governed host requests and deadlines; no tldraw source/package | none | 2026-11-13 |
 | `workers/nativeParseTypes.ts` | w-d | THR-1, W-C5 | threading §2; native-format §7 | Types-only worker parse request and unadmitted ordered wire draft; no filesystem handles or fake validation authority | none | 2026-11-13 |
 | `workers/pointHandlers.ts` | w-d | THR-1, FMT-2 | threading §2; native-format §4 | Sliced point inspection/decode in the parse worker, explicit owned transfers and cancellation cooperation; no tldraw source/package | none | 2026-11-13 |
-| `workers/parse.worker.ts`, `workers/geometry.worker.ts`, `workers/export.worker.ts` | w-d | THR-1 | threading §2 | App-owned worker-host entrypoints; text layout and PNG handlers remain owned by their lanes, geometry operations registered as slab work lands; no tldraw source/package | none | 2026-11-13 |
+| `workers/parse.worker.ts`, `workers/geometry.worker.ts`, `workers/export.worker.ts` | w-d, w-c | THR-1, DM-4 | threading §2 | App-owned worker-host entrypoints; w-c registers native load/repair, other handlers remain with their lanes; no tldraw source/package | none | 2026-11-13 |
 | `security/validatedImport.ts` | w-d | SEC-W1, SEC-8 | security §3 | Issuer-private one-shot WeakMap brand, trusted schema-validator seam and bounded owned inert data projection; no executable values, accessors or foreign prototypes; no tldraw source/package | none | 2026-11-13 |
 
 ## Ink, scene, rendering and the viewer host (lane w-e)
@@ -228,6 +229,7 @@ third-party code included (normally "none") · date.
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssembly.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned pristine writer source, all-sheet ordered ink, exact legacy fence and verified revision/write mark; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkCacheTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5 | Revision/font/writer-keyed page list cache and dirty-session eviction contract; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -280,6 +282,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `geom/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Generic box helpers moved with w-e's agreement; independent interval-filtered cubic and arc extrema | none | 2026-11-13 |
 | `scene/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Re-export generic helpers from geom/bounds.ts to retain the scene API | none | 2026-11-13 |
+| `scene/live.ts` | lane w-g | GE-3; F-SEL-004 | geometry §§4–5; rendering §6 | Stream unordered spatial candidates progressively under revision, generation and lease guards | none | 2026-11-13 |
 | `geom/numeric.ts` | lane w-g | GE-1 | geometry §2.1–2.2 | Design; IEEE 754 binary64; independent dyadic arithmetic | none | 2026-11-13 |
 | `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates and intersection-coordinate enclosures | none | 2026-11-13 |
 | `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |

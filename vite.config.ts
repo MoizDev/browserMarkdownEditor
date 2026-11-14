@@ -28,7 +28,7 @@ export default defineConfig({
     buildStart() { regenerateFrame() },
     async handleHotUpdate(context) {
       const path = context.file.replaceAll('\\', '/')
-      if ((path.includes('/src/epub/') && !/reader-frame\.(html|integrity\.json)$/.test(path)) || path.endsWith('/src/utils/readingEmphasis.ts')) {
+      if ((path.includes('/src/epub/') && !/reader-frame\.(html|integrity\.json)$/.test(path)) || path.endsWith('/src/utils/readingEmphasis.ts') || path.endsWith('/src/platform/containedFrameBuild.mjs')) {
         regenerateFrame()
         context.server.ws.send({ type: 'full-reload' })
         return []

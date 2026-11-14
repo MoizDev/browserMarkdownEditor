@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import TableSizeGrid from './TableSizeGrid';
 import { Check } from './icons';
-import type { ContextMenuRequest } from '../utils/contextMenu';
+import type { ContextMenuRequest, ContextMenuSubmenu } from '../utils/contextMenu';
 
 // Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
 const EntryStylePicker = lazy(() => import('./EntryStylePicker'));
@@ -50,23 +50,87 @@ function place(point: number, size: number, limit: number): number {
     return Math.max(MARGIN, Math.min(flipped, limit - size - MARGIN));
 }
 
+function SubmenuRows({ entries, activate }: {
+    entries: ContextMenuSubmenu['entries'];
+    activate: (run: () => void | Promise<void>) => void;
+}) {
+    const [child, setChild] = useState<{ entry: ContextMenuSubmenu; anchor: DOMRect; focus: boolean } | null>(null);
+    const childPanel = useRef<HTMLDivElement>(null);
+    const childTrigger = useRef<HTMLButtonElement>(null);
+    const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+    useLayoutEffect(() => {
+        const el = childPanel.current;
+        if (!child || !el) { setPosition(null); return; }
+        const rect = el.getBoundingClientRect();
+        const right = child.anchor.right + MARGIN;
+        const left = right + rect.width + MARGIN > window.innerWidth
+            ? Math.max(MARGIN, child.anchor.left - MARGIN - rect.width) : right;
+        setPosition({ left, top: place(child.anchor.top, rect.height, window.innerHeight) });
+        if (child.focus) el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    }, [child]);
+
+    return <>
+        {entries.map(item => {
+            if (item.kind === 'separator') return <div key={item.id} className="context-menu-separator" role="separator" />;
+            if (item.kind === 'submenu') return <button key={item.id} type="button" className="context-menu-item"
+                role="menuitem" aria-haspopup="menu" aria-expanded={child?.entry.id === item.id}
+                disabled={item.disabled} data-tooltip={item.reason}
+                onMouseEnter={event => {
+                    if (!item.disabled && child?.entry.id !== item.id) {
+                        childTrigger.current = event.currentTarget;
+                        setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: false });
+                    }
+                }}
+                onClick={event => {
+                    childTrigger.current = event.currentTarget;
+                    setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: true });
+                }}
+                onKeyDown={event => {
+                    if (event.key !== 'ArrowRight') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    childTrigger.current = event.currentTarget;
+                    setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: true });
+                }}>{item.label}<span className="context-menu-item-arrow" aria-hidden="true">▸</span></button>;
+            return <button key={item.id} type="button" className={`context-menu-item${item.danger ? ' is-danger' : ''}`}
+                role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked}
+                disabled={item.disabled} data-tooltip={item.reason} onMouseEnter={() => setChild(null)}
+                onClick={() => activate(item.run)}>
+                {item.checked !== undefined && <span className="context-menu-item-check" aria-hidden="true">{item.checked && <Check size={14} />}</span>}
+                {item.label}
+                {item.shortcut && <span style={{ marginInlineStart: 'auto' }}>{item.shortcut}</span>}
+            </button>;
+        })}
+        {child && <div ref={childPanel} className="context-menu-panel" style={{ position: 'fixed',
+            left: position?.left ?? 0, top: position?.top ?? 0, ...(position ? null : HIDDEN_UNTIL_MEASURED) }}
+            onKeyDown={event => {
+                if (event.key === 'ArrowLeft') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setChild(null);
+                    childTrigger.current?.focus();
+                    return;
+                }
+                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                const rows = Array.from(childPanel.current?.querySelectorAll<HTMLButtonElement>(':scope > .context-menu > button:not(:disabled)') ?? []);
+                if (!rows.length) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                rows[(index + step + rows.length) % rows.length].focus();
+            }}>
+            <div className="context-menu" role="menu" aria-label={child.entry.label} style={{ position: 'static' }}>
+                <SubmenuRows entries={child.entry.entries} activate={activate} />
+            </div>
+        </div>}
+    </>;
+}
+
 /**
- * The app's own right-click menu — the one surface every context menu in the
- * app is drawn by, whoever raised it (the editor, a table cell, a file tree
- * row).
- *
- * It is a component over a module-level store rather than a component per
- * caller because the callers have nothing else in common: one of them is a DOM
- * handler hung off a CodeMirror widget, which knows nothing about React. See
- * utils/contextMenu.ts for why that store shape is the only one that works.
- *
- * Modelled on VaultMenu (the backlinks popover is the third dismissible
- * surface), with three differences that all come from WHERE this one sits. It
- * hangs from a point in the viewport rather than from a button, so a scroll
- * invalidates its position and must dismiss it; it can be raised anywhere, so
- * it flips on both axes instead of only leftwards; and it is drawn over
- * CodeMirror, which binds Escape itself — so Escape here is capture-phase and
- * stopped, the treatment ConfirmDialog.tsx already documents.
+ * The app's one context menu is shared by React and CodeMirror raisers. Its
+ * viewport-point anchor needs scroll dismissal and flipping on both axes; the
+ * capture-phase Escape also wins over the CodeMirror view behind it.
  */
 export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -81,11 +145,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  place. */
     const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-    /** The id of the row whose flyout is open, and that row's rect — the
-     *  flyout hangs off the row, like a native submenu. Two kinds of row open
-     *  one (the table size flyout and the folder style picker); which component
-     *  goes inside is decided at render time from the entry. */
-    const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect } | null>(null);
+    /** The row and viewport rect of the active picker or command submenu. */
+    const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect; focus?: boolean } | null>(null);
     const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
 
     /* One menu REPLACING another does not remount this component — the store
@@ -166,6 +227,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
             ? Math.max(MARGIN, flyout.anchor.left - MARGIN - rect.width)
             : right;
         setPanelPos({ left, top: place(flyout.anchor.top, rect.height, window.innerHeight) });
+        if (flyout.focus) el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
     }, [flyout]);
 
     /* Dismissal. Mirrors VaultMenu's, with the two listeners a menu
@@ -309,9 +371,21 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  reaches here is ArrowLeft at the grid's left edge, which means "back to
      *  the menu". */
     const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-        if (e.key !== 'ArrowLeft') return;
+        if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeFlyout();
+            return;
+        }
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        const entry = request.entries.find(item => item.id === flyout?.id);
+        if (entry?.kind !== 'submenu') return;
+        const rows = Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>(':scope > .context-menu > button:not(:disabled)') ?? []);
+        if (!rows.length) return;
         e.preventDefault();
-        closeFlyout();
+        const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        rows[(index + step + rows.length) % rows.length].focus();
     };
 
     /** Close FIRST, then act. A `run` that raises the app's dialog would
@@ -372,7 +446,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
                     const index = rowIndex.get(entry.id) ?? 0;
 
-                    if (entry.kind === 'grid' || entry.kind === 'entry-style') {
+                    if (entry.kind === 'grid' || entry.kind === 'entry-style' || entry.kind === 'submenu') {
                         const open = flyout?.id === entry.id;
                         return (
                             <button
@@ -380,18 +454,24 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 ref={el => { itemsRef.current[index] = el; }}
                                 className="context-menu-item"
                                 role="menuitem"
-                                aria-haspopup="true"
+                                aria-haspopup={entry.kind === 'submenu' ? 'menu' : true}
                                 aria-expanded={open}
                                 disabled={entry.disabled}
                                 data-tooltip={entry.reason}
+                                onMouseEnter={e => {
+                                    if (entry.kind === 'submenu' && !entry.disabled && !open) {
+                                        setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
+                                    }
+                                }}
                                 onClick={e => {
                                     const anchor = e.currentTarget.getBoundingClientRect();
-                                    setFlyout(current => (current?.id === entry.id ? null : { id: entry.id, anchor }));
+                                    setFlyout(current => (current?.id === entry.id && entry.kind !== 'submenu'
+                                        ? null : { id: entry.id, anchor, focus: entry.kind === 'submenu' }));
                                 }}
                                 onKeyDown={e => {
-                                    if (e.key !== 'ArrowRight' || open) return;
+                                    if (e.key !== 'ArrowRight' || (open && entry.kind !== 'submenu')) return;
                                     e.preventDefault();
-                                    setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
+                                    setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect(), focus: entry.kind === 'submenu' });
                                 }}
                             >
                                 {entry.label}
@@ -411,6 +491,9 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             // Required when disabled: a dead row that says
                             // nothing is indistinguishable from a broken one.
                             data-tooltip={entry.reason}
+                            onMouseEnter={() => {
+                                if (request.entries.find(item => item.id === flyout?.id)?.kind === 'submenu') setFlyout(null);
+                            }}
                             onClick={() => activate(entry.run)}
                         >
                             {hasChecks && (
@@ -419,6 +502,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 </span>
                             )}
                             {entry.label}
+                            {entry.shortcut && <span style={{ marginInlineStart: 'auto' }}>{entry.shortcut}</span>}
                         </button>
                     );
                 })}
@@ -432,7 +516,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 hangs off; the stylesheet gives it its chrome. */}
             {flyout && (() => {
                 const entry = request.entries.find(e => e.id === flyout.id);
-                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style')) return null;
+                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style' && entry.kind !== 'submenu')) return null;
                 return (
                     <div
                         ref={panelRef}
@@ -448,7 +532,11 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                         onDragOver={cancelDrop}
                         onDrop={cancelDrop}
                     >
-                        {entry.kind === 'grid' ? (
+                        {entry.kind === 'submenu' ? (
+                            <div className="context-menu" role="menu" aria-label={entry.label} style={{ position: 'static' }}>
+                                <SubmenuRows entries={entry.entries} activate={activate} />
+                            </div>
+                        ) : entry.kind === 'grid' ? (
                             <TableSizeGrid
                                 maxRows={entry.maxRows}
                                 maxCols={entry.maxCols}

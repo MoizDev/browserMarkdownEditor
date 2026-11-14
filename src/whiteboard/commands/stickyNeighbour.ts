@@ -1,4 +1,4 @@
-import { isLocked } from '../change/commands';
+import { allocateOrderKeys, isLocked } from '../change/commands';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
 import { acquireBoardGeometryScope } from './geometryScope';
 import { notebookGrowthOp } from './pagesAndSheets';
@@ -6,7 +6,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { isSheetParent, sheetOf } from '../model/doc';
 import { newNodeId, type NodeId } from '../model/ids';
 import { createSticky } from '../model/nodes';
-import { keyBetween, needsRekey } from '../model/orderKey';
+import { keyBetween } from '../model/orderKey';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import { findStickyNeighbour, stickyWorldCentre } from '../geom/stickyNeighbours';
@@ -59,7 +59,6 @@ export async function addStickyNeighbour(options: StickyNeighbourOptions): Promi
         check();
         if (found) { runtime.selection.replace([found]); await options.edit(found); return found; }
     }
-    if (needsRekey(order)) throw new Error('Sticky neighbour cannot allocate an order without rekeying');
     const scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, cooperate, current: () => {
         try { check(); return true; } catch { return false; }
     } });
@@ -70,10 +69,21 @@ export async function addStickyNeighbour(options: StickyNeighbourOptions): Promi
         const placed = poseInParent(doc, node, node.parent, pose, geometry);
         const final = { ...node, x: placed.x, y: placed.y, rotation: placed.rotation, page: placed.page };
         const growth = isSheetParent(doc, final.parent) ? notebookGrowthOp(doc, bounds.y + bounds.height) : null;
-        check(); const applied = session.apply({ origin: 'tool', label: 'Add sticky neighbour', ops: [
-            ...(growth ? [growth] : []), { t: 'create', node: final },
-        ] });
-        applied.release(); runtime.selection.replace([id]);
+        check(); session.history.open('Add sticky neighbour');
+        let builder: ReturnType<typeof session.begin> | undefined, open = true;
+        try {
+            builder = session.begin('tool', 'Add sticky neighbour');
+            const last = (doc.children.get(final.parent) ?? []).at(-1)?.id ?? null;
+            const finalOrder = allocateOrderKeys(doc, builder, final.parent, last, null, 1)[0];
+            if (growth) builder.push(growth);
+            builder.push({ t: 'create', node: { ...final, order: finalOrder } });
+            const applied = builder.commit(); builder = undefined;
+            try { applied.release(); } finally { session.history.close(); open = false; }
+            runtime.selection.replace([id]);
+        } catch (error) {
+            try { builder?.abort(); } finally { if (open) session.history.cancel(); }
+            throw error;
+        }
     } finally { scope.release(); }
     if (options.current() && session.owner === owner && session.doc === doc) await options.edit(id);
     return id;

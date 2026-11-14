@@ -4,6 +4,8 @@ import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capt
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PdfTileProducer } from './tileLayer';
 import type { PdfTileRequest } from './tileDemand';
+import { pdfVariantRevision } from '../fonts/profiles';
+import { consumePdfTileArrival } from '../pool/arrivalWindow';
 
 export interface PdfCaptureLease {
     readonly document: { readonly producer: PdfTileProducer };
@@ -15,6 +17,9 @@ export interface PdfCaptureSource {
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
+    readonly fontEpoch?: number;
+    /** Frozen by the source owner for the lifetime of this capture. */
+    readonly pageVariant?: (page: number) => 'plain' | 'emphasis';
     readonly revision: string;
     readonly stack: Readonly<PageStack>;
     /** Called immediately at snapshot creation, before the capture queue can wait. */
@@ -88,7 +93,8 @@ export function createPdfCaptureSnapshot(source: PdfCaptureSource, request: Capt
                     box.y + box.height <= region.y || box.width <= 0 || box.height <= 0) continue;
                 const grid = createTileGrid(box, scale);
                 const content = { documentToken, sourceRole, pageOrRegion: String(page),
-                    contentRevision: variant, colourVersion: 0, tileSchema: 1 as const };
+                    contentRevision: pdfVariantRevision(source.pageVariant?.(page) ?? variant, source.fontEpoch ?? 0),
+                    colourVersion: 0, tileSchema: 1 as const };
                 for (const tile of intersectingTiles(grid, region)) {
                     combined.throwIfAborted();
                     const reservation = memory.reserve(tile.textureWidth * tile.textureHeight * 4);
@@ -98,6 +104,7 @@ export function createPdfCaptureSnapshot(source: PdfCaptureSource, request: Capt
                     let bitmap: ImageBitmap | null = null;
                     try {
                         bitmap = await lease.document.producer.render(tileRequest, combined);
+                        consumePdfTileArrival(bitmap);
                         combined.throwIfAborted();
                         if (bitmap.width !== tile.textureWidth || bitmap.height !== tile.textureHeight) {
                             throw new Error('PDF capture tile has unexpected dimensions');

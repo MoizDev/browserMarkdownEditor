@@ -42,6 +42,10 @@ export function createPdfWorkerBroker(onFailure: (error: PdfEngineError) => void
             const id = workerId * 2 + (role === 'writer' ? 1 : 0);
             return broker.spawn(role, id, generation, controller.signal);
         },
+        reset() {
+            if (disposed) return;
+            broken = undefined; losses.length = 0;
+        },
         dispose() { if (disposed) return; disposed = true; controller.abort(); frame?.dispose(); frame = undefined; generations.clear(); },
     };
 }

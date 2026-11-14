@@ -2,9 +2,24 @@ import { createPdfWorkerBroker } from '../contained/broker';
 import { createPdfPool } from '../pool/pool';
 import { installTiledPdfPool } from './installPool';
 import type { PdfFocusLease } from './startup.types';
+import type { RenderToken } from '../../platform/render/types';
+import { pdfDocKey } from '../worker/protocol';
+import type { PdfDocKey } from '../worker/protocol';
+import type { PdfPool } from '../pool/types';
 
 const focused = new Map<string, Set<object>>();
-let active: { dispose(): void } | undefined;
+let active: { pool: PdfPool; retry(docKey: PdfDocKey): Promise<void>; dispose(): void } | undefined;
+
+/** Lazy PDF-only callers borrow the one App-wide contained pool. */
+export function getSharedPdfPool(): PdfPool {
+    startPdfPool();
+    if (!active) throw new Error('The contained PDF pool is unavailable');
+    return active.pool;
+}
+
+export async function retryPdfPool(token: RenderToken): Promise<void> {
+    await active?.retry(pdfDocKey({ ...token, source: 'outer' }));
+}
 
 /** A stale pane cleanup cannot remove another pane's focus lease (C5.3). */
 export function retainPdfFocus(documentId: string): PdfFocusLease {
@@ -39,6 +54,8 @@ export function startPdfPool(): void {
     catch (error) { pool.dispose(); throw error; }
     let disposed = false;
     const current = {
+        pool,
+        retry: (key: PdfDocKey) => pool.retry(key),
         dispose() {
             if (disposed) return;
             disposed = true;

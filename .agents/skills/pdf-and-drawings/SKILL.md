@@ -17,14 +17,16 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 as live tldraw shapes.
 
 - **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
-  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a union inventory of every attachment
-  name tree), never from one attachment's presence: `utils/pdfRole.ts` returns one of six tags.
-  `plain` (no attachments of ours: the file's own bytes are the pristine original) and `annotated`
-  (the supported legacy pair, `original.pdf` + a valid `tldraw-snapshot.json`) are the only EDITABLE
-  roles; `notebookExport`, `unreadable`, `ambiguous` and `newer` open Annotate read-only with
-  `pdfRoleNotice`'s text in the outer view. An `original.pdf` alone does NOT make a file ours. The
-  first save of a `plain` PDF is what adds the attachments. Only `plain` may be rotated
-  (`canRotatePdfRole`).
+  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a read-only union inventory of every
+  attachment name tree; never the classic renderer), never from one attachment's presence:
+  `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
+  are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
+  `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
+  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. An
+  `original.pdf` alone does NOT make a file ours. A failed or partial read never falls back to
+  `plain`; the outer pages stay readable. The first save of a `plain` PDF is what adds the
+  attachments, and files from the old spawn-a-sibling behaviour still work. Only `plain` may be
+  rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
   `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
   again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.
@@ -65,7 +67,9 @@ as live tldraw shapes.
   *applies* `/Rotate` (canvas is landscape) but pdf-lib *ignores* it (`getSize()` returns the
   portrait MediaBox). The raster half anchors + rotates the image per angle; the vector half
   concatenates the same mapping as a CTM and draws inside it.
-- `withPdf` always slices the buffer (pdf.js detaches it) and always destroys the worker.
+- `withPdf` is gone: role inventory uses the build worker, while `openPdfPages` keeps a guarded
+  classic task alive until its caller closes it. Only the classic adapter copies renderer bytes
+  (pdf.js detaches its input); a display/Retry never mutates the original.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
@@ -121,15 +125,39 @@ as live tldraw shapes.
 
 ## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
 
-pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears
-down a worker it created itself (`task._worker` is set only when the caller passed none) — so passing
-a shared one is safe, and is the whole fix. Opening a single PDF used to start two workers: `PdfPane`
-probes the file's role via `readPdfRole` before it knows which view to show, then `PdfViewer` opens
-the same bytes again; each boot loads and compiles ~1MB of worker script before a byte is read.
-**Pass `worker: pdfWorker()` to every `getDocument`.** That module is also the one place that sets
-`GlobalWorkerOptions.workerSrc` — importing it is how the PDF modules get the assignment. Verified by
-counting `new Worker(...)`: one for the session, zero more per PDF opened. `prefetchPanes` starts it
-at idle (dynamically, or pdf.js lands in the main bundle), so the boot is off the first click.
+**Only `openClassicPdf` calls pdf.js `getDocument`.** It copies renderer input and obtains the
+shared native module worker through a transferable ready/test handshake and pinned bootstrap.
+No fake/main-thread worker is permitted. `loadClassicPdf` and `closeClassicPdf` own guarded
+acquisition and bounded dead-port teardown of the REAL loading task; never replace task/proxy
+methods. `pdfWorker()` is compatibility for an already-ready port, not a startup entry point.
+`prefetchPanes` calls `prefetchClassicPdf` dynamically only under `kinds.pdf`, retaining lazy
+font/decoder warming. Idle failure stays silent until a document is demanded; no retry loop.
+
+Every asynchronous render/stream consumer uses `session.health.guard` (or
+`classicPdfHealth(doc).guard`) so a dead native port cannot retain a document/page/reader permit.
+Cancel streams without awaiting dead-port RPCs during cleanup, then release reader locks/leases.
+Publish render failures with `recordClassicRenderFailure(health, error, zeroBasedPage)`;
+cancellation is not a render failure. Assert page completeness before returning a raster capture,
+including after asynchronous encoding/composition. Available partial pages can still DISPLAY,
+with persistent app notices and **Thumbnail unavailable**; they are not clean tool captures.
+
+Worker message shapes, runtime assets, bootstrap and native-emphasis internals stay pinned to
+pdf.js 6.1.200 together. Fetch/XHR/WASM observation preserves exact results/throws. A JS fallback
+that fully renders is complete: a dependency failure taints the worker for the next explicit
+open/Retry, but must not falsely mark its successful page incomplete. No PDF text/URLs enter
+health diagnostics. Native worker errors are fatal; silent closure only becomes a soft demanded-
+work no-progress notice (about ten seconds), never a timeout kill or image-size refusal.
+Progress/completion clears that notice. Healthy Retry reopens only its document; explicit Retry
+of an unresponsive/tainted/failed worker creates one replacement. Other affected PDFs retry
+separately. Chrome worker crashes can take the renderer down too; do not promise crash isolation.
+
+Each `openPdfPages` acquisition owns independent `source.health` and publishes it through
+`onRenderHealth` BEFORE awaiting startup. Pane subscribes to that actual source and never closes
+its health; only the source's close does. A byte-keyed memo/shared health races StrictMode's late
+cancelled acquisition. Captures and thumbnails use the same actual-source health. Refused Annotate
+uses the outer viewer's session health; renderer Retry cannot clear a tagged role refusal.
+Never remount an annotation canvas or replace its snapshot to retry: preserve unflushed ink and
+direct the reader to View until an in-place source/image replacement transaction exists.
 
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 

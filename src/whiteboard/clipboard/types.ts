@@ -46,6 +46,9 @@ export type ClipboardClassification =
     | { readonly kind: 'html'; readonly html: string }
     | { readonly kind: 'text'; readonly text: string }
     | { readonly kind: 'empty' };
+export interface ClipboardPngDensity { readonly pixelsPerWorldUnit: number }
+export type ReadClipboardPngDensity = (blob: Blob, signal: AbortSignal) => Promise<ClipboardPngDensity | null>;
+
 export interface ClipboardTextEditor {
     copySelection(): RichFragment;
     replaceSelection(fragment: RichFragment): void;

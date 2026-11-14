@@ -3,12 +3,13 @@ import react from '@vitejs/plugin-react'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { developmentPdfiumAssets } from './build/pdfiumDevAssets'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
 
 export default defineConfig({
-  plugins: [react(), {
+  plugins: [react(), developmentPdfiumAssets(), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
     // in `vite build --mode benchmark` (a dev server in that mode stays false: the
     // benchmark build is the production build plus hooks, nothing else), so every

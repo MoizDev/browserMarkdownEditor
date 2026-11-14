@@ -1,10 +1,19 @@
 import js from '@eslint/js'
+import { readFileSync } from 'node:fs'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 import { bmePlugin } from './eslint.rules.ts'
+
+// ONE native map feeds the backend, linker and lint. Refuse a damaged map
+// rather than quietly widening the prebuilt development engine's surface.
+const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/exports.json', import.meta.url), 'utf8')) as {
+  rows: { exports: string[] }[];
+}
+const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
+if (pdfiumNativeExports.length !== 136 || new Set(pdfiumNativeExports).size !== 136) throw new Error('The canonical PDFium map must declare 136 unique native exports')
 
 export default defineConfig([
   // `planning/` is git-ignored and exists only in the main checkout: its evidence
@@ -122,6 +131,10 @@ export default defineConfig([
       // G-INV-04. The owner's ban on code-based tests, everywhere.
       'bme/no-tests': 'error',
     },
+  },
+  {
+    files: ['src/pdf/**/*.{ts,tsx}'],
+    rules: { 'bme/pdfium-boundaries': ['error', pdfiumNativeExports] },
   },
   {
     files: ['src/**/*.{ts,tsx}', 'shared/**/*.ts'],

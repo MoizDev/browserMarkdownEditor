@@ -276,6 +276,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },
         readyFrame(): PaintFrame | null { return disposed ? null : ready?.sourceFrame ?? null; },
+        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.frame.inkNodeIds ?? null; },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
             const complete = ready.projection === projection(view);

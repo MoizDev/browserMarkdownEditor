@@ -133,11 +133,13 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const tileScale = chooseTileScale(p.scale);
         const address: TileAddress = { pyramid: tileScale.pyramid, level: tileScale.level, x: p.tileX, y: p.tileY };
         const cache = p.source.sessionRasters, variant = p.source.rasterVariant;
-        const cacheable = !!cache && !!variant && isEmpty(p.live) && tileScale.scale === p.scale;
+        // A sensitive node (selection, edit, embed) paints at precision, so a tile holding one is not
+        // a pure function of the document; only sensitive-free tiles are cached and reused.
+        const cacheable = !!cache && !!variant && isEmpty(p.live) && p.source.sensitiveNodes?.size === 0 && tileScale.scale === p.scale;
         const interval = cacheable ? JSON.stringify([variant, band]) : '';
         if (cacheable && !p.job && !p.cache) {
             cache.bindMemory(host.allocator.cpu);
-            if (cache.advanceRevision(p.source.sceneRevision)) {
+            if (cache.advanceRevision(p.source.sceneRevision, p.source.regionChangesSince)) {
                 const found = cache.borrowAncestor(interval, address);
                 if (found) {
                     const exact = found.address.pyramid === address.pyramid && found.address.level === address.level

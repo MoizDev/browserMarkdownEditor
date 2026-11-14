@@ -1,6 +1,7 @@
 import type { Rect } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { BoardDoc } from '../model/doc';
+import type { RegionChanges } from '../scene/boundsVersions';
 import type { NodeId } from '../model/ids';
 import type { PaintNode } from './paintStream';
 import type { SessionDenseRasters } from './sessionDenseRasters';
@@ -16,6 +17,8 @@ export interface ScenePaintNodeStream {
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
+    /** Where pixels changed since an earlier raster revision of this pinned scene; full when unknown. */
+    readonly regionChangesSince?: (from: number) => RegionChanges;
     /** False once the pinned scene, document revision or the stream itself has been retired. */
     isCurrent(): boolean;
     next(): Promise<PaintNode | null>;

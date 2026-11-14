@@ -15,6 +15,7 @@ import type { PdfLinkTarget } from '../pdf/pdfLinkModel';
 import type { PdfSelectionState } from '../pdf/text/selectionState';
 import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
+import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfReadingBinding } from '../types/reading';
 import { pdfAgentPages } from '../pdf/text/agentText';
 import { flushPdfViewPositions, getPdfInverted, readPdfNavigationRevision, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
@@ -65,7 +66,6 @@ interface Props {
     readonly onRotate?: (delta: number, pageIndex?: number) => void;
     readonly findMemory: PdfFindMemory;
     readonly selectionState: PdfSelectionState;
-    readonly onSearchVault: (query: string) => void;
     readonly onOpenTextView: (page?: number) => void;
     readonly onNotice: (message: string) => void;
 }
@@ -73,7 +73,7 @@ interface Props {
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
-    mirror, capturer, findMemory, selectionState, onSearchVault, onRotate, onOpenTextView, onNotice }: Props) {
+    mirror, capturer, findMemory, selectionState, onRotate, onOpenTextView, onNotice }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [contentHost, setContentHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
@@ -124,6 +124,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const revealMotion = useRef<{ from: Camera; to: Camera; start: number; revision: number; correction?: { page: number; box: Readonly<Rect> } } | null>(null);
 
     const persist = useCallback(() => {
+        if (!initialized.current) return;
         const pos = pagedPosition(camera.current, viewport.current, stack, INSETS);
         if (!pos) return;
         writePdfViewPos(filePath, pos, false);
@@ -153,6 +154,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             paneRef.current?.current?.invalidate('pdf-camera-settled');
         }, 180);
     }, [clamp, persist]);
+
+    useEffect(() => {
+        if (thumbs && isVisible) return;
+        for (const task of thumbnailTasks.current) task.abort();
+        thumbnailTasks.current.clear();
+    }, [thumbs, isVisible]);
 
     const renderThumbnail = useCallback(async (index: number, scale: number): Promise<string> => {
         const page = pdf.pages[index];
@@ -278,7 +285,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         isVisible: isVisible && capabilities.copy === true, locate, pageSize: index => pdf.pages[index],
         keyboardAnchor: () => { const box = contentHost?.getBoundingClientRect();
             return { x: (box?.left ?? 0) + (box?.width ?? 0) / 2, y: (box?.top ?? 0) + 24, page }; },
-        searchVault: onSearchVault, findPdf: query => find.find.current?.openFind(query),
+        searchVault: requestVaultSearch, findPdf: query => find.find.current?.openFind(query),
         readText: index => onOpenTextView(index), notice: onNotice });
     copyRef.current = copyMenu;
     const selectionInput = usePdfTiledSelection({ element: contentHost, docKey: pdf.poolDocument.docKey,

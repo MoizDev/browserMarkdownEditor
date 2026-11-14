@@ -8,12 +8,16 @@ export interface LogicalLine { readonly from: number; readonly to: number }
 export function wrapBlock(block: ItemizedBlock, available: number | null, emergency: boolean, advance: (from: number, to: number) => number): LogicalLine[] {
     const lines: LogicalLine[] = [];
     const breaks = block.breaks;
+    const nextMandatory = new Array<number>(breaks.length);
+    let next = breaks.length - 1;
+    for (let i = breaks.length - 1; i >= 0; i--) {
+        if (breaks[i].mandatory) next = i;
+        nextMandatory[i] = next;
+    }
     let from = 0, first = 0;
     while (from < block.text.length) {
         while (first < breaks.length && breaks[first].offset <= from) first++;
-        let mandatory = first;
-        while (mandatory < breaks.length && !breaks[mandatory].mandatory) mandatory++;
-        if (mandatory >= breaks.length) mandatory = breaks.length - 1;
+        const mandatory = nextMandatory[first] ?? breaks.length - 1;
         let chosen = mandatory;
         if (available !== null) {
             let lo = first, hi = mandatory, lastFit = -1;

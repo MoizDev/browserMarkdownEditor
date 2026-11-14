@@ -98,7 +98,7 @@ export async function runBenchmark(config, adapterFactory) {
     let adapter, previous, windowCheck, history = [], historyKey;
     const ledgerPath = join(gateRoot, 'history.json');
     const report = { schema: 1, id, gate: config.gate, mode: config.mode, temperature: config.temperature,
-        status: 'running', started: new Date().toISOString(), metric: config.metric, policy, schedule, plannedLooks,
+        status: 'running', started: new Date().toISOString(), metric: config.metric, metricDefinition: config.metricDefinition ?? null, policy, schedule, plannedLooks,
         contract: Object.fromEntries(['inputScript', 'witness', 'identity', 'mutant', 'falsePass', 'losses'].map(k => [k, config[k]])),
         lock: lock.holder, sessions: [], looks: [], noiseReport: config.noiseReport ?? null, confirmationOf: config.confirmReport ?? null };
     const accepted = { A: [], B: [] };
@@ -110,7 +110,7 @@ export async function runBenchmark(config, adapterFactory) {
         await mkdir(dir, { recursive: true });
         await persist(); // even a fatal browser/Node crash leaves a visible incomplete attempt
         report.machine = await machineIdentity();
-        const scriptFiles = [...new Set([...(config.scriptFiles ?? []), ...['runner.mjs', 'stats.mjs', 'machine.mjs', 'lock.mjs', 'cpuMeasurement.mjs', 'environment.mjs', 'windowCalibration.mjs']
+        const scriptFiles = [...new Set([...(config.scriptFiles ?? []), ...['runner.mjs', 'stats.mjs', 'machine.mjs', 'lock.mjs', 'cpuMeasurement.mjs', 'environment.mjs', 'windowCalibration.mjs', 'metricFloors.mjs', 'benchProcesses.mjs']
             .map(name => fileURLToPath(new URL(name, import.meta.url)))])];
         report.sources = await Promise.all(scriptFiles.map(async path => ({ path, source: await readFile(path, 'utf8') })));
         report.inputScriptHash = hash({ input: config.inputScript, sources: report.sources });
@@ -136,7 +136,7 @@ export async function runBenchmark(config, adapterFactory) {
         configuration({ ...config, metric: analysisMetric });
         if (report.purpose === 'noise' && analysisMetric.rule !== 'no-regression') throw new Error('Noise phase must use no-regression');
         report.analysisMetric = analysisMetric;
-        if (config.mode === 'accepted') windowCheck = await windowCalibration(lock, config, adapter.identities, join(dir, 'report.json'));
+        if (config.mode === 'accepted') windowCheck = await windowCalibration(lock, config, adapter.identities);
         // Noise is a mandatory prerequisite for a comparison, never inferred from
         // the changed-arm run's spread. It must match this metric, fixture and cache policy.
         if (config.mode === 'accepted' && report.purpose === 'gate') {

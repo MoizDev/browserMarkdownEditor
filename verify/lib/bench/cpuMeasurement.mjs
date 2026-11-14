@@ -3,6 +3,7 @@ import os from 'node:os';
 import { basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { registeredBenchEvidence } from './benchProcesses.mjs';
 const exec = promisify(execFile);
 const clock = () => Number(process.hrtime.bigint()) / 1e6;
 function cpuMilliseconds(text) {
@@ -44,6 +45,7 @@ export async function sampleCPU(agentRoots, previousBench = new Map()) {
         return { pid: Number(match[1]), ppid: Number(match[2]), pcpu: Number(match[3]), rssKiB: Number(match[4]),
             cpuMs: cpuMilliseconds(match[5]), comm: match[6] };
     });
+    const registered = await registeredBenchEvidence(processes);
     const byPid = new Map(processes.map(p => [p.pid, p]));
     const agents = new Map(agentRoots.map(p => [p.pid, p]));
     const ancestor = (proc, predicate) => {
@@ -57,8 +59,10 @@ export async function sampleCPU(agentRoots, previousBench = new Map()) {
     };
     for (const proc of processes) {
         const previous = previousBench.get(proc.pid);
-        const bench = ancestor(proc, pid => pid === process.pid)
+        const crashpad = basename(proc.comm) === 'chrome_crashpad_handler';
+        const bench = crashpad ? registered.has(proc.pid) : ancestor(proc, pid => pid === process.pid)
             || (previous?.comm === proc.comm && proc.cpuMs >= previous.cpuMs);
+        if (registered.has(proc.pid)) proc.benchAssociation = registered.get(proc.pid);
         const agent = ancestor(proc, pid => agents.has(pid));
         // A real agent's root is labelled from hc. Another runtime/build/browser
         // never inherits an agent label merely because an agent launched it.

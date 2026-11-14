@@ -1,4 +1,4 @@
-# One benchmark method (V-04)
+# One benchmark method (V-04): note-input dispatch to visible text
 
 Plain Node ESM driving the real built app with Playwright, not a test runner. No app imports,
 paused targets, private statistics, or native picker claims. Follow the run's scratch HOWTO.
@@ -13,18 +13,21 @@ Vite config (`outDir` and `cacheDir` outside the worktree). Never build in a tim
 W=/Users/adham/Developer/bme-impl
 L=$W/scratch/bin/bme-lock
 DIST=$W/scratch/v-c/dist
-# Development only; four sessions, clearly EXPLORATORY, MACHINE SHARED.
-"$L" run -- node verify/bench/open-vault.mjs "$DIST" "$DIST" exploratory cold
-# The printed report contains the median used to calibrate a 10% source mutant.
-"$L" build -- node verify/bench/build-delay.mjs /absolute/control/report.json
-# This prints the scratch mutant dist. Both bundles must exist before a window.
+# Development only:10+10 then20+20, all explicitly MACHINE SHARED, never accepted floors.
+"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 10 "$W/scratch/measure/note-open-exploratory-10.json" exploratory
+"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-exploratory-20.json" exploratory
+# After those are reviewed, a scratch App.handleFileClick mutant is sized to10% of the NEW median.
+# The old pickDirectory wait is OUTSIDE this interval and cannot witness this metric.
+# Both bundles must be built through the build lock before a timing window.
 ```
 
 After lead review, request a window through vr-lead. Only the integrator opens/closes it.
-Budget cool-down to the memory/load floor, 80 sessions per comparison, and 20% margin. During
-that window run same-build first, then mutant, passing the first report as the noise record:
+Budget cool-down, an opening20+20 block,80 sessions per comparison, and20% margin. The opening
+block must precede both arms; a first definition RECORDS its floor, never compares it with itself.
+During the same window run calibration, same-build, then mutant with the passing noise report:
 
 ```sh
+"$L" bench -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-window-calibration.json" window
 "$L" bench -- node verify/bench/open-vault.mjs "$DIST" "$DIST" accepted cold
 "$L" bench -- node verify/bench/open-vault.mjs "$DIST" /absolute/mutant/dist accepted cold /absolute/noise/report.json
 ```
@@ -36,10 +39,24 @@ busy-wait duration, its fraction of the current control, and the observed HL shi
 be within three percentage points of 10% in accepted runs. Never widen the threshold or the
 witness tolerance to get a result. Warm is a separate invocation/recording, not mixed into cold.
 
+## Metric definition and the retired clock
+
+The old Open Vault→text clock included Playwright's actionability RAFs: all8 fast floor sessions
+had a1.18–1.32ms stability pair, all31 main-mode sessions14–24ms;28.18ms of the30.45ms mode gap
+preceded the note click. See `analyze-open-traces.mjs` and the retained bimodality report.
+
+The current metric resolves/stabilises the row and its coordinates BEFORE timing, then uses real
+`page.mouse` input. A page listener starts at note-row `pointerdown.timeStamp`; the existing
+visible-sentinel/next-RAF visual endpoint, screenshot and trace remain. It is latency, NOT renderer
+busy time. It excludes vault acquisition and driver waiting, so it is not restored startup V-08.
+`noteOpenMetric.mjs` hashes observer/preparation/dispatch/read-out functions, fixture, browser pin
+and cold/warm regime; source or definition changes get a new floor key. Keep the paint-proxy loss:
+this is not photon latency. Mutant marks are accepted only INSIDE this interval.
+
 ## Library boundary
 
 - `runner.mjs`: `runBenchmark(config, adapterFactory)` returns `{status, reportPath, report}`.
-  Config declares gate slug, mode, temperature, arms, metric, input script and source files,
+  Config declares gate slug, mode, temperature, arms, metric, metricDefinition(id/hash), input script and source files,
   witness, identity, mutant, false pass and losses. See `verify/bench/open-vault.mjs`.
 - The adapter factory receives `(config, reportDir)` and returns build `identities`, pin/driver
   metadata, `measure({arm,artifacts,temperature})`, `recheck()`, optional `validate(report)`, and
@@ -55,6 +72,12 @@ witness tolerance to get a result. Warm is a separate invocation/recording, not 
   helpers when that prelude is merged; the statistical method does not depend on their shape.
   A rejecting loopback proxy blocks remote requests without Playwright routing, which would
   disable the HTTP cache and make the warm claim false. Cache-hit events are retained.
+- Generic host/session seam (same module): `servePreparedApp(dist,port,buildIdentity)` returns
+  `{url,close}`; `openPreparedBrowser({profile,url,contextOptions})` returns
+  `{context,browser,page,identity,benchProcessAssociations,close}`; `drainTrace(cdp,path)` drains
+  a ReturnAsStream trace. Caller holds run/bench, owns the scratch profile and its retention/deletion,
+  and closes both browser and server. Pin/proxy/headless/launch flags cannot be overridden. Other
+  scenario adapters may compose these without copying note setup or acquiring a nested grant.
 
 ## Inference and pass rules
 
@@ -116,19 +139,26 @@ lid open (ioreg), no thermal throttling. Raw vm_stat/pmset, load and top CPU con
 before/after. Process ownership is checked during the session too, from authoritative grants,
 executable/CWD/run-root argv match. Argv itself is never retained. Agent roots come from hc; another
 runtime never inherits agent status. Unknown runtime ownership is invalid, not silently ignored.
+CfT Crashpad reparents toPID1. Only handlers under the pinned CfT install whose native kernel
+birth lies inside OUR launch→first-page interval are registered as bench processes; their PID,
+executable and microsecond birth are reverified and recorded per session (`benchProcesses.mjs`,
+Darwin libproc through Python stdlib, no install). Any other handler is not exempt. No argv is read
+for that association, and no blanket Crashpad exception exists.
 There is NO aggregate-CPU or per-process CPU-percentage cutoff. Page-ins are not swap-ins.
 At most three immediate invalid attempts per slot, then reschedule; never average an invalidity.
 Lanes may tighten, not loosen, these limits. Closing/expiring the window is a harness stop.
 
-A window also requires its **opening10+10 ABBA cold V-04 control block**. The observed, fixed-n
-relative HL95 half-width must be <=0.09048038882908842, the actual10/arm floor prefix in
-`scratch/measure/floor-3-calibration.json`. Only that canonical prebuilt control can establish the
-opening proof; its first20 valid sessions also feed its ordinary noise run (no double counting).
-Proofs are stored under `scratch/v-c/reports/window-calibrations/`, keyed by dated window identity.
-An opening block noisier than the floor invalidates the WHOLE window; later gates refuse it.
+A window also requires a **separate opening20+20 ABBA cold control calibration**. Floors are keyed
+by metric id + definition hash. When no compiled floor exists, the opening block is held to session
+bounds1–5 and RECORDS its floor; it is NOT compared with itself. The control and mutant may then run
+in that same first window. Afterward vr-lead writes the amendment and reviews the compiled entry
+in `metricFloors.mjs`. Later windows compare their opening exact relative HL95 half-width with it;
+a wider opening block invalidates the WHOLE window. The retired Open Vault9.048pp floor is never
+reused for the new note-input metric. Proofs live under `scratch/v-c/reports/window-calibrations/`,
+keyed by dated window + definition, and both arm reports capture record/check mode explicitly.
 This is window validity, not gate precision: the gate still needs half-width <=5%/3 at <=40/arm,
-with the unchanged estimators and correction. Above-bound sessions and top consumers remain in
-JSON/Markdown, never averaged. The mutant still needs its10% +/-3pp measured witness.
+with unchanged estimators/correction. Invalid sessions and their top consumers are never averaged
+for acceptance. The mutant still needs its10% +/-3pp measured witness.
 
 Reports live at `scratch/v-c/reports/<gate>/<timestamp-id>/report.{json,md}`. JSON retains raw
 session samples, all invalid attempts, script source, identities, machine readings, discarded

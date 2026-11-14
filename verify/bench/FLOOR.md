@@ -1,48 +1,58 @@
-# Timing-floor evidence (t21 procedure; no bound yet)
+# Metric-version calibration (never a gate verdict)
 
-The integrator owns steps 1–2 in one measurement window: three minutes of per-second process/load/
-memory attribution, then shedding run-owned servers/helpers/VM and three more minutes of samples.
-Files: `scratch/measure/floor-1-attribution.txt` and `floor-2-shed.txt`.
+## Historical floor evidence
 
-After the integrator confirms the shed sampler is finished and releases its bench grant, v-c runs
-step 3 through the existing V-04 adapter and its **prebuilt** same-build cold control workload:
+`t21`'s attribution/shedding experiment is preserved at `scratch/measure/`:
+`floor-1-attribution.{txt,raw}`, `floor-2-shed.{txt,raw}`, and `floor-3-calibration.json`.
+It measured the RETIRED Open Vault→text clock. The inputs/read-outs/sources and all40 sessions
+remain immutable. Its9.048pp10/arm prefix is NOT the floor of the new note-input metric.
+The amendment fixes session bounds1–5 (no other run work, VM down, free>=6GiB, zero swaps,
+start load<=3, AC/lid open/no thermal throttling). There is no CPU-percent/1.5-core cutoff.
+
+## New definition: explore, then one window
+
+The metric is now `noteOpenToPaintMs`: resolve/stabilise the row outside the interval, deliver
+real mouse input, start at page-received pointerdown.timeStamp, retain the existing visual
+endpoint/witness. `noteOpenMetric.mjs` hashes the implementation, fixture, pin and cache regime.
+For exploration (vr-lead-approved, MACHINE SHARED, never an accepted floor):
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-"$L" bench -- node verify/bench/floor-calibration.mjs /Users/adham/Developer/bme-impl/scratch/v-c/dist 20
+W=/Users/adham/Developer/bme-impl
+L=$W/scratch/bin/bme-lock
+DIST=$W/scratch/v-c/dist
+"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 10 "$W/scratch/measure/note-open-exploratory-10.json" exploratory
+"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-exploratory-20.json" exploratory
 ```
 
-`20` is sessions **per arm** (40 fresh profiles total, ABBA). Budget 3 minutes: about 90–100 seconds
-of contexts, report I/O and margin; no additional cool-down is needed after the integrator's 3-minute
-shed sampling. Step 3 starts only in the measurement window, never under an ordinary run grant.
+Counts are PER ARM, ABBA, fresh cold profiles. Exploratory machine-invalid samples remain labelled
+and may size a pilot mutant only; any swap-in attempt is excluded and retained, never averaged.
+The quiet window must meet session bounds and the actual measured-shift witness. Outputs refuse
+overwrite; preserve old evidence before an explicitly approved repeat.
 
-Output is `scratch/measure/floor-3-calibration.json`, with per-session captures/traces in
-`scratch/v-c/floor-calibration/<run-id>/`. It refuses to overwrite an older experiment. A repeat must
-preserve the earlier evidence under a distinct name first. Raw measurements, every invalid attempt,
-build identities and the full measurement sources remain in the JSON. No baseline or gate verdict
-is reported, and no load/CPU preflight parameter is defined or changed by this experiment.
+After reviewing exploration and prebuilding the App.handleFileClick mutant at10% of its new median,
+vr-lead requests ONE window. In it: opening20+20 calibration, control, mutant (bench README commands).
+`floor-calibration.mjs <dist> 20 <new-output.json> window` enforces session bounds1–5 and publishes
+a window opening record. Do NOT use an ordinary run grant for that recording.
 
-- Twenty valid sessions per arm are fixed before starting. No early stopping, no adaptive count.
-  Sessions with memory below 6GiB, any swap-in, battery power or reported throttling are excluded,
-  listed and retried, at most three immediate attempts per slot. Load and CPU are evidence, not
-  exclusions during the experiment whose purpose is to establish their bound.
-- Descriptive values: each arm and pooled median, quartiles, IQR and raw values. Exact fixed-n HL
-  and median intervals are reported for available 10/20/40 prefixes. These prefix diagnostics are
-  not used to stop and have no joint-95% claim. The V-04 corrected interval is reported separately.
-- Requested half-width projections at 10/20/40 per arm use the observed endpoint width times
-  `sqrt(observedN / proposedN)`. These are labelled **planning-only root-n estimates**, never
-  distribution-free intervals for unobserved samples and never a replacement for actual gate runs.
-- CPU is sampled per session at one-second cadence plus endpoints. The bench is the collector PID
-  tree (Chrome, inline server, sampler included). Agent roots come from `hc ls --json` and `hc get`;
-  other node/build/browser/VM commands never inherit an agent label. All agents/daemons count as
-  outside. Host non-idle CPU-time delta minus observed bench CPU-time gives the outside estimate;
-  missed exits/centisecond ps rounding can conservatively overestimate outside CPU. Top consumers,
-  raw `ps` and CDP CPU times are retained. There is **no 1.5-core or per-process cutoff** here.
-- The wall-clock Open Vault metric is not autosave CPU time. Its absolute-millisecond projection
-  against a 1/3ms half-width is a scale diagnostic only, NOT evidence that the mixed-note save gate
-  resolves +1ms. V-08 must measure that actual save workload separately.
+Floors are keyed by metric id+definition hash. First window/no compiled floor = RECORD mode:
+the opening block is not compared with itself, and the two timing arms follow in that same window.
+Afterward vr-lead amends/reviews the recorded candidate and its entry in `metricFloors.mjs` is
+committed for later windows. Those compare their opening exact relative HL95 half-width against
+the compiled floor; a wider opening makes the WHOLE window invalid. No silent use of old floors.
 
-Send all three files plus a paragraph to vr-lead. Only vr-lead writes
-`planning/60-implementation/amendments/timing-window-bound.md`; only after that amendment exists
-may v-c commit the resulting preflight bound. The old scalar V-04 method and pass rules stay frozen.
-The superseded proposed 5%-process/1.5-core CPU rule is not implemented as a bound.
+## What the calibration file contains
+
+- Raw values, captures/traces, build identities, definition hash, full measurement sources and
+  every invalid attempt; per-arm and pooled median/quartiles/IQR.
+- Exact fixed-n HL and median intervals for available10/20/40 prefixes. Prefix diagnostics never
+  stop collection and have no joint-95% claim. V-04's corrected interval is separate.
+- Root-n half-width projections `observedWidth*sqrt(observedN/proposedN)` are PLANNING ONLY,
+  not distribution-free intervals for unobserved samples or substitutes for actual gate runs.
+- Per-session CPU from host non-idle delta minus observed bench PID-tree CPU, including explicit
+  orphan-Crashpad birth/path associations. Agents/daemons remain outside. Missed exits/rounding
+  can conservatively overestimate outside CPU. Raw ps and top consumers remain available.
+- This note-open wall-clock workload is NOT the save path's main-thread busy-time metric. Its
+  absolute1ms projection is a scale diagnostic only, not proof of the mixed-note autosave budget.
+
+Calibration itself makes no gate verdict. Control must still pass the unchanged5%/precision rule;
+the mutant must fail with measured shift10% +/-3pp of that window's control median.

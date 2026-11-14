@@ -7,11 +7,13 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { processMemory } from './machine.mjs';
 import { scratch } from './lock.mjs';
+import { beginBrowserLaunch, epochMicroseconds } from './benchProcesses.mjs';
 import { median } from './stats.mjs';
+import { noteSentinel as sentinel, noteFixtureText, noteOpenDefinition,
+    installNoteObservation, prepareNoteOpen, dispatchNoteOpen, noteDefinition, noteOpenLatency } from './noteOpenMetric.mjs';
 const pin = JSON.parse(await readFile(fileURLToPath(new URL('../../browser-pin.json', import.meta.url)), 'utf8'));
 const chromeVersion = pin.version;
 const chromePath = join(scratch, 'browsers', chromeVersion, pin.executable);
-const sentinel = 'Benchmark sentinel cedar seven forty two';
 const vaultName = 'benchmark-vault';
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
     '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
@@ -32,7 +34,7 @@ export async function buildIdentity(dist) {
     if (!files.some(f => f.path === 'index.html') || !files.some(f => f.path.endsWith('.js'))) throw new Error(`Not a built app: ${dist}`);
     return { dist, sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'), files };
 }
-async function serve(dist, port, identity) {
+export async function servePreparedApp(dist, port, identity) {
     const root = resolve(dist);
     const server = createServer(async (request, response) => {
         try {
@@ -57,7 +59,7 @@ async function serve(dist, port, identity) {
     await new Promise((accept, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', accept); });
     return { url: `http://127.0.0.1:${port}`, close: () => new Promise((accept, reject) => server.close(e => e ? reject(e) : accept())) };
 }
-async function drainTrace(cdp, path) {
+export async function drainTrace(cdp, path) {
     const complete = new Promise(accept => cdp.once('Tracing.tracingComplete', accept));
     await cdp.send('Tracing.end');
     const { stream } = await complete;
@@ -71,14 +73,37 @@ async function drainTrace(cdp, path) {
         }
     } finally { await file.close(); await cdp.send('IO.close', { handle: stream }); }
 }
-async function session(chromium, profile, url, artifacts, priming, expectedBuild) {
-    const context = await chromium.launchPersistentContext(profile, { executablePath: chromePath, headless: true,
-        viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC',
-        proxy: { server: url, bypass: '127.0.0.1,localhost' } });
+async function pinnedDriver() {
+    const require = createRequire(import.meta.url);
+    const driverVersion = JSON.parse(await readFile(require.resolve('playwright/package.json'), 'utf8')).version;
+    if (driverVersion !== '1.63.0') throw new Error(`Expected pinned Playwright1.63.0, got ${driverVersion}`);
+    await stat(chromePath);
+    return { ...await import('playwright'), driverVersion };
+}
+export async function openPreparedBrowser({ profile, url, contextOptions = {} }) {
+    if (!resolve(profile).startsWith(`${scratch}/`) || !/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(url)) throw new Error('Prepared browser requires scratch profile and loopback server');
+    if (['executablePath', 'channel', 'proxy', 'headless', 'args'].some(key => key in contextOptions)) throw new Error('Do not override the pinned browser/proxy/launch flags');
+    const { chromium, driverVersion } = await pinnedDriver();
+    const launch = beginBrowserLaunch({ pinnedInstall: join(scratch, 'browsers', chromeVersion), profile });
+    let context;
     try {
+        context = await chromium.launchPersistentContext(profile, { viewport: { width: 1280, height: 800 },
+            deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC', ...contextOptions,
+            executablePath: chromePath, headless: true, proxy: { server: url, bypass: '127.0.0.1,localhost' } });
         const browser = context.browser();
         if (!browser || !browser.version().includes(chromeVersion)) throw new Error(`Expected Chrome ${chromeVersion}; got ${browser?.version()}`);
         const page = context.pages()[0] ?? await context.newPage();
+        const benchProcessAssociations = await launch.firstPage(epochMicroseconds());
+        return { context, browser, page, benchProcessAssociations,
+            identity: { driverVersion, browserVersion: browser.version(), executablePath: chromePath, pin },
+            close: () => context.close() };
+    } catch (error) { await context?.close(); throw error; }
+    finally { launch.finish(); }
+}
+async function session(profile, url, artifacts, priming, expectedBuild, definition) {
+    const prepared = await openPreparedBrowser({ profile, url });
+    const { context, browser, page } = prepared;
+    try {
         const browserCDP = await browser.newBrowserCDPSession();
         const cdp = await context.newCDPSession(page);
         const pageErrors = [], network = [], cacheEvents = [], cacheResponses = [], outsideRequests = [];
@@ -89,34 +114,15 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
         page.on('request', request => {
             if (new URL(request.url()).origin !== url) outsideRequests.push(request.url());
         });
-        await page.addInitScript(({ vaultName, sentinel }) => {
+        await page.addInitScript(({ vaultName }) => {
             const grant = handle => {
                 handle.queryPermission = async () => 'granted'; handle.requestPermission = async () => 'granted'; return handle;
             };
             const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle;
             FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...args) { return grant(await getDir.apply(this, args)); };
             window.showDirectoryPicker = async () => grant(await (await navigator.storage.getDirectory()).getDirectoryHandle(vaultName, { create: true }));
-            const data = { rafTimes: [], longTasks: [], hookEvents: [], start: null, end: null, hooked: false };
-            window.__benchObservation = data;
-            new PerformanceObserver(list => data.longTasks.push(...list.getEntries().map(x => ({ startTime: x.startTime, duration: x.duration }))))
-                .observe({ type: 'longtask', buffered: true });
-            document.addEventListener('click', event => {
-                if (event.target.closest('button')?.textContent.trim() !== 'Open Vault' || data.start !== null) return;
-                data.start = performance.now(); performance.mark('bme-open-vault-start');
-                const frame = time => {
-                    data.rafTimes.push(time);
-                    const node = document.querySelector('.cm-content');
-                    const box = node?.getBoundingClientRect();
-                    if (node?.textContent.includes(sentinel) && box?.width > 0 && box?.height > 0 && getComputedStyle(node).visibility !== 'hidden') {
-                        requestAnimationFrame(() => {
-                            data.end = performance.now(); performance.mark('bme-first-note-paint');
-                            performance.measure('bme-open-to-paint', 'bme-open-vault-start', 'bme-first-note-paint');
-                        });
-                    } else requestAnimationFrame(frame);
-                };
-                requestAnimationFrame(frame);
-            }, true);
-        }, { vaultName, sentinel });
+        }, { vaultName });
+        await page.addInitScript(installNoteObservation, { sentinel });
         await cdp.send('Network.enable');
         cdp.on('Network.loadingFinished', event => network.push(event));
         cdp.on('Network.requestServedFromCache', event => cacheEvents.push(event));
@@ -127,15 +133,14 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
         const response = await page.goto(url, { waitUntil: 'networkidle' });
         if (!response?.ok() || response.headers()['x-bme-build'] !== expectedBuild) throw new Error('Built server identity header mismatch');
         await page.getByRole('button', { name: 'Open Vault', exact: true }).waitFor();
-        const fixture = await page.evaluate(async ({ vaultName, sentinel }) => {
+        const fixture = await page.evaluate(async ({ vaultName, text }) => {
             const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(vaultName, { create: true });
             const note = await dir.getFileHandle('first-note.md', { create: true });
-            const text = `# ${sentinel}\n\nNon-default browser benchmark fixture.\n`;
             const writer = await note.createWritable(); await writer.write(text); await writer.close();
             // One read before every session: warm disk only, deliberately no cold-disk claim.
             const bytes = await (await note.getFile()).arrayBuffer();
             return { text, sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('') };
-        }, { vaultName, sentinel });
+        }, { vaultName, text: noteFixtureText });
         await page.evaluate(() => document.fonts.ready);
         const memoryBefore = await processMemory(browserCDP);
         const display = await page.evaluate(() => ({ width: screen.width, height: screen.height,
@@ -147,15 +152,16 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
         await cdp.send('Tracing.start', { transferMode: 'ReturnAsStream', categories: 'devtools.timeline,disabled-by-default-devtools.timeline.frame,blink.user_timing,disabled-by-default-devtools.screenshot' });
         let observation, actionError;
         try {
-            await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
-            const row = page.locator('.tree-item').filter({ has: page.locator('.tree-item-label', { hasText: /^first-note(?:\.md)?$/ }) });
-            await row.click();
+            const point = await prepareNoteOpen(page);
+            await dispatchNoteOpen(page, point);
             await page.waitForFunction(() => window.__benchObservation.end !== null);
             await page.evaluate(() => document.fonts.ready);
             if (!(await page.locator('.cm-content').innerText()).includes(sentinel)) throw new Error('First-note witness missing');
             if (pageErrors.length) throw new Error(`App errors: ${pageErrors.join('; ')}`);
             observation = await page.evaluate(() => ({ ...window.__benchObservation,
-                mutations: performance.getEntriesByName('bme-mutant-delay').map(x => ({ startTime: x.startTime, duration: x.duration })),
+                mutations: performance.getEntriesByName('bme-mutant-delay')
+                    .filter(x => x.startTime >= window.__benchObservation.start && x.startTime < window.__benchObservation.end)
+                    .map(x => ({ startTime: x.startTime, duration: x.duration })),
                 resources: performance.getEntriesByType('resource').map(x => ({ name: x.name, transferSize: x.transferSize, encodedBodySize: x.encodedBodySize })) }));
             try { await page.screenshot({ path: join(artifacts, 'first-note.png') }); }
             catch (error) { error.invalidCause = `missing capture: ${error.message}`; throw error; }
@@ -166,7 +172,7 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
         const tracePath = join(artifacts, 'trace.json');
         const trace = JSON.parse(await readFile(tracePath, 'utf8'));
         const traceEvents = trace.traceEvents ?? [];
-        if (!['bme-open-vault-start', 'bme-first-note-paint'].every(name => traceEvents.some(event => event.name === name))) {
+        if (!['bme-note-open-start', 'bme-first-note-paint'].every(name => traceEvents.some(event => event.name === name))) {
             throw new Error('Trace is missing the measured input/paint witness marks');
         }
         const traceFrames = {};
@@ -179,11 +185,13 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
             return [key, unique.slice(1).map((x, i) => x - unique[i])];
         }));
         const memoryAfter = await processMemory(browserCDP);
-        const values = [observation.end - observation.start];
+        const values = [noteOpenLatency(observation)];
         if (!values.every(x => Number.isFinite(x) && x > 0)) throw new Error('Invalid observed metric');
-        const result = { values, captures: [join(artifacts, 'first-note.png')],
+        const result = { values, metricName: definition.id, metricDefinition: definition, startEvent: 'page-received pointerdown.timeStamp',
+            captures: [join(artifacts, 'first-note.png')],
             witness: { text: sentinel, fixture, screenshot: join(artifacts, 'first-note.png') },
-            browserVersion: browser.version(), display, refreshIntervals, refreshRateHz: 1000 / median(refreshIntervals),
+            browserVersion: browser.version(), benchProcessAssociations: prepared.benchProcessAssociations,
+            display, refreshIntervals, refreshRateHz: 1000 / median(refreshIntervals),
             observation, trace: tracePath, traceFrameIntervals,
             rafFrameIntervals: observation.rafTimes.slice(1).map((x, i) => x - observation.rafTimes[i]),
             measuredLongTasks: observation.longTasks.filter(x => x.startTime < observation.end && x.startTime + x.duration > observation.start),
@@ -193,7 +201,7 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
             scrollCalibration: { applicable: false, reason: 'No wheel input in this metric (VER-03)' } };
         if (priming) {
             // Reset only the scenario's app state, not HTTP/code/shader caches or OPFS.
-            // This warm gate measures Open Vault, not restored-session startup (V-08).
+            // This warm gate measures note open after vault setup, not restored startup (V-08).
             await page.goto(`${url}/__bench_reset`);
             await page.evaluate(async () => {
                 localStorage.clear();
@@ -205,24 +213,22 @@ async function session(chromium, profile, url, artifacts, priming, expectedBuild
             });
         }
         return result;
-    } finally { await context.close(); }
+    } finally { await prepared.close(); }
 }
 export async function openVaultAdapter(config, reportDir) {
-    const require = createRequire(import.meta.url);
-    const driverVersion = JSON.parse(await readFile(require.resolve('playwright/package.json'), 'utf8')).version;
-    if (driverVersion !== '1.63.0') throw new Error(`Expected pinned Playwright 1.63.0, got ${driverVersion}`);
-    const { chromium } = await import('playwright');
-    await stat(chromePath);
+    if (config.metric && config.metric.name !== noteOpenDefinition.id) throw new Error('This adapter measures note-row dispatch→paint; the old Open Vault clock is retired');
+    const { driverVersion } = await pinnedDriver();
     const identities = {}, servers = {};
     let mutant;
     try {
         for (const [i, arm] of ['A', 'B'].entries()) {
             identities[arm] = await buildIdentity(config.arms[arm].dist);
-            servers[arm] = await serve(config.arms[arm].dist, 6200 + i, identities[arm]);
+            servers[arm] = await servePreparedApp(config.arms[arm].dist, 6200 + i, identities[arm]);
         }
         if (config.methodCheck && identities.A.sha256 !== identities.B.sha256) {
             mutant = JSON.parse(await readFile(join(config.arms.B.dist, 'bench-mutant.json'), 'utf8'));
             if (mutant.kind !== 'measured-open-path-delay' || mutant.controlBuild !== identities.A.sha256
+                || mutant.controlMetric !== noteOpenDefinition.id || mutant.anchorRole !== 'note-open'
                 || mutant.intendedFraction !== 0.1 || !(mutant.delayMs > 0)) throw new Error('Wrong/unidentified open-path mutant');
         }
     } catch (error) { await Promise.all(Object.values(servers).map(s => s.close())); throw error; }
@@ -231,12 +237,14 @@ export async function openVaultAdapter(config, reportDir) {
             const profileRoot = join(reportDir, 'profiles'); await mkdir(profileRoot, { recursive: true });
             const profile = await mkdtemp(join(profileRoot, `${arm}-`));
             try {
+                const definition = noteDefinition(temperature);
+                if (config.metricDefinition && config.metricDefinition.hash !== definition.hash) throw new Error('Adapter metric-definition hash mismatch');
                 let prime;
                 if (temperature === 'warm') {
                     const primeArtifacts = join(artifacts, 'prime'); await mkdir(primeArtifacts);
-                    prime = await session(chromium, profile, servers[arm].url, primeArtifacts, true, identities[arm].sha256);
+                    prime = await session(profile, servers[arm].url, primeArtifacts, true, identities[arm].sha256, definition);
                 }
-                const measured = await session(chromium, profile, servers[arm].url, artifacts, false, identities[arm].sha256);
+                const measured = await session(profile, servers[arm].url, artifacts, false, identities[arm].sha256, definition);
                 // CfT can omit requestServedFromCache for a disk hit. Resource
                 // Timing's same-origin transfer=0/body>0 is the independent witness.
                 const appScript = measured.observation.resources.find(x => x.name.startsWith(servers[arm].url) && x.name.endsWith('.js'));

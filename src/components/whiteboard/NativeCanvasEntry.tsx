@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { ActiveFile, Theme } from '../../types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -17,6 +17,7 @@ import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import NativeMinimap, { type NativeMinimapThumbnail } from './NativeMinimap';
+import { NativeCanvasEditing } from './NativeCanvasEditing';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
@@ -77,9 +78,17 @@ function NativeViewer({ props, identity, board, onError }: {
     return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} setNotice={setNotice} />;
 }
 
-function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice }: {
+export interface NativeEditingChromeContext {
+    readonly minimapOpen: boolean;
+    readonly setMinimapOpen: (value: boolean) => void;
+    readonly inverted: boolean;
+    readonly setInverted: (value: boolean) => void;
+    readonly zoom: number;
+}
+export function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice, editingChrome }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
     setInverted(value: boolean): void; notice: string | null; setNotice(message: string): void;
+    editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
@@ -144,9 +153,9 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice,
     const viewer = useNativeClipboard(lease, props.nativeCanvasHost, identity, readTheme, setNotice);
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-        view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
-        readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-        chrome={<><div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
+        view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
+        readOnly={editingChrome ? board.isReadOnly : true} readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+        chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
                 const sheet = sheets.find(item => item.id === event.currentTarget.value);
                 if (sheet) selection.setSheet(sheet.id);
@@ -165,7 +174,8 @@ function AttachedViewer({ props, identity, lease, inverted, setInverted, notice,
                 current={current} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
             {minimapOpen && minimapNotice && <span role="status">{minimapNotice}</span>}
-        </div>
+        </div>}
+        {editingChrome && notice && <span role="status">{notice}</span>}
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
             isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}</>} />;
 }
@@ -182,11 +192,14 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
     const [emergencyReadOnly] = useState(() => props.emergencyReadOnly);
     const emergencyPolicy = useCallback(() => emergencyReadOnly, [emergencyReadOnly]);
     const [error, setError] = useState<string | null>(null);
+    const [editingFailure, setEditingFailure] = useState<{ documentId: string; session: number; reason: string } | null>(null);
+    const editingUnavailable = useCallback((cause: unknown) => setEditingFailure({ documentId: identity.documentId, session: identity.session,
+        reason: cause instanceof Error ? cause.message : String(cause) }), [identity.documentId, identity.session]);
     const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
     const prepare = useCallback((signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind === 'pdfInk') throw new Error('Canvas identity does not match this entry');
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: identity.kind, signal,
-            deadlineMs, zMax, readOnlyReason: VIEW_REASON,
+            deadlineMs, zMax,
             onError, onHistoryLimit: () => setError('The board history limit was reached.') });
     }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);
     const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,
@@ -231,6 +244,10 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
         || identity.kind !== incoming.kind) return <div role="status">Preparing canvas…</div>;
     if (error) return <div role="alert">Could not open canvas: {error}</div>;
     if (!acquired) return <div role="status">Preparing canvas…</div>;
-    if (!acquired.adapter.board.isReadOnly) return <div role="alert">This canvas cannot be opened safely in read-only mode.</div>;
-    return <NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />;
+    if (emergencyReadOnly || (editingFailure?.documentId === identity.documentId && editingFailure.session === identity.session)) {
+        return <><NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />
+            {editingFailure && <div role="status">Editing unavailable: {editingFailure.reason}</div>}</>;
+    }
+    return <NativeCanvasEditing props={{ ...props, identity }} board={acquired.adapter.board} adapter={acquired.adapter}
+        factory={nativeCanvasHost.createEditingCapabilities} onError={onError} onUnavailable={editingUnavailable} />;
 }

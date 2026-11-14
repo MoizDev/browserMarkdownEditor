@@ -1,4 +1,5 @@
 import type { BoardCommand, BoardCommandSource, CommandState } from './chrome/boardCommands';
+import { boardBindings } from '../../whiteboard/input/keyboard';
 import type { MainAction } from './chrome/mainMenu';
 
 export interface NativeCommandOperation {
@@ -28,6 +29,24 @@ const keyCommands: Readonly<Record<string, BoardCommand>> = {
     'align.middle': 'alignVertical', 'align.bottom': 'alignBottom', 'distribute.horizontal': 'distributeHorizontal',
     'distribute.vertical': 'distributeVertical', flatten: 'flatten',
 };
+
+function bindingShortcut(key: string | undefined, mac: boolean): string | undefined {
+    const binding = key && boardBindings.find(item => item.id === key);
+    if (!binding) return undefined;
+    return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
+        binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
+        .filter(Boolean).join(mac ? '' : '+');
+}
+export function nativeCommandShortcut(command: BoardCommand, mac: boolean): string | undefined {
+    const key = Object.entries(keyCommands).find(([, value]) => value === command)?.[0]
+        ?? ({ undo: 'undo', redo: 'redo' } as Partial<Record<BoardCommand, string>>)[command];
+    return bindingShortcut(key, mac);
+}
+export function nativeActionShortcut(action: MainAction, mac: boolean): string | undefined {
+    return bindingShortcut(({ uploadMedia: 'media.insert', zoomIn: 'camera.zoomIn', zoomOut: 'camera.zoomOut',
+        zoomTo100: 'camera.reset', zoomToFit: 'camera.fit', zoomToSelection: 'camera.selection',
+        keyboardShortcuts: 'help.shortcuts' } as Partial<Record<MainAction, string>>)[action], mac);
+}
 
 /** The input router and menus consult the same live command authority. */
 export function createNativeKeyCommands(source: BoardCommandSource, other: (id: string, event: KeyboardEvent) => boolean) {

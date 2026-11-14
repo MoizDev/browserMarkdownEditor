@@ -37,6 +37,7 @@ export function useNativeSheetControls(options: {
         remove(value) { const sheet = id(value); if (sheet) void controls.deleteSheet(sheet); },
         move(value, destination) { const sheet = id(value); if (sheet) controls.moveSheet(sheet, destination); },
     });
-    useEffect(() => { if (!options.isVisible) sheets.closeSheets(); }, [options.isVisible, sheets.closeSheets]);
+    const { closeSheets } = sheets;
+    useEffect(() => { if (!options.isVisible) closeSheets(); }, [options.isVisible, closeSheets]);
     return { ...sheets, controls, sheetName: state.sheets.find(sheet => sheet.id === state.current)?.name ?? '' };
 }

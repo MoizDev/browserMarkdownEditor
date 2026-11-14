@@ -7,6 +7,7 @@ import { add, interval, multiply, sqrtInterval, subtract, type Interval } from '
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createExactInverseDistance } from './exactInverseDistance';
 import { strokeSeparatedFromPoint } from './strokeSupport';
+import { createAnisotropicPointJob } from './anisotropicPointJob';
 export { isUniformDistanceMatrix } from './strokeRadiusBounds';
 import type { PathOp, Vec2 } from './path';
 import type { PathPickOptions } from './pick';
@@ -71,7 +72,7 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
     const stroke = strokeRadiusBounds(matrix, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Point path transform scale overflows' };
     const radius = add(stroke ?? interval(0), interval(margin));
-    const inverseDistance = margin === 0 && !isUniformDistanceMatrix(matrix) ? createExactInverseDistance(matrix) : null;
+    const anisotropic = !isUniformDistanceMatrix(matrix), inverseDistance = margin === 0 && anisotropic ? createExactInverseDistance(matrix) : null;
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Point path radius overflows' };
     const fill = options.interiorPaths?.length
         ? createFillPointJob(options.interiorPaths, query.point, 'nonzero', { localToWorld: matrix, maxCommands: options.maxSegments }) : undefined;
@@ -79,6 +80,7 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, bestUpper = Infinity;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
     let certificate: ReturnType<typeof createCurveDiskCertificate> | undefined, certificatePhase: 'inner' | 'outer' | 'exact' = 'inner';
+    let anisotropicJob: ReturnType<typeof createAnisotropicPointJob> | undefined;
     let exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
     let deferred: Curve['points'] | undefined;
     const centre = exactPoint(query.point), innerRadius = Math.max(0, radius.lo), outerRadius = Math.max(0, radius.hi);
@@ -103,6 +105,14 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (state.status === 'uncertain') fillUncertain = true;
                     continue;
                 }
+                if (anisotropicJob) {
+                    const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    anisotropicJob.cancel(); anisotropicJob = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
+                    if (result.status === 'uncertain' && !push(deferred!)) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
+                    deferred = undefined; exactCurve = undefined; continue;
+                }
                 if (certificate) {
                     const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
@@ -112,6 +122,10 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (certificatePhase === 'exact') {
                         if (!push(deferred!)) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
                         deferred = undefined; exactCurve = undefined; continue;
+                    }
+                    if (anisotropic && margin > 0 && ((certificatePhase === 'inner' && result.status === 'uncertain')
+                        || (certificatePhase === 'outer' && result.status !== 'miss'))) {
+                        anisotropicJob = createAnisotropicPointJob(exactCurve!, matrix, options.strokeRadiusLocal, query.point, margin); continue;
                     }
                     if (certificatePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
                     if (certificatePhase === 'inner' && result.status === 'miss' && innerRadius === outerRadius) { deferred = undefined; exactCurve = undefined; continue; }
@@ -160,6 +174,6 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; exactCurve = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); certificate = undefined; exactCurve = undefined; deferred = undefined; stack.length = 0; },
     };
 }

@@ -200,6 +200,7 @@ function resizeEmbed(view: EditorView, dom: HTMLElement, model: ImageModel, dire
  * leave the picture in the trash with the note still pointing at it.
  */
 function removeEmbed(view: EditorView, at: EmbedAt): void {
+    if (!view.dom.isConnected) return;
     let { from, to } = at;
     // The confirmation is modal, so the document cannot have moved — and if it
     // somehow has, this bails rather than guessing. Searching the document for

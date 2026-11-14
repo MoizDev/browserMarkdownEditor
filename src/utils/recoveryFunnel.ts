@@ -1,11 +1,11 @@
 import type { createRecoveryJournal } from './recoveryJournalCoordinator';
-import { newJournalId } from './recoveryJournal';
+import { newJournalId, type RecoveryCopy } from './recoveryJournal';
 
 /** C-20 supplies an immutable snapshot of the adapter's current dirty revision.
- *  `copy` is a self-contained file, never a delta against a possibly missing file. */
+ *  `copy` is a self-contained file or recipe, never dependent on a live session or baseline. */
 export interface JournalCapture {
     payload: unknown;
-    copy: string | Uint8Array | Blob;
+    copy: RecoveryCopy;
     mediaRefs: string[];
 }
 export type JournalEvent =

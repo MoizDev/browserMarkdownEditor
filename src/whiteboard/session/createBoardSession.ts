@@ -51,7 +51,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     };
     const checkpoints = new Map<number, { checkpoint: SerializerCheckpoint; context: unknown }>();
     const outstanding = new Set<Promise<unknown>>();
-    let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
+    let cachedSource: { revision: number; handle: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
+    const retireSource = () => { const previous = cachedSource; cachedSource = undefined; previous?.handle.release(); };
     const track = <T>(work: Promise<T>): Promise<T> => {
         outstanding.add(work); notifyPending();
         const settled = () => { outstanding.delete(work); notifyPending(); };
@@ -103,7 +104,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             addTouched(pending, applied.touched);
             pendingDirty = true;
             contentRevision = doc.rev;
-            cachedSource = undefined;
+            retireSource();
             for (const id of applied.touched.media) refreshMedia(id);
             try { journal.record(applied, contentRevision); }
             catch (error) { options.onFailure(error); }
@@ -137,25 +138,30 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         encoded.value.commit();
         pending = emptyTouched(); pendingDirty = false;
     }
-    function capture(): ReturnType<typeof boardContentSource> {
+    function capture(): ReturnType<typeof boardContentSource>['source'] {
         encodePending();
-        if (cachedSource?.revision === contentRevision) return cachedSource.source;
+        if (cachedSource?.revision === contentRevision) return cachedSource.handle.source;
+        retireSource();
         const buildCapture = options.captureBuild?.(contentRevision);
         const base = serializer.checkpoint(records.integrity(), doc.preserved.end, buildCapture?.overrides);
         if (base.revision !== contentRevision) throw new Error('Serializer and board revision differ');
         const pinned = options.pinBuild(base, contentRevision, buildCapture?.context);
-        if (pinned.revision !== contentRevision) throw new Error('Pinned board build revision differs');
+        if (pinned.revision !== contentRevision) { pinned.release?.(); throw new Error('Pinned board build revision differs'); }
         let built: Uint8Array | Blob | undefined;
         const wrapped: PinnedBoardBuild = { revision: pinned.revision, async build(signal) {
             if (built) return built;
             const result = await track(pinned.build(signal));
             built = result;
             return result;
-        } };
-        const source = boardContentSource(owner, wrapped);
-        checkpoints.set(contentRevision, { checkpoint: base, context: buildCapture?.context });
-        cachedSource = { revision: contentRevision, source, context: buildCapture?.context };
-        return source;
+        }, release: () => pinned.release?.() };
+        const revision = contentRevision;
+        const entry = { checkpoint: base, context: buildCapture?.context };
+        const handle = boardContentSource(owner, wrapped, () => {
+            if (checkpoints.get(revision) === entry) checkpoints.delete(revision);
+        });
+        checkpoints.set(revision, entry);
+        cachedSource = { revision, handle, context: buildCapture?.context };
+        return handle.source;
     }
     function report(): void {
         const source = capture();
@@ -246,7 +252,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             disposed = true; notifyPending(); pendingListeners.clear();
             unsubscribeSelection(); channel.dispose(); queue.dispose(); scheduler.dispose(); history.dispose(); applyController.dispose();
             for (const lease of mediaLeases.values()) lease.release();
-            mediaLeases.clear(); checkpoints.clear(); cachedSource = undefined; journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();
+            mediaLeases.clear(); retireSource(); checkpoints.clear(); journal.dispose(); serializer.dispose(); media.clear(); listeners.clear();
         },
     };
     return session as ComposedBoardSession;

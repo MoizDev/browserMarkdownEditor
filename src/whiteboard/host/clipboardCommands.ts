@@ -1,16 +1,15 @@
 import type { RenderToken } from '../../platform/render/types';
-import { deleteNodes } from '../../whiteboard/change/commands';
-import type { ChangeGeometry } from '../../whiteboard/change/coordinates';
-import { ClipboardCopy } from '../../whiteboard/clipboard/copy';
-import { prepareInlineMedia } from '../../whiteboard/clipboard/encode';
-import { snapshotSelection, type CopySnapshot, type CopySnapshotHost } from '../../whiteboard/clipboard/snapshot';
-import { deletionContents } from '../../whiteboard/commands/pagesAndSheets';
-import type { PinExportSnapshot } from '../../whiteboard/export/snapshot';
-import { exportSnapshotPng, exportSnapshotSvg, type SnapshotExportBounds } from '../../whiteboard/export/snapshotExport';
-import type { BoardRuntime } from '../../whiteboard/host/runtime';
-import { hashMedia } from '../../whiteboard/media/sha256';
-import type { MediaId } from '../../whiteboard/model/media';
-import { copyBoardPng, copyBoardSvg, downloadBoardExport } from './exportDelivery';
+import { deleteNodes } from '../change/commands';
+import type { ChangeGeometry } from '../change/coordinates';
+import { ClipboardCopy } from '../clipboard/copy';
+import { prepareInlineMedia } from '../clipboard/encode';
+import { snapshotSelection, type CopySnapshot, type CopySnapshotHost } from '../clipboard/snapshot';
+import { deletionContents } from '../commands/pagesAndSheets';
+import type { PinExportSnapshot } from '../export/snapshot';
+import { exportSnapshotPng, exportSnapshotSvg, type SnapshotExportBounds } from '../export/snapshotExport';
+import type { BoardRuntime } from './runtime';
+import { hashMedia } from '../media/sha256';
+import type { MediaId } from '../model/media';
 
 export interface NativeClipboardCommandsOptions {
     readonly runtime: BoardRuntime;
@@ -25,6 +24,9 @@ export interface NativeClipboardCommandsOptions {
     current(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
+    copyPng(capture: Promise<Blob>): Promise<void>;
+    copySvg(capture: Promise<Blob>): Promise<void>;
+    download(blob: Blob, filename: string): void;
 }
 
 /** Browser delivery borrows exact session snapshots; neither copy nor export owns a board. */
@@ -115,8 +117,8 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             try { if (cut) writable(); prepare(); return copy.copyEvent(event, cut); }
             catch (error) { options.onError(error); return false; }
         },
-        copyAsPng: () => run(() => withController(signal => copyBoardPng(png('copy', signal)))),
-        copyAsSvg: () => run(() => withController(signal => copyBoardSvg(svg('copy', signal)))),
+        copyAsPng: () => run(() => withController(signal => options.copyPng(png('copy', signal)))),
+        copyAsSvg: () => run(() => withController(signal => options.copySvg(svg('copy', signal)))),
         copyAsJson: () => run(() => withController(async signal => {
             const snapshot = selected();
             const sizes = new Map(snapshot.media.map(entry => [entry.id, entry.bytes]));
@@ -138,8 +140,8 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             try { await navigator.clipboard.write([new ClipboardItem({ 'text/plain': payload })]); }
             finally { void payload.catch(() => {}); }
         })),
-        exportPng: () => run(() => withController(async signal => { const name = options.exportFilename('png'); const blob = await png('menu', signal); guard(); downloadBoardExport(blob, name); })),
-        exportSvg: () => run(() => withController(async signal => { const name = options.exportFilename('svg'); const blob = await svg('menu', signal); guard(); downloadBoardExport(blob, name); })),
+        exportPng: () => run(() => withController(async signal => { const name = options.exportFilename('png'); const blob = await png('menu', signal); guard(); options.download(blob, name); })),
+        exportSvg: () => run(() => withController(async signal => { const name = options.exportFilename('svg'); const blob = await svg('menu', signal); guard(); options.download(blob, name); })),
         dispose() { if (!disposed) { disposed = true; for (const owned of active) owned.abort(); active.clear(); copy.dispose(); } },
     };
 }

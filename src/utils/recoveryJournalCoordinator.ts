@@ -22,9 +22,19 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
         const entries = [...pending.entries()];
         pending.clear();
         return enqueue(async () => {
-            for (const [id, entry] of entries) {
+            for (let i = 0; i < entries.length; i++) {
+                const [id, entry] = entries[i];
                 if ((acknowledged.get(id) ?? -1) >= entry.revision) continue;
-                await writeRecoveryEntry(entry, options.refused);
+                try { await writeRecoveryEntry(entry, options.refused); }
+                catch (error) {
+                    // Keep every uncommitted capture for the next checkpoint.
+                    for (const [remainingId, remaining] of entries.slice(i)) {
+                        if ((acknowledged.get(remainingId) ?? -1) >= remaining.revision) continue;
+                        const newer = pending.get(remainingId);
+                        if (!newer || newer.revision < remaining.revision) pending.set(remainingId, remaining);
+                    }
+                    throw error;
+                }
             }
         });
     };

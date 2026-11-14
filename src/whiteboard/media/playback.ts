@@ -9,6 +9,10 @@ export interface VideoPlaybackSource { readonly entry: MediaEntry; readonly blob
 export interface VideoPlaybackState { readonly playing: boolean; readonly muted: boolean; readonly time: number; readonly visible: boolean }
 export interface VideoPlaybackHost {
     readonly memory: MemoryAllocator;
+    readonly mode?: 'detached' | 'hidden-dom';
+    readonly overlay?: HTMLElement;
+    /** Real pane-relative on-screen box; required by the hidden-DOM decoder fallback. */
+    videoRect?(id: NodeId): Readonly<{ x: number; y: number; width: number; height: number }> | null;
     /** Only session-owned bytes already verified against this entry may be returned. */
     source(id: NodeId): VideoPlaybackSource | null;
     current(): boolean;
@@ -114,13 +118,19 @@ export class BoardVideoPlayback {
             if (!Number.isSafeInteger(pixels) || pixels < 1 || pixels > 2 ** 26) throw new RangeError('Invalid video dimensions');
             const memory = this.host.memory.reserve(4 * pixels);
             if (!memory) { this.host.error(id, 'Not enough memory for video playback'); return; }
-            let url: string | undefined;
+            let url: string | undefined, cleanupVideo: HTMLVideoElement | undefined;
             try {
                 url = URL.createObjectURL(source.blob);
-                const video = document.createElement('video');
+                const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
                 const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false };
                 state.player = player; state.muted = true;
+                if (this.host.mode === 'hidden-dom') {
+                    if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
+                    video.setAttribute('aria-hidden', 'true'); video.style.position = 'absolute';
+                    video.style.opacity = '0'; video.style.pointerEvents = 'none';
+                    this.host.overlay.append(video);
+                }
                 video.addEventListener('loadedmetadata', () => {
                     if (player.closed || !this.host.current()) return;
                     if (state.time > 0) video.currentTime = Number.isFinite(video.duration) ? Math.min(state.time, video.duration) : state.time;
@@ -137,9 +147,18 @@ export class BoardVideoPlayback {
                 };
                 player.callback = video.requestVideoFrameCallback(frame);
             } catch (error) {
-                if (url) URL.revokeObjectURL(url);
-                this.host.memory.release(memory); state.player = undefined; throw error;
+                try { if (cleanupVideo) { cleanupVideo.pause(); cleanupVideo.removeAttribute('src'); cleanupVideo.load(); cleanupVideo.remove(); } }
+                finally { if (url) URL.revokeObjectURL(url); this.host.memory.release(memory); state.player = undefined; }
+                throw error;
             }
+        }
+        if (this.host.mode === 'hidden-dom') {
+            const rect = this.host.videoRect?.(id);
+            if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0) {
+                this.close(state); return;
+            }
+            const style = state.player.video.style;
+            style.left = `${rect.x}px`; style.top = `${rect.y}px`; style.width = `${rect.width}px`; style.height = `${rect.height}px`;
         }
         if (state.playing) {
             const player = state.player;
@@ -152,8 +171,11 @@ export class BoardVideoPlayback {
         if (Number.isFinite(player.video.currentTime)) state.time = player.video.currentTime;
         if (soundOwner === player) soundOwner = null;
         state.muted = true;
-        if (player.callback !== null) player.video.cancelVideoFrameCallback(player.callback);
-        player.video.pause(); player.video.removeAttribute('src'); player.video.load();
-        URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
+        try {
+            if (player.callback !== null) player.video.cancelVideoFrameCallback(player.callback);
+            player.video.pause(); player.video.removeAttribute('src'); player.video.load();
+        } finally {
+            player.video.remove(); URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
+        }
     }
 }

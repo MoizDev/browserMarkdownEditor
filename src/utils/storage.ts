@@ -79,6 +79,54 @@ export function subscribeRestoreNotice(listener: () => void): () => void {
     return () => { restoreListeners.delete(listener); };
 }
 
+/** The normal boot pays ONE read, and no IndexedDB work before first render. */
+export function restoreStorageBeforeRender(): Promise<void> | undefined {
+    try {
+        if (localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION) return;
+        return mirror.restore();
+    } catch (error) {
+        console.warn('Browser settings are unavailable:', error);
+    }
+}
+
+let recoveryInstalled = false;
+/** Install once outside React; legacy writers get an off-critical-path snapshot. */
+export function installStorageRecovery(): () => void {
+    if (recoveryInstalled) return () => {};
+    recoveryInstalled = true;
+    const onStorage = (event: StorageEvent) => {
+        if (event.key !== null) return;
+        try { if (event.storageArea !== localStorage) return; } catch { return; }
+        // A newer write may already have replaced the sentinel. The event is
+        // still proof of a clear, so restore per key regardless of its value.
+        void mirror.restore();
+    };
+    const onHidden = () => { if (document.visibilityState === 'hidden') void mirror.reconcile(); };
+    const onPageHide = () => { void mirror.reconcile(); };
+    window.addEventListener('storage', onStorage);
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onPageHide);
+    let idle: number | undefined;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    let secondFrame: number | undefined;
+    const firstFrame = requestAnimationFrame(() => {
+        secondFrame = requestAnimationFrame(() => {
+            if (typeof requestIdleCallback === 'function') idle = requestIdleCallback(() => { void mirror.reconcile(); }, { timeout: 1000 });
+            else fallback = setTimeout(() => { void mirror.reconcile(); }, 0);
+        });
+    });
+    return () => {
+        recoveryInstalled = false;
+        window.removeEventListener('storage', onStorage);
+        document.removeEventListener('visibilitychange', onHidden);
+        window.removeEventListener('pagehide', onPageHide);
+        cancelAnimationFrame(firstFrame);
+        if (secondFrame !== undefined) cancelAnimationFrame(secondFrame);
+        if (idle !== undefined) cancelIdleCallback(idle);
+        if (fallback !== undefined) clearTimeout(fallback);
+    };
+}
+
 /** Read and JSON-parse a localStorage value, returning `fallback` if it's
  *  missing, null, or unparseable. */
 export function readJSON<T>(key: string, fallback: T): T {
@@ -114,8 +162,9 @@ export function writeJSON(key: string, value: unknown): boolean {
    grows by one entry per file ever opened.
 
    Holding the parsed object in memory removes the repeated parse entirely; the
-   write is unchanged. Safe because each key has exactly one writer in the app,
-   so nothing else can modify the stored value behind this cache's back. */
+   write is unchanged. Each key has one writer in this window. Recovery repairs
+   missing backing keys without discarding the live window's record objects;
+   ordinary cross-window edits retain their existing last-writer semantics. */
 
 const records = new Map<string, Record<string, unknown>>();
 

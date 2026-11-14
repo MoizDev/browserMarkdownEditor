@@ -77,7 +77,7 @@ export function createNativeBoardImageExport(options: NativeBoardImageExportOpti
     const pages = paper ? scene.layout?.rects.map(rect => ({ ...rect })) : undefined;
     if (paper && (!pages || pages.length !== notebookPaper!.pageCount)) throw new Error('Notebook export page geometry is unavailable');
     const fixedBounds = pages ? pageBounds(pages) : null;
-    const background: Rgba = [options.background[0], options.background[1], options.background[2], options.background[3]];
+    const background: Rgba = notebook ? [1, 1, 1, 1] : [options.background[0], options.background[1], options.background[2], options.background[3]];
     const pin = createBoardExportSnapshot({ runtime, request: { sheetId: sheet, theme: notebook ? 'light' : options.theme },
         ...(selected ? { selectedNodeIds: selected } : {}), includeNotebookPaper: paper,
         readMedia: options.readMedia, onError: options.onError });

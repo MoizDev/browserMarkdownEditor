@@ -768,6 +768,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             <div className="pdf-tiled-overlays" ref={setOverlay} />
             {updating && <div className="pdf-tiled-updating" role="status">Updating PDF…</div>}</div>
         <div className="pdf-viewer-controls">
+            {copyMenu.copyStatus && <div className="pdf-tiled-copy-status" role="status" aria-live="polite">{copyMenu.copyStatus}</div>}
             <div className="pdf-viewer-pill">{outline.button}<ThumbnailsToggle open={thumbs} onToggle={() => setThumbs(previous => { writeThumbnailsOpen(!previous); return !previous; })} />
                 <PdfInvertToggle />
                 {onRotate && <PdfTiledRotateControls path={filePath} page={page} onRotate={rotate}

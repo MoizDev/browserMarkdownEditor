@@ -210,16 +210,17 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
         } };
 }
 
-export function prepareStickyGeometry(node: Readonly<StickyNode>, options: ContainerGeometryOptions & Readonly<{ cornerRadius: number }>): ContainerGeometry {
+export function prepareStickyGeometry(node: Readonly<StickyNode>, options: ContainerGeometryOptions & Readonly<{ cornerRadius?: number }>): ContainerGeometry {
     const width = 200 * node.scale, height = (200 + node.growY) * node.scale;
-    if (!Number.isFinite(options.cornerRadius) || options.cornerRadius < 0) throw new RangeError('Invalid sticky radius');
-    const outline = roundedBox(width, height, options.cornerRadius, options.pathError, options.maxPieces);
+    const radius = options.cornerRadius ?? styleGeometryMetrics.stickyCornerRadius(node.scale).value;
+    if (!Number.isFinite(radius) || radius < 0) throw new RangeError('Invalid sticky radius');
+    const outline = roundedBox(width, height, radius, options.pathError, options.maxPieces);
     return containerGeometry({ x: 0, y: 0, width, height }, outline, 0, true, options);
 }
 
-export function prepareFrameGeometry(node: Readonly<FrameNode>, options: ContainerGeometryOptions & Readonly<{ borderWidth: number }>): ContainerGeometry {
+export function prepareFrameGeometry(node: Readonly<FrameNode>, options: ContainerGeometryOptions & Readonly<{ borderWidth?: number }>): ContainerGeometry {
     const box = { x: 0, y: 0, width: node.w, height: node.h };
-    return containerGeometry(box, rectPath(box), options.borderWidth, false, options);
+    return containerGeometry(box, rectPath(box), options.borderWidth ?? styleGeometryMetrics.frameBorderWidth().value, false, options);
 }
 
 export type MediaBoxNode = PictureNode | ClipNode | LinkcardNode | EmbedNode;

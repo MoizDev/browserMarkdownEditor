@@ -1,9 +1,14 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { openClassicPdf } from './pdfClassicOpen';
+import { PdfEmphasisVerdicts } from './pdfEmphasisVerdicts';
+import { createPdfEmphasisIdentity } from './pdfEmphasisIdentity';
+import type { PdfEmphasisIdentity } from './pdfEmphasisIdentity';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
 export interface PdfDocumentSession {
     readonly generation: number;
+    readonly emphasisVerdicts: PdfEmphasisVerdicts;
+    readonly emphasisIdentity: PdfEmphasisIdentity;
     acquire(): Promise<{ document: PDFDocumentProxy; release(): void }>;
     acquirePage(index0: number, consumer: 'render' | 'text' | 'thumbnail' | 'agent', signal?: AbortSignal): Promise<PdfPageLease>;
     dispose(): Promise<void>;
@@ -25,6 +30,8 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
     let finish: (() => void) | undefined;
     let disposal: Promise<void> | undefined;
     const pages = new Map<number, { promise: Promise<PDFPageProxy>; users: number }>();
+    const emphasisVerdicts = new PdfEmphasisVerdicts();
+    const emphasisIdentity = createPdfEmphasisIdentity(bytes);
     function hold() {
         if (closing) throw aborted();
         leases++;
@@ -37,6 +44,8 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
     }
     return {
         generation,
+        emphasisVerdicts,
+        emphasisIdentity,
         async acquire() {
             const release = hold();
             try {
@@ -92,6 +101,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
             // document/page lease ordering rather than destroying mid-render.
             if (!taskReady) opening.abort();
             disposal = (async () => {
+                await emphasisVerdicts.dispose();
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
                 const loaded = await loadingTask.catch(() => undefined);
                 await loaded?.destroy();

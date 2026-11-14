@@ -149,10 +149,15 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     else {
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
-        // A merged-away future block has no lossless carrier in the surviving tuple.
-        if (first.block !== last.block && endBlock.tail !== undefined && endBlock.tail !== '[]'
-            && (insert.blocks.length < 2 || insert.blocks[insert.blocks.length - 1].tail !== endBlock.tail))
-            throw new Error('This edit would discard future block formatting');
+        // A surviving tuple can carry one unknown block tail; never overwrite another.
+        let adoptedTail: RawJson | undefined;
+        if (first.block !== last.block && endBlock.tail !== undefined && endBlock.tail !== '[]') {
+            const lastFragment = insert.blocks[insert.blocks.length - 1];
+            const destinationTail = insert.blocks.length === 1 ? startBlock.tail : lastFragment.tail;
+            if (destinationTail === undefined || destinationTail === '[]') adoptedTail = endBlock.tail;
+            else if (insert.blocks.length < 2 || destinationTail !== endBlock.tail)
+                throw new Error('This edit would discard future block formatting');
+        }
         const prefix = sliceRuns(startBlock, 0, first.offset, false);
         const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to);
         const blocks: Block[] = [];
@@ -161,7 +166,8 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
             const runs = [...(i === 0 ? prefix : []), ...fragment.runs, ...(i + 1 === insert.blocks.length ? suffix : [])];
             // Existing first-block attributes live outside the replaced character
             // range. Newline-bearing fragment blocks carry their own attributes.
-            blocks.push({ ...(i === 0 ? startBlock : fragment), runs });
+            const base = i === 0 ? startBlock : fragment;
+            blocks.push({ ...base, ...(i + 1 === insert.blocks.length && adoptedTail !== undefined ? { tail: adoptedTail } : {}), runs });
         }
         after = normalizeRichText({ blocks }).blocks;
     }

@@ -131,8 +131,9 @@ class CreationGesture implements GestureOwner {
             }
             case 'frame': {
                 const down = { x: this.base.x, y: this.base.y };
-                const box = moved ? figureDragBox('rectangle', down, p, modifiers) : { ...down, width: 320, height: 180 };
-                return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: 'Frame', color: null });
+                const box = moved ? figureDragBox('rectangle', down, p, modifiers)
+                    : { x: down.x - 160, y: down.y - 90, width: 320, height: 180 };
+                return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: '', color: null });
             }
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });

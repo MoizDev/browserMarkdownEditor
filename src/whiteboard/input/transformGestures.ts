@@ -5,6 +5,7 @@ import { createBoardTranslationPlan, type BoardTranslationOptions, type BoardTra
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 
 export interface AsyncTransformGestureHost {
     hold(): () => void;
@@ -20,7 +21,7 @@ export interface AsyncTransformGestureHost {
     error(error: unknown): void;
 }
 interface Plan<Preview extends { readonly ops: readonly Op[] }> {
-    preview(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Preview>;
+    preview(sample: RealSample, modifiers: Modifiers, signal: AbortSignal, commit: boolean): Promise<Preview>;
     commit(preview: Preview): void;
     display?(preview: Preview): void;
     cancel(): void;
@@ -66,7 +67,7 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
             const plan = await this.ready;
             if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
             if (!this.host.current()) { this.cancel('invalidated'); return; }
-            const value = await plan.preview(sample, modifiers, request.signal);
+            const value = await plan.preview(sample, modifiers, request.signal, commit);
             if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
             if (!this.host.current()) { this.cancel('invalidated'); return; }
             if (commit) {
@@ -108,10 +109,28 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
 
 export function translationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardTranslationOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost): GestureOwner {
-    return new AsyncTransformGesture<BoardTranslationPreview>(sample, modifiers, async signal => {
+    type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview; readonly drop: FrameDropPlan | null };
+    return new AsyncTransformGesture<Preview>(sample, modifiers, async signal => {
         const plan = await createBoardTranslationPlan({ ...options, down: sample, signal });
-        return { preview: (point, keys, request) => plan.preview(point, keys.shift, keys.accel, request),
-            display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
+        let drop: FrameDropPlan | null = null;
+        const clear = () => { drop?.release(); drop = null; };
+        return {
+            async preview(point, keys, request, commit) {
+                clear(); const base = await plan.preview(point, keys.shift, keys.accel, request);
+                if (commit && base.ops.length) drop = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: base,
+                    signal: request, current: () => !signal.aborted && options.current() && host.current(), cooperate: options.cooperate });
+                return { base, drop, ops: drop ? [...base.ops, ...drop.ops] : base.ops };
+            },
+            display: value => host.guides?.(value.base.guides),
+            commit(value) {
+                if (!value.drop) { plan.commit(value.base); return; }
+                try {
+                    if (value.drop !== drop || signal.aborted || !options.current() || !host.current()) throw new DOMException('Frame drop became stale', 'AbortError');
+                    const applied = options.runtime.session.apply({ origin: 'tool', label: 'Move selection', ops: value.ops }); applied.release();
+                } finally { clear(); plan.cancel(); }
+            },
+            cancel() { clear(); plan.cancel(); },
+        };
     }, host);
 }
 

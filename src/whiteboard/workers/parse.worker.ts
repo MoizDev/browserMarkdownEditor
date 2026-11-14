@@ -8,5 +8,6 @@ import { legacyScan } from './legacyScan';
 import { clipboardDecode } from './clipboardDecode';
 import { legacyClipboard } from './legacyClipboard';
 import { clipboardJsonKind } from './clipboardJsonKind';
+import { excalidrawClipboard } from './excalidrawClipboard';
 
-serve({ protocol: 1, buildId: 'whiteboard-parse-1', handlers: boardHandlers({ layout, inspectPoints, decodePoints, encodePoints, nativeLoad, parseNative, legacyScan, clipboardDecode, legacyClipboard, clipboardJsonKind }) });
+serve({ protocol: 1, buildId: 'whiteboard-parse-1', handlers: boardHandlers({ layout, inspectPoints, decodePoints, encodePoints, nativeLoad, parseNative, legacyScan, clipboardDecode, legacyClipboard, clipboardJsonKind, excalidrawClipboard }) });

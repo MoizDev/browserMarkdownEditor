@@ -1,4 +1,5 @@
 import { parseJson } from '../../format/jsonRead';
+import { carryLegacyMetadata } from '../../format/legacyMetadata';
 import type { Sheet } from '../../model/doc';
 import type { RawJson } from '../../model/json';
 import { sheetId, type NodeId, type SheetId } from '../../model/ids';
@@ -63,7 +64,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         while (preservedIds.has(`${type}\u0000${preservedId}`)) preservedId = `${id.slice(0, 100)}~duplicate${++suffix}`;
         preservedIds.add(`${type}\u0000${preservedId}`);
         const raw = parseJson(JSON.stringify({ type, id: preservedId, record })).raw();
-        preservedRecords.push({ type, id: preservedId, raw });
+        preservedRecords.push({ type, id: preservedId, raw: carryLegacyMetadata({ type, id: preservedId, raw }) });
     };
     const assetOrdinals = new Map<LegacyObject, number>();
     let ordinal = 0;

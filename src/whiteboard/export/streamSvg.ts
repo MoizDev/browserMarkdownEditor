@@ -38,10 +38,12 @@ export async function streamSvg(
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   let started = false, finished = false
   async function send(items: PageDisplayItem[]): Promise<void> {
-    if (!items.length) return
-    const transfer: Transferable[] = []
-    const owned = items.map(item => transferable(item, transfer))
-    await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+    for (let offset = 0; offset < items.length; offset += 64) {
+      signal.throwIfAborted()
+      const transfer: Transferable[] = []
+      const owned = items.slice(offset, offset + 64).map(item => transferable(item, transfer))
+      await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+    }
   }
   try {
     started = true

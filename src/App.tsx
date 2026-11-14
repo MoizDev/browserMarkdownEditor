@@ -1163,12 +1163,17 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration ? tab : undefined;
     };
-    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal) => {
+    const writable = (identity: NativeCanvasIdentity) => {
+      const policy = nativePoliciesRef.current.get(identity.documentId);
+      return !!policy && !policy.emergencyReadOnly && policy.session === identity.session
+        && policy.activation === identity.vaultActivation && policy.generation === identity.bytesGeneration;
+    };
+    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
-      if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+      if (!tab?.file.handle || !tab.file.parentHandle || !root || write && !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
       return { root, parent: tab.file.parentHandle, owner: tab.file.handle as FileSystemFileHandle,
-        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) };
+        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) && (!write || writable(identity)) };
     };
     return {
       identity(id) {
@@ -1209,9 +1214,9 @@ export default function App() {
         return { name: found.name, blob };
       },
       async putMedia(identity, media, blob, signal) {
-        const name = await putBoardAsset({ ...request(identity, media, signal), extension: media.extension, blob });
+        const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
-        if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        if (!current(identity) || !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
         return name;
       },
     };

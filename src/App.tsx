@@ -3,7 +3,7 @@ import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensIn
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
-import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
+import React, { useState, useReducer, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
@@ -406,10 +406,11 @@ export default function App() {
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
-  const [tabs, setTabsState] = useState<OpenTab[]>([]);
-  const setTabs = useCallback((action: React.SetStateAction<OpenTab[]>) => {
-    setTabsState(previous => classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous));
-  }, []);
+  const [tabs, setTabs] = useReducer(
+    (previous: OpenTab[], action: React.SetStateAction<OpenTab[]>) =>
+      classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous),
+    [],
+  );
   // How those documents are arranged on screen: a row of panes — columns, all
   // drawn at once — each holding its own ordered tabs and showing one of them
   // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up

@@ -1,4 +1,5 @@
-import { isTextGraphemeBoundary, blockTextLength } from '../model/textOffsets';
+import { blockTextLength } from '../model/textOffsets';
+import { textBoundaries } from './boundaries';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
 import { normalizePlainInsertion } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
@@ -7,7 +8,7 @@ import { trackBlock, trackRun } from './carriers';
 
 const position = projectionPosition;
 function check(text: RichText, from: number, to = from): void {
-    if (to < from || !isTextGraphemeBoundary(text, from) || !isTextGraphemeBoundary(text, to))
+    if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
         throw new RangeError('Text range must have grapheme boundaries');
 }
 function withoutStart(block: Block): Block {
@@ -70,7 +71,7 @@ export function linkRangeAt(value: RichText, offset: number): { readonly from: n
     for (let index = 0; index < first; index++) from += runs[index].text.length;
     let to = from;
     for (let index = first; index <= last; index++) to += runs[index].text.length;
-    return from < to && isTextGraphemeBoundary(value, from) && isTextGraphemeBoundary(value, to) ? { from, to, url } : null;
+    return from < to && textBoundaries.isBoundary(value, from) && textBoundaries.isBoundary(value, to) ? { from, to, url } : null;
 }
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);

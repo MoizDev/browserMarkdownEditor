@@ -3,6 +3,7 @@ import type { Tree } from '@lezer/common';
 import { embedPattern } from '../assets';
 import { codeRangesForTree, findMathRegions } from '../mathRegions';
 import { overlapsRange } from '../rangeSearch';
+import { localMarkdownTarget } from '../linkClassify';
 
 export interface NoteFacts {
     wikilinks: string[];
@@ -15,13 +16,8 @@ export interface NoteFacts {
 const markdown = parser.configure([GFM, Subscript, Superscript, Emoji]);
 
 function markdownTarget(raw: string): string | null {
-    let path: string;
-    try { path = decodeURIComponent(raw.trim()); } catch { return null; }
-    if (!path || [...path].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
-        || /[\\?#]/.test(path) || path.startsWith('//') || /^www\.[^\s<>]+$/i.test(path)
-        || /^[^\s@<>:]+@[^\s@<>:]+\.[^\s@<>]+$/.test(path)
-        || /^[a-z][a-z\d+.-]*:/i.test(path) || !/\.md$/i.test(path)) return null;
-    return path;
+    const path = localMarkdownTarget(raw, true);
+    return path && /\.md$/i.test(path) ? path : null;
 }
 
 export function noteFacts(text: string, tree: Tree = markdown.parse(text)): NoteFacts {

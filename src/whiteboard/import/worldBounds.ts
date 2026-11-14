@@ -66,7 +66,11 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
-            else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
+            else if (current.node.kind === 'figure') part = transformed([0, 0, current.node.w, current.node.h + current.node.growY], transform);
+            else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
+                || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
+                part = transformed([0, 0, current.node.w, current.node.h], transform);
+            } else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
             if (part) {
                 if (!validBox(part)) throw new Error(`Invalid geometry for ${current.node.id}`);
                 box = union(box, part);

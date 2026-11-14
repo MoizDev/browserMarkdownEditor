@@ -133,6 +133,8 @@ export interface VaultToolHost {
      *  beside the user's focused pane without taking focus when it is not on
      *  screen, switches a PDF to annotate, and waits for it to mount. */
     openCanvasForAgent(path: string): Promise<ViewReporter | null>;
+    /** Rechecked at commit as a reload may revoke a canvas's write authority. */
+    canvasWritable(path: string): boolean;
 }
 
 /* ───────────────────────── change cards ───────────────────────── */

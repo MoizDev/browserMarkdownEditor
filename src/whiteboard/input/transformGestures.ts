@@ -117,8 +117,12 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
         return {
             async preview(point, keys, request, commit) {
                 clear(); const base = await plan.preview(point, keys.shift, keys.accel, request);
-                if (commit && base.ops.length) drop = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: base,
-                    signal: request, current: () => !signal.aborted && options.current() && host.current(), cooperate: options.cooperate });
+                if (commit && base.ops.length) {
+                    const prepared = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: base,
+                        signal: request, current: () => !signal.aborted && options.current() && host.current(), cooperate: options.cooperate });
+                    if (request.aborted || signal.aborted) { prepared?.release(); throw new DOMException('Frame drop cancelled', 'AbortError'); }
+                    drop = prepared;
+                }
                 return { base, drop, ops: drop ? [...base.ops, ...drop.ops] : base.ops };
             },
             display: value => host.guides?.(value.base.guides),

@@ -31,7 +31,11 @@ export class PdfTiledFindHighlights {
     private disposed = false;
 
     constructor(private readonly geometry: PdfSelectionGeometryCache, private readonly host: PdfTiledFindHost) {}
-    setFind(hits: readonly PdfFindHit[], current?: PdfFindHit): void { this.hits = hits; this.current = current; this.rebuild(); }
+    setFind(hits: readonly PdfFindHit[], current?: PdfFindHit): void {
+        this.hits = hits; this.current = current;
+        this.geometry.setFindPage(this.visible ? current?.page ?? null : null);
+        this.rebuild();
+    }
     setSelection(selection: PdfSelection | null): void { this.selection = selection; this.rebuild(); }
     setWindow(pages: readonly number[], zoom: number): void {
         if (this.zoom === zoom && this.pages.length === pages.length && pages.every((page, i) => page === this.pages[i])) return;
@@ -40,8 +44,8 @@ export class PdfTiledFindHighlights {
     setVisible(visible: boolean): void {
         if (this.visible === visible) return;
         this.visible = visible;
-        if (!visible) { this.cancel?.abort(); this.cancel = null; this.host.publish({ find: [], current: [], selection: [] }); }
-        else this.rebuild();
+        if (!visible) { this.geometry.setFindPage(null); this.cancel?.abort(); this.cancel = null; this.host.publish({ find: [], current: [], selection: [] }); }
+        else { this.geometry.setFindPage(this.current?.page ?? null); this.rebuild(); }
     }
     async atOrAfter(hit: PdfFindHit, start: PdfFindStart, signal: AbortSignal): Promise<boolean> {
         if (hit.page !== start.page) return hit.page > start.page;
@@ -54,7 +58,7 @@ export class PdfTiledFindHighlights {
         if (rect) this.host.reveal(hit.page, rect);
         else this.host.reveal(hit.page, { x: 0, y: 0, width: 0, height: 0 });
     }
-    dispose(): void { this.disposed = true; this.cancel?.abort(); this.cancel = null; }
+    dispose(): void { this.disposed = true; this.geometry.setFindPage(null); this.cancel?.abort(); this.cancel = null; }
 
     private async firstRect(hit: PdfFindHit, signal: AbortSignal): Promise<Rect | undefined> {
         const reply = await this.geometry.get(hit.page, 0, signal);

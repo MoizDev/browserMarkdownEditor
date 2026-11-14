@@ -39,6 +39,8 @@ export interface PaintLine {
     readonly top: number;
     readonly bottom: number;
     readonly baseline: number;
+    /** Inline origin, including alignment, also defined for an empty line. */
+    readonly x: number;
     /** Projection range includes a consumed hard break, if any. */
     readonly src: readonly [number, number];
     readonly direction: 'ltr' | 'rtl';

@@ -10,6 +10,9 @@ export interface MediaTile {
 export interface MediaRasterGeometry {
     readonly sourceX: number; readonly sourceY: number; readonly sourceWidth: number; readonly sourceHeight: number;
     readonly width: number; readonly height: number;
+    readonly interiorX: number; readonly interiorY: number;
+    readonly interiorWidth: number; readonly interiorHeight: number;
+    readonly mipX: number; readonly mipY: number;
 }
 const TILE = 1024;
 
@@ -70,9 +73,14 @@ export function mediaRasterGeometry(tile: MediaTile, sourceWidth: number, source
     if (!tiled && (mipWidth > 4096 || mipHeight > 4096)) throw new RangeError('Large mip requires tiles');
     const left = tiled ? tile.column * TILE : 0, top = tiled ? tile.row * TILE : 0;
     if (!Number.isSafeInteger(left) || !Number.isSafeInteger(top) || left >= mipWidth || top >= mipHeight) throw new RangeError('Media tile is outside its mip');
-    const width = Math.min(tiled ? TILE : mipWidth, mipWidth - left);
-    const height = Math.min(tiled ? TILE : mipHeight, mipHeight - top);
-    const sourceX = left * factor, sourceY = top * factor;
+    const interiorWidth = Math.min(tiled ? TILE : mipWidth, mipWidth - left);
+    const interiorHeight = Math.min(tiled ? TILE : mipHeight, mipHeight - top);
+    const interiorX = tiled && left > 0 ? 1 : 0, interiorY = tiled && top > 0 ? 1 : 0;
+    const rightApron = tiled && left + interiorWidth < mipWidth ? 1 : 0;
+    const bottomApron = tiled && top + interiorHeight < mipHeight ? 1 : 0;
+    const width = interiorWidth + interiorX + rightApron, height = interiorHeight + interiorY + bottomApron;
+    const sourceX = (left - interiorX) * factor, sourceY = (top - interiorY) * factor;
     return { sourceX, sourceY, sourceWidth: Math.min(sourceWidth - sourceX, width * factor),
-        sourceHeight: Math.min(sourceHeight - sourceY, height * factor), width, height };
+        sourceHeight: Math.min(sourceHeight - sourceY, height * factor), width, height,
+        interiorX, interiorY, interiorWidth, interiorHeight, mipX: left, mipY: top };
 }

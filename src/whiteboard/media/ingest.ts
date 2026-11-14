@@ -1,7 +1,7 @@
 import type { Op, TransactionOrigin } from '../change/ops';
 import type { ParentId, NodeId } from '../model/ids';
 import { newNodeId } from '../model/ids';
-import type { MediaEntry, MediaId, MediaMime } from '../model/media';
+import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '../model/media';
 import { createClip, createPicture, type Crop } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
@@ -70,11 +70,6 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
-function safeLeaf(name: string | null): boolean {
-    return name === null || (name.length > 0 && name.length <= 255 && name !== '.' && name !== '..'
-        && !/[\\/\0]/.test(name));
-}
-
 function box(info: InspectedMedia): { w: number; h: number } {
     const scale = Math.min(1, 5000 / Math.max(info.width, info.height));
     return { w: info.width * scale, h: info.height * scale };
@@ -83,10 +78,20 @@ function box(info: InspectedMedia): { w: number; h: number } {
 interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null }
 export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
-// W-c's accepted history-exempt file-location operation; narrowed until its
-// model-owned declaration lands. Failed admission leaves the stored bytes orphaned, never referenced.
 function setMediaFile(id: MediaId, file: string | null): Op {
-    return { t: 'media', op: 'set-file', id, file } as unknown as Op;
+    return { t: 'media', op: 'set-file', id, file };
+}
+
+// Call synchronously inside the session's save/gesture queue after storing bytes.
+export function updateMediaFile(session: BoardSession, locations: MediaLocationWriter, id: MediaId, file: string | null): void {
+    if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
+    const existing = session.doc.media.get(id);
+    if (!existing) throw new Error('Media no longer belongs to this board');
+    if (existing.file !== file) {
+        const applied = session.apply({ ops: [setMediaFile(id, file)], origin: 'host', label: 'Restore media' });
+        applied.release();
+    }
+    locations.setFile(id, file);
 }
 
 export class MediaIngestor {
@@ -131,7 +136,7 @@ export class MediaIngestor {
         };
         const file = await this.host.storeMedia(entry, source.blob, signal);
         current();
-        if (!safeLeaf(file)) throw new Error('Invalid stored media name');
+        if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
         const node = this.session.doc.nodes.get(id);
         if (!node || node.kind !== 'picture' || node.locked || node.media !== initial.media) throw new Error('Picture changed during replacement');
         const old = this.session.doc.media.get(initial.media);
@@ -183,7 +188,7 @@ export class MediaIngestor {
                 };
                 const file = await this.host.storeMedia(entry, source.blob, signal);
                 current();
-                if (!safeLeaf(file)) throw new Error('Invalid stored media name');
+                if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
                 staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
             }
             current();

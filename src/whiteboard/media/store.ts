@@ -1,4 +1,4 @@
-import type { MediaEntry, MediaId } from '../model/media';
+import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 
 export type MediaHolder = 'document' | 'history' | 'clipboard';
 interface StoredMedia {
@@ -31,9 +31,7 @@ export class MediaStore {
 
     setFile(id: MediaId, file: string | null): void {
         if (this.closed) throw new Error('Media session is closed');
-        if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
-            throw new Error('Invalid stored media name');
-        }
+        if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
         this.locations.set(id, file);
     }
 
@@ -72,9 +70,7 @@ export class MediaStore {
             if (!bytes) continue;
             const file = await restore(entry, bytes);
             signal.throwIfAborted();
-            if (file !== null && (!file || file === '.' || file === '..' || file.length > 255 || /[\\/\0]/.test(file))) {
-                throw new Error('Invalid stored media name');
-            }
+            if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
             if (entry.file !== file) updateFile(entry.id, file);
             this.setFile(entry.id, file);
         }

@@ -81,10 +81,16 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
     // Unmarked legacy names become ours only when the full guarded role reader
     // validates the pair and its embedded pristine bytes match this source.
     const legacy = await inspectPdfRole(outerBytes, 'legacy-conversion');
-    if (legacy.kind === 'annotated' && new Sha256().update(legacy.original).digest() === pristineHash) {
+    const validLegacy = legacy.kind === 'annotated' && new Sha256().update(legacy.original).digest() === pristineHash;
+    if (validLegacy) {
         for (const entry of outerEntries) {
             if (entry.keys.length === 1 && ['original.pdf', 'tldraw-snapshot.json'].includes(entry.keys[0].decodeText())) owned.add(entry.id);
         }
+    }
+    const boardNames = new Set(outerEntries.filter(entry => owned.has(entry.id) && ownedBoardEntry(entry, input.format)).map(entry => entry.keys[0].decodeText()));
+    if (new Sha256().update(outerBytes).digest() !== pristineHash && !validLegacy &&
+        ['original.pdf', 'board.json', 'tldraw-snapshot.json'].some(name => !boardNames.has(name))) {
+        throw new Error('Cannot establish the outer PDF source authority');
     }
     const reserved = new Set(input.reservedNames), seen = new Map<string, Set<string>>();
     const named: Array<{ name: PDFHexString; raw: PDFObject }> = [];

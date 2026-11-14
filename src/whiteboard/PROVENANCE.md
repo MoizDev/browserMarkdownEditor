@@ -190,6 +190,23 @@ third-party code included (normally "none") · date.
 | `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | XML preflight and SVG dimensions, isolated realm only | none | 2026-11-13 |
 | `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
 
+## Text editing and spelling (lane w-i)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Unicode grapheme boundary API; no tldraw source | none | 2026-11-13 |
+| `text/edit/host.ts` | w-i | T-4, F-TEXT-016, E-TXT-2/21/22 | text §§5.1–5.3, 5.10 | Design, browser EditContext and textarea APIs | none | 2026-11-13 |
+| `text/edit/controller.ts` | w-i | T-5, WB-D26 | text §§4–5 | Design and public change operation types | none | 2026-11-13 |
+| `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |
+| `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design and Intl.Segmenter through TX-1 | none | 2026-11-13 |
+| `text/edit/pointer.ts` | w-i | F-TEXT-006 | text §5.6 | Design, pointer and timer APIs | none | 2026-11-13 |
+| `text/edit/selection.ts` | w-i | F-TEXT-006/018 | text §5.6 | Design and Intl.Segmenter | none | 2026-11-13 |
+| `text/edit/caret.ts` | w-i | F-TEXT-006/018 | text §§5.4–5.5, 9 | TX-3 public caret index and design | none | 2026-11-13 |
+| `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design and affine rectangle bounds | none | 2026-11-13 |
+| `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types | none | 2026-11-13 |
+| `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
+| `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design and Intl.Segmenter | none | 2026-11-13 |
+
 ## Editing lanes (w-f to w-j)
 
 ### Input (lane w-f)

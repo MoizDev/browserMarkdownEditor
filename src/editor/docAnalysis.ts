@@ -69,7 +69,7 @@ function updateCodeRanges(previous: readonly CharRange[], tree: Tree, tr: Transa
 function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const state = tr.state, tree = syntaxTree(state);
     if (!tr.docChanged && tree === previous.tree) return previous;
-    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc);
+    const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc, tr.startState.doc);
     const codeRanges = updateCodeRanges(previous.codeRanges, tree, tr, treeChanged);
     const lines = tr.docChanged ? updateLineScans(previous.lines, tr.changes, tr.startState.doc, state.doc) : previous.lines;
     const pairs = updateBlockPairs(previous.blockPairs, tr.startState.doc, state.doc, tr.changes, lines.mathTokens, codeRanges);
@@ -79,7 +79,8 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const compare = <T extends CharRange>(before: readonly T[], after: readonly T[], value: (item: T) => string) => {
         const old = new Map<string, CharRange>();
         for (const item of before) {
-            const range = { from: tr.changes.mapPos(item.from, 1), to: tr.changes.mapPos(item.to, -1) };
+            const from = tr.changes.mapPos(item.from, 1);
+            const range = { from, to: Math.max(from, tr.changes.mapPos(item.to, -1)) };
             old.set(`${range.from}:${range.to}:${value(item)}`, range);
         }
         for (const item of after) {

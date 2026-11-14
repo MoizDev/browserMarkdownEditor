@@ -34,7 +34,7 @@ export class VaultIndexClient {
     private overlays = new Map<string, { revision: number; rev: number; text: string }>();
     private resultListeners = new Map<number, (batch: SearchBatch) => void>();
     constructor(public session: IndexSession, onGraph: (graph: IndexGraph) => void,
-        onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void,
+        private readonly onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void,
         onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {
         this.worker = createWorkerClient({
             name: `vault-index-${session.sessionNo}`, protocol: 1,
@@ -71,7 +71,7 @@ export class VaultIndexClient {
             const event = value as { changes: [string, number, number][]; sweepComplete: boolean };
             onTimes?.(event.changes, event.sweepComplete);
         });
-        this.worker.on('problem', value => { if (currentEvent(value)) onProblem(value); });
+        this.worker.on('problem', value => { if (currentEvent(value)) this.onProblem(value); });
         this.worker.on('status', value => { if (currentEvent(value)) onStatus?.(value); });
         this.stopForeground = observeForegroundReads(active => { void this.foregroundIO(active).catch(() => {}); });
     }
@@ -182,6 +182,7 @@ export class VaultIndexClient {
                 await this.worker.request('search', { session: this.session, queryId, kind: 'sidebar', query }, { priority: 1, signal });
                 return;
             } catch (error) {
+                if (error instanceof Error && error.name === 'NotAllowedError') this.onProblem({ session: this.session, kind: 'permission', detail: error.message });
                 if (attempt || signal.aborted || !(error instanceof Error) || error.name !== 'WorkerCrashed') throw error;
                 onBatch({ session: this.session, queryId, overlayRevs: {}, batch: [], done: false, clipped: false, matchCount: 0, reset: true });
             } finally { this.resultListeners.delete(queryId); }
@@ -191,7 +192,12 @@ export class VaultIndexClient {
         buffers: readonly SearchBuffer[], signal?: AbortSignal): Promise<MatchAnswer> {
         await this.syncOverlays(buffers);
         await this.worker.request('ready', {}, { priority: 1, signal });
-        return this.worker.request<MatchAnswer>('search', { session: this.session, queryId: ++this.nextQuery, kind: 'agent', ...config }, { priority: 1, signal });
+        try {
+            return await this.worker.request<MatchAnswer>('search', { session: this.session, queryId: ++this.nextQuery, kind: 'agent', ...config }, { priority: 1, signal });
+        } catch (error) {
+            if (error instanceof Error && error.name === 'NotAllowedError') this.onProblem({ session: this.session, kind: 'permission', detail: error.message });
+            throw error;
+        }
     }
     retry(): void {
         this.worker.reset();

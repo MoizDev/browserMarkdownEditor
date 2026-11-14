@@ -98,7 +98,10 @@ export class SearchResidency {
                 try {
                     const stat = await this.stat(file, context);
                     if (this.valid(file.path, rev) && treeGen === this.treeGen) this.sources.set(file.path, { stat, revision: rev });
-                } catch { /* Transient IO failures are not cached. */ }
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
+                    /* Transient IO failures are not cached. */
+                }
             });
             context.signal.throwIfAborted();
             if (treeGen !== this.treeGen) { for (const path of wanted) this.requested.add(path); continue; }
@@ -119,7 +122,10 @@ export class SearchResidency {
                     }
                     if (this.valid(file.path, source.revision) && treeGen === this.treeGen && this.sources.get(file.path) === source)
                         this.entries.set(file.path, { mtime: source.stat.mtime, size: source.stat.size, text });
-                } catch { /* Retry on a later request. */ }
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
+                    /* Retry on a later request. */
+                }
                 await context.slice();
             }
         }

@@ -374,13 +374,6 @@ interface PdfRebuildEntry {
   approved: boolean;
 }
 
-async function materializeRecoveryEntry(entry: RecoveryEntry, signal: AbortSignal) {
-  if (typeof entry.copy === 'object' && entry.copy !== null && 'kind' in entry.copy && entry.copy.kind === 'recipe') {
-    await import('./whiteboard/host/recoveryCopy');
-  }
-  return materializeRecoveryCopy(entry, signal);
-}
-
 export default function App() {
   useEffect(() => {
     const refuseUnclaimedDrop = (event: DragEvent) => {
@@ -5983,7 +5976,7 @@ export default function App() {
       try {
         const version = await snapshot.fingerprint();
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
-        const copy = await materializeRecoveryEntry(entry, new AbortController().signal);
+        const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
         const bytes = typeof copy === 'string' ? new TextEncoder().encode(copy) : copy instanceof Blob ? new Uint8Array(await copy.arrayBuffer()) : copy;
         const copyHash = await hashBytes(bytes);
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
@@ -6019,7 +6012,7 @@ export default function App() {
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
     if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
-    const copyData = await materializeRecoveryEntry(entry, new AbortController().signal);
+    const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
     const data = copyData instanceof Blob ? new Uint8Array(await copyData.arrayBuffer()) : copyData;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);

@@ -2835,13 +2835,16 @@ export default function App() {
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
+    const liveNativePolicy = !!target && !!policy && policy.activation === getVaultActivation()
+      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && documentSessions.isLiveOwner(target.id, { documentId: target.id, session: policy.session });
     const ownedNative = !!target && typeof content !== 'string' && !!policy && !policy.emergencyReadOnly
       && policy.session === content.owner.session && policy.activation === getVaultActivation()
       && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
       && documentSessions.isLiveOwner(target.id, content.owner);
     const accepted = !!target && (canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
       || ownedNative && !target.readError && target.representation.status === 'ready')
-      && (typeof content === 'string' || documentSessions.isLiveOwner(target.id, content.owner));
+      && (typeof content === 'string' ? !!options?.fromDisk || !liveNativePolicy : documentSessions.isLiveOwner(target.id, content.owner));
     if (__BME_BENCH__) {
       try {
         const kind = target?.representation.loadedKind ?? 'unknown';

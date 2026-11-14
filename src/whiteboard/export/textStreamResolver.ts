@@ -34,11 +34,16 @@ export function createStreamingExportTextResolver(source: PaintNodeSource, signa
       if (started.kind !== 'started') throw new TypeError('Invalid text outline stream start')
       for (;;) {
         active.throwIfAborted()
-        const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'next' }, owner, options, current)
-        if (reply.kind === 'done') { completed = true; return }
-        if (reply.kind !== 'item' || !reply.item || (reply.item.kind !== 'path' && reply.item.kind !== 'raster'))
-          throw new TypeError('Invalid text outline stream item')
-        yield reply.item
+        const reply = await client.request<OutlineStreamReply>('textOutline', { ...base, mode: 'nextBatch' }, owner, options, current)
+        if (reply.kind !== 'batch' || !Array.isArray(reply.items) || reply.items.length > 64 || (!reply.done && !reply.items.length))
+          throw new TypeError('Invalid text outline stream batch')
+        if (reply.done) completed = true
+        for (const part of reply.items) {
+          active.throwIfAborted()
+          if (!part || (part.kind !== 'path' && part.kind !== 'raster')) throw new TypeError('Invalid text outline stream item')
+          yield part
+        }
+        if (reply.done) return
       }
     } finally {
       // Cleanup must reach the worker even after the source, caller, or document was cancelled.

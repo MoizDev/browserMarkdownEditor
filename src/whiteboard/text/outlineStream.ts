@@ -4,7 +4,8 @@ import type { BoardJobIdentity } from '../workers/protocol';
 
 export type OutlineStreamReply =
     | { readonly kind: 'reserved' | 'busy' | 'started' | 'closed' | 'done' }
-    | { readonly kind: 'item'; readonly item: PageDisplayItem };
+    | { readonly kind: 'item'; readonly item: PageDisplayItem }
+    | { readonly kind: 'batch'; readonly items: readonly PageDisplayItem[]; readonly done: boolean };
 
 type OutlineGenerator = AsyncGenerator<PageDisplayItem, void, unknown>;
 type GeneratorFactory = (payload: unknown, context: WorkerContext) => OutlineGenerator;
@@ -14,6 +15,7 @@ interface StreamSlot {
     readonly proxy: WorkerContext;
     active?: WorkerContext;
     iterator?: OutlineGenerator;
+    pending?: PageDisplayItem;
     timer?: ReturnType<typeof setTimeout>;
     busy: boolean;
     closing: boolean;
@@ -23,7 +25,19 @@ interface StreamSlot {
 // cloning that paint so contention queues on the caller rather than retaining more worker data.
 const streams = new Map<string, StreamSlot>();
 const MAX_STREAMS = 8;
+const MAX_BATCH_ITEMS = 64;
+const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const IDLE_MS = 10 * 60_000;
+
+function itemBytes(item: PageDisplayItem): number {
+    if (item.kind === 'path') return item.d.length * 64;
+    if (item.kind === 'raster') return item.png.byteLength;
+    throw new TypeError('Unexpected text outline stream item');
+}
+function transferItem(item: PageDisplayItem, context: WorkerContext): void {
+    if (item.kind === 'raster' && item.png.buffer instanceof ArrayBuffer
+        && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) context.transfer(item.png.buffer);
+}
 
 function record(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -102,20 +116,29 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
         arm(slot);
         return { kind: 'started' };
     }
-    if (value.mode !== 'next' || !slot.iterator) throw new Error('Invalid text outline stream operation');
+    if ((value.mode !== 'next' && value.mode !== 'nextBatch') || !slot.iterator) throw new Error('Invalid text outline stream operation');
     if (slot.timer !== undefined) clearTimeout(slot.timer);
     slot.timer = undefined;
     slot.busy = true;
     slot.active = context;
     try {
-        const result = await slot.iterator.next();
-        context.signal.throwIfAborted();
-        if (context.cancelled || slot.closing) throw new DOMException('Text export cancelled', 'AbortError');
-        if (result.done) { dispose(slot); return { kind: 'done' }; }
-        const item = result.value;
-        if (item.kind === 'raster' && item.png.buffer instanceof ArrayBuffer
-            && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) context.transfer(item.png.buffer);
-        return { kind: 'item', item };
+        const items: PageDisplayItem[] = [];
+        let bytes = 0, done = false;
+        const maximum = value.mode === 'next' ? 1 : MAX_BATCH_ITEMS;
+        while (items.length < maximum) {
+            const result = slot.pending ? { done: false as const, value: slot.pending } : await slot.iterator.next();
+            slot.pending = undefined;
+            context.signal.throwIfAborted();
+            if (context.cancelled || slot.closing) throw new DOMException('Text export cancelled', 'AbortError');
+            if (result.done) { done = true; break; }
+            const size = itemBytes(result.value);
+            if (items.length && bytes + size > MAX_BATCH_BYTES) { slot.pending = result.value; break; }
+            items.push(result.value); bytes += size;
+        }
+        if (done) dispose(slot);
+        for (const item of items) transferItem(item, context);
+        if (value.mode === 'next') return items.length ? { kind: 'item', item: items[0] } : { kind: 'done' };
+        return { kind: 'batch', items, done };
     } catch (error) {
         dispose(slot);
         throw error;

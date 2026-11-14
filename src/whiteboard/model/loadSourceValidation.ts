@@ -29,6 +29,8 @@ function source(value: unknown, size: number): value is ReadSourceRecord {
         || typeof value.category !== 'string' || !RECORD_ORDER.includes(value.category as ReadSourceRecord['category'])
         || !boundedString(value.type, FORMAT_LIMITS.idChars) || (Object.hasOwn(value, 'id') && !boundedString(value.id, FORMAT_LIMITS.idChars))
         || !position(value.position, size) || typeof value.reencode !== 'boolean') return false;
+    const needsId = value.category === 'node' || value.category === 'sheet' || value.category === 'media' || value.category === 'opaque';
+    if (needsId !== Object.hasOwn(value, 'id') || (value.category !== 'opaque' && value.type !== value.category)) return false;
     if (Object.hasOwn(value, 'nodeBounds')) {
         const b = value.nodeBounds;
         if (value.category !== 'node' || !Array.isArray(b) || b.length !== 4) return false;

@@ -53,6 +53,7 @@ async function raster(fragment: PaintFragment, face: Face, baseline: number, col
     ctx.scale(density, density); ctx.translate(fragment.x - left, baseline - top); ctx.scale(factor, factor);
     ctx.font = face.css; ctx.direction = fragment.rtl ? 'rtl' : 'ltr'; ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic'; ctx.fontKerning = 'normal'; ctx.textRendering = 'geometricPrecision';
+    ctx.letterSpacing = '0px'; ctx.wordSpacing = '0px'; ctx.fontVariantCaps = 'normal';
     ctx.fillStyle = css(color); ctx.fillText(fragment.text, 0, 0);
     const png = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
     signal.throwIfAborted();

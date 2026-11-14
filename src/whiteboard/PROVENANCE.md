@@ -147,6 +147,7 @@ third-party code included (normally "none") · date.
 | `text/paint.ts` | lane w-n | T-1, T-2, T-4, T-5 | text §§3, 5.5–5.6, 6 | Design's renderer contract and caret-index geometry; shared platform/model types; no tldraw source | none | 2026-11-13 |
 | `text/measure.ts` | lane w-n | T-1, T-2 | text §§2–3, 7.2 | Canvas TextMetrics API and fixed-size draw recipe; bounded epoch-aware cache | none | 2026-11-13 |
 | `text/itemize.ts` | lane w-n | T-1, T-2 | text §§2–3 | Rich-text runs and independently implemented Unicode line, bidi and grapheme APIs | none | 2026-11-13 |
+| `text/wrap.ts` | lane w-n | T-1, T-2 | text §§2, 6 | Greedy Unicode line opportunities and grapheme emergency breaks, own implementation | none | 2026-11-13 |
 | `text/fonts.ts` | lane w-n | T-6 | text §7 | FontFace API; lazy per-context registration and epoch, no tldraw source | none | 2026-11-13 |
 | `text/fontMetrics.json` | lane w-n | T-6 | text §7 | Generated directly from pinned upstream WOFF2 metrics tables | font metrics | 2026-11-13 |
 | `text/fonts/*.woff2` | lane w-n | T-6 | text §7.1; IR-4 | Arrow Type Shantell Sans 1.011 release ZIP matches tagged tree; IBM Plex Sans/Serif/Mono 1.1.0 tags; exact per-file URLs, tags and SHA-256 in `tools/whiteboard-fonts/manifest.json` and G-TXT-FONTPIN | upstream unmodified fonts, SIL OFL 1.1, Plex Reserved Font Name | 2026-11-13 |

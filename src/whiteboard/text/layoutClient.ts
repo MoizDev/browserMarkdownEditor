@@ -45,6 +45,7 @@ export class TextLayoutClient {
     constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
         const changed = (key: FontKey) => { this.compatibleClasses.clear(); this.different = false; onFontArrival?.(key); };
         this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
+        // A worker FontFaceSet is shared; the request identity that relays an arrival is not the only affected board.
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
             if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
             const key = payload.key as Partial<FontKey> | null;
@@ -76,6 +77,7 @@ export class TextLayoutClient {
     /** Edited or immediately visible content never waits on a queued open-time job. */
     layoutNow(node: string, request: TextLayoutRequest): LayoutProduct {
         this.next(node);
+        this.versions.delete(node);
         void this.main.prepare(request).catch(() => {});
         return this.onMain(request);
     }
@@ -106,6 +108,7 @@ export class TextLayoutClient {
         if (workerProduct && !this.compatibleClasses.has(kind)) {
             const mainProduct = this.onMain(request);
             if (!sameLayoutProduct(mainProduct, workerProduct)) { this.different = true; return mainProduct; }
+            if (this.compatibleClasses.size >= 1024) this.compatibleClasses.delete(this.compatibleClasses.values().next().value!);
             this.compatibleClasses.add(kind);
         }
         if (workerProduct && !this.different) return workerProduct;
@@ -115,7 +118,10 @@ export class TextLayoutClient {
         if (!current()) return null;
         return this.onMain(request);
         } finally {
-            if (this.pending.get(node) === controller) this.pending.delete(node);
+            if (this.pending.get(node) === controller) {
+                this.pending.delete(node);
+                if (this.versions.get(node) === version) this.versions.delete(node);
+            }
             signal?.removeEventListener('abort', abort);
         }
     }

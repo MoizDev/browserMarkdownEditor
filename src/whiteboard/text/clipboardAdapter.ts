@@ -1,5 +1,5 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { ClipboardCopy } from '../clipboard/copy';
+import type { ClipboardCachePin, ClipboardCopy } from '../clipboard/copy';
 import type { ClipboardClassifierHost } from '../clipboard/classify';
 import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
 import type { CopySnapshot } from '../clipboard/snapshot';
@@ -22,12 +22,14 @@ export interface TextClipboardAdapterOptions {
     identity(): BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     /** Core owns the OS event and forwards non-text content after editing has ended. */
-    pasteBoard(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal): Promise<void>;
+    /** The pin is borrowed until the returned board paste settles; Core must not reacquire the window cache. */
+    pasteBoard(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<void>;
 }
 
 /** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
 export function createTextClipboardAdapter(options: TextClipboardAdapterOptions) {
     let disposed = false, serial = 0, pending: AbortController | null = null;
+    const lifetime = new AbortController();
     const owners = new WeakMap<CopySnapshot, BoardJobIdentity>();
     const cancel = () => { serial++; pending?.abort(); pending = null; };
     const current = (snapshot: CopySnapshot): boolean => {
@@ -36,6 +38,7 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             && actual.selection.anchor === expected.anchor && actual.selection.focus === expected.focus;
     };
     return {
+        signal: lifetime.signal,
         /** Prime h2's real clipboard cache; Core then calls its copyEvent/copyMenu. */
         prepareCopy(): CopySnapshot | null {
             if (disposed) return null;
@@ -69,20 +72,24 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             };
         },
         /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */
-        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal): Promise<boolean> {
-            if (disposed) return false;
-            cancel();
-            const before = options.editor.clipboardContext();
-            if (!before) return false;
-            const owner = { node: before.node.id, revision: before.revision, selection: { ...before.selection } };
-            const identity = { ...options.identity() }, controller = new AbortController(), generation = serial;
-            pending = controller;
-            const combined = AbortSignal.any([signal, controller.signal]);
+        /** Call at the OS gesture; the caller releases this pin if acquisition fails before paste is invoked. */
+        capturePaste(): ClipboardCachePin | null { return options.copy.pin(); },
+        /** The pin captured at the gesture transfers to this call, including an explicit null. */
+        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<boolean> {
+            let controller: AbortController | undefined;
             try {
+                if (disposed) return false;
+                cancel();
+                const before = options.editor.clipboardContext();
+                if (!before) return false;
+                const owner = { node: before.node.id, revision: before.revision, selection: { ...before.selection } };
+                const identity = { ...options.identity() }, generation = serial;
+                controller = new AbortController(); pending = controller;
+                const combined = AbortSignal.any([signal, controller.signal, lifetime.signal]);
                 const plain = intent === 'paste-plain' || intent === 'paste-plain-inverted';
                 const content = await classifyTextPaste(input, plain, { classifier: options.classifier, html: options.html,
                     privateText: (encoded, text, requestSignal) => readPrivateClipboardText(encoded, text, requestSignal,
-                        { identity, memory: options.memory, cache: options.copy, isCurrent: options.isCurrent }) }, combined);
+                        { identity, memory: options.memory, cache, isCurrent: options.isCurrent }) }, combined);
                 combined.throwIfAborted();
                 const after = options.editor.clipboardContext();
                 if (disposed || generation !== serial || !options.isCurrent(identity) || !after || after.node.id !== owner.node
@@ -91,15 +98,44 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 if (content.kind === 'text') return options.editor.pasteText(content.fragment);
                 // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
                 if (pending === controller) pending = null;
+                const boardSignal = AbortSignal.any([signal, controller.signal]);
                 options.editor.manager.close();
-                await options.pasteBoard(input, intent, combined);
-                combined.throwIfAborted();
+                await options.pasteBoard(input, intent, boardSignal, cache);
+                boardSignal.throwIfAborted();
                 return true;
-            } finally { if (pending === controller) pending = null; }
+            } finally {
+                if (pending === controller) pending = null;
+                cache?.release();
+            }
         },
         cancel,
-        dispose() { if (!disposed) { disposed = true; cancel(); } },
+        dispose() { if (!disposed) { disposed = true; lifetime.abort(); cancel(); } },
     };
+}
+
+/** Pin before an asynchronous OS read; ownership transfers only once paste actually starts. */
+export function pasteWithCapturedClipboard(
+    adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste' | 'signal'>,
+    acquire: (signal: AbortSignal) => Promise<ClipboardInput>, intent: TextPasteIntent, signal: AbortSignal,
+): Promise<boolean> {
+    const captured = adapter.capturePaste(), active = AbortSignal.any([signal, adapter.signal]);
+    return (async () => {
+        let transferred = false;
+        try {
+            active.throwIfAborted();
+            const work = acquire(active);
+            const input = await new Promise<ClipboardInput>((resolve, reject) => {
+                const abort = () => { active.removeEventListener('abort', abort); reject(active.reason ?? new DOMException('Paste cancelled', 'AbortError')); };
+                active.addEventListener('abort', abort, { once: true });
+                work.then(value => { active.removeEventListener('abort', abort); resolve(value); },
+                    error => { active.removeEventListener('abort', abort); reject(error); });
+                if (active.aborted) abort();
+            });
+            active.throwIfAborted();
+            transferred = true;
+            return await adapter.paste(input, intent, signal, captured);
+        } finally { if (!transferred) captured?.release(); }
+    })();
 }
 
 export interface TextClipboardDocumentOwner {

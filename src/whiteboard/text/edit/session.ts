@@ -100,16 +100,13 @@ export class TextEditSession {
             followLink: (x, y) => {
                 const layout = services.layout();
                 const local = point(layout.clientToLocal, x, y);
-                for (const line of layout.caret.lines) for (const cluster of line.clusters) {
-                    const box = cluster.bounds;
-                    if (local.x < box.x || local.x > box.x + box.width || local.y < box.y || local.y > box.y + box.height) continue;
-                    const value = sliceRichText(services.readText(), cluster.src[0], cluster.src[1]).blocks[0]?.runs[0]?.marks.link;
-                    const url = value ? linkUrl(value) : null;
-                    if (!url) return false;
-                    services.openLink(url);
-                    return true;
-                }
-                return false;
+                const cluster = layout.caret.clusterAt(local.x, local.y);
+                if (!cluster) return false;
+                const value = sliceRichText(services.readText(), cluster.src[0], cluster.src[1]).blocks[0]?.runs[0]?.marks.link;
+                const url = value ? linkUrl(value) : null;
+                if (!url) return false;
+                services.openLink(url);
+                return true;
             },
         });
         this.host = new EditHost(container, label, {

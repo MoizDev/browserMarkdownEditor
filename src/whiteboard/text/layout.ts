@@ -4,6 +4,7 @@ import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from 
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
 import { CaretLineCache, makeCaretIndex } from './caretIndex';
+import { clearLongAsciiCaretIndex } from './asciiCaretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 import type { Marks, RichText } from './richText';
@@ -24,7 +25,8 @@ export class BoardTextLayout implements TextLayoutEngine {
     private readonly faces: Face[] = [];
     private readonly faceIds = new Map<string, number>();
     readonly faceTable: FaceTable = { faces: this.faces };
-    private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement }>();
+    private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement; bytes: number }>();
+    private layoutBytes = 0;
     private readonly textIds = new WeakMap<RichText, number>();
     private readonly instanceId = crypto.randomUUID();
     private nextTextId = 1;
@@ -110,7 +112,7 @@ export class BoardTextLayout implements TextLayoutEngine {
         if (textId === undefined) { textId = this.nextTextId++; this.textIds.set(request.text, textId); }
         const key = sha256(new TextEncoder().encode(JSON.stringify([this.instanceId, request.revision, textId, request.style, request.width, request.fontEpoch, [...states].sort()])));
         const old = this.layouts.get(key);
-        if (old) return old;
+        if (old) { this.layouts.delete(key); this.layouts.set(key, old); return old; }
         const style = request.style, pad = style.padding;
         const outerWidth = request.width === null ? null : Math.max(16, request.width);
         const available = outerWidth === null ? null : Math.max(0, outerWidth - pad.left - pad.right);
@@ -245,11 +247,20 @@ export class BoardTextLayout implements TextLayoutEngine {
         const paint: TextPaint = { key, fontEpoch: request.fontEpoch, box: { w: boxWidth, h: boxHeight }, ink, backgrounds, lines, decorations };
         const measurement: TextMeasurement = { box: paint.box, ink, requiredHeight: naturalHeight, fontScale: appliedScale };
         const result = { paint, measurement };
-        this.layouts.set(key, result);
-        if (this.layouts.size > 512) this.layouts.delete(this.layouts.keys().next().value!);
+        let bytes = 512 + lines.length * 160 + (backgrounds.length + decorations.length) * 96;
+        for (const line of lines) for (const fragment of line.fragments) bytes += 192 + fragment.text.length * 2;
+        const limit = 32 * 1024 * 1024;
+        if (bytes <= limit) {
+            while (this.layouts.size && (this.layouts.size >= 512 || this.layoutBytes + bytes > limit)) {
+                const oldest = this.layouts.keys().next().value!, entry = this.layouts.get(oldest)!;
+                this.layouts.delete(oldest); this.layoutBytes -= entry.bytes;
+            }
+            this.layouts.set(key, { ...result, bytes }); this.layoutBytes += bytes;
+        }
         return result;
     }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
     caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
+    releaseEditingCache(): void { this.caretLines.clear(); clearLongAsciiCaretIndex(this.measurer); }
 }

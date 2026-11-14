@@ -124,6 +124,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const revealMotion = useRef<{ from: Camera; to: Camera; start: number; revision: number; correction?: { page: number; box: Readonly<Rect> } } | null>(null);
 
     const persist = useCallback(() => {
+        if (!initialized.current) return;
         const pos = pagedPosition(camera.current, viewport.current, stack, INSETS);
         if (!pos) return;
         writePdfViewPos(filePath, pos, false);
@@ -153,6 +154,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             paneRef.current?.current?.invalidate('pdf-camera-settled');
         }, 180);
     }, [clamp, persist]);
+
+    useEffect(() => {
+        if (thumbs && isVisible) return;
+        for (const task of thumbnailTasks.current) task.abort();
+        thumbnailTasks.current.clear();
+    }, [thumbs, isVisible]);
 
     const renderThumbnail = useCallback(async (index: number, scale: number): Promise<string> => {
         const page = pdf.pages[index];

@@ -26,7 +26,7 @@ import type { TextEditViewServices } from '../text/edit/bindingTypes';
 import { editableTextRequest } from '../text/edit/request';
 import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
-import type { Misspelling } from '../text/spell/menu';
+import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
 import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
 import { insertionFragment, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
@@ -52,6 +52,7 @@ export interface BoardTextEditorOptions {
     /** App-owned UI, never geometry or transaction authorities. */
     readonly ui: {
         menu(x: number, y: number): void;
+        spellingMenu(x: number, y: number, rows: SpellMenuRows | null): void;
         openLink(url: string): void;
         command(name: string, selection: EditSelection): void;
         selectionChanged(node: NodeId | null, selection: EditSelection | null): void;
@@ -84,6 +85,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let svg: SVGSVGElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
+    let spellingMenu: SpellingMenuRequest | null = null;
     const checkSpelling = () => {
         const id = active, node = id && doc.nodes.get(id), value = node && nodeText(node);
         if (!id || !value) return;
@@ -109,6 +111,31 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     Object.assign(live.style, { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clipPath: 'inset(50%)' });
     overlay.append(live);
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot interrupt cleanup */ } };
+    const replaceMisspelling = (range: Misspelling & { readonly revision: number; readonly node: NodeId }, suggestion: string): boolean => {
+        const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+        if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
+        const fragment = insertionFragment(text, range.from, suggestion, null);
+        editor.restoreSelection({ anchor: range.from, focus: range.to }); editor.replaceSelection(fragment);
+        return true;
+    };
+    const openTextMenu = (x: number, y: number) => {
+        spellingMenu?.cancel(); spellingMenu = null;
+        const editor = manager.current?.editor, node = active;
+        if (!editor || !node) { options.ui.menu(x, y); return; }
+        const offset = editor.offsetAtClient(x, y), range = misspellings.find(item => offset >= item.from && offset <= item.to);
+        if (!range) { options.ui.menu(x, y); return; }
+        const revision = doc.rev;
+        const request = new SpellingMenuRequest({
+            revision: () => doc.rev,
+            suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
+            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’\-]+$/u.test(word),
+            add: word => options.spelling.add(word),
+            replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
+            open: rows => options.ui.spellingMenu(x, y, rows),
+        });
+        spellingMenu = request;
+        void request.open(range).catch(report);
+    };
     const current = () => !disposed && options.current() && engine.getView().visible;
     const requestFrame = () => options.interaction.invalidate();
     const clientMatrix = (world: Affine): Affine => {
@@ -228,8 +255,8 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 command: options.ui.command,
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
-                menu: options.ui.menu, openLink: options.ui.openLink,
-                finish() { stopScroll(); spellGeneration++; misspellings = []; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                menu: openTextMenu, openLink: options.ui.openLink,
+                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; misspellings = []; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,
@@ -371,12 +398,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         async spellingSuggestions(word: string) { return spell ? spell.suggest(word) : []; },
         addSpellingWord(word: string) { options.spelling.add(word); },
         replaceSpelling(range: Misspelling & { readonly revision: number; readonly node: NodeId }, suggestion: string) {
-            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
-            if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
-            const fragment = insertionFragment(text, range.from, suggestion, null);
-            editor.restoreSelection({ anchor: range.from, focus: range.to });
-            editor.replaceSelection(fragment);
-            return true;
+            return replaceMisspelling(range, suggestion);
         },
         restoreText(value: TextSelectionSnapshot) { void prepareMetric(value.node, controller.signal).then(() => { if (current()) manager.start(value.node, { anchor: value.anchor, focus: value.head }); }, report); },
         finishComposition() { manager.close(true); },

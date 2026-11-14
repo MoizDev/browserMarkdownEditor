@@ -3,12 +3,14 @@ import type { EditorView, ViewUpdate } from '@codemirror/view';
 import type { DeferredSource, SourceOwner } from '../utils/documentBuffers';
 import type { SessionAdapter } from '../utils/documentSessions';
 
+export type MarkdownSessionUpdate = Pick<ViewUpdate, 'state' | 'startState' | 'transactions' | 'changes' | 'docChanged'>;
+
 /** One immutable EditorState belongs to the document, never to its current pane. */
 export interface MarkdownSessionAdapter extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly state: EditorState;
     /** Installs the visible editor configuration once without dropping a cold edit's history. */
-    configure(extensions: Extension): void;
+    configure(extensions: Extension, onUpdate?: (update: MarkdownSessionUpdate) => void): void;
     /** Detach unregisters this view only; it never releases the document session. */
     attach(view: EditorView): () => void;
     /** The baked-in view listener forwards updates to this same document owner. */

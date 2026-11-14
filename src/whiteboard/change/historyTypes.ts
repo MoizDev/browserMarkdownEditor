@@ -31,6 +31,7 @@ export interface HistoryPorts {
     restoreSelection(snapshot: HistorySnapshot): void;
     /** The pane's existing CameraController owns the pan; history stores no camera. */
     revealTouched(ids: ReadonlySet<NodeId>): void;
+    /** Undo/redo apply projects media through the session's MediaLocations; rollback stays exact. */
     apply(transaction: Transaction): Applied;
     retainMedia(id: MediaId): HistoryLease;
     sampleBytes(ref: SampleRef): number;
@@ -53,6 +54,10 @@ export interface HistoryController {
     clearRedo(): void;
     /** Called by the apply consumer, while apply owns the borrowed receipt. */
     record(applied: Applied, transaction: Transaction): void;
+    /** A barrier inside an open step; typing rules can undo just their transformation. */
+    mark(): number;
+    /** Replay and discard only work after a mark, retaining the earlier typing burst. */
+    rollbackTo(mark: number): void;
     /** Join a leave-empty deletion to the immediately preceding typing step (WB-D16). */
     reopenLast(): boolean;
     undo(): void;

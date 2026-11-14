@@ -136,6 +136,7 @@ third-party code included (normally "none") · date.
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
 | `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-7 | import §§1–3,6 | Documented record families; page bounds prepared after node mapping; report and host admission contracts | none | 2026-11-13 |
 | `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source retention, failure reporting, ordered draft and model admission | none | 2026-11-13 |
+| `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse and collision-safe restore contracts | none | 2026-11-13 |
 
 ## Export and whiteboard host (lane w-k)
 
@@ -151,6 +152,7 @@ third-party code included (normally "none") · date.
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; bounded-band producer and transferable owned rows; no tldraw source | none | 2026-11-13 |
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs and image lease contract; pinned capture resources; no tldraw source | none | 2026-11-13 |
 | `export/capturePng.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; pinned capture preparation, worker encoding and lease cleanup; no tldraw source | none | 2026-11-13 |
+| `export/exportImage.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §5 | Export design; admitted origin-clean image leases, embedded source or normalized PNG, baked inversion; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -187,6 +189,7 @@ third-party code included (normally "none") · date.
 | `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates | none | 2026-11-13 |
 | `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
 | `geom/flatten.ts` | lane w-g | GE-1 | geometry §2.4 | Design; w-e's bounded ink cubic flattening job and circular sagitta bound | none | 2026-11-13 |
+| `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded inversion | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 
@@ -195,7 +198,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; finite metric admission; no tldraw source | none | 2026-11-13 |
-| `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds from the design; FIG creation ratios and seed-centred gestures; analytic ellipse/stadium/cloud and fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
+| `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds; FIG creation ratios and seed-centred gestures; kernel-certified arc conversion and analytic cloud with fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe and continuous dash phase; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)
@@ -220,6 +223,7 @@ third-party code included (normally "none") · date.
 | `media/svgFrameHost.ts` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 frame API, token validation, bounded acknowledged transfer | none | 2026-11-13 |
 | `media/svgFrames.d.ts` | lane w-q | SEC-3/4 | security §6 | Build-time virtual fixed-frame declarations | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.mjs` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 exact-byte hashing/bundling helper; strict separate profile CSPs | none | 2026-11-13 |
+| `build/whiteboardSvgFrames.d.mts` | lane w-q | SEC-3/4 | security §§5–6 | Vite plugin declaration for fixed-frame build | none | 2026-11-13 |
 
 ## Text editing and spelling (lane w-i)
 
@@ -247,6 +251,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `input/tool.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
 | `input/router.ts` | lane w-f | F-INPUT-001/004/005; R-19 | input §§2,7,9 | Input architecture and behavioural spec; no tldraw source | none | 2026-11-13 |
+| `input/keyboard.ts` | lane w-f | F-TOOL-003/004; R-19 | input §8; toolbar §3 | Input and toolbar behavioural specifications; no tldraw source | none | 2026-11-13 |
 | `input/gesture.ts` | lane w-f | F-TOOL-002/003/004 | input §7; toolbar §§2–4 | Tool and input behavioural specifications; no tldraw source | none | 2026-11-13 |
 | `input/pointer.ts` | lane w-f | F-INPUT-001/005/008; R-19 | input §§3–4 | Input architecture; browser Pointer Events APIs; no tldraw source | none | 2026-11-13 |
 | `input/prediction.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture; browser Pointer Events and Ink APIs; no tldraw source | none | 2026-11-13 |

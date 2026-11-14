@@ -127,7 +127,16 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
             try { slot.setSlot(sourceSlot, facade, () => close()); }
             catch (error) { void close().catch(options.onError); throw error; }
             if (closed) throw stale();
-            return { board: owned.board, dispose: close };
+            const pdfWriteAuthority = Object.freeze({ canWrite() {
+                try {
+                    const state = rebind.getSnapshot(), outer = host.outerIdentity(documentId), token = state.source.source.token;
+                    return !closed && current() && isLiveOwner(owner) && !owned.board.isReadOnly && state.status === 'ready'
+                        && !!outer && host.isCurrent(outer) && outer.documentId === token.documentId && outer.session === token.session
+                        && outer.vaultActivation === token.vaultEpoch && outer.bytesGeneration === token.bytesGeneration
+                        && state.source.writeSafety.kind === 'safe' && state.source.isCurrent();
+                } catch { return false; }
+            } });
+            return { board: owned.board, pdfWriteAuthority, dispose: close };
         },
         async dispose() {
             if (transferred || stagingDisposed) return;

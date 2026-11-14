@@ -58,7 +58,8 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                     taken = true;
                     try {
                         policy = onNativeCanvasReady({ owner, vaultActivation, bytesGeneration, kind,
-                            legacyOriginalSha256: prepared!.legacyOriginalSha256 });
+                            legacyOriginalSha256: prepared!.legacyOriginalSha256,
+                            ...(owned.pdfWriteAuthority ? { pdfWriteAuthority: owned.pdfWriteAuthority } : {}) });
                         if (!policy || !isLiveOwner(owner)) throw new DOMException('Board session ended', 'AbortError');
                         reason = policy.emergencyReadOnly ? emergencyReadOnlyReason : null;
                         if (policy.emergencyReadOnly && !owned.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');

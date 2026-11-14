@@ -9,6 +9,7 @@ export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly conversionPending?: boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
+        readonly pdfWriteAuthority?: { canWrite(): boolean };
         dispose(): void | Promise<void>;
     };
     dispose(): void | Promise<void>;

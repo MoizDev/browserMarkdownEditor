@@ -43,6 +43,7 @@ import type { RecoveryEntry } from './utils/recoveryJournal';
 import { recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from './utils/recoveryFunnel';
+import { getSearchRequest, subscribeSearchRequest } from './utils/searchRequest';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -1238,6 +1239,11 @@ export default function App() {
   // Sidebar collapse (Cmd+\, the explorer-header button, or the rail) —
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
+  useEffect(() => subscribeSearchRequest(() => {
+    if (!getSearchRequest()) return;
+    setSidebarCollapsed(false);
+    setSearchOpen(true);
+  }), []);
   useEffect(() => {
     writeStoredValue('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);

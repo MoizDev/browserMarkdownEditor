@@ -59,9 +59,11 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
         const sample = this.sample, modifiers = this.modifiers;
         try {
             const plan = await this.ready;
-            if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation || !this.host.current()) return;
+            if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
+            if (!this.host.current()) { this.cancel('invalidated'); return; }
             const value = await plan.preview(sample, modifiers, request.signal);
-            if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation || !this.host.current()) return;
+            if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation) return;
+            if (!this.host.current()) { this.cancel('invalidated'); return; }
             if (commit) { plan.commit(value); this.cleanup(); }
             else { plan.display?.(value); this.host.show(value.ops); }
         } catch (error) {

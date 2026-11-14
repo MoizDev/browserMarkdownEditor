@@ -1,5 +1,6 @@
 import type { rebindPdfInkSource } from '../../pdf/session/inkHost';
-import type { PdfEditableInkSource, PdfInkAcquisition } from '../../pdf/session/inkAcquisition.types';
+import type { PdfInkAcquisition } from '../../pdf/session/inkAcquisition.types';
+import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
 import type { RenderToken } from '../../platform/render/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { createPdfInkBuildCapture } from './pdfInkBuildCapture';
@@ -9,7 +10,7 @@ export interface PdfInkRebindOptions {
     readonly host: NativeCanvasHost;
     readonly documentId: string;
     readonly admittedIdentity: NativeCanvasIdentity;
-    readonly initialSource: PdfEditableInkSource;
+    readonly initialSource: PdfRuntimeInkSource;
     readonly sources: ReturnType<typeof createPdfInkSourceOwner>;
     readonly rebind: typeof rebindPdfInkSource;
     onError(error: unknown): void;
@@ -20,7 +21,7 @@ export interface PdfInkRebindOptions {
 export type PdfInkWrittenContext = ReturnType<ReturnType<typeof createPdfInkBuildCapture>['writtenContext']>;
 
 export interface PdfInkRebindSnapshot {
-    readonly source: PdfEditableInkSource;
+    readonly source: PdfRuntimeInkSource;
     readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
     readonly reason?: string;
 }

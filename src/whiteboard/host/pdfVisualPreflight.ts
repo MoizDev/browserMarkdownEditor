@@ -1,4 +1,5 @@
 import { NODE_FILE_FIELDS } from '../model/fileFields';
+import { isKnownLegacyMetadata } from '../format/legacyMetadata';
 import type { NodeId } from '../model/ids';
 import type { RehydratedLoad } from '../model/loadTypes';
 import type { BoardDoc } from '../model/doc';
@@ -48,7 +49,7 @@ export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     }
     for (const record of doc.preserved.records) {
         if (due()) await tick();
-        issues.push({ kind: 'preserved-record', type: record.type, id: record.id });
+        if (!isKnownLegacyMetadata(record)) issues.push({ kind: 'preserved-record', type: record.type, id: record.id });
     }
     options.signal.throwIfAborted();
     return { status: issues.length ? 'unknown' : 'known', issues: Object.freeze(issues) };

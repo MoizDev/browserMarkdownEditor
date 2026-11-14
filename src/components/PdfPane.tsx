@@ -312,7 +312,11 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
     const readerIdentity = reading?.identity;
-    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry, readerIdentity }), [mode, file.handle, file.path, roleRetry, readerIdentity]);
+    const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry, readerIdentity,
+        session: appSession?.serial, generation: appSession?.bytesGeneration }),
+    [mode, file.handle, file.path, roleRetry, readerIdentity, appSession?.serial, appSession?.bytesGeneration]);
+    const [legacyConversionEntry, setLegacyConversionEntry] = useState<typeof annotateEntry | null>(null);
+    const [flushing, setFlushing] = useState(false);
     const currentEntry = useRef(annotateEntry);
     useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
     const [loadedSource, setSource] = useState<PdfSource | null>(null);
@@ -337,12 +341,29 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
+    const legacyOffer = tiled && mode === 'edit' && source?.kind === 'annotated';
+    const plainNativeOffer = tiled && mode === 'edit' && source?.kind === 'plain';
+    const liveNativeIdentity = legacyOffer || plainNativeOffer ? nativeCanvasHost?.identity(documentId) : undefined;
+    const canConvertLegacy = !!(legacyOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
+        && pdfEngineAvailableInBuild() && nativeCanvasHost && attachCanvasSession && reading && appSession && liveNativeIdentity
+        && liveNativeIdentity.kind === 'pdfInk' && liveNativeIdentity.documentId === documentId
+        && liveNativeIdentity.session === appSession.serial && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration
+        && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch && reading.identity.documentId === documentId
+        && reading.identity.path === file.path && reading.identity.byteGeneration === appSession.bytesGeneration
+        && nativeCanvasHost.isCurrent(liveNativeIdentity));
+    const legacyConversion = legacyConversionEntry === annotateEntry && canConvertLegacy;
+    const nativePlain = !!(plainNativeOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
+        && appSession && reading && liveNativeIdentity && nativeCanvasHost && liveNativeIdentity.kind === 'pdfInk'
+        && liveNativeIdentity.documentId === documentId && liveNativeIdentity.session === appSession.serial
+        && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch
+        && reading.identity.documentId === documentId && reading.identity.path === file.path
+        && reading.identity.byteGeneration === appSession.bytesGeneration && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
-        source?.kind === 'newer' && source.attachments.includes('board.json')) &&
+        source?.kind === 'newer' && source.attachments.includes('board.json') || legacyConversion || nativePlain) &&
         pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
     const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined)
         || (inspectedWriteRefused ? 'This PDF’s inspected permissions require read-only annotation. The original has not been changed.' : undefined);
-    const readOnly = mode === 'edit' && (nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
+    const readOnly = mode === 'edit' && (legacyOffer || plainNativeOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const sessionVersion = useRef<string | undefined>(undefined);
@@ -561,7 +582,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     // `isDirty` alone can't cover this: the export takes a moment, and the tab
     // isn't marked dirty until it finishes — a window in which the viewer would
     // happily read and show the pre-annotation file.
-    const [flushing, setFlushing] = useState(false);
     // The save landing is what pulls `dirty` back down — this file's own write,
     // not some other tab's (the old global saveEpoch signal reloaded the view,
     // and with it the scroll position, whenever ANY file autosaved).
@@ -904,6 +924,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             body = nativeIdentity && nativeIdentity.kind === 'pdfInk' ? (
                 <Suspense fallback={<div className="pdf-pane-message">Preparing PDF annotations…</div>}>
                     <NativePdfEntry file={file} documentId={documentId} identity={nativeIdentity} nativeCanvasHost={nativeCanvasHost}
+                        legacyConversion={legacyConversion} onLegacyConversionRefused={message => {
+                            if (currentEntry.current === annotateEntry) { setLegacyConversionEntry(null); tiledNotify(message); }
+                        }}
                         attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
                         isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={routeEngines('pdfInk').canvas.pdfInk.emergencyReadOnly}
                         zoomLimits={NATIVE_PDF_ZOOM} insets={NATIVE_PDF_INSETS} zMax={100} deadlineMs={30_000}
@@ -913,7 +936,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
-        } else if (mode === 'edit' && editableSource && loadedSource?.session) {
+        } else if (!tiled && mode === 'edit' && editableSource && loadedSource?.session) {
+            // Native conversion refusal keeps the outer PDF; only explicit Classic
+            // selection may mount its editor, including while a legacy offer is visible.
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
@@ -1038,6 +1063,21 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
+            {legacyOffer && !legacyConversion && <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
+                <span>These annotations use Classic format. The original PDF remains available to read.</span>
+                <button type="button" className="pdf-pane-action" disabled={!canConvertLegacy}
+                    data-tooltip={!canConvertLegacy ? 'Conversion requires a current, unchanged PDF with verified write safety.' : undefined}
+                    onClick={() => {
+                        const current = binding.current?.identity, live = getSessionIdentity(documentId);
+                        if (!canConvertLegacy || currentEntry.current !== annotateEntry || !reading || !current || live !== appSession
+                            || writeState.current.isDirty || writeState.current.disk || !liveNativeIdentity || !nativeCanvasHost?.isCurrent(liveNativeIdentity)
+                            || current.documentId !== reading.identity.documentId || current.vaultId !== reading.identity.vaultId
+                            || current.vaultEpoch !== reading.identity.vaultEpoch || current.byteGeneration !== reading.identity.byteGeneration
+                            || current.path !== file.path || current.diskRev !== reading.identity.diskRev) return;
+                        setLegacyConversionEntry(annotateEntry);
+                    }}>Convert legacy annotations…</button>
+                <button type="button" className="pdf-pane-action" onClick={openClassic}>Open in Classic</button>
+            </div>}
             {tiled && mode === 'read' && currentTiledSource?.session.isCurrent() &&
                 tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).signed === true &&
                 <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>

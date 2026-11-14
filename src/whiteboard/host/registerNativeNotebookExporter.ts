@@ -7,8 +7,7 @@ import { exportNotebookPdf } from './notebookExport';
 import { pinNativeNotebookExport } from './notebookExportCapture';
 import { getBoardRuntime } from './runtime';
 
-export type NativeNotebookDisplayWriter = (input: Parameters<DisplayPdfWriter>[0],
-    options: { readonly signal?: AbortSignal; readonly revision: number }) => Promise<Uint8Array>;
+export type NativeNotebookDisplayWriter = (revision: number) => DisplayPdfWriter;
 
 const slot = Symbol('native notebook exporter');
 
@@ -50,8 +49,12 @@ export function registerNativeNotebookExporter(options: {
                     getSessionIdentity(identity.documentId)?.serial === identity.session && getBoardRuntime(board) === runtime;
             };
             const pin = pinNativeNotebookExport({ runtime, revision, current: isCurrent, onError: options.onError });
+            let writer: DisplayPdfWriter;
+            try { writer = options.writer(pin.revision); } catch (error) { pin.release(); throw error; }
             const controller = new AbortController();
-            let released = false, active = false, used = false, pinReleased = false;
+            let released = false, active = false, pinReleased = false;
+            let flight: Promise<{ paper: typeof pin.snapshot.paper; bytes: Uint8Array }> | undefined;
+            let attempt: AbortController | undefined;
             const releasePin = () => {
                 if (pinReleased) return;
                 pinReleased = true; jobs.delete(release);
@@ -66,23 +69,31 @@ export function registerNativeNotebookExporter(options: {
             return {
                 sourcePath, isCurrent: () => !released && isCurrent(),
                 run(signal) {
-                    if (used || released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
-                    used = true; active = true;
-                    const combined = AbortSignal.any([signal, controller.signal]);
-                    const work = (async () => {
-                        try {
-                            combined.throwIfAborted();
-                            const bytes = await exportNotebookPdf(pin.snapshot, sourcePath,
-                                (input, writerOptions) => options.writer(input, { ...writerOptions, revision: pin.revision }), combined);
-                            combined.throwIfAborted();
-                            if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
-                            return { paper: { ...pin.snapshot.paper }, bytes };
-                        } finally { active = false; if (released) releasePin(); }
-                    })();
-                    const settled = work.then(() => {}, () => {});
-                    running.add(settled);
-                    void settled.then(() => { running.delete(settled); });
-                    return work;
+                    if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
+                    if (signal.aborted) return Promise.reject(signal.reason);
+                    if (!flight) {
+                        active = true;
+                        const runAbort = new AbortController(); attempt = runAbort;
+                        const combined = AbortSignal.any([controller.signal, runAbort.signal]);
+                        flight = (async () => {
+                            try {
+                                combined.throwIfAborted();
+                                const bytes = await exportNotebookPdf(pin.snapshot, sourcePath, writer, combined);
+                                combined.throwIfAborted();
+                                if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
+                                return { paper: { ...pin.snapshot.paper }, bytes };
+                            } finally { active = false; attempt = undefined; flight = undefined; if (released) releasePin(); }
+                        })();
+                        const settled = flight.then(() => {}, () => {});
+                        running.add(settled);
+                        void settled.then(() => { running.delete(settled); });
+                    }
+                    const shared = flight, currentAttempt = attempt!;
+                    const abort = () => currentAttempt.abort(signal.reason);
+                    signal.addEventListener('abort', abort, { once: true });
+                    return shared.then(result => { signal.removeEventListener('abort', abort); signal.throwIfAborted();
+                        return { paper: { ...result.paper }, bytes: result.bytes.slice() }; },
+                    error => { signal.removeEventListener('abort', abort); throw error; });
                 },
                 release,
             };

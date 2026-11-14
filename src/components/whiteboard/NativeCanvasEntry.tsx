@@ -123,7 +123,17 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
         if (!board || identity.kind !== 'notebook') return;
         try {
             registerNativeNotebookExporter({ board, host: nativeCanvasHost, identity, onError,
-                writer: async (input, options) => (await import('../../pdf/writing/notebookClient')).buildNativeNotebookPdf(input, options) });
+                writer: revision => {
+                    let build: ReturnType<typeof import('../../pdf/writing/notebookClient').createNativeNotebookPdfBuild> | undefined;
+                    return async (input, options) => {
+                        if (!build) {
+                            const { createNativeNotebookPdfBuild } = await import('../../pdf/writing/notebookClient');
+                            options.signal?.throwIfAborted();
+                            build ??= createNativeNotebookPdfBuild(input, { revision });
+                        }
+                        return build.run(options.signal);
+                    };
+                } });
         } catch (cause) { onError(cause); }
     }, [acquired, identity, nativeCanvasHost, onError]);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session

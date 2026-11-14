@@ -15,12 +15,26 @@ export class MappingHistory {
     // Retain at least 250 ms even at very high frame rates.
     while (this.entries.length > 64 && mapping.time - this.entries[1].time >= 250) this.entries.shift()
   }
-  map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
+  private at(time: number): PresentedMapping {
     if (!this.entries.length) throw new Error('No presented input mapping')
     let i = this.entries.length - 1
     while (i > 0 && this.entries[i].time > time) i--
     if (time < this.entries[0].time) this.onExpired()
-    return this.entries[i].clientToWorld(x, y)
+    return this.entries[i]
+  }
+  map(time: number, x: number, y: number): { readonly x: number; readonly y: number } {
+    return this.at(time).clientToWorld(x, y)
+  }
+  /** Recover the physical input point through the SAME presented affine that
+   * acquired it. Reprojecting with a newer pan camera feeds motion back twice. */
+  unmap(time: number, point: { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } {
+    const mapping = this.at(time), o = mapping.clientToWorld(0, 0), x = mapping.clientToWorld(1, 0), y = mapping.clientToWorld(0, 1)
+    const a = x.x - o.x, b = x.y - o.y, c = y.x - o.x, d = y.y - o.y, determinant = a * d - b * c
+    if (![a, b, c, d, determinant, point.x, point.y].every(Number.isFinite) || determinant === 0) throw new RangeError('Invalid presented input affine')
+    const dx = point.x - o.x, dy = point.y - o.y
+    const result = { x: (d * dx - c * dy) / determinant, y: (-b * dx + a * dy) / determinant }
+    if (!Number.isFinite(result.x) || !Number.isFinite(result.y)) throw new RangeError('Presented input affine overflows')
+    return result
   }
 }
 

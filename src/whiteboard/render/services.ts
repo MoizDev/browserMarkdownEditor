@@ -26,6 +26,7 @@ import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
 import { prepareScenePaintSource } from './sceneSource';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
+import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 
 interface Prepared {
@@ -67,13 +68,15 @@ export function createBoardRenderServices(options: {
     readonly token: RenderToken;
     readonly palettes?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly deviceScale?: number;
+    readonly fonts?: BoardFonts;
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const textIds = new Set<NodeId>();
-    let serial = 0, disposed = false;
+    const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
+    let serial = 0, disposed = false, ownerReleased = false, holders = 1;
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
-    const text = createBoardTextGeometry({ cooperate: options.cooperate, onFontEpoch() {
+    const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);
@@ -81,6 +84,10 @@ export function createBoardRenderServices(options: {
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (disposed) throw new DOMException('Board rendering services disposed', 'AbortError');
+    };
+    const releaseHolder = () => {
+        if (--holders !== 0) return;
+        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -201,20 +208,65 @@ export function createBoardRenderServices(options: {
             throw new ApplyFailed('geometry-unavailable', 'Text faces must finish loading before a geometric content operation');
         }
     };
+    const preparedForChange = (doc: BoardDoc, node: Readonly<Node>) => {
+        for (const scope of changeScopes) {
+            const value = scope.get(node.id);
+            if (value && sameGeometrySignature(value.signature, signature(node, doc))) return value;
+        }
+        const value = cached.get(node.id);
+        return value && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
+    };
+    const warmChangeGeometry = async (ids: Iterable<NodeId>, signal: AbortSignal, scope?: Map<NodeId, Prepared>, leases?: { release(): void }[]) => {
+        check(signal);
+        const revision = options.doc.rev, seen = new Set<NodeId>(), queue = [...ids];
+        for (let at = 0; at < queue.length; at++) {
+            check(signal);
+            if (options.doc.rev !== revision) throw new DOMException('Board changed during geometry preparation', 'AbortError');
+            const id = queue[at];
+            if (seen.has(id)) continue;
+            seen.add(id);
+            const node = options.doc.nodes.get(id);
+            if (!node) continue;
+            if (leases) leases.push(retainPaintNodeResources(node, options.samples, options.media));
+            for (const connector of options.doc.attachedTo.get(id) ?? []) queue.push(connector);
+            if (node.kind === 'group' || node.kind === 'frame') for (const child of options.doc.children.get(id) ?? []) queue.push(child.id);
+            if (node.kind !== 'group') {
+                if (node.kind === 'connector') {
+                    if (node.start.attach) queue.push(node.start.attach.target);
+                    if (node.end.attach) queue.push(node.end.attach.target);
+                }
+                const label = text.prepareNow(node, { revision: `warm:${id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
+                if (label) {
+                    const keys = new Map<string, { family: typeof label.request.style.font; bold: boolean; italic: boolean }>();
+                    const base = { family: label.request.style.font, bold: false, italic: false };
+                    keys.set(JSON.stringify(base), base);
+                    for (const line of label.paint.lines) for (const fragment of line.fragments) {
+                        const key = text.faces.faces[fragment.face].key;
+                        keys.set(JSON.stringify(key), key);
+                    }
+                    for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required board font could not be loaded'); check(signal); }
+                }
+                const value = await prepare(node, options.doc, signal);
+                scope?.set(id, value);
+            }
+            if ((at & 63) === 63) await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        }
+        check(signal);
+        if (options.doc.rev !== revision) throw new DOMException('Board changed during geometry preparation', 'AbortError');
+    };
     const changeVector = (doc: BoardDoc, node: Readonly<Node>) => {
         check();
         if (node.kind === 'group' || node.kind === 'stroke' || node.kind === 'connector') return undefined;
         const key = `${options.token.session}:${node.id}:change:${++serial}`;
         if (node.kind !== 'opaque') requireLoadedText(text.prepareNow(node, { revision: key }));
-        const hit = cached.get(node.id);
-        if (hit && sameGeometrySignature(hit.signature, signature(node, doc)) && hit.vector) return hit.vector;
+        const hit = preparedForChange(doc, node);
+        if (hit?.vector) return hit.vector;
         return node.kind === 'opaque' ? undefined : prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
     };
     const changeGeometry = createBoardChangeGeometry({ vector: changeVector,
         local(doc, node) {
             if (node.kind === 'stroke') {
-                const hit = cached.get(node.id);
-                return hit && sameGeometrySignature(hit.signature, signature(node, doc)) ? hit.bounds : undefined;
+                return preparedForChange(doc, node)?.bounds;
             }
             const vector = changeVector(doc, node);
             return vector ? geometrySceneBounds(vector) : undefined;
@@ -227,43 +279,36 @@ export function createBoardRenderServices(options: {
     });
     return {
         text, bounds, changeGeometry,
-        prepareForPick(node: Readonly<Node>, signal: AbortSignal) { return prepare(node, options.doc, signal); },
+        /** A save/export pin may finish after its App session closes. Releasing
+         * the runtime owner must not invalidate that pin's geometry/fonts. */
+        retainRenderer() {
+            check();
+            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+            holders++;
+            let held = true;
+            return { release() { if (held) { held = false; releaseHolder(); } } };
+        },
+        prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
         /** Preflight actual font/ink inputs outside the synchronous writer.
          * Staged transforms still resolve through the doc passed by apply. */
-        async prepareChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal): Promise<void> {
+        prepareChangeGeometry: (ids: Iterable<NodeId>, signal: AbortSignal) => warmChangeGeometry(ids, signal),
+        /** Commands may touch more than the idle cache's 256 nodes. Their
+         * exact records/resources stay pinned until the synchronous writer ends. */
+        async pinChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal): Promise<{ release(): void }> {
             check(signal);
-            const revision = options.doc.rev, seen = new Set<NodeId>(), queue = [...ids];
-            for (let at = 0; at < queue.length; at++) {
-                check(signal);
-                if (options.doc.rev !== revision) throw new DOMException('Board changed during geometry preparation', 'AbortError');
-                const id = queue[at];
-                if (seen.has(id)) continue;
-                seen.add(id);
-                const node = options.doc.nodes.get(id);
-                if (!node) continue;
-                if (node.kind === 'group') { for (const child of options.doc.children.get(id) ?? []) queue.push(child.id); }
-                else {
-                    if (node.kind === 'connector') {
-                        if (node.start.attach) queue.push(node.start.attach.target);
-                        if (node.end.attach) queue.push(node.end.attach.target);
-                    }
-                    const label = text.prepareNow(node, { revision: `warm:${id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
-                    if (label) {
-                        const keys = new Map<string, { family: typeof label.request.style.font; bold: boolean; italic: boolean }>();
-                        const base = { family: label.request.style.font, bold: false, italic: false };
-                        keys.set(JSON.stringify(base), base);
-                        for (const line of label.paint.lines) for (const fragment of line.fragments) {
-                            const key = text.faces.faces[fragment.face].key;
-                            keys.set(JSON.stringify(key), key);
-                        }
-                        for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required board font could not be loaded'); check(signal); }
-                    }
-                    await prepare(node, options.doc, signal);
-                }
-                if ((at & 63) === 63) await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
-            }
-            check(signal);
-            if (options.doc.rev !== revision) throw new DOMException('Board changed during geometry preparation', 'AbortError');
+            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+            const scope = new Map<NodeId, Prepared>(), leases: { release(): void }[] = [];
+            try {
+                await warmChangeGeometry(ids, signal, scope, leases);
+                if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+            } catch (error) { for (const lease of leases) lease.release(); throw error; }
+            changeScopes.add(scope); holders++;
+            let held = true;
+            return { release() {
+                if (!held) return;
+                held = false; changeScopes.delete(scope); scope.clear();
+                try { for (const lease of leases) lease.release(); } finally { releaseHolder(); }
+            } };
         },
         /** Conservative native b hint only. Current-font TX3 layout is real
          * geometry, but a conservative connector/ink envelope is NOT a Scene
@@ -293,6 +338,6 @@ export function createBoardRenderServices(options: {
             return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        dispose() { if (!disposed) { disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); } },
+        dispose() { if (!ownerReleased) { ownerReleased = true; releaseHolder(); } },
     };
 }

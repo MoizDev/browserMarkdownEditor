@@ -27,7 +27,7 @@ export function createNativeViewPlatform(options: {
     const token = Object.freeze({ documentId: identity.documentId, session: identity.session,
         vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     return {
-        paneId, viewLease, backendPreference: viewer.getSnapshot().backendPreference,
+        paneId, viewLease, camera, backendPreference: viewer.getSnapshot().backendPreference,
         session: { mirrors: null, checkpoint: () => { if (board.hasPendingEdits()) board.checkpoint(); } },
         layout: viewer.getSnapshot().layout,
         readLayout: () => viewer.getSnapshot().layout,

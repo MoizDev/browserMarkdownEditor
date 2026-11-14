@@ -20,6 +20,7 @@ export interface BoardContentSource {
     readonly kind: 'deferred';
     readonly owner: SessionOwner;
     readonly revision: number;
+    retain?(): { release(): void };
     read(): string | Uint8Array | Blob | BuildJob;
 }
 export type SaveOutcome = 'written' | 'conflict' | 'failed';

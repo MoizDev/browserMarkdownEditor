@@ -24,7 +24,7 @@ export function isLocked(doc: BoardDoc, node: Node): boolean {
     }
     return false;
 }
-function selectedRoots(doc: BoardDoc, ids: Iterable<NodeId>): Node[] {
+export function selectedRoots(doc: BoardDoc, ids: Iterable<NodeId>): Node[] {
     const selected = new Set(ids), roots: Node[] = [];
     for (const id of selected) {
         const node = doc.nodes.get(id);

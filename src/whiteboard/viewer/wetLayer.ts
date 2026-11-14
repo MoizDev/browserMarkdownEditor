@@ -45,6 +45,10 @@ function sameToken(a: RenderToken, b: RenderToken): boolean {
 function available(frame: PaintFrame | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
     return !!frame && sameToken(frame.token, token) && frame.sceneRevision >= identity.nodeRevision && frame.inkNodeIds.has(identity.nodeId);
 }
+function visuallyCovered(frame: PaintFrame | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
+    return available(frame, identity, token) || !!frame && sameToken(frame.token, token)
+        && frame.sceneRevision >= identity.nodeRevision && !!frame.occludedInkNodeIds?.has(identity.nodeId);
+}
 function predictionSamples(g: CurveGeometry): SampleSequence {
     return { count: g.spanCount + 1,
         x: i => g.originX + g.cubics[i ? (i - 1) * 8 + 6 : 0],
@@ -177,7 +181,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 drawGpu() { throw new Error('Wet ink requires the Canvas2D board backend'); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
-                    const frame = options.readyFrame(), snapshots = handover?.forFrame(identity => available(frame, identity, options.token)) ?? [];
+                    const frame = options.readyFrame(), snapshots = handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             const item = prepared.get(snapshot.identity.gestureSequence);
@@ -213,10 +217,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         },
         revision: () => generation,
         cpuWorkingSet: () => ({ mandatoryBytes: reserved, prefetchBytes: 0 }),
-        critical: () => (handover?.forFrame(identity => available(options.readyFrame(), identity, options.token)) ?? [])
+        critical: () => (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: () => {
-            const missing = (handover?.forFrame(identity => available(options.readyFrame(), identity, options.token)) ?? [])
+            const missing = (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
                 .some(item => !prepared.has(item.identity.gestureSequence));
             return { complete: !missing, sharp: !missing };
         },

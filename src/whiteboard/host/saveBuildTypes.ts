@@ -20,10 +20,10 @@ export interface MediaRestorePorts {
 }
 export interface BoardBuildPorts {
     pinMedia(revision: number): PinnedMediaRestore;
-    pinPdf?(revision: number): PinnedPdfAssembly;
+    pinPdf?(revision: number, context: unknown): PinnedPdfAssembly;
 }
 export interface BoardBuildPinning {
-    pinBuild(base: PinnedBoardBuild, revision: number): PinnedBoardBuild;
+    pinBuild(base: PinnedBoardBuild, revision: number, context: unknown): PinnedBoardBuild;
     /** App session release cancels and releases all still-retained snapshots. */
     dispose(): void;
 }

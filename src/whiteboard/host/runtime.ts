@@ -1,7 +1,13 @@
 import { NoticeDispatcher } from '../change/notices';
 import type { HistorySnapshot, HistoryStepInfo, TextSelectionSnapshot } from '../change/historyTypes';
 import type { NodeId } from '../model/ids';
+import type { createBoardRenderServices } from '../render/services';
 import { SelectionState } from '../selection';
+import { createBoardToolState } from '../input/boardTools';
+import type { ToolState } from '../input/gesture';
+import { TOOLS } from '../model/styles';
+import { SampleStore } from '../ink/samples';
+import { createJobAuthority, type JobAuthority } from '../security/admission';
 import { SessionScene } from '../scene/sessionScene';
 import type { SessionSceneOptions } from '../scene/sessionScene';
 import { createBoardSession } from '../session/createBoardSession';
@@ -25,12 +31,18 @@ export type BoardRuntimeOptions = Omit<BoardSessionFactoryOptions, 'selection' |
     | 'historySnapshot' | 'restoreHistorySelection' | 'revealTouched' | 'finishGesture' | 'finishComposition'
     | 'beforeHistoryReplay' | 'historyLimitReached'> & {
         readonly scene: Omit<SessionSceneOptions, 'doc' | 'invalidate' | 'onError' | 'signal'>;
+        readonly render: ReturnType<typeof createBoardRenderServices>;
         onHistoryLimit(): void;
     };
 export interface BoardRuntime {
     readonly session: ComposedBoardSession;
     readonly selection: SelectionState;
+    readonly tools: ToolState;
+    readonly samples: SampleStore;
+    readonly jobs: JobAuthority;
     readonly media: BoardSessionFactoryOptions['media'];
+    readonly render: ReturnType<typeof createBoardRenderServices>;
+    readonly encoder: BoardSessionFactoryOptions['encoder'];
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
     bindView(sink: BoardRuntimeViewSink): () => void;
@@ -51,10 +63,14 @@ const notices = new NoticeDispatcher({
 export function getBoardRuntime(session: BoardSession): BoardRuntime | undefined { return runtimes.get(session); }
 
 export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
+    if (!(options.samples instanceof SampleStore)) throw new TypeError('Board runtime requires its canonical writable sample store');
+    const samples = options.samples;
     const first = options.doc.sheetOrder[0];
     if (!first) throw new Error('A board runtime needs a sheet');
     if (options.scene.token.documentId !== options.owner.documentId || options.scene.token.session !== options.owner.session) throw new Error('Scene token does not match board session');
-    const selection = new SelectionState(first.id), attached = new Set<Registration>(), controller = new AbortController();
+    const jobs = createJobAuthority(`${options.owner.documentId}:${options.owner.session}`, options.scene.token.vaultEpoch, options.owner.session);
+    const selection = new SelectionState(first.id), tools = createBoardToolState(options.doc.ui, options.doc.view.toolLock);
+    const attached = new Set<Registration>(), controller = new AbortController();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
@@ -99,6 +115,8 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
                 const sheet = options.doc.sheetOrder[0]; if (sheet) selection.setSheet(sheet.id);
             }
             selection.reconcile(options.doc);
+            if (applied.touched.board.has('ui.tool') && tools.getRegistration(options.doc.ui.tool)) tools.setTool(options.doc.ui.tool);
+            if (applied.touched.board.has('view.toolLock')) tools.setLocked(options.doc.view.toolLock);
             scene?.record(applied);
         },
         historySnapshot, restoreHistorySelection, revealTouched: reveal,
@@ -110,6 +128,19 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             return allowed;
         },
         historyLimitReached: options.onHistoryLimit,
+    });
+    const stopTools = tools.subscribe(() => {
+        const captured = tools.getSnapshot();
+        // Single-use completion happens at pointer-up, before asynchronous text
+        // and shape preflight commits. Persisting UI earlier would invalidate it.
+        void session.enqueueAfterGesture(controller.signal, () => {
+            if (disposed || session.isReadOnly || tools.getSnapshot() !== captured) return;
+            const ops: import('../change/ops').Op[] = [];
+            const persistedTool = TOOLS.find(tool => tool === captured.active.id);
+            if (persistedTool && options.doc.ui.tool !== persistedTool) ops.push({ t: 'board', key: 'ui.tool', value: persistedTool });
+            if (options.doc.view.toolLock !== captured.locked) ops.push({ t: 'board', key: 'view.toolLock', value: captured.locked });
+            if (ops.length) session.apply({ origin: 'host', label: 'Board tool preference', ops }).release();
+        }).catch(error => { if (!disposed && !controller.signal.aborted) report(error); });
     });
     const ready = (async () => {
         for (;;) {
@@ -129,7 +160,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     })();
     void ready.catch(() => {});
     const runtime: BoardRuntime = {
-        session, selection, media: options.media, ready,
+        session, selection, tools, samples, jobs, media: options.media, render: options.render, encoder: options.encoder, ready,
         get scene() { return scene; },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');
@@ -140,11 +171,11 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
             if (disposed) return;
-            disposed = true; controller.abort(); stopSelection();
+            disposed = true; jobs.dispose(); controller.abort(); stopSelection(); stopTools();
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);
-            try { scene?.dispose(); } finally { scene = null; session.dispose(); }
+            try { scene?.dispose(); } finally { scene = null; try { session.dispose(); } finally { options.render.dispose(); } }
         },
     };
     runtimes.set(session, runtime);

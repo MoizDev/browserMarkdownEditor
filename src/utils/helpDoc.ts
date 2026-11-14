@@ -351,8 +351,8 @@ The bar across the top of a notebook is its paper:
   it asks first and says how much, because that writing goes with it.
 
 ### Exporting a notebook to PDF
-The download icon in the top bar writes a PDF beside the notebook — \`Assignment
-3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
+Choose **⋯ → Export to PDF** in the notebook pane (or use its download button) to
+write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open.
 

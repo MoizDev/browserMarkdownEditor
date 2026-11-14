@@ -6,15 +6,26 @@ import { outlineGlyphBatches } from './outlineGlyphs';
 import type { Face, PaintFragment } from './paint';
 
 type HarfBuzzFont = import('harfbuzzjs').Font;
+type HarfBuzzBuffer = import('harfbuzzjs').Buffer;
 type GlyphPath = ReturnType<HarfBuzzFont['glyphToJson']>;
 interface FontEntry { readonly font: HarfBuzzFont; readonly paths: Map<number, { path: GlyphPath; bytes: number }>; bytes: number }
 interface FontSlot { promise: Promise<FontEntry>; readonly controller: AbortController; waiters: number; settled: boolean }
 const loaded = new Map<string, FontSlot>();
 const GLYPH_CACHE_BYTES = 512 * 1024;
 const COMMAND_CHUNK = 1024;
+const BUFFER_POOL_LIMIT = 4;
+const BUFFER_POOL_TEXT = 1024;
+const BUFFER_POOL_GLYPHS = 2048;
+const buffers: HarfBuzzBuffer[] = [];
 
 export interface PreparedTextOutline {
     commands(): AsyncGenerator<readonly PathCommand[]>;
+    release(): void;
+}
+
+function releaseBuffer(buffer: HarfBuzzBuffer, textLength: number, glyphCount: number): void {
+    buffer.reset();
+    if (textLength <= BUFFER_POOL_TEXT && glyphCount <= BUFFER_POOL_GLYPHS && buffers.length < BUFFER_POOL_LIMIT) buffers.push(buffer);
 }
 
 export function clearOutlineGlyphCaches(): void {
@@ -80,14 +91,16 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
     context: WorkerContext): Promise<PreparedTextOutline | null> {
     current(context);
     if (fragment.systemFallback || !face.loaded) return null;
+    let buffer: HarfBuzzBuffer | null = null, adopted = false, glyphCount = Infinity;
     try {
         const [hb, entry] = await Promise.all([import('harfbuzzjs'), outlineFont(face, context.signal)]);
         current(context);
-        const buffer = new hb.Buffer();
+        buffer = buffers.pop() ?? new hb.Buffer();
         buffer.addText(fragment.text); buffer.guessSegmentProperties();
         buffer.setDirection(fragment.rtl ? hb.Direction.RTL : hb.Direction.LTR);
         hb.shape(entry.font, buffer);
         const count = buffer.getLength(), upem = entry.font.face.upem;
+        glyphCount = count;
         if (!Number.isFinite(upem) || upem <= 0 || !Number.isSafeInteger(count) || count < 0
             || count > fragment.text.length * 8 + 1024) return null;
         let advance = 0, hasGlyphCommands = false;
@@ -108,11 +121,23 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
         if (!Number.isFinite(advance) || Math.abs(advance * 64 / upem - fragment.width * 64 / face.size) > 0.05) return null;
         if (!hasGlyphCommands && /\S/u.test(fragment.text)) return null;
         current(context);
-        const factor = face.size / upem;
+        const factor = face.size / upem, shaped = buffer;
+        let used = false, running = false, released = false, releaseRequested = false;
+        const release = () => {
+            if (released) return;
+            if (running) { releaseRequested = true; return; }
+            released = true;
+            releaseBuffer(shaped, fragment.text.length, glyphCount);
+        };
+        adopted = true;
         return {
+            release,
             async *commands(): AsyncGenerator<readonly PathCommand[]> {
+                if (used || released) throw new Error('Text outline is already consumed');
+                used = true; running = true;
+                try {
                 let commands: PathCommand[] = [], x = fragment.x, y = baseline;
-                for await (const batch of outlineGlyphBatches(hb, buffer, context)) for (const glyph of batch) {
+                for await (const batch of outlineGlyphBatches(hb, shaped, context)) for (const glyph of batch) {
                     current(context);
                     const originX = x + glyph.xOffset * factor, originY = y - glyph.yOffset * factor;
                     let px = 0, py = 0, startX = 0, startY = 0;
@@ -139,11 +164,17 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
                 }
                 current(context);
                 if (commands.length) yield commands;
+                } finally {
+                    running = false;
+                    if (releaseRequested) release();
+                }
             },
         };
     } catch {
         current(context);
         return null;
+    } finally {
+        if (buffer && !adopted) releaseBuffer(buffer, fragment.text.length, glyphCount);
     }
 }
 
@@ -152,6 +183,8 @@ export async function shapeTextFragment(fragment: PaintFragment, face: Face, bas
     const prepared = await prepareTextOutline(fragment, face, baseline, context);
     if (!prepared) return null;
     const commands: PathCommand[] = [];
-    for await (const chunk of prepared.commands()) commands.push(...chunk);
-    return commands;
+    try {
+        for await (const chunk of prepared.commands()) commands.push(...chunk);
+        return commands;
+    } finally { prepared.release(); }
 }

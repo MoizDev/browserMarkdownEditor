@@ -43,9 +43,11 @@ async function* produceTextOutline(payload: unknown, context: WorkerContext, chu
                 if (chunkPaths) {
                     const prepared = await prepareTextOutline(fragment, face, line.baseline, context);
                     if (prepared) {
-                        yield { kind: 'textPathStart', fill: color, blend: material.blend };
-                        for await (const commands of prepared.commands()) yield { kind: 'textPathChunk', commands };
-                        yield { kind: 'textPathEnd' };
+                        try {
+                            yield { kind: 'textPathStart', fill: color, blend: material.blend };
+                            for await (const commands of prepared.commands()) yield { kind: 'textPathChunk', commands };
+                            yield { kind: 'textPathEnd' };
+                        } finally { prepared.release(); }
                     } else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, localToWorld, color, pageScale, material.blend, fonts, context);
                 } else {
                     const commands = await shapeTextFragment(fragment, face, line.baseline, context);

@@ -6,6 +6,8 @@ import { regionPath } from '../geom/pick';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { orient2d } from '../geom/predicates';
+import { exactAffinePoint } from '../geom/exactAffine';
+import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
 import type { PathOp, Vec2 } from '../geom/path';
 import type { RegionQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
@@ -44,26 +46,36 @@ function stampView(a: ViewState, b: ViewState): boolean {
         && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
 }
 function stale(): DOMException { return new DOMException('Board region query became stale', 'AbortError'); }
-function clipPolygon(subject: readonly Vec2[], clip: readonly Vec2[]): Vec2[] {
-    let result = [...subject];
+function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec2[] {
+    // A single polygon cannot represent a disconnected intersection of a concave lasso and frame.
+    if (subject.length < 3 || subject.length > 4) throw new BoardRegionUncertain('Frame clipping requires a certified convex region');
+    let winding = 0;
+    for (let i = 0; i < subject.length; i++) {
+        const side = orient2d(subject[i], subject[(i + 1) % subject.length], subject[(i + 2) % subject.length]);
+        if (!side || (winding && Math.sign(side) !== winding)) throw new BoardRegionUncertain('Frame clipping requires a certified convex region');
+        winding = Math.sign(side);
+    }
+    let result = subject.map(exactPoint);
     for (let side = 0; side < 4 && result.length; side++) {
-        const a = clip[side], b = clip[(side + 1) % 4], input = result; result = [];
-        let previous = input[input.length - 1], prevSide = orient2d(a, b, previous);
+        const line = exactLineBetween(clip[side], clip[(side + 1) % 4]), input = result; result = [];
+        let previous = input[input.length - 1], prevSide = exactSide(line, previous);
         for (const point of input) {
-            const currentSide = orient2d(a, b, point);
+            const currentSide = exactSide(line, point);
             if ((currentSide >= 0) !== (prevSide >= 0)) {
-                const ex = b.x - a.x, ey = b.y - a.y, dx = point.x - previous.x, dy = point.y - previous.y;
-                const denominator = ex * dy - ey * dx, numerator = ex * (a.y - previous.y) - ey * (a.x - previous.x);
-                if (!Number.isFinite(denominator) || !Number.isFinite(numerator) || denominator === 0) throw new BoardRegionUncertain('Frame intersection is numerically ambiguous');
-                const t = numerator / denominator, x = previous.x + t * dx, y = previous.y + t * dy;
-                if (![t, x, y].every(Number.isFinite) || t < 0 || t > 1) throw new BoardRegionUncertain('Frame intersection is numerically ambiguous');
-                result.push({ x, y });
+                const intersection = exactIntersection(line, exactLineBetween(previous, point));
+                if (!intersection) throw new BoardRegionUncertain('Frame intersection is numerically ambiguous');
+                result.push(intersection);
             }
             if (currentSide >= 0) result.push(point);
             previous = point; prevSide = currentSide;
         }
     }
-    return result;
+    return result.map(point => {
+        const intervals = exactPointIntervals(point);
+        if (intervals.x.lo !== intervals.x.hi || intervals.y.lo !== intervals.y.hi)
+            throw new BoardRegionUncertain('Frame intersection cannot be represented exactly');
+        return { x: intervals.x.lo, y: intervals.y.lo };
+    });
 }
 export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     const { runtime } = options;
@@ -124,8 +136,9 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         if (!fullyVisible) {
                             if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                             const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
-                                { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => transformPoint(frameCss, p));
+                                { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
                             localPoints = clipPolygon(localPoints, polygon);
+                            if (!localPoints.length) return;
                             if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                         }
                     }

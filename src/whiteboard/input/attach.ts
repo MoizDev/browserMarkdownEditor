@@ -7,7 +7,7 @@ import { LiveInk, WetInkHandover } from './liveInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
-import { predictedTail, type PredictionMapping } from './prediction'
+import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
@@ -52,6 +52,7 @@ export interface BoardInputServices {
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   linkAt?(sample: RealSample): (() => void) | null
+  continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
@@ -81,6 +82,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let spaceHeld = false
   let zoomHeld = false
   let temporaryPan = false
+  let pendingPrediction: readonly PredictedPoint[] | undefined
   let suppressMenu = false
   const touchAdmission = new Map<number, boolean>()
   const handContext: HandContext = {
@@ -165,6 +167,18 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null
       completeTool = true
+      if (choice.id === 'pen' && modifiers.shift) {
+        const commit = services.continueInk?.(sample)
+        if (commit) {
+          const continuation: Tool<unknown> = { id: 'continue-ink', begin: () => {
+            let endpoint = sample
+            return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
+              update: samples => { if (samples.length) endpoint = samples[samples.length - 1] },
+              finish: reason => { if (reason === 'up') commit(endpoint) }, cancel: () => {}, }
+          } }
+          return { tool: continuation, context: undefined }
+        }
+      }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
       return services.resolveTool(choice, sample, modifiers, event)
     },
@@ -172,12 +186,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (reason === 'up' && start && completeTool) services.tools.complete(start)
       completeTool = false
       temporaryPan = false
+      pendingPrediction = undefined
       start = null
       activeSource = null
     },
     prediction(id, event) {
       if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk) || !router.activeOwner.pointerIds.has(id)) return
-      router.activeOwner.publishPrediction(event ? predictedTail(event, view.predictionMapping(), 16) : [])
+      pendingPrediction = event ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
     contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
@@ -224,12 +239,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('lostpointercapture', up, true)
   const stopWet = view.wet.attach(handover)
   const stopFrame = view.wet.onInputFrame(() => {
-    if (current() && router.activeOwner instanceof LiveInk) router.activeOwner.publish()
+    if (current() && router.activeOwner instanceof LiveInk) {
+      if (pendingPrediction) router.activeOwner.publishPrediction(pendingPrediction)
+      else router.activeOwner.publish()
+    }
+    pendingPrediction = undefined
   })
   const stopWheel = installWheel(view.surface, {
     camera: view.camera, paged: view.paged, toSurface: view.clientToSurface,
     owns: event => current() && services.ownsWheel(event),
-    changed: () => { if (router.activeOwner instanceof LiveInk) router.activeOwner.publishPrediction([]); services.cameraChanged() },
+    changed: () => { if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }; services.cameraChanged() },
   })
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,

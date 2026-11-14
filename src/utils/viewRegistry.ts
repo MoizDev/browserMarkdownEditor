@@ -153,6 +153,7 @@ export interface CanvasShapePage {
     revision: number;
     nextOffset?: number;
     revisionChanged?: true;
+    sections?: readonly { readonly offset: number; readonly name: string; readonly index: number }[];
 }
 
 /** The agent's hands on a canvas document (drawing, notebook, PDF annotate). */

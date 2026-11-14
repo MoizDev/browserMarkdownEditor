@@ -65,6 +65,7 @@ export type ComposedBoardSession = BoardSession & SessionAdapter & {
     readonly readOnlyReason: string | null;
     mediaReferences(): readonly string[];
     mediaReferenceIssues(): readonly MediaId[];
+    onPending(listener: () => void): () => void;
     flushNow(): void;
     pageHide(): void;
     hidden(): void;

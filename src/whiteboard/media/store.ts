@@ -1,6 +1,6 @@
 import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 
-export type MediaHolder = 'document' | 'history' | 'clipboard';
+export type MediaHolder = 'document' | 'history' | 'clipboard' | 'snapshot' | 'journal';
 interface StoredMedia {
     readonly blob: Blob;
     readonly holders: Map<MediaHolder, number>;
@@ -85,12 +85,12 @@ export class MediaStore {
         const retained = new Set<MediaId>();
         for (const [id, entry] of this.entries) {
             entry.holders.delete('document'); entry.holders.delete('history');
-            if (entry.holders.get('clipboard')) retained.add(id);
+            if (entry.holders.size) retained.add(id);
             else this.entries.delete(id);
         }
         for (const [id, counts] of this.pending) {
             counts.delete('document'); counts.delete('history');
-            if (counts.get('clipboard')) retained.add(id);
+            if (counts.size) retained.add(id);
             else this.pending.delete(id);
         }
         for (const id of this.locations.keys()) if (!retained.has(id)) this.locations.delete(id);

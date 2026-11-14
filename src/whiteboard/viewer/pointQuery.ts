@@ -16,6 +16,7 @@ import { dyadicMultiply, dyadicSubtract } from '../geom/numeric';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
+import { createClippedVectorPointJob } from '../geom/clippedVectorPointJob';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { InkCoverage } from '../ink/outline';
@@ -273,12 +274,12 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                             void vector.key;
                             const descriptor = vectorNarrowDescriptor(vector);
                             if (descriptor) {
-                                const job = createVectorPointJob(descriptor, query);
+                                const job = frameClips.length ? createClippedVectorPointJob(descriptor, query, frameClips) : createVectorPointJob(descriptor, query);
                                 try {
                                     for (;;) {
                                         const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                                         if (value.status === 'pending') { await tick(); continue; }
-                                        if (value.status === 'hit') result = value.result;
+                                        if (value.status === 'hit') { result = value.result; if (frameClips.length) clipUncertain = false; }
                                         else if (value.status === 'uncertain') { result = { hit: true, distanceCss: 0, part: value.part }; ambiguous = true; }
                                         break;
                                     }

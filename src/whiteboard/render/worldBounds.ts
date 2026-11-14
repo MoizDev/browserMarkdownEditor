@@ -3,6 +3,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { Box } from '../geom/bounds';
 import { createConvexClipJob, type ConvexClipPolygon } from '../geom/convexClip';
+import { createConvexPathEnvelopeJob } from '../geom/convexPathEnvelope';
 import { createClippedTubeBoundsJob, type ClippedTubeClip, type TubeCurve } from '../geom/clippedTubeBounds';
 import { createFillPointJob } from '../geom/fillPoint';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -89,25 +90,48 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
     const clipEnvelope = async (clips: readonly PaintClip[]): Promise<ClippedTubeClip | 'empty' | null> => {
         if (!clips.length) return null;
         const cached = clipCache.get(clips); if (cached) return cached.value;
-        const polygons: ConvexClipPolygon[] = [];
+        const innerPolygons: ConvexClipPolygon[] = [], outerPolygons: ConvexClipPolygon[] = [], temporary: ByteLease[] = [];
+        let hasCurve = false;
         for (const clip of clips) {
             const points: Vec2[] = [];
             if (clip.fillRule !== 'nonzero') throw new BoardBoundsUncertified(`Non-convex exclusion clip ${clip.key}`);
-            let closed = false;
+            let closed = false, curved = false, moved = false;
             for (const command of clip.d) {
-                if ((command[0] === 'M' && points.length) || command[0] === 'C') throw new BoardBoundsUncertified(`Curved or multiple clip contour ${clip.key}`);
+                if (command[0] === 'M') { if (moved) throw new BoardBoundsUncertified(`Multiple clip contours ${clip.key}`); moved = true; }
                 if (command[0] === 'Z') closed = true;
+                else if (command[0] === 'C') curved = true;
                 else points.push({ x: command[1], y: command[2] });
                 await checkpoint();
             }
-            if (!closed || points.length < 3) throw new BoardBoundsUncertified(`Open or empty clip ${clip.key}`);
-            polygons.push({ points, localToWorld: clip.localToWorld });
+            if (!closed) throw new BoardBoundsUncertified(`Open clip ${clip.key}`);
+            if (curved) {
+                // The inner curve polygon is a genuine subset; the outer
+                // control hull is a superset. Never turn a flattened ellipse's
+                // midpoint error into an exact clipping authority.
+                hasCurve = true; temporary.push(reserve(32768 * 1024));
+                const envelope = await finishJob(createConvexPathEnvelopeJob(await readPath(clip.d), clip.localToWorld,
+                    tolerance / 4, { maxLeaves: 4096, maxPoints: 32768 }));
+                if (envelope.status === 'uncertain') throw new BoardBoundsUncertified(envelope.reason);
+                innerPolygons.push(envelope.inner); outerPolygons.push(envelope.outer);
+            } else {
+                if (points.length < 3) throw new BoardBoundsUncertified(`Empty clip ${clip.key}`);
+                const polygon = { points, localToWorld: clip.localToWorld };
+                innerPolygons.push(polygon); outerPolygons.push(polygon);
+            }
         }
-        const vertices = polygons.reduce((count, polygon) => count + ('points' in polygon ? polygon.points.length : polygon.length), 0);
-        const lease = reserve(vertices * 8192 + 1024 * 1024);
-        const result = await finishJob(createConvexClipJob(polygons, tolerance / 16));
+        const count = (polygons: readonly ConvexClipPolygon[]) => polygons.reduce((n, polygon) => n + ('points' in polygon ? polygon.points.length : polygon.length), 0);
+        const lease = reserve((count(outerPolygons) + (hasCurve ? count(innerPolygons) : 0)) * 8192 + 1024 * 1024);
+        const result = await finishJob(createConvexClipJob(outerPolygons, tolerance / 32));
         if (result.status === 'uncertain') throw new BoardBoundsUncertified(result.reason);
-        const value = result.status === 'empty' ? 'empty' : { inner: result.inner, outer: result.outer };
+        let value: ClippedTubeClip | 'empty';
+        if (result.status === 'empty') value = 'empty';
+        else if (!hasCurve) value = { inner: result.inner, outer: result.outer };
+        else {
+            const inside = await finishJob(createConvexClipJob(innerPolygons, tolerance / 32));
+            if (inside.status === 'uncertain') throw new BoardBoundsUncertified(inside.reason);
+            value = { inner: inside.status === 'empty' ? [] : inside.inner, outer: result.outer };
+        }
+        for (const allocation of temporary) release(allocation);
         for (const prior of clipCache.values()) if (prior.lease) release(prior.lease);
         clipCache.clear();
         if (value === 'empty') { release(lease); clipCache.set(clips, { value }); }

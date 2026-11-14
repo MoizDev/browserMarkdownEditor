@@ -68,8 +68,11 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
             if (include && !include(node, nodePage)) continue;
             if (total >= offset && shapes.length < limit && !exhausted) {
                 const summary = await boundedSummary(node, geometry, nodePage, guard), size = JSON.stringify(summary).length + 1;
-                if (chars + size > 58_500) exhausted = true;
-                else {
+                if (chars + size > 58_500) {
+                    // A continuation must advance; never return a cursor that repeats forever.
+                    if (!shapes.length) throw new RangeError('Shape summary exceeds the agent response budget');
+                    exhausted = true;
+                } else {
                     if (labelled && !started) { sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) }); started = true; }
                     shapes.push(summary); chars += size;
                 }

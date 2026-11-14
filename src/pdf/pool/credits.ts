@@ -12,8 +12,9 @@ export class TileCredits {
     constructor(private readonly changed: () => void) {}
 
     reserve(args: PageTileArgs): (() => void) | null {
-        const { w, h } = args.rect;
-        if (!Number.isSafeInteger(w) || !Number.isSafeInteger(h) || w < 1 || h < 1) throw new RangeError('Invalid PDF tile extent');
+        const { x, y, w, h } = args.rect;
+        if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !Number.isSafeInteger(w) || !Number.isSafeInteger(h) || w < 1 || h < 1 ||
+            !Number.isFinite(args.scale) || args.scale <= 0) throw new RangeError('Invalid PDF tile extent');
         const size = (w + 2) * (h + 2) * 4;
         if (!Number.isSafeInteger(size) || size > MAX_BYTES) throw new RangeError('PDF tile exceeds reply credit');
         if (this.count >= MAX_REPLIES || this.bytes + size > MAX_BYTES) return null;

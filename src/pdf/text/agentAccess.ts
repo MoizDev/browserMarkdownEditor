@@ -18,13 +18,13 @@ export function createClosedPdfAgentAccess(pool: PdfPool, capture: (path: string
     return {
         async read(path, bytes, first, maxPages, maxChars, signal) {
             const { options, current } = open(path, bytes, signal);
-            const result = await readPdfAgentText(pool, options, first, maxPages, maxChars, signal);
+            const result = await readPdfAgentText(pool, options, first, maxPages, maxChars, signal, current);
             if (!current()) throw new DOMException('PDF session changed', 'AbortError');
             return result;
         },
         async render(path, bytes, page, maxSide, signal) {
             const { options, current } = open(path, bytes, signal);
-            const result = await renderPdfAgentPage(pool, options, page, maxSide, signal);
+            const result = await renderPdfAgentPage(pool, options, page, maxSide, signal, current);
             if (!current()) throw new DOMException('PDF session changed', 'AbortError');
             return result;
         },

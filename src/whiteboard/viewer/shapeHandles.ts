@@ -78,11 +78,11 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         const path = polylinePath({ ...node, points: actual.points });
                         for (let index = 1; index < path.length; index++) {
                             const segment = path[index], a = actual.points[index - 1];
-                            if (segment.op !== 'L' && segment.op !== 'C') continue;
-                            const p = segment.op === 'L'
-                                ? { x: (a.x + segment.p.x) / 2, y: (a.y + segment.p.y) / 2 }
-                                : { x: (a.x + 3 * segment.c1.x + 3 * segment.c2.x + segment.p.x) / 8,
-                                    y: (a.y + 3 * segment.c1.y + 3 * segment.c2.y + segment.p.y) / 8 };
+                            let p: Vec2;
+                            if (segment.op === 'L') p = { x: (a.x + segment.p.x) / 2, y: (a.y + segment.p.y) / 2 };
+                            else if (segment.op === 'C') p = { x: (a.x + 3 * segment.c1.x + 3 * segment.c2.x + segment.p.x) / 8,
+                                y: (a.y + 3 * segment.c1.y + 3 * segment.c2.y + segment.p.y) / 8 };
+                            else continue;
                             next.push({ hit: { kind: 'polyline-midpoint', index }, point: world(p) });
                         }
                     } finally { actual.release(); }

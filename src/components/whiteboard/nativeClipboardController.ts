@@ -108,7 +108,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
                         containsFrame: [...acquired.load.doc.nodes.values()].some(node => node.kind === 'frame'), doc, cameraZoom: zoom, intent });
                     transferred = true;
                     await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
-                        current: targetCurrent, signal: context.signal });
+                        receivingBoardId: identity.documentId, external: false, current: targetCurrent, signal: context.signal });
                 } finally { if (!transferred) { staged?.release(); acquired.dispose(); } }
             };
             if (duplicate) {

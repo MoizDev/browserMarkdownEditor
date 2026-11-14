@@ -5,7 +5,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import { attachBoardInput, type BoardInputMode, type BoardInputServices, type BoardInputView, type BoardWetLayer } from '../input/attach';
-import { MappingHistory } from '../input/pointer';
+import { MappingHistory, presentedMapping } from '../input/pointer';
 import type { InputToken, RealSample } from '../input/tool';
 import type { BoardSession } from '../session/BoardSession';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
@@ -47,6 +47,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const token = Object.freeze({ ...options.token }), inputToken = Object.freeze({ ...options.inputToken });
     let disposed = false, enabled = false, attached: (() => void) | null = null, flush: (() => void) | null = null;
     let binding: { surface: HTMLElement; overlay: HTMLElement } | null = null, presented: PlatformPresentation | null = null;
+    let presentedAt = 0;
     const contacts = new Set<number>();
     const scheduled = new Set<() => void>();
     const current = () => !disposed && options.visible() && options.current(token);
@@ -76,8 +77,10 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     };
     const sampleToSurface = (sample: RealSample): Point => {
         if (sample.source === 'keyboard') return worldToSurface(sample, options.camera.camera);
+        if (typeof sample.surfaceX === 'number' && typeof sample.surfaceY === 'number'
+            && Number.isFinite(sample.surfaceX) && Number.isFinite(sample.surfaceY)) return { x: sample.surfaceX, y: sample.surfaceY };
         const client = mappings.unmap(sample.time, sample);
-        return clientToSurface(client.x, client.y);
+        return mappings.surface(sample.time, client.x, client.y);
     };
     const connect = () => {
         if (!binding || attached || !enabled || !current()) return;
@@ -142,13 +145,15 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             safe(() => {
                 const rect = binding!.surface.getBoundingClientRect(), viewport = frame.view.viewport, camera = { ...frame.view.camera };
                 if (rect.width > 0 && rect.height > 0 && viewport.width > 0 && viewport.height > 0) {
-                    const left = rect.left, top = rect.top, width = rect.width, height = rect.height;
-                    mappings.present({ time: frame.timestamp, clientToWorld: (x, y) => surfaceToWorld({ x: (x - left) * viewport.width / width, y: (y - top) * viewport.height / height }, camera) });
+                    mappings.present(presentedMapping(presentedAt, rect, viewport, camera));
                 }
                 options.overlays?.write(frame, binding!.overlay);
             });
         },
-        onPresentation(value: PlatformPresentation | null) { presented = value && current() && sameToken(value.token, token) ? value : null; },
+        onPresentation(value: PlatformPresentation | null) {
+            presented = value && current() && sameToken(value.token, token) ? value : null;
+            if (presented) presentedAt = performance.now();
+        },
         dispose() {
             if (disposed) return;
             stopAttachment(); scheduled.clear(); disposed = true; binding = null; presented = null;

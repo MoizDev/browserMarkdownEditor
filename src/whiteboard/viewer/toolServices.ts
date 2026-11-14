@@ -15,7 +15,6 @@ import { zoomBrushTool } from '../input/zoomBrush';
 import { FIGURE_SHAPES, type FigureShape } from '../model/styles';
 import type { PaintImageProvider } from '../render/resources';
 import { textTool } from '../text/edit/tool';
-import { selectTool } from '../tools/select';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
 import { createBoardInkServices } from './inkServices';
@@ -96,7 +95,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const region = createBoardRegionQuery({ runtime, geometry: runtime.render, camera: options.view,
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
     const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error });
-    const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, point, region, preview,
+    const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
+        surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames,
         editSticky: async id => { await text.editText(id); }, onError: ui.error });
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
@@ -146,7 +146,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const resolve = (choice: ToolChoice, sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
         switch (choice.id) {
-            case 'select': return route(selectTool, select.select);
+            case 'select': return route(select.tool, undefined);
             case 'eraser': return route(eraserTool, select.eraser);
             case 'laser': return route(laserTool, laserContext);
             case 'zoom': return route(zoomBrushTool, zoom);
@@ -161,6 +161,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
                 return route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+                    sampleToSurface: options.sampleToSurface, guides: select.setGuides,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
                         { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error });
@@ -182,7 +183,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     options.surface.addEventListener('paste', paste);
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
-        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen, commands: options.commands,
+        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
+        commands: { run: (id, event) => select.command(id) || options.commands.run(id, event) },
         ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,

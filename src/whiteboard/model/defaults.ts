@@ -34,7 +34,7 @@ export const NODE_DEFAULTS = {
     polyline: { startAttach: null, endAttach: null },
     frame: {},
     group: {},
-    picture: {},
+    picture: { playing: true },
     clip: {},
     linkcard: {},
     embed: {},

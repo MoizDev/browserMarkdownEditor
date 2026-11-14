@@ -1,3 +1,5 @@
+import type { ExtBag } from './json';
+
 // document-model.md §7, M-7: names persist; the scene packs their stable indices.
 export const SWATCHES = [
     'black', 'grey', 'light-violet', 'violet', 'blue', 'light-blue', 'yellow',
@@ -59,4 +61,5 @@ export interface UiBlock {
     readonly tool: ToolId;
     readonly next: NextStyles;
     readonly penWidth: number;
+    readonly ext: ExtBag | null;
 }

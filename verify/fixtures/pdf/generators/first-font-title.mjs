@@ -1,7 +1,9 @@
 // Authored first-font control; proposed CC0-1.0 awaits the owner.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pdfBuilder, parseArgs, fixtureWriter, jsonBytes } from './rtl-cjk-unicode.mjs';
+import { parseArgs } from '../../lib/cli.mjs';
+import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
+import { pdfBuilder } from './rtl-cjk-unicode.mjs';
 
 export async function generateFirstFont(out, seed) {
     const title = 'First font cache collision';

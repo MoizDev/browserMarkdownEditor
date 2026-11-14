@@ -21,7 +21,8 @@ import type { NodeId } from '../model/ids';
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
-import { selectTool, type SelectRegion, type SelectToolContext } from '../tools/select';
+import type { SelectRegion, SelectToolContext } from '../tools/select';
+import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
@@ -386,8 +387,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return navigate(id) || transform(id);
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
-    const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
-        return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
+    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle };
+    const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
+        return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },

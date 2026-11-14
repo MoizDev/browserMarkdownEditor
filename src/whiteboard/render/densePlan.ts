@@ -50,7 +50,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.tile?.cancel(); p.tile = null; p.bounds.dispose();
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.bitmaps.values()) bitmap.release(); p.bitmaps.clear();
-        p.commands.length = 0; p.outputs.underlay.length = p.outputs.content.length = 0;
+        p.commands.length = 0;
+        // Published arrays are immutable and may still be borrowed by the preceding GPU plan.
+        p.outputs = { underlay: [], content: [] };
         p.direct.underlay.length = p.direct.content.length = 0;
         if (p.directLease) { host.allocator.cpu.release(p.directLease); p.directLease = null; }
         for (const block of p.blocks) host.allocator.cpu.release(block); p.blocks.length = 0;

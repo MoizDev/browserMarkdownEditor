@@ -169,7 +169,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // CPU's detached complete-frame buffer and a staged GPU backing can coexist.
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + 2 * requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
-                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0),
+                // New panes need admission before their first raster exists; live bytes alone
+                // would grant zero CPU credit and prevent every first tile from arriving.
+                cpuNeedBytes: Math.max(memory.reduce((sum, value) => sum + value.cpuBytes, 0),
+                    requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel),
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,

@@ -116,7 +116,7 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
     host: AsyncTransformGestureHost): GestureOwner {
     if (modifiers.alt) return new AsyncTransformGesture<DuplicateDragPreview>(sample, modifiers, async signal => {
         const plan = await createDuplicateDragPlan({ ...options, down: sample, signal });
-        return { preview: (point, keys, request) => plan.preview(point, keys.shift, keys.accel, request),
+        return { preview: (point, keys, request, commit) => plan.preview(point, keys.shift, keys.accel, request, commit),
             display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
     }, host);
     type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview;

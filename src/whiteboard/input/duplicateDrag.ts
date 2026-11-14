@@ -14,6 +14,7 @@ import { createNode, type ConnectorNode, type Node } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { boardPageStack } from '../model/pages';
+import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 
 export interface DuplicateDragPreview {
     readonly ops: readonly Op[];
@@ -21,7 +22,7 @@ export interface DuplicateDragPreview {
     readonly guides: readonly BoardSnapGuide[];
 }
 export interface DuplicateDragPlan {
-    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal): Promise<DuplicateDragPreview>;
+    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, commit?: boolean): Promise<DuplicateDragPreview>;
     commit(value: DuplicateDragPreview): void;
     cancel(): void;
 }
@@ -70,8 +71,9 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
         for (let i = 0; i < values.length; i++) { order.set(values[i], keys[i]); await tick(); }
     }
     const translation = await createBoardTranslationPlan({ ...options, signal });
-    let latest: { readonly value: DuplicateDragPreview; readonly scope: BoardGeometryScope | null; readonly request: AbortSignal; readonly serial: number } | undefined;
-    const clear = () => { latest?.scope?.release(); latest = undefined; };
+    let latest: { readonly value: DuplicateDragPreview; readonly scope: BoardGeometryScope | null; readonly drop: FrameDropPlan | null;
+        readonly request: AbortSignal; readonly serial: number } | undefined;
+    const clear = () => { try { latest?.scope?.release(); } finally { latest?.drop?.release(); latest = undefined; } };
     const close = () => { if (closed) return; closed = true; serial++; clear(); translation.cancel(); };
     const clonedRoots = Object.freeze(roots.map(node => ids.get(node.id)!));
     const rawFor = (node: Readonly<Node>, changes: readonly NodeSetOp[]) => {
@@ -84,16 +86,24 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
     const attachment = (value: ConnectorNode['start']['attach']) => value
         ? { ...value, target: ids.get(value.target) ?? value.target } : null;
     return {
-        async preview(point, shift, accel, request) {
+        async preview(point, shift, accel, request, commit = false) {
             check(request); const turn = ++serial;
             const base = await translation.preview(point, shift, accel, request); check(request);
             if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
             if (!base.ops.length) {
                 clear(); const value = Object.freeze({ ops: Object.freeze([]), roots: clonedRoots, guides: base.guides });
-                latest = { value, scope: null, request, serial: turn }; return value;
+                latest = { value, scope: null, drop: null, request, serial: turn }; return value;
             }
-            const changes = new Map<NodeId, NodeSetOp[]>();
+            let drop: FrameDropPlan | null = null, scope: BoardGeometryScope | undefined;
+            try {
+            if (commit) drop = await prepareFrameDrop({ runtime, ids: options.ids, preview: base, signal: request, current, cooperate });
+            check(request); if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
+            const changes = new Map<NodeId, NodeSetOp[]>(), placements = new Map<NodeId, NodeSetOp[]>();
             for (const op of base.ops) { const list = changes.get(op.id) ?? []; list.push(op); changes.set(op.id, list); await tick(request); }
+            for (const op of drop?.ops ?? []) {
+                if (!rootSet.has(op.id) || !['parent', 'page', 'x', 'y', 'rotation'].includes(op.key)) continue;
+                const list = placements.get(op.id) ?? []; list.push(op); placements.set(op.id, list); await tick(request);
+            }
             const additions: Node[] = [];
             for (const original of originals) {
                 check(request); const moved = base.doc.nodes.get(original.id);
@@ -102,14 +112,23 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 if (!parent) throw new Error('Duplicate hierarchy is incomplete');
                 let node = createNode({ ...moved, id: ids.get(original.id)!, parent, order: root ? order.get(original.id)! : original.order,
                     ext: rawFor(original, changes.get(original.id) ?? []) });
+                for (const patch of placements.get(original.id) ?? []) node = { ...node, [patch.key]: patch.value } as Node;
                 if (node.kind === 'connector') node = { ...node,
                     start: { ...node.start, attach: attachment(node.start.attach) }, end: { ...node.end, attach: attachment(node.end.attach) } };
                 else if (node.kind === 'polyline') node = { ...node, startAttach: attachment(node.startAttach), endAttach: attachment(node.endAttach) };
                 additions.push(node); await tick(request);
             }
+            if (drop) {
+                const rootIds = new Set(clonedRoots), byParent = new Map<ParentId, number[]>();
+                for (let i = 0; i < additions.length; i++) if (rootIds.has(additions[i].id)) {
+                    const parent = additions[i].parent, indices = byParent.get(parent) ?? []; indices.push(i); byParent.set(parent, indices);
+                }
+                for (const [parent, indices] of byParent) {
+                    const keys = keysBetween(doc.children.get(parent)?.at(-1)?.order ?? null, null, indices.length);
+                    for (let i = 0; i < indices.length; i++) { const index = indices[i]; additions[index] = { ...additions[index], order: keys[i] }; await tick(request); }
+                }
+            }
             const candidate = createAddedBoardDoc(doc, additions);
-            let scope: BoardGeometryScope | undefined;
-            try {
                 scope = await acquireBoardGeometryScope(runtime, clonedRoots, { doc: candidate, signal: request, current, cooperate });
                 check(request); if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
                 let deepest = -Infinity;
@@ -131,8 +150,8 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 const ops: Op[] = [...(growth ? [growth] : []), ...final.map(node => ({ t: 'create' as const, node }))];
                 check(request); if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
                 const value = Object.freeze({ ops: Object.freeze(ops), roots: clonedRoots, guides: base.guides });
-                clear(); latest = { value, scope, request, serial: turn }; scope = undefined; return value;
-            } finally { scope?.release(); }
+                clear(); latest = { value, scope, drop, request, serial: turn }; scope = undefined; drop = null; return value;
+            } finally { try { scope?.release(); } finally { drop?.release(); } }
         },
         commit(value) {
             try {

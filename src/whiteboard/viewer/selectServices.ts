@@ -20,6 +20,7 @@ import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../in
 import type { NodeId } from '../model/ids';
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
+import { prepareFrameDrop } from '../input/frameDrop';
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
@@ -217,7 +218,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
                     alwaysSnap: () => false, current: active, signal: controller.signal });
                 const preview = await plan.preview({ x: delta.x * scale, y: delta.y * scale }, false, false, controller.signal);
-                if (active()) await presentAndCommit(preview.ops, controller.signal, active, () => plan!.commit(preview));
+                const drop = preview.ops.length ? await prepareFrameDrop({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
+                try {
+                    if (active()) {
+                        const ops = drop ? [...preview.ops, ...drop.ops] : preview.ops;
+                        await presentAndCommit(ops, controller.signal, active, () => {
+                            if (!drop) { plan!.commit(preview); return; }
+                            const applied = session.apply({ origin: 'tool', label: 'Move selection', ops }); applied.release();
+                            plan!.cancel();
+                        });
+                    }
+                } finally { drop?.release(); }
             } catch (error) { if (active()) report(error); }
             finally { try { plan?.cancel(); } finally { try { unregister?.(); } finally { release(); } } }
         });

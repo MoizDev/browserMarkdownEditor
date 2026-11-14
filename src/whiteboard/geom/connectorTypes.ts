@@ -1,6 +1,7 @@
 import type { Affine, Rect } from '../../platform/types';
 import type { NodeId } from '../model/ids';
 import type { ConnectorNode } from '../model/nodes';
+import type { Arrowhead } from '../model/styles';
 import type { TextPaint } from '../text/paint';
 import type { PathOp, Vec2 } from './path';
 
@@ -39,6 +40,24 @@ export type ConnectorGeometryResult =
     | Readonly<{ status: 'ready'; geometry: ConnectorGeometry }>
     | Readonly<{ status: 'pending'; reason: 'target' | 'text' | 'budget' }>
     | Readonly<{ status: 'unroutable'; connector: NodeId; reason: string }>;
+export interface HeadGeometryRequest {
+    readonly kind: Arrowhead;
+    readonly tip: Vec2;
+    /** Forward tangent points from the connector body toward this tip. */
+    readonly tangent: Vec2;
+    readonly width: number;
+    readonly scale: number;
+    readonly tolerance: number;
+    readonly maxPieces: number;
+}
+export interface HeadGeometry {
+    readonly paths: readonly (readonly PathOp[])[];
+    readonly closed: boolean;
+    readonly reserve: number;
+    readonly degenerateTangent: boolean;
+}
+export type HeadGeometryProvider = (request: HeadGeometryRequest) => HeadGeometry;
+
 export interface ConnectorGeometryRequest {
     readonly key: string;
     readonly node: Readonly<ConnectorNode>;

@@ -483,7 +483,7 @@ export default function App() {
   } = useFileSystem();
 
   const searchActivation = getVaultActivation();
-  const searchToken = useMemo(() => ({}), [searchActivation]);
+  const searchToken = useMemo(() => ({ activation: searchActivation }), [searchActivation]);
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.

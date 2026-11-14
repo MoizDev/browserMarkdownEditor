@@ -1,9 +1,11 @@
 import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameBudget } from '../../platform/render/types';
 import { PaintBoundsJob } from './paintBounds';
 import type { PaintBoundsCache } from './paintBoundsCache';
+import type { Blend } from './colour';
 import { InkTileCoverageJob } from './inkTileCoverage';
 import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
@@ -17,11 +19,27 @@ const intersects = (a: Rect, b: Rect) => a.x <= b.x + b.width && b.x <= a.x + a.
 export interface DenseTileBitmap {
     readonly bitmap: ImageBitmap;
     readonly rect: Readonly<Rect>;
+    readonly memoryBytes: number;
+    takeOwnership?(): { bitmap: ImageBitmap; bytesLease: ByteLease; owner: MemoryAllocator } | null;
     release(): void;
+}
+function ownedBitmap(bitmap: ImageBitmap, rect: Readonly<Rect>, bytesLease: ByteLease, owner: MemoryAllocator): DenseTileBitmap {
+    let held = true;
+    return { bitmap, rect: Object.freeze({ ...rect }), get memoryBytes() { return held ? bytesLease.bytes : 0; },
+        takeOwnership() {
+            if (!held) return null;
+            held = false; return { bitmap, bytesLease, owner };
+        },
+        release() {
+            if (!held) return;
+            held = false;
+            try { bitmap.close(); } finally { owner.release(bytesLease); }
+        },
+    };
 }
 
 /** One private raster tile. It retains at most one native prepared item at a time. The caller
- * owns the source frame pin and supplies an ordered, normal-blend interval from that frame. */
+ * owns the source frame pin and supplies an ordered, uniform-blend interval from that frame. */
 export class DenseTileJob {
     private canvas: OffscreenCanvas | null = null;
     private ctx: OffscreenCanvasRenderingContext2D | null = null;
@@ -38,7 +56,6 @@ export class DenseTileJob {
     private estimate = 0;
     private estimated = false;
     private painted = 0;
-    private bitmapHeld = false;
     private phase: 'start' | 'bounds' | 'crop' | 'estimate' | 'item' | 'complete' | 'empty' | 'cancelled' = 'start';
     private blocked = false;
     private resultValue: DenseTileBitmap | null = null;
@@ -46,7 +63,8 @@ export class DenseTileJob {
     constructor(private readonly resources: PaintLayerResources, private readonly host: LayerHost,
         private readonly report: (error: unknown) => void, private readonly source: PaintFrame,
         private readonly items: readonly PaintItem[], private readonly rect: Readonly<Rect>, private readonly scale: number,
-        range?: Readonly<{ first: number; end: number }>, private readonly boundsCache?: PaintBoundsCache) {
+        range?: Readonly<{ first: number; end: number }>, private readonly boundsCache?: PaintBoundsCache,
+        private readonly expectedBlend: Blend = 'normal') {
         this.index = range?.first ?? 0; this.end = range?.end ?? items.length;
         if (!Number.isSafeInteger(this.index) || !Number.isSafeInteger(this.end) || this.index < 0
             || this.end < this.index || this.end > items.length) throw new RangeError('Invalid dense paint interval');
@@ -57,7 +75,7 @@ export class DenseTileJob {
     get isEmpty(): boolean { return this.phase === 'empty'; }
     get isComplete(): boolean { return this.phase === 'complete'; }
     get memoryBytes(): number { return (this.scratch?.bytes ?? 0) + (this.bitmapLease?.bytes ?? 0) + (this.pathLease?.bytes ?? 0)
-        + (this.bitmapHeld ? BITMAP_BYTES : 0) + (this.inkClip?.memoryBytes ?? 0); }
+        + (this.resultValue?.memoryBytes ?? 0) + (this.inkClip?.memoryBytes ?? 0); }
     get cpuWorkingSet(): number {
         return this.memoryBytes + (this.phase === 'start' ? 2 * BITMAP_BYTES : this.phase === 'estimate' && !this.pathLease ? this.estimate : 0)
             + Math.max(0, (this.inkClip?.cpuWorkingSet ?? 0) - (this.inkClip?.memoryBytes ?? 0));
@@ -130,16 +148,13 @@ export class DenseTileJob {
                             this.phase = 'empty'; return;
                         }
                         const bitmap = this.canvas!.transferToImageBitmap(), lease = this.bitmapLease!;
-                        this.bitmapHeld = true;
+                        try { this.resultValue = ownedBitmap(bitmap, this.rect, lease, this.host.allocator.cpu); }
+                        catch (error) { bitmap.close(); throw error; }
                         this.bitmapLease = null; this.releaseScratch();
-                        let held = true;
-                        this.resultValue = { bitmap, rect: this.rect, release: () => {
-                            if (!held) return; held = false; this.bitmapHeld = false; bitmap.close(); this.host.allocator.cpu.release(lease);
-                        } };
                         this.phase = 'complete'; return;
                     }
                     const item = this.items[this.index];
-                    if ((item.kind === 'image' ? item.blend : item.material.blend) !== 'normal') throw new Error('Backdrop-dependent paint cannot enter a dense tile');
+                    if ((item.kind === 'image' ? item.blend : item.material.blend) !== this.expectedBlend) throw new Error('Mixed blend modes cannot enter a dense tile');
                     let bounds: Readonly<Rect> | null;
                     if (this.boundsCache) {
                         if (!this.boundsCache.step(item, 1)) {

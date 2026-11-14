@@ -4,8 +4,10 @@ import type { WorkerContext } from '../../platform/workers';
 import type { RawJson } from '../model/json';
 import { boardHandlers } from '../workers/protocol';
 import { LineTable } from './lineTable';
+import { JsonReadError, parseJsonIncremental } from './jsonRead';
+import { FORMAT_LIMITS } from './schema';
 import type { BaselineLine, SerializerBuild, SerializerDelta, SerializerPrime, SerializerProduct, SerializerReply } from './serializerProtocol';
-import { writeFailure } from './writeTypes';
+import { recordKey, writeFailure } from './writeTypes';
 import type { WriteResult } from './writeTypes';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -30,7 +32,7 @@ class Refusal extends Error {
 function failure<T>(error: unknown): SerializerReply<T> {
     if (error instanceof Refusal) return writeFailure(error.code, error.message, error.field);
     if (error instanceof RangeError) return writeFailure('allocation', 'Serializer could not allocate its line table or output');
-    if (error instanceof TypeError) return writeFailure('invalid', 'Serializer encountered invalid UTF-8 or an unreadable baseline');
+    if (error instanceof TypeError || error instanceof JsonReadError) return writeFailure('invalid', 'Serializer encountered invalid UTF-8, JSON or an unreadable baseline');
     throw error;
 }
 async function* baselineLines(input: SerializerPrime): AsyncIterable<BaselineLine> {
@@ -111,8 +113,28 @@ async function apply(input: SerializerDelta, context: WorkerContext): Promise<Se
 }
 async function build(input: SerializerBuild, context: WorkerContext): Promise<SerializerReply<SerializerProduct>> {
     try {
-        const table = revisions.get(input.revision);
-        if (!table) return writeFailure('integrity', 'Requested revision is no longer retained by the serializer');
+        const base = revisions.get(input.revision);
+        if (!base) return writeFailure('integrity', 'Requested revision is no longer retained by the serializer');
+        if (input.overrides !== undefined && !Array.isArray(input.overrides)) return writeFailure('invalid', 'Invalid checkpoint overrides');
+        const overrides = input.overrides ?? [], table = overrides.length ? base.fork() : base, seen = new Set<string>();
+        for (let i = 0; i < overrides.length; i++) {
+            const entry = overrides[i];
+            if (!entry || !entry.identity || !(entry.bytes instanceof Uint8Array)) return writeFailure('invalid', 'Invalid checkpoint override');
+            const key = recordKey(entry.identity);
+            if (seen.has(key)) return writeFailure('invalid', 'Duplicate checkpoint override');
+            seen.add(key);
+            const text = decoder.decode(entry.bytes), parsed = await parseJsonIncremental(text, () => context.slice());
+            if (parsed.kind !== 'object') return writeFailure('invalid', 'Override record must be a JSON object');
+            const fields = await parsed.fieldMapIncremental(() => context.slice());
+            const type = fields.get('type'), id = fields.get('id');
+            if (!type || type.kind !== 'string' || await type.stringIncremental(FORMAT_LIMITS.idChars, () => context.slice()) !== entry.identity.type
+                || (entry.identity.id !== undefined && (!id || id.kind !== 'string'
+                    || await id.stringIncremental(FORMAT_LIMITS.idChars, () => context.slice()) !== entry.identity.id))) {
+                return writeFailure('integrity', 'Override bytes identify a different record');
+            }
+            take(table.override({ identity: entry.identity, text }));
+            if ((i & 127) === 127) await context.slice();
+        }
         const fields = new Map<string, RawJson>();
         for (const [key, value] of input.endFields) {
             if (fields.has(key)) return writeFailure('invalid', 'Duplicate preserved footer field');

@@ -47,7 +47,17 @@ export interface ShapeQuery {
 }
 
 function plainText(text: RichText): string {
-    const value = text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+    const parts: string[] = [];
+    let length = 0;
+    for (let index = 0; index < text.blocks.length && length < 2001; index++) {
+        if (index) { parts.push('\n'); length++; }
+        for (const run of text.blocks[index].runs) {
+            if (length >= 2001) break;
+            const part = run.text.slice(0, 2001 - length);
+            if (part) { parts.push(part); length += part.length; }
+        }
+    }
+    const value = parts.join('');
     return value.length > 2000 ? `${value.slice(0, 2000)}…` : value;
 }
 
@@ -107,21 +117,22 @@ function listAcrossSheets(doc: BoardDoc, sheets: readonly Sheet[], geometry: Age
     const shapes: ShapeSummary[] = [];
     const sections: Array<{ offset: number; name: string; index: number }> = [];
     let total = 0, chars = 0, budgetExhausted = false;
-    for (const sheet of sheets) {
+    for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
+        const sheet = sheets[sheetIndex];
         let started = false;
         forEachNodeInZOrder(doc, sheet.id, node => {
             const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
             if (page !== undefined && nodePage !== page) return;
             if (total >= offset && shapes.length < limit && !budgetExhausted) {
                 const summary = summarizeAgentNode(node, geometry, nodePage);
-                const size = JSON.stringify(summary).length + 1;
-                // Keep room for the envelope and tool text while never skipping an item.
+                const section = labelled && !started ? { offset: total, name: sheet.name.slice(0, 2000), index: sheetIndex } : undefined;
+                const size = JSON.stringify(summary).length + 1 + (section ? JSON.stringify(section).length + 1 : 0);
+                // Section labels share the response budget with shapes; a huge
+                // received sheet name must not make the envelope unbounded.
+                if (size > 58_500) throw new RangeError('A shape summary exceeds the agent response budget');
                 if (chars + size > 58_500) budgetExhausted = true;
                 else {
-                    if (labelled && !started) {
-                        sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) });
-                        started = true;
-                    }
+                    if (section) { sections.push(section); started = true; }
                     shapes.push(summary); chars += size;
                 }
             }

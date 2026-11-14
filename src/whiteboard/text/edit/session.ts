@@ -23,6 +23,7 @@ export interface EditLayout {
 }
 export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
     readonly history: HistoryController;
+    prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
     alive(): boolean;
     layout(): EditLayout;
@@ -161,13 +162,14 @@ export class TextEditSession {
         this.blinkTimer = setTimeout(tick, 530);
     }
 
-    private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
+    private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): boolean {
         this.resetBlink();
         try { this.selection = this.controller.replace(change, kind, this.selection); this.lastText = this.services.plainText(); }
-        catch (error) { this.services.reportError(error); return; }
+        catch (error) { this.services.reportError(error); return false; }
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
+        return true;
     }
 
     private select(next: EditSelection, moving = false): void {
@@ -242,7 +244,10 @@ export class TextEditSession {
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
                 } else if (command === 'enter') {
-                    try { this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText(); this.services.changed(this.selection); }
+                    try {
+                        this.selection = this.controller.enter(this.selection); this.lastText = this.services.plainText();
+                        this.affinity = undefined; this.goalX = undefined; this.services.changed(this.selection);
+                    }
                     catch (error) { this.services.reportError(error); }
                     this.resetBlink();
                     this.host.sync();
@@ -279,7 +284,6 @@ export class TextEditSession {
         if (!this.services.alive()) { this.close(false); return; }
         if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
         this.host.sync();
-        this.lastText = this.services.plainText();
         const layout = this.services.layout();
         const { a, b, c, d, e, f } = layout.localToClient;
         const container = this.host.element.parentElement?.getBoundingClientRect();
@@ -358,16 +362,41 @@ export class TextEditSession {
         return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
     }
 
-    deleteSelection(): void {
+    prepareCut(): { commit(): void; release(): void } {
+        if (this.closed || !this.services.alive() || this.compositionSelection || this.compositionRange)
+            throw new Error('Text editing is not ready for cut');
+        const before = { ...this.selection }, from = Math.min(before.anchor, before.focus);
+        const proof = this.services.prepareCut(this.controller.cutTransaction(before));
+        let released = false, committed = false;
+        const current = () => !this.closed && this.services.alive() && !this.compositionSelection && !this.compositionRange
+            && this.selection.anchor === before.anchor && this.selection.focus === before.focus;
+        try { if (!current()) throw new Error('Text selection changed; cut again'); }
+        catch (error) { proof.release(); throw error; }
+        return {
+            commit: () => {
+                if (released || committed || !current()) throw new Error('Text selection changed; nothing was cut');
+                this.typingHistory.close();
+                this.services.history.open('Cut text');
+                try {
+                    proof.commit(); committed = true;
+                    this.lastText = this.services.plainText();
+                    this.select({ anchor: from, focus: from });
+                } finally { this.services.history.close(); }
+            },
+            release: () => { if (!released) { released = true; proof.release(); } },
+        };
+    }
+
+    deleteSelection(): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
-        if (from === to) return;
+        if (from === to) return false;
         this.typingHistory.close();
         this.services.history.open('Cut text');
-        try { this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); }
+        try { const deleted = this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); return deleted; }
         finally { this.services.history.close(); }
     }
 
-    replaceSelection(fragment: RichFragment): void {
+    replaceSelection(fragment: RichFragment): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
@@ -377,15 +406,16 @@ export class TextEditSession {
             this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
             this.lastText = this.services.plainText();
             this.select(next);
-        } catch (error) { this.services.reportError(error); }
+            return true;
+        } catch (error) { this.services.reportError(error); return false; }
         finally { this.services.history.close(); }
     }
 
-    applyLink(url: string, selection: EditSelection): boolean {
+    applyLink(url: string | null, selection: EditSelection): boolean {
         let applied: boolean;
         try { applied = this.controller.applyLink(url, selection); }
         catch (error) { this.services.reportError(error); return false; }
-        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce('Link formatting changed'); this.host.focus(); }
+        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce(url === null ? 'Link removed' : 'Link formatting changed'); this.host.focus(); }
         return applied;
     }
 

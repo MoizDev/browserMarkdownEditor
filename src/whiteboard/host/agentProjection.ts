@@ -12,6 +12,8 @@ import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils
 import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
+import type { RenderToken } from '../../platform/render/types';
+import { createAgentGeometryReader } from './agentGeometry';
 
 function yieldAgentWork(): Promise<void> {
     const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
@@ -40,8 +42,9 @@ async function boundedSummary(node: Node, geometry: AgentGeometry, page: number 
     return summary;
 }
 
-async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
-    revision: number, labelled: boolean, guard: () => void, include?: (node: Node, page: number | undefined) => boolean): Promise<ShapePage> {
+export async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
+    revision: number, labelled: boolean, guard: () => void, include?: (node: Node, page: number | undefined) => boolean,
+    prepare?: (node: Node) => Promise<void>): Promise<ShapePage> {
     const page = query.page, requested = query.offset ?? 0, limit = query.limit ?? 200;
     if (!Number.isSafeInteger(revision) || revision < 0 || !Number.isSafeInteger(requested) || requested < 0
         || !Number.isSafeInteger(limit) || limit < 1 || limit > 200
@@ -50,7 +53,8 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
     const changed = query.revision !== undefined && query.revision !== revision, offset = changed ? 0 : requested;
     const shapes: ShapeSummary[] = [], sections: { offset: number; name: string; index: number }[] = [];
     let total = 0, chars = 0, exhausted = false, work = 0;
-    for (const sheet of sheets) {
+    for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
+        const sheet = sheets[sheetIndex];
         let started = false;
         const stack: { nodes: ReturnType<typeof childrenOf>; index: number }[] = [{ nodes: childrenOf(doc, sheet.id), index: 0 }];
         while (stack.length) {
@@ -63,14 +67,19 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
             if (top.index >= top.nodes.length) { stack.pop(); continue; }
             const node = top.nodes[top.index++], children = childrenOf(doc, node.id);
             if (children.length) stack.push({ nodes: children, index: 0 });
-            const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
+            const needsGeometry = page !== undefined || include !== undefined || (total >= offset && shapes.length < limit && !exhausted);
+            if (needsGeometry && prepare) { await prepare(node); guard(); }
+            const nodePage = doc.kind === 'whiteboard' || !needsGeometry ? undefined : geometry.page(node);
             if (page !== undefined && nodePage !== page) continue;
             if (include && !include(node, nodePage)) continue;
             if (total >= offset && shapes.length < limit && !exhausted) {
-                const summary = await boundedSummary(node, geometry, nodePage, guard), size = JSON.stringify(summary).length + 1;
+                const summary = await boundedSummary(node, geometry, nodePage, guard);
+                const section = labelled && !started ? { offset: total, name: sheet.name.slice(0, 2000), index: sheetIndex } : undefined;
+                const size = JSON.stringify(summary).length + 1 + (section ? JSON.stringify(section).length + 1 : 0);
+                if (size > 58_500) throw new RangeError('A shape summary exceeds the agent response budget');
                 if (chars + size > 58_500) exhausted = true;
                 else {
-                    if (labelled && !started) { sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) }); started = true; }
+                    if (section) { sections.push(section); started = true; }
                     shapes.push(summary); chars += size;
                 }
             }
@@ -91,13 +100,14 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
     const adapter = createBoardAgentAdapter(host);
     return {
         shapes(query, options) {
+            const captured = { ...query };
             return authority.run(async context => {
                 authority.assertContext(context);
                 if (!host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
                 const revision = host.session.doc.rev;
                 const sheet = host.session.doc.sheets.get(host.sheet());
                 if (!sheet) throw new RangeError('Sheet does not exist');
-                const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, query, revision, false, () => {
+                const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, captured, revision, false, () => {
                     authority.assertContext(context);
                     if (!host.isCurrent() || host.session.doc.rev !== revision || host.sheet() !== sheet.id)
                         throw new DOMException('Board changed during shape projection', 'AbortError');
@@ -141,15 +151,19 @@ export async function readClosedAgentProjection(options: {
     readonly kind: BoardKind;
     readonly pdfPages?: readonly (readonly [number, number])[];
     readonly diskRevision: number;
+    /** Actual App source identity, not a token reconstructed from a worker job. */
+    readonly token: RenderToken;
     readonly query: ShapeQuery;
     readonly job: JobOptions;
     readonly authority: JobAuthority;
     isCurrent(): boolean;
     /** App compares the current disk stat and hash with the bytes it supplied. */
     assertBaseline(signal: AbortSignal): Promise<void>;
-    project(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
+    project?(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{
+        readonly geometry: AgentGeometry; prepare?(node: Node): Promise<void>; dispose(): void;
+    }>;
 }): Promise<ShapePage> {
-    const { authority } = options;
+    const { authority } = options, query = { ...options.query };
     if (!Number.isSafeInteger(options.diskRevision) || options.diskRevision < 0) throw new RangeError('Invalid disk generation');
     return authority.run(async context => {
         const guard = () => {
@@ -165,11 +179,13 @@ export async function readClosedAgentProjection(options: {
         try {
             guard();
             if (acquired.status !== 'editable') throw new Error('Board cannot be projected without its original-byte recovery');
-            const projection = await options.project(acquired.load.doc, acquired.samples, context.signal);
+            const projection = options.project ? await options.project(acquired.load.doc, acquired.samples, context.signal)
+                : createAgentGeometryReader({ doc: acquired.load.doc, samples: acquired.samples, token: options.token,
+                    signal: context.signal, isCurrent: () => authority.isCurrent(context.job) && options.isCurrent(), cooperate: yieldAgentWork });
             try {
                 guard();
                 const result = await listPinnedShapes(acquired.load.doc, acquired.load.doc.sheetOrder, projection.geometry,
-                    options.query, options.diskRevision, true, guard);
+                    query, options.diskRevision, true, guard, undefined, projection.prepare?.bind(projection));
                 guard();
                 await options.assertBaseline(context.signal);
                 guard();
@@ -179,7 +195,7 @@ export async function readClosedAgentProjection(options: {
     }, options.job);
 }
 
-type AgentViewSnapshot = Omit<DrawingViewInfo, 'shapes' | 'shapesTotal'>
+export type AgentViewSnapshot = Omit<DrawingViewInfo, 'shapes' | 'shapesTotal'>
     | Omit<NotebookViewInfo, 'shapes' | 'shapesTotal'>
     | (Omit<PdfViewInfo, 'shapes' | 'shapesTotal'> & { kind: 'pdf-annotate'; surface: 'annotation' });
 

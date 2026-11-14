@@ -4,7 +4,7 @@ export type RichMark = 'b' | 'i' | 'u' | 's' | 'code' | 'hl';
 export interface RichSelection { readonly anchor: number; readonly focus: number }
 export interface RichEdit { readonly from: number; readonly to: number; readonly insert: RichFragment; readonly selection: RichSelection; readonly replaceBlocks?: true }
 export type { Block, Marks, RichFragment, RichSpliceResult, RichText, Run } from './richText';
-export { plain, fromPlain, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
+export { plain, fromPlain, marksAt, linkRangeAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
 export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough } from './rangeMap';

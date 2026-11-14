@@ -112,7 +112,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             media.set(entry.id, blob); await cooperate();
         }
         // Hash the copied original, not reserialized JSON or the new native R0.
-        const digest = await boardWorker('decode').request<unknown>('hash', { blob: original }, identity,
+        const digest = await boardWorker('decode').request<unknown>('hashSource', { blob: original }, identity,
             { priority: 0, cpu: 'governed', deadlineMs: importDeadline(original.size), signal }, options.isCurrent); check();
         if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) throw new TypeError('Invalid original legacy digest');
         const native = owned; owned = undefined;

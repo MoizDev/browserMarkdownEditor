@@ -1,5 +1,6 @@
 import type { Rect } from '../../platform/types';
 import { graphemeBoundaries } from './graphemes';
+import { projectionSlice } from './projection';
 import type { ReferenceMeasurer } from './measure';
 import type { CaretIndex, CaretLine, CaretPosition, CaretStop, FaceTable, TextCluster, TextLayoutRequest, TextPaint } from './paint';
 
@@ -20,9 +21,8 @@ export class CaretLineCache {
 
 /** Prefix measurements use the same face and reference-size canvas as the paint. */
 export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer, cache?: CaretLineCache): CaretIndex {
-    const projection = request.text.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
     const lines: CaretLine[] = paint.lines.map((line, lineIndex) => {
-        const content = projection.slice(line.src[0], line.src[1]);
+        const content = projectionSlice(request.text, line.src[0], line.src[1]);
         const key = JSON.stringify([paint.fontEpoch, content, line.x, line.bottom - line.top, line.direction,
             line.fragments.map(fragment => [fragment.text, fragment.x, fragment.width, fragment.rtl, table.faces[fragment.face].css,
                 table.faces[fragment.face].size, fragment.src[0] - line.src[0], fragment.src[1] - line.src[0]])]);
@@ -60,13 +60,16 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
     });
     function hitTest(x: number, y: number): CaretStop {
         if (!lines.length) return { offset: 0, affinity: 'downstream', x: 0, top: 0, bottom: 0, line: 0 };
-        let line = lines[0];
-        for (const candidate of lines) {
-            if (y < (line.bottom + candidate.top) / 2) break;
-            line = candidate;
-            if (y <= line.bottom) break;
+        let lo = 0, hi = lines.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (y < (lines[mid].bottom + lines[mid + 1].top) / 2) hi = mid; else lo = mid + 1;
         }
-        return line.stops.reduce((best, stop) => Math.abs(stop.x - x) < Math.abs(best.x - x) ? stop : best);
+        const stops = lines[lo].stops;
+        let left = 0, right = stops.length;
+        while (left < right) { const mid = (left + right) >>> 1; if (stops[mid].x < x) left = mid + 1; else right = mid; }
+        const before = stops[Math.max(0, left - 1)], after = stops[Math.min(left, stops.length - 1)];
+        return Math.abs(before.x - x) <= Math.abs(after.x - x) ? before : after;
     }
     const byOffset = new Map<number, CaretStop[]>();
     for (const line of lines) for (const stop of line.stops) {
@@ -92,10 +95,15 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             && (Math.abs(cluster.bounds.x - stop.x) < 0.001 || Math.abs(cluster.bounds.x + cluster.bounds.width - stop.x) < 0.001)));
         return primary ?? candidates[0];
     }
+    const firstLine = (offset: number): number => {
+        let lo = 0, hi = paint.lines.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (paint.lines[mid].src[1] < offset) lo = mid + 1; else hi = mid; }
+        return lo;
+    };
     function selection(start: number, end: number): readonly Rect[] {
         if (start > end) [start, end] = [end, start];
         const result: Rect[] = [];
-        for (let i = 0; i < lines.length; i++) {
+        for (let i = firstLine(start); i < lines.length && paint.lines[i].src[0] <= end; i++) {
             const line = lines[i], paintLine = paint.lines[i];
             let current: Rect | undefined;
             for (const cluster of line.clusters) {
@@ -105,7 +113,7 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
                 else { current = { ...rect }; result.push(current); }
             }
             const boundary = paintLine.src[1];
-            const consumedBreak = boundary > paintLine.src[0] && /[\r\n\u0085\u2028\u2029]/u.test(projection[boundary - 1]);
+            const consumedBreak = boundary > paintLine.src[0] && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary - 1, boundary));
             const crossesLine = consumedBreak ? start < boundary && end >= boundary : start <= boundary && end > boundary;
             if (crossesLine && i + 1 < lines.length) {
                 const edge = line.stops[line.stops.length - 1].x;
@@ -117,9 +125,11 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
     }
     function characterBounds(start: number, end: number): readonly Rect[] {
         const byOffset = new Map<number, Rect>();
-        for (const line of lines) for (const cluster of line.clusters) {
-            const from = Math.max(start, cluster.src[0]), to = Math.min(end, cluster.src[1]);
-            for (let offset = from; offset < to; offset++) byOffset.set(offset, cluster.bounds);
+        for (let index = firstLine(start); index < lines.length && paint.lines[index].src[0] < end; index++) {
+            for (const cluster of lines[index].clusters) {
+                const from = Math.max(start, cluster.src[0]), to = Math.min(end, cluster.src[1]);
+                for (let offset = from; offset < to; offset++) byOffset.set(offset, cluster.bounds);
+            }
         }
         const result: Rect[] = [];
         for (let offset = start; offset < end; offset++) {

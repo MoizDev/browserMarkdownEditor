@@ -31,6 +31,9 @@ export interface NativeExportOptions {
     readonly theme: 'light' | 'dark';
     readonly transparent: boolean;
     readonly signal: AbortSignal;
+    /** Agent viewport/page captures share this producer, including genuine PDF children. */
+    readonly region?: Readonly<Rect>;
+    readonly maxSide?: number;
     current(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
@@ -50,12 +53,16 @@ const stale = () => new DOMException('Board export ended', 'AbortError');
 
 /** Scene, selection and media are pinned before the first asynchronous boundary. */
 export async function prepareNativeExport(options: NativeExportOptions): Promise<NativeExportJob> {
-    const { runtime, signal, route, theme, transparent, boardName } = options;
+    const { runtime, signal, route, theme, transparent, boardName, maxSide } = options;
+    const region = options.region ? { ...options.region } : undefined;
+    if (region && (![region.x, region.y, region.width, region.height, region.x + region.width, region.y + region.height].every(Number.isFinite)
+        || region.width <= 0 || region.height <= 0)) throw new RangeError('Invalid capture region');
+    if (maxSide !== undefined && (!Number.isSafeInteger(maxSide) || maxSide < 1 || maxSide > 8192)) throw new RangeError('Invalid capture maximum side');
     const timestamp = new Date(), doc = runtime.session.doc, scene = runtime.scene;
     signal.throwIfAborted();
     if (!options.current() || !scene?.ready || scene.revision !== doc.rev) throw new Error('Board export scene is not ready');
     const selection = runtime.selection.getSnapshot(), revision = doc.rev, fontEpoch = runtime.render.text.fonts.epoch;
-    const selectedRoots = route === 'menu' ? [] : [...selection.selected];
+    const selectedRoots = route === 'menu' || region ? [] : [...selection.selected];
     const selected = new Set<NodeId>(), pending = [...selectedRoots];
     const sheetNodes = doc.bySheet.get(selection.sheet);
     while (pending.length) {
@@ -172,8 +179,9 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             }
             pageBounds = { x: left, y: top, width: right - left, height: bottom - top };
         }
-        const scope = resolveExportScope({ selection: selectedRoots, paged: meta.kind !== 'whiteboard',
-            selectionBounds: () => inkBounds, sheetBounds: () => pageBounds ?? inkBounds }, route);
+        const scope = region ? { kind: 'sheet' as const, ids: [], bounds: region, includeBackdrop: meta.kind !== 'whiteboard' }
+            : resolveExportScope({ selection: selectedRoots, paged: meta.kind !== 'whiteboard',
+                selectionBounds: () => inkBounds, sheetBounds: () => pageBounds ?? inkBounds }, route);
         let source = filtered;
         if (scope.includeBackdrop && meta.host.kind === 'notebook' && pages) {
             const paper = meta.host.paper, base = filtered;
@@ -183,11 +191,14 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                     return base.readNode(index - pages.length);
                 } };
         }
-        const background = scope.includeBackdrop ? undefined : transparent ? undefined :
-            DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
+        // An explicit viewport may contain only page gaps/outside space; agent
+        // captures still show real empty paper-white pixels, not transparent ink.
+        const background = region ? DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background
+            : scope.includeBackdrop || transparent ? undefined : DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
         const sheetName = meta.sheetOrder.length > 1 ? sheet.name : null;
         const longest = Math.max(scope.bounds.width, scope.bounds.height);
-        const pngScale = route === 'copy' && longest * 2 > 8192 ? (8192 - 1e-9) / longest : 2;
+        const naturalScale = route === 'copy' && longest * 2 > 8192 ? (8192 - 1e-9) / longest : 2;
+        const pngScale = maxSide === undefined ? naturalScale : Math.min(naturalScale, (maxSide - 1e-9) / longest);
         const pdfLayers = pdfBackdrop?.layers.map(layer => layer.id) ?? [];
         const pdfCapturer = (includeBoard: boolean) => {
             const backdrop = pdfBackdrop, pdfSource = pdfLease?.source;
@@ -215,7 +226,9 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                         active++;
                         return { token, revision: String(revision),
                             signal: AbortSignal.any([controller.signal, ...children.map(child => child.snapshot.signal)]),
-                            layers: children.flatMap(child => child.snapshot.layers),
+                            layers: [...(region && background ? [{ id: 'native-export-background', draw2d(ctx: CanvasRenderingContext2D) {
+                                ctx.fillStyle = colourCss(background); ctx.fillRect(region.x, region.y, region.width, region.height);
+                            } }] : []), ...children.flatMap(child => child.snapshot.layers)],
                             get isolation() { return children.every(child => child.snapshot.isolation !== undefined)
                                 ? children.flatMap(child => child.snapshot.isolation ?? []) : undefined; },
                             async prepare(_request, renderRoute, captureSignal) {
@@ -261,7 +274,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             const capturer = pdfCapturer(true);
             try {
                 return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
-                    { layers: [...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
+                    { layers: [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
                         deadlineMs: 300_000, clipboard: route === 'copy', pixelsPerWorldUnit: scale });
             } finally { await capturer.dispose(); }
         };

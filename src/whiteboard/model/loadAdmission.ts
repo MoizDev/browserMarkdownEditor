@@ -11,7 +11,7 @@ export interface BoardLoadAdmission {
     /** Must run inside the authority's current content job. Original opened bytes
      * are an owned Blob, never a disk File that can change across these awaits. */
     prepare(projection: LoadProjection, baseline: Blob, context: JobContext): Promise<AdmittedLoadToken>;
-    take(token: AdmittedLoadToken, job: ContentJob): RehydratedLoad;
+    take(token: AdmittedLoadToken, context: JobContext): RehydratedLoad;
     discard(token: AdmittedLoadToken): void;
     dispose(): void;
 }
@@ -57,14 +57,12 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
                 throw error;
             }
         },
-        take(token, job) {
+        take(token, context) {
             const entry = owned.get(token);
-            if (!entry || disposed || !authority.isCurrent(job) || entry.signal.aborted
-                || entry.job.session !== job.session || entry.job.vaultEpoch !== job.vaultEpoch
-                || entry.job.generation !== job.generation || entry.job.request !== job.request) {
-                discard(token);
-                throw new TypeError('Unvalidated, stale or already-consumed board load');
-            }
+            try {
+                authority.assertContext(context);
+                if (!entry || disposed || entry.job !== context.job || entry.signal.aborted) throw new TypeError('Unvalidated, stale or already-consumed board load');
+            } catch (error) { discard(token); throw error; }
             owned.delete(token);
             entry.signal.removeEventListener('abort', entry.abort);
             return entry.load;

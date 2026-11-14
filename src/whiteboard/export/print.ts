@@ -17,7 +17,9 @@ export async function printBoard(options: BoardPrintOptions): Promise<void> {
     options.signal.throwIfAborted();
     const source = options.pin();
     const urls: string[] = [], nodes: Element[] = [];
-    let finished = false, timer: ReturnType<typeof setTimeout> | undefined;
+    let finished = false, timer: ReturnType<typeof setTimeout> | undefined, cleanupError: unknown;
+    let finish!: () => void;
+    const closed = new Promise<void>(resolve => { finish = resolve; });
     const cleanup = () => {
         if (finished) return;
         finished = true;
@@ -26,11 +28,13 @@ export async function printBoard(options: BoardPrintOptions): Promise<void> {
         options.signal.removeEventListener('abort', cleanup);
         for (const node of nodes) node.remove();
         for (const url of urls) URL.revokeObjectURL(url);
-        source.release();
+        try { source.release(); } catch (error) { cleanupError = error; } finally { finish(); }
     };
     const urlFor = (blob: Blob): string => { const url = URL.createObjectURL(blob); urls.push(url); return url; };
     options.signal.addEventListener('abort', cleanup, { once: true });
+    if (options.signal.aborted) cleanup();
     try {
+        options.signal.throwIfAborted();
         if (!Number.isSafeInteger(source.pageCount) || source.pageCount < 1) throw new RangeError('Nothing to print');
         if (navigator.pdfViewerEnabled) {
             const pdf = await source.pdf(options.signal);
@@ -81,5 +85,8 @@ export async function printBoard(options: BoardPrintOptions): Promise<void> {
             timer = setTimeout(cleanup, 60_000);
             window.print();
         }
+        await closed;
+        options.signal.throwIfAborted();
+        if (cleanupError) throw cleanupError;
     } catch (error) { cleanup(); throw error; }
 }

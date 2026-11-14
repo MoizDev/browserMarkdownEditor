@@ -16,6 +16,7 @@ import type { NodeId, ParentId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { boardPageStack, pageOrigin, reanchorPage } from '../model/pages';
 import { prepareBoardVectorGeometryNow } from '../render/vectorGeometry';
+import { colourCss } from '../render/colour';
 import type { createBoardRenderServices } from '../render/services';
 import { textCreation } from '../text/edit/createText';
 import { createTextEditGrowth } from '../text/edit/growth';
@@ -27,8 +28,8 @@ import { editableTextRequest } from '../text/edit/request';
 import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
-import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
-import { insertionFragment, plain } from '../text/richOperations';
+import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
+import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
@@ -64,10 +65,17 @@ export interface BoardTextEditorOptions {
 type ConnectorMetrics = { readonly anchorWorld: { x: number; y: number }; readonly bodyLength: number };
 const svgNS = 'http://www.w3.org/2000/svg';
 function transformObject(m: Affine) { return { a: m[0], b: m[1], c: m[2], d: m[3], e: m[4], f: m[5] }; }
+const frameNames = new WeakMap<Readonly<Node>, RichText>();
 function nodeText(node: Readonly<Node>): RichText | null {
     if (node.kind === 'text' || node.kind === 'sticky') return node.text;
     if (node.kind === 'figure' || node.kind === 'connector') return node.label ?? EMPTY_RICH_TEXT;
-    return node.kind === 'frame' ? { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: node.name, marks: {} }] }] } : null;
+    if (node.kind !== 'frame') return null;
+    let value = frameNames.get(node);
+    if (!value) {
+        value = { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: node.name, marks: {} }] }] };
+        frameNames.set(node, value);
+    }
+    return value;
 }
 function poseMatrix(runtime: BoardRuntime, id: NodeId): Affine {
     const pose = worldPose(runtime.session.doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -86,24 +94,32 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
     let spellSource: RichText | null = null, spellNode: NodeId | null = null;
+    let spellTimer: ReturnType<typeof setTimeout> | null = null;
     let spellingMenu: SpellingMenuRequest | null = null;
     const checkSpelling = () => {
         const id = active, node = id && doc.nodes.get(id), value = node && nodeText(node);
         if (!id || !value || (spellNode === id && spellSource === value)) return;
         spellNode = id; spellSource = value;
-        const generation = ++spellGeneration, text = value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+        const generation = ++spellGeneration;
+        if (spellTimer !== null) clearTimeout(spellTimer);
         misspellings = [];
         spellLoad ??= import('../text/spell/client').then(({ BoardSpellClient }) => {
             if (disposed) throw new DOMException('Text editor disposed', 'AbortError');
             return spell = new BoardSpellClient(options.spelling.words());
         }).catch(error => { spellLoad = null; throw error; });
-        void spellLoad.then(client => {
-            if (disposed || active !== id || generation !== spellGeneration) return;
-            client.check(text, ranges => {
-                if (active !== id || generation !== spellGeneration) return;
-                misspellings = ranges; requestFrame();
-            }, error => { spellSource = null; report(error); });
-        }).catch(error => { spellSource = null; if (!disposed) report(error); });
+        const loading = spellLoad;
+        void loading.catch(() => {});
+        spellTimer = setTimeout(() => {
+            spellTimer = null;
+            void loading.then(client => {
+                if (disposed || active !== id || generation !== spellGeneration) return;
+                const text = value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+                client.check(text, ranges => {
+                    if (active !== id || generation !== spellGeneration) return;
+                    misspellings = ranges; requestFrame();
+                }, error => { spellSource = null; report(error); }, 0);
+            }).catch(error => { spellSource = null; if (!disposed) report(error); });
+        }, 300);
     };
     const live = document.createElement('div');
     live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
@@ -114,8 +130,9 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
         if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
         const fragment = insertionFragment(text, range.from, suggestion, null);
-        editor.restoreSelection({ anchor: range.from, focus: range.to }); editor.replaceSelection(fragment);
-        return true;
+        editor.restoreSelection({ anchor: range.from, focus: range.to });
+        const applied = editor.replaceSelection(fragment); editor.focus();
+        return applied;
     };
     const openTextMenu = (x: number, y: number) => {
         spellingMenu?.cancel(); spellingMenu = null;
@@ -127,8 +144,8 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const request = new SpellingMenuRequest({
             revision: () => doc.rev,
             suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
-            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’\-]+$/u.test(word),
-            add: word => options.spelling.add(word),
+            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’-]+$/u.test(word),
+            add: word => { options.spelling.add(word); manager.current?.editor.focus(); },
             replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
             open: rows => options.ui.spellingMenu(x, y, rows),
         });
@@ -264,7 +281,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink,
-                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,
@@ -380,15 +397,43 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
             path.setAttribute('stroke-width', String(1 / frame.view.camera.z)); group.append(path);
         }
-        for (const item of chrome.selection) rect(group, item, 'rgba(80,145,255,0.32)');
-        if (chrome.caret) rect(group, chrome.caret, '#4d91ff');
-        for (const item of chrome.composition) rect(group, { x: item.rect.x, y: item.rect.y + item.rect.height - 1 / frame.view.camera.z,
-            width: item.rect.width, height: 1 / frame.view.camera.z }, '#4d91ff');
+        const selection = manager.current.editor.getSelection(), edited = active && doc.nodes.get(active);
+        const fallbackSwatch = edited?.kind === 'text' ? edited.color
+            : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
+                : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
+        let caretColour = colourCss(engine.getSnapshot().palette.stroke[fallbackSwatch]);
+        outer: for (const line of paint.lines) for (const fragment of line.fragments) {
+            if (selection.focus >= fragment.src[0] && selection.focus <= fragment.src[1]) {
+                caretColour = colourCss(engine.getSnapshot().palette.stroke[fragment.ink.swatch]);
+                break outer;
+            }
+        }
+        for (const item of chrome.selection) rect(group, item, 'color-mix(in srgb, var(--interactive-accent) 30%, transparent)');
+        if (chrome.caret) rect(group, chrome.caret, caretColour);
+        for (const item of chrome.composition) {
+            if (item.style === 'none') continue;
+            const unit = 1 / frame.view.camera.z, y = item.rect.y + item.rect.height - unit;
+            const stroke = item.thickness === 'thick' ? 2 * unit : unit;
+            if (item.style === 'solid') rect(group, { x: item.rect.x, y, width: item.rect.width, height: stroke }, caretColour);
+            else {
+                const path = document.createElementNS(svgNS, 'path');
+                let d = `M ${item.rect.x} ${y}`;
+                if (item.style === 'wavy') {
+                    for (let x = item.rect.x + 2 * unit, n = 0; x < item.rect.x + item.rect.width; x += 2 * unit, n++)
+                        d += ` L ${x} ${y + (n % 2 ? -unit : unit)}`;
+                } else d += ` L ${item.rect.x + item.rect.width} ${y}`;
+                path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', caretColour);
+                path.setAttribute('stroke-width', String(stroke));
+                if (item.style === 'dotted') path.setAttribute('stroke-dasharray', `${unit} ${unit}`);
+                else if (item.style === 'dashed') path.setAttribute('stroke-dasharray', `${3 * unit} ${2 * unit}`);
+                group.append(path);
+            }
+        }
         if (handles) for (const position of [chrome.handles.anchor, chrome.handles.focus]) {
             const bounds = overlay.getBoundingClientRect(), x = (position.x - bounds.left) * frame.view.viewport.width / bounds.width;
             const y = (position.y - bounds.top) * frame.view.viewport.height / bounds.height;
             const circle = document.createElementNS(svgNS, 'circle'); circle.setAttribute('cx', String(x)); circle.setAttribute('cy', String(y));
-            circle.setAttribute('r', '5'); circle.setAttribute('fill', '#4d91ff'); svg.append(circle);
+            circle.setAttribute('r', '5'); circle.setAttribute('fill', 'var(--interactive-accent)'); svg.append(circle);
         }
     };
     const captureText = (): TextSelectionSnapshot | undefined => {
@@ -396,6 +441,10 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
     return { manager, input, editText, writeOverlays, captureText,
+        clipboardContext() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            return editor && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;
+        },
         clipboardSelection() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), transform = currentWorld;
             if (!editor || !node || !transform) return null;
@@ -413,11 +462,38 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
                 bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
         },
-        pasteText(fragment: RichText) { if (!manager.current) return false; manager.current.editor.replaceSelection(fragment); return true; },
+        linkContext() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            if (!editor || !node || !text) return null;
+            const selection = { ...editor.getSelection() }, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+            let href: string | null = null, target: EditSelection | undefined;
+            if (from === to) {
+                const link = linkRangeAt(text, from);
+                if (link) { href = link.url; target = { anchor: link.from, focus: link.to }; }
+            } else {
+                const runs = sliceRichText(text, from, to).blocks.flatMap(block => block.runs).filter(run => run.text.length);
+                const first = runs[0]?.marks.link;
+                if (first && runs.every(run => run.marks.link === first)) href = first;
+            }
+            return { node: node.id, revision: doc.rev, selection, href, target };
+        },
+        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection; readonly target?: EditSelection }, href: string | null) {
+            const editor = manager.current?.editor, selection = editor?.getSelection();
+            if (!editor || active !== context.node || doc.rev !== context.revision || !selection
+                || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;
+            return editor.applyLink(href, context.target ?? context.selection);
+        },
+        pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
         cutText(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
-            editor.deleteSelection(); return true;
+            return editor.deleteSelection();
+        },
+        prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
+            const editor = manager.current?.editor, current = editor?.getSelection();
+            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)
+                throw new Error('Text selection changed; cut again');
+            return editor.prepareCut();
         },
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
         spellingAtClient(x: number, y: number) {

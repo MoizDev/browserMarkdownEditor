@@ -36,7 +36,7 @@ export class TextClipboardSession {
 
     copy(): TextClipboardCopy | null {
         if (this.disposed) return null;
-        const revision = this.ports.revision(), selection = this.ports.selection();
+        const revision = this.ports.revision(), selection = { ...this.ports.selection() };
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
         if (from === to) return null;
         const rendition = textClipboardRendition(this.ports.text(), from, to);
@@ -60,7 +60,7 @@ export class TextClipboardSession {
         if (this.disposed) return false;
         signal.throwIfAborted();
         this.cancel();
-        const generation = this.generation, revision = this.ports.revision(), selection = this.ports.selection();
+        const generation = this.generation, revision = this.ports.revision(), selection = { ...this.ports.selection() };
         const controller = new AbortController(); this.active = controller;
         const combined = AbortSignal.any([signal, controller.signal]);
         try {

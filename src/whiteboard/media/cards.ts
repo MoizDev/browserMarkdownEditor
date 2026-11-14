@@ -6,18 +6,18 @@ import { newNodeId, type NodeId } from '../model/ids';
 import { createEmbed, createLinkcard } from '../model/nodes';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { fetchLinkPreview } from './preview';
+import { resolveEmbedCandidate, type EmbedManifest } from './embed';
 
 // Provenance: media §10a/§11 card conversion and explicit preview consent;
 // independent transaction composition, no upstream engine source.
 export function convertMediaCard(options: {
     readonly runtime: BoardRuntime; readonly id: NodeId; current(): boolean;
-    /** The registry is the only authority for a permitted embed endpoint. */
-    canEmbed(url: string): boolean;
+    readonly environment: UrlEnvironment; readonly manifest: EmbedManifest;
 }): NodeId {
     const { runtime } = options, session = runtime.session, doc = session.doc, node = doc.nodes.get(options.id);
     if (!options.current() || session.isReadOnly || session.isGestureActive || !node || isLocked(doc, node)
         || node.kind !== 'linkcard' && node.kind !== 'embed') throw new Error('Card conversion is unavailable');
-    if (node.kind === 'linkcard' && !options.canEmbed(node.url)) throw new Error('This URL has no supported embed provider');
+    if (node.kind === 'linkcard' && !resolveEmbedCandidate(node.url, options.environment, options.manifest)) throw new Error('This URL has no supported embed provider');
     const id = newNodeId(doc), w = node.kind === 'linkcard' ? 800 : 300, h = node.kind === 'linkcard' ? 450 : 320;
     const dx = (node.w - w) / 2, dy = (node.h - h) / 2, c = Math.cos(node.rotation), s = Math.sin(node.rotation);
     const common = { id, parent: node.parent, order: node.order, page: node.page, x: node.x + c * dx - s * dy,

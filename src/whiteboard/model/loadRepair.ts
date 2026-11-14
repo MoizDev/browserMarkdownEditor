@@ -27,10 +27,19 @@ async function ordered<T>(values: Iterable<T>, options: LoadRepairOptions): Prom
 /** Repair is history-silent. Re-encoding flags and deleted-source tombstones are
  * preparation for the first user edit, not a write or a dirty admission itself. */
 export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOptions): Promise<LoadRepairResult> {
+    options = { ...options, cooperate: options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0))) };
     const sheets = await ordered<Sheet>(draft.input.sheets, options), nodes = await ordered<NodeRecord>(draft.input.nodes ?? [], options);
     const sourceMedia = await ordered<MediaEntry>(draft.input.media ?? [], options), media: MediaEntry[] = [], notices: LoadRepairNotice[] = [], issues: ReadIssue[] = [];
     const refuse = (reason: string): LoadRepairResult => ({ status: 'read-only', projection: null, repairs: notices,
         issues: [...issues, { code: 'repair', reason, readOnly: true }] });
+    const singletonSources = new Set<string>();
+    for (let i = 0; i < draft.sources.length; i++) {
+        if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
+        const source = draft.sources[i];
+        if (!['pen', 'view', 'paper', 'host', 'end'].includes(source.category)) continue;
+        if (singletonSources.has(source.category)) return refuse(`Duplicate ${source.category} records require original-byte recovery`);
+        singletonSources.add(source.category);
+    }
     const reserved = new Set<string>();
     for (let i = 0; i < nodes.length; i++) {
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
@@ -124,7 +133,9 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
             const ordinal = sheetOrdinal++, sheet = sheetRepair.sheets[ordinal];
             sources.push(identities.changedSheetOrdinals.has(ordinal) || sheetRepair.changedOrdinals.has(ordinal) ? { ...source, id: sheet.id, reencode: true } : source);
         } else if (source.category === 'media') {
-            if (!duplicateMedia.has(mediaOrdinal++)) sources.push(source);
+            const ordinal = mediaOrdinal++, entry = sourceMedia[ordinal];
+            if (!entry || source.id !== entry.id || source.type !== 'media') return refuse('Media source identity does not match its decoded record');
+            if (!duplicateMedia.has(ordinal)) sources.push(source);
         } else sources.push(source);
     }
     const projection = await projectLoad({ input, sources, removedSources, unmapped: draft.unmapped,

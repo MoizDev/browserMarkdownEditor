@@ -6,8 +6,10 @@ type Container = Record<string, unknown> | unknown[] | Map<string, unknown>;
 type Frame = { readonly source: object; readonly target: Container; readonly entries: Iterator<readonly [string | number, unknown]>; readonly depth: number };
 
 function* properties(source: object): Generator<readonly [string, unknown]> {
+    let count = 0;
     for (const key in source) {
         if (!Object.hasOwn(source, key)) continue;
+        if (++count > SECURITY_LIMITS.records) throw new RangeError('Load projection object exceeds its record budget');
         const descriptor = Object.getOwnPropertyDescriptor(source, key);
         if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) throw new TypeError('Load data contains an accessor');
         yield [key, descriptor.value];

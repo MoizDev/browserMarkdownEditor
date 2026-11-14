@@ -98,6 +98,10 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             path.setAttribute('points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
             path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
             svg.replaceChildren(path);
+            const rotation = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            rotation.setAttribute('cx', String(geometry.rotate.x)); rotation.setAttribute('cy', String(geometry.rotate.y));
+            rotation.setAttribute('r', '3'); rotation.setAttribute('fill', '#ffffff');
+            rotation.setAttribute('stroke', '#75b7ff'); rotation.setAttribute('stroke-width', '1.5'); svg.append(rotation);
             for (const position of geometry.positions) {
                 const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                 circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '4');

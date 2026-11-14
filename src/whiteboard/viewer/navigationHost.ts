@@ -3,7 +3,7 @@ import type { PlatformPane, PlatformPresentation } from '../../platform/render/a
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { FrameToken } from '../../platform/render/types';
 import type { Viewport } from '../../platform/types';
-import type { MappingHistory } from '../input/pointer';
+import { presentedMapping, type MappingHistory } from '../input/pointer';
 import { attachBoardNavigation, type BoardNavigationOptions } from './navigationInput';
 
 export interface BoardNavigationHostOptions {
@@ -116,11 +116,7 @@ export function createBoardNavigationHost(options: BoardNavigationHostOptions): 
                 if (options.mappings) {
                     const bounds = binding.surface.getBoundingClientRect(), view = frame.view;
                     if (bounds.width > 0 && bounds.height > 0 && view.viewport.width > 0 && view.viewport.height > 0) {
-                        const left = bounds.left, top = bounds.top, xscale = view.viewport.width / bounds.width, yscale = view.viewport.height / bounds.height;
-                        const projection = { ...view.camera };
-                        options.mappings.present({ time: presentedAt, clientToWorld: (x, y) => ({
-                            x: projection.x + (x - left) * xscale / projection.z, y: projection.y + (y - top) * yscale / projection.z,
-                        }) });
+                        options.mappings.present(presentedMapping(presentedAt, bounds, view.viewport, view.camera));
                     }
                 }
             }

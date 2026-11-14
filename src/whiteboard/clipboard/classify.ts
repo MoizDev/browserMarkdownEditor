@@ -6,6 +6,8 @@ export interface HtmlClipboardMarkers {
     readonly hasPrivate: boolean;
     readonly privatePayload: string | null;
     readonly legacyPayload: string | null;
+    /** Keeps extracted marker strings accounted until the selected decoder owns them. */
+    release?(): void;
 }
 export interface ClipboardClassifierHost {
     /** Opaque, network-denied HTML realm; never parse HTML in the vault origin. */
@@ -86,12 +88,13 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
             throw new RangeError('Clipboard HTML is too large');
         }
         markers = await host.markers(input.html, signal);
-        signal.throwIfAborted();
-        if (markers.hasPrivate) return { kind: 'private', encoded: markers.privatePayload ?? '' };
+        if (signal.aborted) { markers.release?.(); signal.throwIfAborted(); }
+        if (markers.hasPrivate) return { kind: 'private', encoded: markers.privatePayload ?? '', release: markers.release };
     }
-    if (input.privatePng) return { kind: 'private-png', blob: input.privatePng };
-    if (input.files.length) return { kind: 'files', files: input.files };
-    if (markers?.legacyPayload !== null && markers?.legacyPayload !== undefined) return { kind: 'legacy', envelope: markers.legacyPayload };
+    if (input.privatePng) { markers?.release?.(); return { kind: 'private-png', blob: input.privatePng }; }
+    if (input.files.length) { markers?.release?.(); return { kind: 'files', files: input.files }; }
+    if (markers?.legacyPayload !== null && markers?.legacyPayload !== undefined) return { kind: 'legacy', envelope: markers.legacyPayload, release: markers.release };
+    markers?.release?.();
     if (input.text !== null) {
         const text = input.text, start = await leading(input.text, signal);
         if (text[start] === '{' || text[start] === '[') {

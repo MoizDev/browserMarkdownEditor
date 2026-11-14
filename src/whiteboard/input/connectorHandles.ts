@@ -14,8 +14,13 @@ export interface ConnectorEndHandleOptions {
     readonly id: NodeId;
     readonly terminal: 'start' | 'end';
     readonly current: () => boolean;
+    readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly armCommit: () => void;
+    readonly finishCommit: () => void;
+    readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -28,7 +33,8 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
     if (!node || node.kind !== 'connector' || isLocked(doc, node) || session.isReadOnly) throw new Error('Connector endpoint is not editable');
-    let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false;
+    let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false, lastMovedAt = first.time;
+    let lastSurface = options.sampleToSurface(first);
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined;
     const release = options.hold();
@@ -54,7 +60,8 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             if (!scope) await source;
             check();
             const attachment = input.accel ? null : await options.resolveAttachment(point, localRequest.signal,
-                { precise: input.shift, exact: input.alt, input: point.source === 'keyboard' ? 'mouse' : point.source });
+                { precise: input.shift || point.time - lastMovedAt >= 1000, exact: input.alt,
+                    input: point.source === 'keyboard' ? 'mouse' : point.source });
             check();
             const local = worldToLocal(doc, node, point), terminal = options.terminal;
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: attachment } }];
@@ -70,11 +77,16 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             const finalDoc = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             if (commit) {
-                const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release();
+                options.show(ops); await options.waitUntilReady(localRequest.signal); check();
+                options.armCommit();
+                try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release(); options.finishCommit(); }
+                catch (error) { options.cancelCommit(); throw error; }
                 ended = true; controller.abort(); cleanup();
             } else options.show(ops);
         } catch (error) {
-            if (active()) { try { options.error(error); } finally { cancel(); } }
+            if (!cleaned && !localRequest.signal.aborted && turn === generation) {
+                try { if (current()) options.error(error); } finally { cancel(); }
+            }
         } finally { try { final?.release(); } finally { preview?.release(); } }
     };
     void render(false);
@@ -82,7 +94,11 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         kind: 'node-edit', pointerIds: new Set([first.pointerId]),
         update(samples, next) {
             if (ended || !current()) { if (!ended) cancel(); return; }
-            keys = next; for (const value of samples) if (value.pointerId === first.pointerId) sample = value;
+            keys = next; for (const value of samples) if (value.pointerId === first.pointerId) {
+                const surface = options.sampleToSurface(value);
+                if (surface.x !== lastSurface.x || surface.y !== lastSurface.y) lastMovedAt = value.time;
+                lastSurface = surface; sample = value;
+            }
             void render(false);
         },
         finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current()) { cancel(); return; } ended = true; void render(true); },

@@ -6,11 +6,13 @@ import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordina
 import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
+import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
-import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
-import { hasOpaqueDescendant, isSheetParent } from '../model/doc';
+import { sampleSurface, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from '../input/tool';
+import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
+import { polylineHandleGesture } from '../input/polylineHandles';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { newNodeId, type NodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
@@ -19,6 +21,8 @@ import { boardPageStack, pageOrigin } from '../model/pages';
 import type { FigureShape } from '../model/styles';
 import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
+import type { AttachmentRequest } from './attachments';
+import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
 export interface BoardCreationContext {
@@ -26,12 +30,15 @@ export interface BoardCreationContext {
     readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly kind: CreationKind;
     readonly camera: CameraController;
+    readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     registerPending(cancel: () => void): () => void;
     readonly figure?: FigureShape;
-    readonly preview: { show(nodes: readonly Node[]): void; clear(): void };
+    readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
+    readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
+    readonly alwaysSnap?: () => boolean;
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
-    resolveAttachment(point: { x: number; y: number }, signal: AbortSignal): Promise<Attachment | null>;
+    resolveAttachment(point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest): Promise<Attachment | null>;
     onError(error: unknown): void;
 }
 class CreationGesture implements GestureOwner {
@@ -39,23 +46,34 @@ class CreationGesture implements GestureOwner {
     readonly pointerIds: ReadonlySet<number>;
     private readonly controller = new AbortController();
     private readonly revision: number;
+    private readonly document: BoardRuntime['session']['doc'];
+    private readonly owner: BoardRuntime['session']['owner'];
+    private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
     private readonly release: () => void;
     private readonly unregister: () => void;
     private readonly parent: ParentId;
     private readonly page: number;
     private readonly parentPose: { x: number; y: number; rotation: number };
+    private readonly downSurface: { x: number; y: number };
+    private lastSurface: { x: number; y: number };
     private readonly base: { id: Node['id']; parent: ParentId; order: string; page: number; x: number; y: number; ext: null };
     private readonly style;
+    private fontEpoch: number | undefined;
+    private previewRequest: AbortController | undefined;
+    private previewGeneration = 0;
+    private lastMovedAt: number;
     private sample: RealSample;
+    private readonly downModifiers: Modifiers;
     private modifiers: Modifiers;
     private ended = false;
     private released = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
-        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.modifiers = modifiers;
-        this.revision = doc.rev; this.parent = selection.focus;
+        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
+        this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
+        this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
-        if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame'))) throw new Error('Creation focus is not a live container');
+        if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
         const stack = boardPageStack(doc.host);
         this.page = isSheetParent(doc, this.parent) && stack ? pageAt(stack, down.y) : -1;
         const origin = this.page >= 0 && stack ? pageOrigin(stack, this.page) : null;
@@ -64,25 +82,33 @@ class CreationGesture implements GestureOwner {
         this.base = { id: newNodeId(doc), parent: this.parent, order: keyBetween(children.at(-1)?.order ?? null, null), page: this.page, x: point.x, y: point.y, ext: null };
         this.style = { ...doc.ui.next };
         this.release = context.runtime.session.beginGesture();
-        this.unregister = context.registerPending(() => this.cancel('invalidated'));
-        this.draw();
+        try { this.unregister = context.registerPending(() => this.cancel('invalidated')); }
+        catch (error) { this.release(); throw error; }
+        try { this.draw(); } catch (error) { this.cancel('invalidated'); throw error; }
     }
-    private valid(): boolean { return !this.controller.signal.aborted && this.context.current() && this.context.runtime.session.doc.rev === this.revision; }
+    private valid(): boolean {
+        const { runtime } = this.context, session = runtime.session;
+        return !this.controller.signal.aborted && this.context.current() && session.owner === this.owner
+            && session.doc === this.document && this.document.rev === this.revision && !session.isReadOnly
+            && runtime.selection.getSnapshot() === this.selection
+            && (this.fontEpoch === undefined || runtime.render.text.fonts.epoch === this.fontEpoch);
+    }
     private local(point: { x: number; y: number }) {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         return { x: c * dx + s * dy, y: -s * dx + c * dy };
     }
-    private node(): Node {
-        const p = this.local(this.sample), style = this.style;
+    private node(sample = this.sample, modifiers = this.modifiers): Node {
+        const p = this.local(sample), style = this.style;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
-        const moved = Math.hypot(this.sample.x - this.down.x, this.sample.y - this.down.y) * this.context.camera.camera.z >= 4;
-        if (this.modifiers.shift) {
+        const surface = sampleSurface(sample, this.context.sampleToSurface);
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
+        if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
                 const length = Math.hypot(dx, dy), step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
                 dx = length * Math.cos(angle); dy = length * Math.sin(angle);
             } else { const size = Math.max(Math.abs(dx), Math.abs(dy)); dx = Math.sign(dx || 1) * size; dy = Math.sign(dy || 1) * size; }
         }
-        const centered = this.modifiers.alt, x = centered ? this.base.x - Math.abs(dx) : this.base.x + Math.min(0, dx),
+        const centered = modifiers.alt, x = centered ? this.base.x - Math.abs(dx) : this.base.x + Math.min(0, dx),
             y = centered ? this.base.y - Math.abs(dy) : this.base.y + Math.min(0, dy);
         const factor = centered ? 2 : 1;
         const w = moved ? Math.max(1, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
@@ -92,14 +118,14 @@ class CreationGesture implements GestureOwner {
         switch (this.context.kind) {
             case 'figure': {
                 const shape = this.context.figure ?? 'rectangle', down = { x: this.base.x, y: this.base.y };
-                const box = moved ? figureDragBox(shape, down, p, this.modifiers) : figureClickBox(shape, down);
+                const box = moved ? figureDragBox(shape, down, p, modifiers) : figureClickBox(shape, down);
                 return createFigure({ ...base, x: box.x, y: box.y, shape, w: box.width, h: box.height, growY: 0,
                     color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font,
                     align: style.align, valign: style.valign, label: null, width, flipX: false, flipY: false, url: null });
             }
             case 'frame': {
                 const down = { x: this.base.x, y: this.base.y };
-                const box = moved ? figureDragBox('rectangle', down, p, this.modifiers) : { ...down, width: 320, height: 180 };
+                const box = moved ? figureDragBox('rectangle', down, p, modifiers) : { ...down, width: 320, height: 180 };
                 return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: 'Frame', color: null });
             }
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
@@ -114,17 +140,49 @@ class CreationGesture implements GestureOwner {
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
     }
-    private draw(): void { if (this.valid()) this.context.preview.show([this.node()]); }
+    private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
+        const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
+        // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
+        if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
+            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4
+            || (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky')) {
+            this.context.guides?.([]); return node;
+        }
+        const { runtime } = this.context, candidate = createAddedBoardDoc(this.document, [node]);
+        const active = () => !signal.aborted && this.valid();
+        const scope = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal, current: active });
+        let bounds: ReturnType<typeof scope.logicalBounds>;
+        try { bounds = scope.logicalBounds(node.id); } finally { scope.release(); }
+        signal.throwIfAborted(); if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+        const result = await snapBoardBounds({ runtime, bounds, selected: [], zoom: this.context.camera.camera.z, current: active, signal });
+        signal.throwIfAborted(); if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+        this.context.guides?.(result.guides);
+        return result.delta.x || result.delta.y ? this.node({ ...sample, x: sample.x + result.delta.x, y: sample.y + result.delta.y }, modifiers) : node;
+    }
+    private draw(): void {
+        if (!this.valid()) return;
+        const sample = this.sample, modifiers = this.modifiers, turn = ++this.previewGeneration;
+        this.previewRequest?.abort(); const request = new AbortController(); this.previewRequest = request;
+        this.context.preview.show([this.node(sample, modifiers)]);
+        void this.snapped(sample, modifiers, request.signal).then(node => {
+            if (!request.signal.aborted && turn === this.previewGeneration && this.valid() && !this.ended) this.context.preview.show([node]);
+        }).catch(error => { if (!request.signal.aborted && turn === this.previewGeneration && this.valid()) this.context.onError(error); });
+    }
     update(samples: readonly RealSample[], modifiers: Modifiers): void {
         if (this.ended) return;
         if (!this.valid()) { this.cancel('invalidated'); return; }
         this.modifiers = modifiers;
-        for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.sample = sample;
+        for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) {
+            const surface = sampleSurface(sample, this.context.sampleToSurface);
+            if (surface.x !== this.lastSurface.x || surface.y !== this.lastSurface.y) this.lastMovedAt = sample.time;
+            this.lastSurface = surface; this.sample = sample;
+        }
         try { this.draw(); } catch (error) { this.cancel('invalidated'); this.context.onError(error); }
     }
     finish(reason: FinishReason): void {
         if (this.ended) return;
         this.ended = true;
+        this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
         void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
     }
@@ -165,16 +223,25 @@ class CreationGesture implements GestureOwner {
         } finally { scope.release(); }
     }
     private async commit(): Promise<void> {
-        let node = this.node();
         const { render, runtime } = this.context, signal = this.controller.signal;
+        let node = await this.snapped(this.sample, this.modifiers, signal);
         if (node.kind === 'connector') {
-            const start = await this.context.resolveAttachment(this.down, signal);
+            const request = (sample: RealSample, keys: Modifiers, dwell: boolean): AttachmentRequest => ({ precise: keys.shift || dwell, exact: keys.alt,
+                input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+            const world = (point: { x: number; y: number }) => {
+                const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                const x = node.x + point.x, y = node.y + point.y;
+                return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
+            };
+            const start = this.downModifiers.accel ? null : await this.context.resolveAttachment(world(node.start), signal, request(this.down, this.downModifiers, false));
             if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-            const end = await this.context.resolveAttachment(this.sample, signal);
+            const end = this.modifiers.accel ? null : await this.context.resolveAttachment(world(node.end), signal,
+                request(this.sample, this.modifiers, this.sample.time - this.lastMovedAt >= 1000));
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+        this.fontEpoch = render.text.fonts.epoch;
         const doc = runtime.session.doc, candidate = createAddedBoardDoc(doc, [node]);
         const geometry = await render.prepareForPick(node, signal, candidate);
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
@@ -193,8 +260,12 @@ class CreationGesture implements GestureOwner {
             const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
             try {
                 if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+                this.context.preview.show([node]);
+                await this.context.preview.waitUntilReady(signal);
+                if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
                 const builder = runtime.session.begin('tool', `Create ${this.context.kind}`);
                 try {
+                    this.context.preview.armCommit();
                     if (growth) builder.push(growth);
                     builder.push({ t: 'create', node });
                     if (adopted.length) {
@@ -204,20 +275,37 @@ class CreationGesture implements GestureOwner {
                             reparentNode(doc, builder, child, node.id, render.changeGeometry, keys[i]);
                         }
                     }
-                    const applied = builder.commit(); applied.release();
-                } catch (error) { builder.abort(); throw error; }
+                    const applied = builder.commit(); applied.release(); this.context.preview.finishCommit();
+                } catch (error) { builder.abort(); this.context.preview.cancelCommit(); throw error; }
                 runtime.selection.replace([node.id]);
+                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id);
             } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
     }
-    cancel(_reason: CancelReason): void { this.ended = true; this.controller.abort(); this.cleanup(); }
+    cancel(_reason: CancelReason): void { this.ended = true; this.previewGeneration++; this.previewRequest?.abort(); this.controller.abort(); this.cleanup(); }
     private cleanup(): void {
         if (this.released) return;
         this.released = true;
-        try { this.context.preview.clear(); } finally { this.unregister(); this.release(); }
+        try { this.context.guides?.([]); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
     }
 }
 export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> {
-    return { id, begin(sample, modifiers, context) { return new CreationGesture(sample, modifiers, context); } };
+    return { id, begin(sample, modifiers, context) {
+        if (id === 'polyline' && modifiers.shift) {
+            const { runtime } = context, session = runtime.session, doc = session.doc;
+            const prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior) : undefined;
+            // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
+            if (node?.kind === 'polyline' && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
+                && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
+                // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
+                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,
+                    current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
+                    show: ops => context.preview.showOps(ops), waitUntilReady: context.preview.waitUntilReady,
+                    armCommit: context.preview.armCommit, finishCommit: context.preview.finishCommit, cancelCommit: context.preview.cancelCommit,
+                    clear: () => context.preview.clear(), error: context.onError });
+            }
+        }
+        return new CreationGesture(sample, modifiers, context);
+    } };
 }

@@ -8,6 +8,7 @@ import { connectorBody, connectorBodyPoint } from '../geom/connectors';
 import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
+import { polylinePath } from '../geom/polylines';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import { connectorEndHandleGesture } from '../input/connectorHandles';
@@ -21,17 +22,23 @@ import type { NodeSetOp } from '../change/ops';
 
 export type ShapeHandleHit = Readonly<{ kind: 'connector-end'; terminal: 'start' | 'end' }>
     | Readonly<{ kind: 'connector-control'; control: ConnectorControl }>
-    | Readonly<{ kind: 'polyline-vertex'; index: number }>;
+    | Readonly<{ kind: 'polyline-vertex'; index: number }>
+    | Readonly<{ kind: 'polyline-midpoint'; index: number }>;
 export interface ShapeHandleOptions {
     readonly runtime: BoardRuntime;
     readonly overlay: HTMLElement;
     readonly view: () => ViewState;
     readonly current: () => boolean;
     readonly visible: () => boolean;
+    readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly invalidate: () => void;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
     readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
+    readonly armCommit: () => void;
+    readonly finishCommit: () => void;
+    readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly resolveAttachment: (point: Vec2, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
     readonly error: (error: unknown) => void;
@@ -64,9 +71,19 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                     const actual = await resolvePolylineAttachments(node, { runtime, signal, current: active, cooperate: options.cooperate });
                     try {
                         const pose = worldPose(doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                        const world = (p: Vec2) => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y });
                         for (let index = 0; index < actual.points.length; index++) {
-                            const p = actual.points[index];
-                            next.push({ hit: { kind: 'polyline-vertex', index }, point: { x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y } });
+                            next.push({ hit: { kind: 'polyline-vertex', index }, point: world(actual.points[index]) });
+                        }
+                        const path = polylinePath({ ...node, points: actual.points });
+                        for (let index = 1; index < path.length; index++) {
+                            const segment = path[index], a = actual.points[index - 1];
+                            let p: Vec2;
+                            if (segment.op === 'L') p = { x: (a.x + segment.p.x) / 2, y: (a.y + segment.p.y) / 2 };
+                            else if (segment.op === 'C') p = { x: (a.x + 3 * segment.c1.x + 3 * segment.c2.x + segment.p.x) / 8,
+                                y: (a.y + 3 * segment.c1.y + 3 * segment.c2.y + segment.p.y) / 8 };
+                            else continue;
+                            next.push({ hit: { kind: 'polyline-midpoint', index }, point: world(p) });
                         }
                     } finally { actual.release(); }
                 } else {
@@ -109,9 +126,13 @@ export function createShapeHandles(options: ShapeHandleOptions) {
         begin(hit: ShapeHandleHit, sample: RealSample, modifiers: Modifiers): GestureOwner | null {
             if (!current() || !selected) return null;
             const common = { runtime, id: selected, current, hold: options.hold, registerPending: options.registerPending,
-                show: options.show, clear: options.clear, error: options.error, cooperate: options.cooperate };
-            if (hit.kind === 'polyline-vertex') return polylineHandleGesture(sample, modifiers, { ...common, index: hit.index });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, resolveAttachment: options.resolveAttachment });
+                show: options.show, waitUntilReady: options.waitUntilReady, armCommit: options.armCommit,
+                finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
+                clear: options.clear, error: options.error, cooperate: options.cooperate };
+            if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
+                { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint' });
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal,
+                sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
         },
         write(frame: ScheduledFrame) {
@@ -122,7 +143,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             }
             const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
             for (const handle of handles) {
-                const p = worldToSurface(handle.point, frame.view.camera), r = handle.hit.kind === 'connector-control' ? 3 : 5;
+                const p = worldToSurface(handle.point, frame.view.camera), r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
                 parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
             }
             path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');

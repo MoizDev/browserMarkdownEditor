@@ -326,7 +326,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 if (!prior) { media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime })); }
                 nodes.push(createPicture({ id, parent: options.sheet, order: orders[index], page: -1, x: geometry.x, y: geometry.y,
                     rotation: geometry.rotation, opacity: geometry.opacity, ext: null, w: geometry.w, h: geometry.h, media: info.id, crop: null,
-                    flipX: scale[0] === -1, flipY: scale[1] === -1, alt: '', inverted: false, playing: false, url: null }));
+                    flipX: scale[0] === -1, flipY: scale[1] === -1, alt: '', inverted: false, url: null }));
             } else if (element.type === 'arrow' || element.type === 'line' || element.type === 'freedraw') {
                 const dash = visibleDash(element), rawPoints = element.points;
                 if (!pos || !stroke || !dash || !finite(element.strokeWidth, 0.05, 500) || !Array.isArray(rawPoints)

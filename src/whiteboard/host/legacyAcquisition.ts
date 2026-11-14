@@ -13,6 +13,8 @@ import type { NativeLoadReply } from '../workers/nativeLoad';
 import type { LegacyPrepareReply } from '../workers/legacyPrepare';
 import { acquireNativeBoard, type NativeBoardAcquisition } from './nativeAcquisition';
 import { scanLegacyBoard } from './legacyScan';
+import { encodeHost } from '../format/encode';
+import { FORMAT_LIMITS } from '../format/schema';
 
 // Provenance: copied original -> governed legacy mapping -> real native C5.
 // Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
@@ -40,6 +42,18 @@ export type LegacyBoardAcquisition =
         readonly legacyReport: ImportReport; readonly media: ReadonlyMap<MediaId, Blob>;
         readonly previousFrames: readonly LegacyPageRect[]; readonly nextFrames: readonly LegacyPageRect[];
         readonly conversionPending: true; dispose(): void };
+type EditableLegacy = Extract<LegacyBoardAcquisition, { status: 'editable' }>;
+const activeLegacy = new WeakSet<EditableLegacy>();
+function ownLegacy(value: Omit<EditableLegacy, 'dispose' | 'media'> & { readonly media: Map<MediaId, Blob> }): EditableLegacy {
+    let live = true;
+    const result: EditableLegacy = { ...value, dispose() {
+        if (!live) return;
+        live = false; activeLegacy.delete(result);
+        try { value.media.clear(); } finally { value.native.dispose(); }
+    } };
+    activeLegacy.add(result);
+    return result;
+}
 function report(value: unknown): value is ImportReport {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const r = value as Partial<ImportReport>;
@@ -116,11 +130,57 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             { priority: 0, cpu: 'governed', deadlineMs: importDeadline(original.size), signal }, options.isCurrent); check();
         if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) throw new TypeError('Invalid original legacy digest');
         const native = owned; owned = undefined;
-        let live = true;
-        return { status: 'editable', original, originalSha256: digest, bytes: nativeBytes, native,
+        return ownLegacy({ status: 'editable', original, originalSha256: digest, bytes: nativeBytes, native,
             legacyReport: value.report, media,
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
-            nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true,
-            dispose() { if (!live) return; live = false; media.clear(); native.dispose(); } };
+            nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
     } finally { try { owned?.dispose(); } finally { memory.release(reservation); } }
+}
+
+/** Upgrade a genuine PDF preview HOST only after the PDF domain minted its final
+ * conversion host. This does not grant write authority, reconvert legacy shapes,
+ * or manufacture an edit: offsets and all other R0 bytes remain source-owned.
+ * Caller keeps the old acquisition until this independent result is acquired. */
+export async function rehostLegacyBoard(source: EditableLegacy,
+    finalHost: Extract<HostBlock, { kind: 'pdf-ink' }>,
+    options: Pick<LegacyAcquisitionOptions, 'identity' | 'isCurrent' | 'memory' | 'signal' | 'cooperate'>): Promise<EditableLegacy> {
+    const identity = Object.freeze({ ...options.identity }), signal = options.signal ?? new AbortController().signal;
+    const check = () => {
+        signal.throwIfAborted();
+        if (!activeLegacy.has(source) || !options.isCurrent(identity)) throw new DOMException('Legacy source ended', 'AbortError');
+    };
+    if (!validBoardIdentity(identity) || !source || !activeLegacy.has(source) || finalHost.kind !== 'pdf-ink') throw new TypeError('Expected an active legacy PDF acquisition');
+    check();
+    const doc = source.native.load.doc, previous = doc.host;
+    if (doc.kind !== 'pdf-ink' || previous.kind !== 'pdf-ink' || doc.rev !== 0 || previous.pages.length !== finalHost.pages.length
+        || previous.pages.some((page, index) => page[0] !== finalHost.pages[index][0] || page[1] !== finalHost.pages[index][1]))
+        throw new Error('Final legacy PDF host must retain the admitted physical geometry');
+    const records = source.native.load.sources.filter(record => record.category === 'host');
+    const position = records[0]?.position;
+    if (records.length !== 1 || records[0].reencode || !position || !Number.isSafeInteger(position.byteOffset)
+        || !Number.isSafeInteger(position.byteLength) || position.byteOffset < 0 || position.byteLength <= 0
+        || position.byteLength > FORMAT_LIMITS.recordBytes || position.byteOffset + position.byteLength > source.bytes.size
+        || source.native.report.bytesRead !== source.bytes.size || !source.native.report.complete) throw new Error('Native R0 HOST has no exact admitted source span');
+    const encoded = encodeHost(finalHost);
+    if (!encoded.ok) throw new Error(encoded.error.reason);
+    const reservation = options.memory.reserve(16 * 1024 * 1024 + source.bytes.size * 12);
+    if (!reservation) throw new Error('Insufficient shared memory for native PDF host admission');
+    let owned: NativeBoardAcquisition | undefined;
+    try {
+        // Blob slices preserve every original record lexeme, sample packet,
+        // separator and opaque row; replacing a HOST does not change end.count.
+        const bytes = new Blob([source.bytes.slice(0, position.byteOffset), encoded.value.text,
+            source.bytes.slice(position.byteOffset + position.byteLength)], { type: source.bytes.type });
+        const media = new Map(source.media);
+        owned = await acquireNativeBoard({ bytes, kind: 'pdf-ink', pdfPages: finalHost.pages,
+            identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision }, signal,
+            deadlineMs: importDeadline(bytes.size), cooperate: options.cooperate });
+        check();
+        if (owned.status !== 'editable' || !owned.report.complete || owned.report.format !== 'native'
+            || owned.report.repaired?.repairs.length) throw new Error('Final legacy PDF HOST failed lossless native C5 admission');
+        const native = owned; owned = undefined;
+        return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,
+            bytes, native, legacyReport: source.legacyReport, media, previousFrames: source.previousFrames,
+            nextFrames: source.nextFrames, conversionPending: true });
+    } finally { try { owned?.dispose(); } finally { options.memory.release(reservation); } }
 }

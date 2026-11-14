@@ -3,7 +3,7 @@ import { isoHeader } from './isoHeaders';
 import { sniffMedia } from './sniff';
 
 // Run the lexical cap before passing bytes to the opaque XML profile.
-export function preflightSvgText(text: string): void {
+export function preflightSvgText(text: string): number {
     if (new TextEncoder().encode(text).length > 5 * 1024 * 1024 || /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text)) throw new Error('Unsafe SVG');
     let depth = 0, elements = 0;
     for (let i = 0; i < text.length;) {
@@ -44,19 +44,21 @@ export function preflightSvgText(text: string): void {
         i = end + 1;
     }
     if (depth !== 0) throw new Error('Invalid SVG nesting');
+    return elements;
 }
 
 // This function runs only in the opaque, network-denied XML profile. Parsed
 // nodes never leave that realm or enter its live document.
 export function svgHeaderInIsolatedRealm(text: string): { width: number; height: number; rgbaBytes: number } {
-    const budget = { bytes: new TextEncoder().encode(text).length, pixels: 0, documents: 0 };
+    const budget = { bytes: new TextEncoder().encode(text).length, pixels: 0, documents: 0, elements: 0 };
     const image = inspectDocument(text, budget, 0);
     return { ...image, rgbaBytes: budget.pixels * 4 };
 }
 
-function inspectDocument(text: string, budget: { bytes: number; pixels: number; documents: number }, level: number): { width: number; height: number } {
+function inspectDocument(text: string, budget: { bytes: number; pixels: number; documents: number; elements: number }, level: number): { width: number; height: number } {
     if (level > 64 || ++budget.documents > 50000) throw new Error('SVG inline resources are too complex');
-    preflightSvgText(text);
+    budget.elements += preflightSvgText(text);
+    if (budget.elements > 50000) throw new Error('SVG inline resources have too many elements');
     const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
     const root = parsed.documentElement;
     if (root.localName !== 'svg' || root.namespaceURI !== 'http://www.w3.org/2000/svg' || parsed.getElementsByTagName('parsererror').length) throw new Error('Invalid SVG');

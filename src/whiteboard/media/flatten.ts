@@ -81,7 +81,7 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
             }
             const id = newNodeId(doc), picture = createPicture({ id, parent, order: top.order, page, x, y, rotation, ext: null,
                 w: bounds.width, h: bounds.height, media: info.id, crop: null, flipX: false, flipY: false,
-                alt: '', inverted: false, playing: false, url: null });
+                alt: '', inverted: false, url: null });
             check();
             return await session.enqueueAfterGesture(context.signal, () => {
                 check(); session.history.open('Flatten to image');

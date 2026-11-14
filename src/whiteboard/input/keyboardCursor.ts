@@ -37,7 +37,8 @@ export function createKeyboardCursor(services: KeyboardCursorServices): Keyboard
       return true
     },
     escape() {
-      if (!current() || !point) return false
+      // Teardown must cancel a cursor-owned gesture even after the view becomes hidden.
+      if (disposed || !point) return false
       if (gesture) { services.escape(); gesture = false; services.show(point, false) }
       else { point = null; services.show(null, false) }
       return true

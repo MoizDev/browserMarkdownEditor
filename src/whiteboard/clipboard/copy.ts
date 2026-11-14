@@ -5,7 +5,7 @@ import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type Clipboa
 import type { CopySnapshot } from './snapshot';
 
 interface HeldSnapshot { readonly snapshot: CopySnapshot; readonly memory: { release(): void }; count: number }
-interface Candidate { readonly held: HeldSnapshot; envelope: ClipboardEnvelope; readonly controller: AbortController }
+interface Candidate { readonly held: HeldSnapshot; envelope: ClipboardEnvelope; readonly controller: AbortController; timer: ReturnType<typeof setTimeout> | null }
 export interface CachedClipboard {
     readonly snapshot: CopySnapshot;
     readonly encoded: string;
@@ -16,6 +16,10 @@ export interface CachedClipboard {
 }
 export interface ClipboardCut {
     commit(): void;
+    release(): void;
+}
+export interface ClipboardCachePin {
+    match(encoded: string, plain: string): CachedClipboard | null;
     release(): void;
 }
 export interface ClipboardCopyHost {
@@ -87,9 +91,13 @@ export class ClipboardCopy {
         let envelope: ClipboardEnvelope;
         try { envelope = encodeClipboardNow(snapshot, new Map()); }
         catch (error) { release(held); throw error; }
-        const candidate: Candidate = { held, controller, envelope };
+        const candidate: Candidate = { held, controller, envelope, timer: null };
         this.candidate = candidate;
-        void (async () => {
+        candidate.timer = setTimeout(() => {
+            candidate.timer = null;
+            if (this.candidate !== candidate || controller.signal.aborted) return;
+            held.count++;
+            void (async () => {
             const inline = snapshot.payload.records.reduce((sum, line) => sum + line.length, 0) > 48 * 1024 * 1024
                 ? new Map<MediaId, string>() : await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(snapshot, id, signal), controller.signal);
             controller.signal.throwIfAborted();
@@ -101,13 +109,35 @@ export class ClipboardCopy {
             if (this.candidate === candidate && this.host.isCurrent(snapshot)) candidate.envelope = compressed;
         })().catch(() => {
             // Copy still has the synchronous native records; missing bytes are resolved by hash on paste.
-        });
+        }).finally(() => release(held));
+        }, 40);
     }
 
     match(encoded: string, plain: string): CachedClipboard | null {
         const entry = this.cache.match(encoded, plain);
         if (!(entry instanceof WrittenSnapshot)) return null;
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly, readMedia: entry.readMedia };
+    }
+
+    /** Pin the current window cache when a paste is queued, before a later copy can replace it. */
+    pin(): ClipboardCachePin | null {
+        const entry = this.cache.peek();
+        if (this.disposed || !(entry instanceof WrittenSnapshot)) return null;
+        entry.held.count++;
+        let active = true;
+        return {
+            match(encoded, plain) {
+                if (!active || entry.envelope.encoded !== encoded || entry.envelope.cacheOnly && entry.envelope.plain !== plain) return null;
+                return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly,
+                    async readMedia(id, signal) {
+                        if (!active) throw new DOMException('Clipboard cache pin ended', 'AbortError');
+                        entry.held.count++;
+                        try { return await entry.readMedia(id, signal); }
+                        finally { release(entry.held); }
+                    } };
+            },
+            release() { if (active) { active = false; release(entry.held); } },
+        };
     }
 
     /** The event path captures the current selection synchronously; it never waits for a warm cache. */
@@ -129,6 +159,9 @@ export class ClipboardCopy {
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;
+        // Once this selection owns the event, refusal must not fall through to
+        // the browser's hidden text buffer and perform an unproved native cut.
+        event.preventDefault();
         let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');
@@ -161,7 +194,8 @@ export class ClipboardCopy {
             const snapshot = await capture(controller.signal);
             const owner = hold(snapshot, this.host.memory);
             if (finished) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
-            held = owner;
+            held = owner; owner.count++;
+            try {
             controller.signal.throwIfAborted();
             if (cut && !this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
@@ -177,6 +211,7 @@ export class ClipboardCopy {
             catch { controller.signal.throwIfAborted(); }
             controller.signal.throwIfAborted();
             return { owner, envelope };
+            } finally { release(owner); }
         })();
         const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
         const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));
@@ -251,6 +286,7 @@ export class ClipboardCopy {
     private dropCandidate(): void {
         if (!this.candidate) return;
         this.candidate.controller.abort();
+        if (this.candidate.timer !== null) clearTimeout(this.candidate.timer);
         release(this.candidate.held);
         this.candidate = null;
     }

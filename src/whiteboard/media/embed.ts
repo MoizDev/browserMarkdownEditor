@@ -31,14 +31,17 @@ export interface EmbedLease {
 /** Invoke only after this embed's explicit Load action. */
 export async function activateEmbed(options: {
     readonly input: string; readonly environment: UrlEnvironment; readonly container: HTMLElement;
-    readonly identity: BoardJobIdentity; readonly signal?: AbortSignal; current(identity: BoardJobIdentity): boolean;
+    readonly identity: BoardJobIdentity; readonly signal?: AbortSignal;
+    /** Platform must explicitly admit its tested credentialless containment profile. */
+    containmentApproved(): boolean;
+    current(identity: BoardJobIdentity): boolean;
 }): Promise<EmbedLease> {
     options.signal?.throwIfAborted();
-    if (!('credentialless' in HTMLIFrameElement.prototype) || !validBoardIdentity(options.identity)) throw new Error('Credentialless embed containment is unavailable');
+    if (!('credentialless' in HTMLIFrameElement.prototype) || !validBoardIdentity(options.identity) || !options.containmentApproved()) throw new Error('Credentialless embed containment is unavailable');
     const candidate = resolveEmbedCandidate(options.input, options.environment);
     if (!candidate || !checkContentUrl(candidate.url, 'embed', options.environment).ok) throw new Error('This embed provider is unsupported');
     const identity = Object.freeze({ ...options.identity }), signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
-    const check = () => { signal.throwIfAborted(); if (!options.current(identity)) throw new DOMException('Embed became stale', 'AbortError'); };
+    const check = () => { signal.throwIfAborted(); if (!options.containmentApproved() || !options.current(identity)) throw new DOMException('Embed became stale', 'AbortError'); };
     check();
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(BOOTSTRAP))); check();
     const hash = btoa(String.fromCharCode(...digest));

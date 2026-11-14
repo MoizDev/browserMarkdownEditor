@@ -26,6 +26,7 @@ import type { Webgl2Coverage, CoverageFrameTag } from './webgl2Coverage';
 const coverageModule = __BME_BENCH__ ? await import('./webgl2Coverage') : null;
 const coverageShaders = __BME_BENCH__ ? await import('./webgl2CoverageShaders') : null;
 const coveragePerf = __BME_BENCH__ ? await import('../renderPerf') : null;
+const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : null;
 
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
@@ -39,6 +40,7 @@ const coveragePerf = __BME_BENCH__ ? await import('../renderPerf') : null;
  * cancels its registration after one callback. No backend rAF exists.
  */
 export interface Webgl2Services {
+    readonly measurementPaneId?: string;
     working: MemoryAllocator;
     program: MemoryAllocator;
     gpuStaging: MemoryAllocator;
@@ -187,7 +189,7 @@ interface FrameWork {
     finished: boolean;
     coverage: CoveragePlan | null;
 }
-type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null };
+type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; width: number; height: number };
 type CoverageRoot = { width: number; height: number; texture: TextureHandle; target: TargetHandle };
 
 const CAPABILITY_SHADER: ShaderModule = {
@@ -241,6 +243,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly resources: GfxDevice = this;
     readonly uploadMeterAvailable: boolean;
     readonly #services: Webgl2Services;
+    readonly #measurementWorking: MemoryAllocator;
+    readonly #measurementProgram: MemoryAllocator;
     readonly #arena: ResourceArena<Descriptors, Objects>;
     readonly #parallel: KHR_parallel_shader_compile | null;
     readonly #timer: Webgl2Timer;
@@ -312,6 +316,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#canvas = preparation.canvas;
         this.generation = preparation.generation;
         this.#services = services;
+        this.#measurementWorking = benchmarkMemory && services.measurementPaneId
+            ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.working) : services.working;
+        this.#measurementProgram = benchmarkMemory && services.measurementPaneId
+            ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.program) : services.program;
         this.uploadMeterAvailable = typeof services.recordUpload === 'function';
         // Query once per generation, never to reconstruct state in a frame (design:276–277).
         const parameter = (name: number): number => {
@@ -403,16 +411,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             if (this.#coveragePrograms && width > 0 && height > 0) {
                 this.#coverage ??= new coverageModule.Webgl2Coverage({ generation: this.generation, gl: () => this.#healthy(),
-                    memory: this.#services.working, reset: () => this.#reset(), schedulePoll: this.#services.schedulePoll,
+                    memory: this.#measurementWorking, reset: () => this.#reset(), schedulePoll: this.#services.schedulePoll,
                     programs: () => this.#coveragePrograms,
                     onCount: (result, counts) => coveragePerf.recordCoverageFrame({ ...result, backend: 'webgl2',
                         outside: counts[0], hole: counts[1], standin: counts[2], current: counts[3],
                         invalid: result.width * result.height - counts[0] - counts[1] - counts[2] - counts[3] }),
-                    onDrop: () => {} });
+                    onDrop: result => coveragePerf.recordCoverageDrop({ ...result, backend: 'webgl2' }, 'readback') });
                 if (this.#coverage.prepare(width, height)) root = this.#prepareCoverageRoot(width, height);
             }
         } catch { root = null; }
-        this.#coveragePlan = { tag, domain, root };
+        this.#coveragePlan = { tag, domain, root, missing: false, width, height };
         return root !== null;
     }
 
@@ -421,17 +429,21 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     #prepareCoverageRoot(width: number, height: number): CoverageRoot {
         if (this.#coverageRoot?.width === width && this.#coverageRoot.height === height) return this.#coverageRoot;
-        const lease = this.#reserve(this.#services.working, byteSize(width, height, 12));
         let texture: TextureHandle | null = null;
         try {
-            texture = this.#allocate('texture', { width, height, format: 'rgba8', uses: ['sample', 'render', 'copy-src'] }, width * height * 4, lease);
-            const target = this.#allocateColorTarget(texture, 1, true, width * height * 8, lease, [texture]);
+            texture = this.#owned('texture', { width, height, format: 'rgba8', uses: ['sample', 'render', 'copy-src'] },
+                byteSize(width, height, 4), this.#measurementWorking);
+            const native = this.#arena.validate(texture, 'texture');
+            const lease = this.#reserve(this.#measurementWorking, this.#targetBytes(native, 1, true));
+            let target: TargetHandle;
+            try { target = this.#allocateColorTarget(texture, 1, true, this.#targetBytes(native, 1, true), lease, [texture]); }
+            finally { this.closeLease(lease); }
+            if (!this.#arena.validate(target, 'target').coverage) { this.destroy(target); throw new ArenaError('out-of-budget'); }
             const previous = this.#coverageRoot;
             this.#coverageRoot = { width, height, texture, target };
             if (previous) { this.destroy(previous.target); this.destroy(previous.texture); }
             return this.#coverageRoot;
         } catch (error) { if (texture) this.destroy(texture); throw error; }
-        finally { this.closeLease(lease); }
     }
 
     #releaseCoverage(abandon: boolean): void {
@@ -1002,6 +1014,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
             }
             const native = this.#pin(work.encoding, handle, 'target');
+            if (work.coverage?.root && !work.coverage.domain.vector && native.format === 'rgba8' && !native.coverage) work.coverage.missing = true;
             return { handle, framebuffer: native.framebuffer, resolveFramebuffer: native.resolveFramebuffer,
                 coverage: native.coverage?.texture ?? null, width: native.width, height: native.height, format: native.format, samples: native.samples,
                 stencil: native.stencil, capture: native.capture, retained: native,
@@ -1035,6 +1048,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             uniforms: bytes => this.#frameUniforms(work, bytes),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
             quad: command => {
+                if (work.coverage?.root && !work.coverage.domain.vector && command.source.format === 'rgba8' && !command.source.coverage) {
+                    work.coverage.missing = true;
+                }
                 if (!this.#composition) throw new ArenaError('invalid-resource');
                 const program = this.#pin(work.encoding, this.#composition, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
@@ -1089,7 +1105,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!plan || !coveragePerf) return null;
         const root = plan.root;
         const drop = () => coveragePerf.recordCoverageDrop({ ...plan.tag, backend: 'webgl2',
-            width: this.#canvas?.width ?? 0, height: this.#canvas?.height ?? 0 }, 'unavailable');
+            width: plan.width, height: plan.height }, 'unavailable');
         if (!root) return { commit: drop, cancel: () => {} };
         const gl = this.#usable();
         const target = this.#arena.validate(root.target, 'target');
@@ -1104,7 +1120,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 }
                 gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
             }
-            try { if (target.coverage) ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height, plan.tag) ?? null; }
+            try { if (target.coverage && !plan.missing) ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height, plan.tag) ?? null; }
             catch { ticket = null; }
             gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer); gl.readBuffer(gl.COLOR_ATTACHMENT0);
             gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null); gl.drawBuffers([gl.BACK]); gl.disable(gl.SCISSOR_TEST);
@@ -1417,10 +1433,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (__BME_BENCH__ && samples === 1 && texture.format === 'rgba8') {
             coverage = this.#coverageTextures.get(texture.texture);
             if (!coverage) {
-                coverage = this.#owned('texture', { width: texture.width, height: texture.height, format: 'r8',
-                    uses: ['sample', 'render', 'copy-src', 'copy-dst'] }, byteSize(texture.width, texture.height), this.#services.working);
-                this.#coverageTextures.set(texture.texture, coverage);
-                created = true;
+                try {
+                    coverage = this.#owned('texture', { width: texture.width, height: texture.height, format: 'r8',
+                        uses: ['sample', 'render', 'copy-src', 'copy-dst'] }, byteSize(texture.width, texture.height), this.#measurementWorking);
+                    this.#coverageTextures.set(texture.texture, coverage);
+                    created = true;
+                } catch (error) {
+                    if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') throw error;
+                }
             }
         }
         try {
@@ -1528,7 +1548,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const promise = (async () => {
             await this.#task(signal);
             this.#usable();
-            const handle = this.#owned('pipeline', { role: 'program', shader }, 0, this.#services.program);
+            const allocator = __BME_BENCH__ && shader.id.startsWith('benchmark-coverage-') ? this.#measurementProgram : this.#services.program;
+            const handle = this.#owned('pipeline', { role: 'program', shader }, 0, allocator);
             try {
                 const native = this.#arena.validate(handle, 'pipeline');
                 if (native.role !== 'program') throw new ArenaError('invalid-resource');

@@ -35,6 +35,7 @@ interface Ticket {
     decision: 'pending' | 'committed' | 'cancelled';
     counts: Uint32Array | null;
     done: boolean;
+    failed: boolean;
 }
 
 /** Benchmark-only asynchronous reduction; presentation and readback have separate lifetimes. */
@@ -77,7 +78,10 @@ export class Webgl2Coverage {
         const tag: CoverageResultTag = Object.freeze({ ...frameTag, token: Object.freeze({ ...frameTag.token }), width, height });
         let slot = 0;
         while (this.#slots.has(slot) && slot < 8) slot++;
-        if (slot === 8) { this.options.onDrop(tag); return null; }
+        if (slot === 8) {
+            let decided = false;
+            return { commit: () => { if (!decided) { decided = true; this.options.onDrop(tag); } }, cancel: () => { decided = true; } };
+        }
         const gl = this.options.gl();
         const frame = this.#resources.begin();
         const read = this.#resources.begin();
@@ -111,7 +115,7 @@ export class Webgl2Coverage {
             gl.flush();
             const serial = ++this.#serial;
             this.#resources.submit(frame, serial);
-            const ticket: Ticket = { tag, serial, fence, pack, read, slot, decision: 'pending', counts: null, done: false };
+            const ticket: Ticket = { tag, serial, fence, pack, read, slot, decision: 'pending', counts: null, done: false, failed: false };
             this.#slots.add(slot); this.#tickets.add(ticket);
             this.#ensurePoll();
             return {
@@ -145,6 +149,10 @@ export class Webgl2Coverage {
     #decide(ticket: Ticket, decision: 'committed' | 'cancelled'): void {
         if (ticket.decision !== 'pending') return;
         ticket.decision = decision;
+        if (ticket.failed && decision === 'committed' && !this.#closed) {
+            this.options.onDrop(ticket.tag);
+            ticket.decision = 'cancelled';
+        }
         if (ticket.done) this.#publish(ticket);
     }
 
@@ -155,7 +163,7 @@ export class Webgl2Coverage {
     }
 
     #ensurePoll(): void {
-        if (this.#poll || ![...this.#tickets].some(ticket => !ticket.done)) return;
+        if (this.#poll || ![...this.#tickets].some(ticket => !ticket.done && !ticket.failed)) return;
         this.#poll = this.options.schedulePoll(() => this.#collect());
     }
 
@@ -164,22 +172,40 @@ export class Webgl2Coverage {
         try {
             for (const ticket of this.#tickets) {
                 if (ticket.done) continue;
-                const status = gl.clientWaitSync(ticket.fence, 0, 0);
+                if (ticket.failed) continue;
+                let status: number;
+                try { status = gl.clientWaitSync(ticket.fence, 0, 0); }
+                catch { status = gl.WAIT_FAILED; }
+                if (status === gl.WAIT_FAILED) {
+                    ticket.failed = true;
+                    if (ticket.decision === 'committed' && !this.#closed) {
+                        this.options.onDrop(ticket.tag);
+                        ticket.decision = 'cancelled';
+                    }
+                    continue;
+                }
                 if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) continue;
                 this.#completed = Math.max(this.#completed, ticket.serial);
                 if (!this.#closed && ticket.decision !== 'cancelled') {
                     const counts = new Uint32Array(4);
-                    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, ticket.pack);
-                    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, counts);
-                    ticket.counts = counts;
+                    try {
+                        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, ticket.pack);
+                        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, counts);
+                        if (gl.getError() !== gl.NO_ERROR) ticket.failed = true;
+                        else ticket.counts = counts;
+                    } catch { ticket.failed = true; }
                 }
                 gl.deleteSync(ticket.fence);
                 this.#resources.cancel(ticket.read);
                 this.#slots.delete(ticket.slot);
                 ticket.done = true;
+                if (ticket.failed && ticket.decision === 'committed' && !this.#closed) {
+                    this.options.onDrop(ticket.tag);
+                    ticket.decision = 'cancelled';
+                }
                 this.#publish(ticket);
             }
         } finally { this.options.reset(); }
-        if (![...this.#tickets].some(ticket => !ticket.done)) { this.#poll?.(); this.#poll = null; }
+        if (![...this.#tickets].some(ticket => !ticket.done && !ticket.failed)) { this.#poll?.(); this.#poll = null; }
     }
 }

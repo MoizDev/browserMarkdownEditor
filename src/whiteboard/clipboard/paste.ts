@@ -74,11 +74,12 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
     intent: ClipboardIntent, signal?: AbortSignal): Promise<readonly NodeId[]> {
     const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
         pointer: target.pointer ? Object.freeze({ ...target.pointer }) : null });
-    const runtime = host.runtime, session = runtime.session, doc = session.doc, revision = doc.rev;
+    const runtime = host.runtime, session = runtime.session, doc = session.doc;
     const bytes = copied.files.reduce((sum, file) => sum + (file.directory ? 0 : Math.min(file.blob.size, SECURITY_LIMITS.mediaBytes)), 0)
         + (copied.privatePng ? Math.min(copied.privatePng.size, SECURITY_LIMITS.mediaBytes) : 0);
     const deadlineMs = Math.min(600_000, Math.max(120_000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30_000));
     return runtime.jobs.run(async context => {
+        const revision = doc.rev;
         const check = () => {
             runtime.jobs.assertContext(context); context.assertCurrent();
             if (!host.current(captured) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {

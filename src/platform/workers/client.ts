@@ -194,7 +194,8 @@ class Client implements WorkerClient {
                             }
                         }
                         if (!job.admitted || job.paused) continue;
-                        assertPayload(job.args);
+                        const allowHandles = !connection.alive && !!this.spec.fileHandleOps?.includes(job.op);
+                        assertPayload(job.args, new Set(), allowHandles);
                         if (!this.pending.has(job.id) || this.connection !== connection) continue;
                         job.phase = 'sent';
                         connection.sent.set(job.id, job);

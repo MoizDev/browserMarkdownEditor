@@ -20,7 +20,12 @@ export interface TextClipboardPorts {
     /** Ends this editor and forwards the original sampled transfer to the board controller. */
     pasteBoard(input: ClipboardInput, plain: boolean): void;
 }
-export interface TextClipboardCopy { readonly plain: string; readonly html: string }
+export interface TextClipboardCopy {
+    readonly plain: string;
+    readonly html: string;
+    readonly revision: number;
+    readonly selection: EditSelection;
+}
 
 /** Owns text-range decisions; platform clipboard permissions remain in the app controller. */
 export class TextClipboardSession {
@@ -31,11 +36,14 @@ export class TextClipboardSession {
 
     copy(): TextClipboardCopy | null {
         if (this.disposed) return null;
-        const selection = this.ports.selection();
+        const revision = this.ports.revision(), selection = this.ports.selection();
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
         if (from === to) return null;
         const rendition = textClipboardRendition(this.ports.text(), from, to);
-        return { plain: rendition.plain, html: this.ports.envelope(rendition.fragment, rendition.html) };
+        const html = this.ports.envelope(rendition.fragment, rendition.html);
+        const current = this.ports.selection();
+        if (this.disposed || this.ports.revision() !== revision || current.anchor !== selection.anchor || current.focus !== selection.focus) return null;
+        return { plain: rendition.plain, html, revision, selection: { ...selection } };
     }
 
     /** Call only after the synchronous copy event or async clipboard write succeeds. */

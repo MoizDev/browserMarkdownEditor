@@ -27,6 +27,7 @@ async function ordered<T>(values: Iterable<T>, options: LoadRepairOptions): Prom
 /** Repair is history-silent. Re-encoding flags and deleted-source tombstones are
  * preparation for the first user edit, not a write or a dirty admission itself. */
 export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOptions): Promise<LoadRepairResult> {
+    options = { ...options, cooperate: options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0))) };
     const sheets = await ordered<Sheet>(draft.input.sheets, options), nodes = await ordered<NodeRecord>(draft.input.nodes ?? [], options);
     const sourceMedia = await ordered<MediaEntry>(draft.input.media ?? [], options), media: MediaEntry[] = [], notices: LoadRepairNotice[] = [], issues: ReadIssue[] = [];
     const refuse = (reason: string): LoadRepairResult => ({ status: 'read-only', projection: null, repairs: notices,

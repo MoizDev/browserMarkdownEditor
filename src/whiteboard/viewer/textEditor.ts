@@ -28,6 +28,7 @@ import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import type { Misspelling } from '../text/spell/menu';
 import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
+import { insertionFragment, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
@@ -47,7 +48,7 @@ export interface BoardTextEditorOptions {
     readonly mac: boolean;
     readonly onError: (error: unknown) => void;
     /** App-wide persisted dictionary; its owner also propagates cross-window changes. */
-    readonly spelling: { words(): readonly string[]; subscribe(listener: () => void): () => void };
+    readonly spelling: { words(): readonly string[]; subscribe(listener: () => void): () => void; add(word: string): void };
     /** App-owned UI, never geometry or transaction authorities. */
     readonly ui: {
         menu(x: number, y: number): void;
@@ -353,7 +354,22 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     };
     return { manager, input, editText, writeOverlays, captureText,
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
+        spellingAtClient(x: number, y: number) {
+            const editor = manager.current?.editor;
+            if (!editor || !active) return null;
+            const offset = editor.offsetAtClient(x, y), range = misspellings.find(item => offset >= item.from && offset < item.to);
+            return range ? { ...range, revision: doc.rev, node: active } : null;
+        },
         async spellingSuggestions(word: string) { return spell ? spell.suggest(word) : []; },
+        addSpellingWord(word: string) { options.spelling.add(word); },
+        replaceSpelling(range: Misspelling & { readonly revision: number; readonly node: NodeId }, suggestion: string) {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            if (!editor || !text || active !== range.node || doc.rev !== range.revision || plain(text).slice(range.from, range.to) !== range.word) return false;
+            const fragment = insertionFragment(text, range.from, suggestion, null);
+            editor.restoreSelection({ anchor: range.from, focus: range.to });
+            editor.replaceSelection(fragment);
+            return true;
+        },
         restoreText(value: TextSelectionSnapshot) { void prepareMetric(value.node, controller.signal).then(() => { if (current()) manager.start(value.node, { anchor: value.anchor, focus: value.head }); }, report); },
         finishComposition() { manager.close(true); },
         beforeHistoryReplay(step: HistoryStepInfo, _direction: 'undo' | 'redo') {

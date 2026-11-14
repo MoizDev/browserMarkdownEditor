@@ -14,7 +14,10 @@ export function buildLines(raw: RawPageText, charU16: Uint32Array): LineTable {
         finishCluster();
         if (end <= first || !box || firstInk < 0) { first = end; box = undefined; firstInk = lastInk = -1; base = undefined; heading = undefined; return; }
         let dx = raw.origin[lastInk * 2] - raw.origin[firstInk * 2], dy = raw.origin[lastInk * 2 + 1] - raw.origin[firstInk * 2 + 1];
-        if (Math.hypot(dx, dy) < 1e-6) { dx = raw.matrix[firstInk * 4] || 1; dy = raw.matrix[firstInk * 4 + 1] || 0; }
+        if (Math.hypot(dx, dy) < 1e-6) {
+            dx = raw.matrix[firstInk * 4]; dy = raw.matrix[firstInk * 4 + 1];
+            if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < 1e-6) { dx = 1; dy = 0; }
+        }
         const length = Math.hypot(dx, dy) || 1;
         const line = lines.length / 2;
         lines.push(first, end); boxes.push(...box); dirs.push(dx / length, dy / length); bidi.push(base ?? 0);

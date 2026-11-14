@@ -54,8 +54,9 @@ export function validBox(box: readonly number[]): boolean {
 export function differentLine(raw: RawPageText, previous: number, current: number): boolean {
     const a = boxAt(raw, previous), b = boxAt(raw, current);
     if (!validBox(a) || !validBox(b)) return false;
-    const dx = raw.matrix[previous * 4] || 1, dy = raw.matrix[previous * 4 + 1] || 0;
-    const length = Math.hypot(dx, dy) || 1, nx = -dy / length, ny = dx / length;
+    let dx = raw.matrix[previous * 4], dy = raw.matrix[previous * 4 + 1];
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) === 0) { dx = 1; dy = 0; }
+    const length = Math.hypot(dx, dy), nx = -dy / length, ny = dx / length;
     const across = Math.abs(((b[0] + b[2] - a[0] - a[2]) * nx + (b[1] + b[3] - a[1] - a[3]) * ny) / 2);
     const height = Math.max(raw.fontSize[previous] || 0, raw.fontSize[current] || 0, a[3] - a[1], b[3] - b[1], 1);
     return across > 2 * height;

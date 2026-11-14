@@ -28,6 +28,42 @@ export interface ServeSpec {
     yield?: () => Promise<void>;
 }
 
+// Worker replies can contain an entire board's ordered records. Validate the same allowed
+// payload domain as the synchronous input guard, but never monopolize a worker on that walk.
+async function assertReply(value: unknown, context: WorkerContext): Promise<void> {
+    const seen = new Set<object>();
+    const pending: Iterator<unknown>[] = [[value][Symbol.iterator]()];
+    let started = now(), count = 0;
+    while (pending.length) {
+        if (context.cancelled) throw new WorkerHostError('Cancelled', 'Worker request cancelled');
+        if ((++count & 255) === 0 && now() - started >= 3) { await context.slice(); started = now(); }
+        const next = pending[pending.length - 1].next();
+        if (next.done) { pending.pop(); continue; }
+        const item = next.value;
+        if (item === null || item === undefined || ['string', 'boolean', 'number', 'bigint'].includes(typeof item)) continue;
+        if (typeof item !== 'object') throw new WorkerHostError('Protocol', 'Worker payload must be plain data');
+        if (seen.has(item)) continue;
+        seen.add(item);
+        if (item instanceof ArrayBuffer) continue;
+        if (ArrayBuffer.isView(item)) { pending.push([item.buffer][Symbol.iterator]()); continue; }
+        if (typeof ImageBitmap !== 'undefined' && item instanceof ImageBitmap) continue;
+        if (typeof MessagePort !== 'undefined' && item instanceof MessagePort) continue;
+        if (typeof Blob !== 'undefined' && item instanceof Blob && !(typeof File !== 'undefined' && item instanceof File)) continue;
+        const prototype = Object.getPrototypeOf(item);
+        if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) {
+            throw new WorkerHostError('Protocol', 'Worker payload contains a forbidden platform object');
+        }
+        pending.push((function* () {
+            for (const key in item) {
+                if (!Object.hasOwn(item, key)) { yield undefined; continue; }
+                const descriptor = Object.getOwnPropertyDescriptor(item, key)!;
+                if (!('value' in descriptor)) throw new WorkerHostError('Protocol', 'Worker payload must not contain accessors');
+                yield descriptor.value;
+            }
+        })());
+    }
+}
+
 type Task = {
     cancelled: boolean;
     controller: AbortController;
@@ -100,7 +136,8 @@ export function serve(spec: ServeSpec): () => void {
                 if (!handler) throw new WorkerHostError('Protocol', `Unknown worker operation: ${data.op}`);
                 check();
                 const result = await handler(data.args, context);
-                assertPayload(result);
+                await assertReply(result, context);
+                check();
                 if (!disposed) post({ v: 1, id: data.id, ok: true, result }, task.transfer);
                 else closeTransfers(task);
             } catch (error) {

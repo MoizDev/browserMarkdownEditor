@@ -7,6 +7,11 @@ export interface CanvasSessionBridge extends SessionAdapter {
     attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A): A;
 }
 
+export type AttachCanvasSession = <A extends SessionAdapter>(
+    documentId: string,
+    create: (owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean) => A,
+) => A;
+
 /** Attach only through App's already-created entry, never from a parallel pane-owned store. */
 export function attachCanvasSession<A extends SessionAdapter>(
     sessions: DocumentSessionStore,

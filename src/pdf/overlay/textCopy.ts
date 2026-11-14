@@ -16,7 +16,8 @@ export interface PdfTextCopyBinding {
     copy(): Promise<void>;
     copyQuote(filename: string, path: string): Promise<void>;
     /** Call on selection, docKey or visibility change. */
-    cancel(): void;
+    /** Returns true when an in-flight gather was cancelled. */
+    cancel(): boolean;
     dispose(): void;
 }
 const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -38,7 +39,12 @@ function snapshot(value: PdfSelection): PdfSelection { return { ...value, anchor
 /** Extends the tiled pane's copy event; it installs no competing Select All handler. */
 export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): PdfTextCopyBinding {
     let pending: AbortController | null = null, disposed = false, localEpoch = 0;
-    const cancel = () => { ++localEpoch; pending?.abort(); pending = null; host.notice(''); };
+    const cancel = (silent = false) => {
+        const hadPending = !!pending;
+        ++localEpoch; pending?.abort(); pending = null;
+        host.notice(hadPending && !silent ? 'Copy cancelled' : '');
+        return hadPending;
+    };
     const initial = (selection: PdfSelection) => {
         const count = host.pageCount(), pages = new Map<number, string>(), range = selectionRange(selection);
         const first = selection.wholeDocument ? 0 : Math.max(0, Math.min(count - 1, range.start.page));
@@ -50,7 +56,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         return { count, pages, first, last, range };
     };
     const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number, format: (text: string) => string = text => text) => {
-        cancel();
+        cancel(true);
         const controller = new AbortController(), epoch = localEpoch; pending = controller;
         const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && sameSelection(selection, host.selection()) && host.pageCount() === state.count;
         const parts: string[] = [];
@@ -95,7 +101,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         const format = quote ? (text: string) => pdfSelectionQuote(text, quote.filename, quote.path, state.first, state.last) : (text: string) => text;
         if (result.kind === 'too-large') { cancel(); host.notice(result.message); return; }
         if (result.kind === 'ready') {
-            cancel();
+            cancel(true);
             const epoch = localEpoch;
             const copied = await writeLatest(format(result.text), ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
             if (copied === false) host.notice(CLIPBOARD_WRITE_BLOCKED);
@@ -111,14 +117,15 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         const selection = snapshot(current), state = initial(selection), result = copySelection(selection, state.count, state.pages), ticket = ++latestCopy;
         event.preventDefault();
         if (result.kind === 'ready' && event.clipboardData) {
-            cancel(); event.clipboardData.setData('text/plain', result.text);
-            // If an older permission-gated write is already in flight, restore
-            // this newer native copy after it settles, never in reverse order.
-            if (writes) void writeLatest(result.text, ticket, () => true);
+            cancel(true); event.clipboardData.setData('text/plain', result.text);
+            // A delayed restore must not write after a vault switch or a new
+            // selection, even if an earlier clipboard request was already live.
+            const epoch = localEpoch;
+            if (writes) void writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
         } else if (result.kind === 'too-large') { cancel(); host.notice(result.message); }
         else void gather(selection, state, ticket);
     };
     element.addEventListener('copy', onCopy);
-    return { copy: () => copy(), copyQuote: (filename, path) => copy({ filename, path }), cancel,
-        dispose() { disposed = true; cancel(); element.removeEventListener('copy', onCopy); } };
+    return { copy: () => copy(), copyQuote: (filename, path) => copy({ filename, path }), cancel: () => cancel(),
+        dispose() { disposed = true; cancel(true); element.removeEventListener('copy', onCopy); } };
 }

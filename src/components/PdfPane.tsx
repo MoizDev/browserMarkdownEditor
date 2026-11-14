@@ -29,12 +29,18 @@ import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
 import { flushPdfTextViewState } from '../utils/readerViewState';
 import { pdfNativeEmphasisAvailability } from '../utils/pdfNativeEmphasis';
+import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
+import { readPdfSessionRoute } from '../utils/pdfSessionRoute';
+import { requestVaultSearch } from '../utils/searchRequest';
+import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
 
 // tldraw + pdf.js rasterization are heavy and only needed once someone actually
 // annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
 const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
+const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
+const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
 
 export interface PdfPaneProps {
     documentId: string;
@@ -129,6 +135,14 @@ const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, 
 
 function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
+    const appSession = useSyncExternalStore(subscribeSessionIdentity,
+        () => getSessionIdentity(documentId), () => undefined);
+    const pdfRoute = reading ? (appSession ? readPdfSessionRoute(appSession) : undefined) : 'classic';
+    const tiled = pdfRoute === 'tiled';
+    const [tiledSource, setTiledSource] = useState<PdfTiledTextSurfaceProps['source'] | null>(null);
+    const currentTiledSource = tiledSource && appSession && tiledSource.session.token.vaultEpoch === reading?.identity.vaultEpoch &&
+        tiledSource.session.token.documentId === documentId && tiledSource.session.token.session === appSession.serial &&
+        tiledSource.session.token.bytesGeneration === appSession.bytesGeneration ? tiledSource : null;
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
@@ -220,6 +234,17 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
+    const [tiledVersion, setTiledVersion] = useState<DiskVersion>();
+    const tiledNotify = useCallback((message: string) => binding.current?.onNotify(message), []);
+    const tiledReading = useMemo<PdfReadingBinding | undefined>(() => reading ? {
+        ...reading,
+        onReaderVersion(token, version) {
+            const current = binding.current;
+            if (current && token.vaultEpoch === current.identity.vaultEpoch && token.documentId === current.identity.documentId &&
+                token.byteGeneration === current.identity.byteGeneration) { displayedVersion.current = version; setTiledVersion(version); }
+            current?.onReaderVersion(token, version);
+        },
+    } : undefined, [reading]);
     const [rotationPreview, setRotationPreview] = useState(() => documentId ? peekPdfRotation(documentId) : undefined);
     const discardRotationPreview = useCallback(() => {
         setRotationPreview(previous => {
@@ -327,13 +352,35 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         }
         const pos = surface ? originalCheckpoint.current : readPdfViewPos(file.path);
         b.onReaderLocation(b.identity, { kind: 'pdf-text', value: {
-            v: 1, surface: surface ? 'text' : 'original', rawFingerprint: version.hash, extractionSchema: 1,
+            v: 1, surface: surface ? 'text' : 'original', rawFingerprint: version.hash, extractionSchema: tiled ? 2 : 1,
             pageDigest: pageDigest.current, textAnchor: textAnchor.current,
             originalCheckpoint: { page: pos?.page ?? 0, offset: pos?.offset ?? 0, zoom: pos?.zoom ?? 1,
                 navigationRevision: surface ? originalCheckpoint.current?.navigationRevision ?? 0 : readPdfNavigationRevision(file.path) },
             textNavigationRevision: textNavigationRevision.current,
         } }, cause);
     }
+    useEffect(() => {
+        if (!tiled || !tiledVersion || restoredRecord.current) return;
+        restoredRecord.current = true;
+        const saved = binding.current?.initialRecord, record = saved?.record;
+        if (!saved || !record || record.rawFingerprint !== tiledVersion.hash) return;
+        const sameSchema = saved.anchorUsable && saved.storedSchema === 2 && saved.storedV === 1;
+        originalCheckpoint.current = record.originalCheckpoint;
+        textNavigationRevision.current = record.textNavigationRevision;
+        textCheckpointRevision.current = record.textNavigationRevision;
+        protectedRestore.current = sameSchema ? undefined : {
+            textRevision: textNavigationRevision.current, originalRevision: readPdfNavigationRevision(file.path),
+        };
+        setSameTextSchema(sameSchema);
+        const notice = saved.anchorUsable ? '' : 'Restored to the page; the saved text position was made by a newer version of the app.';
+        setRestoreNotice(notice); setMappingNotice(notice);
+        const anchor = record.textAnchor ?? { physicalPageIndex: record.originalCheckpoint.page,
+            offsetUTF16: 0, affinity: 'after' as const, quote: '', before: '', after: '' };
+        textAnchor.current = anchor; textPage.current = anchor.physicalPageIndex;
+        pageDigest.current = sameSchema ? record.pageDigest : undefined;
+        writePdfViewPos(file.path, record.originalCheckpoint);
+        if (record.surface === 'text') { setInitialTextAnchor(anchor); textSurfaceRef.current = true; setTextSurface(true); }
+    }, [tiled, tiledVersion, file.path]);
     useEffect(() => () => { if (session) void session.dispose().catch(console.error); }, [session]);
     useEffect(() => {
         if (!session) return;
@@ -350,6 +397,17 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         return () => { ++epoch.current; controller.dispose(); setTextReader(null); };
     }, [session, file.path]);
     async function showText() {
+        if (tiled && currentTiledSource && mode === 'read' && !isDirty && !flushing && !disk) {
+            const checkpoint = readPdfViewPos(file.path) ?? { page: 0, offset: 0, zoom: 1 };
+            originalCheckpoint.current = { ...checkpoint, navigationRevision: readPdfNavigationRevision(file.path) };
+            textCheckpointRevision.current = textNavigationRevision.current;
+            textPage.current = checkpoint.page;
+            setInitialTextAnchor(undefined);
+            textSurfaceRef.current = true;
+            setTextSurface(true);
+            publishLocation('user-navigation', true);
+            return;
+        }
         if (mode !== 'read' || isDirty || flushing || disk || !textReader || !session) throw new Error('Wait for PDF annotations to finish saving before opening extracted text.');
         if (textSurfaceRef.current) { focusReading(); return; }
         const epoch = ++returnEpoch.current;
@@ -581,7 +639,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     // a save of THIS file lands (mid-flush the bytes on disk still predate the
     // strokes, so wait out `flushing`/`isDirty`; their clearing re-runs this).
     useEffect(() => {
-        if (!activated || mode !== 'read' && !readOnly || !file.handle || flushing || isDirty) return;
+        if (!activated || !pdfRoute || tiled || mode !== 'read' && !readOnly || !file.handle || flushing || isDirty) return;
         if (session && !viewStaleRef.current) return;
         let cancelled = false;
 
@@ -640,7 +698,7 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         })();
 
         return () => { cancelled = true; };
-    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch, rotationPreview, discardRotationPreview]);
+    }, [activated, pdfRoute, tiled, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch, rotationPreview, discardRotationPreview]);
 
     function focusReading() {
         root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
@@ -678,11 +736,12 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     }, [identity, file.path, registerKeyboardTarget]);
     const capabilityKey = JSON.stringify(capabilities);
     useEffect(() => {
+        if (tiled && !textSurface && !annotationMode) return;
         const b = binding.current;
         b?.onReaderCapabilities(b.identity, actions.current.capabilities);
         b?.onReaderStatus(b.identity, fatalRenderIssue ? { phase: 'error', message: new ClassicPdfError(fatalRenderIssue).message }
             : error ? { phase: 'error', message: error } : { phase: !renderDelayIssue && (session || mode === 'edit' && source) ? 'ready' : 'loading' });
-    }, [capabilityKey, error, fatalRenderIssue, renderDelayIssue, session, mode, source]);
+    }, [capabilityKey, error, fatalRenderIssue, renderDelayIssue, session, mode, source, tiled, textSurface, annotationMode]);
     useEffect(() => {
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
@@ -761,6 +820,31 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
             // the file on disk still predates the last strokes. Say so rather than
             // render a PDF that's missing the annotations the user just drew.
             body = <div className="pdf-pane-message">Applying annotations…</div>;
+        } else if (!pdfRoute) {
+            body = <div className="pdf-pane-message" role="status">Loading PDF…</div>;
+        } else if (tiled && tiledReading) {
+            body = textSurface ? currentTiledSource ? (
+                <Suspense fallback={<div className="pdf-pane-message">Opening extracted text…</div>}>
+                    <PdfTiledTextSurface source={currentTiledSource} reading={tiledReading} filePath={file.path}
+                        findMemory={findMemory} checkpoint={originalCheckpoint.current ?? readPdfViewPos(file.path) ?? { page: 0, offset: 0, zoom: 1 }}
+                        anchor={initialTextAnchor} expectedPageDigest={pageDigest.current} sameSchema={sameTextSchema}
+                        restorationNotice={restoreNotice} isVisible={isVisible} isFocused={isFocused}
+                        onReader={reader => setTextReader(reader ?? null)}
+                        onShowOriginalPage={page => { void showOriginal(page); }} onShowOriginal={() => { void showOriginal(); }}
+                        onLocation={(anchor, cause, digest) => {
+                            textAnchor.current = anchor; pageDigest.current = digest; textPage.current = anchor.physicalPageIndex;
+                            if (USER_TEXT_NAVIGATION_CAUSES.some(userCause => userCause === cause)) ++textNavigationRevision.current;
+                            publishLocation(cause);
+                        }} onTextQuality={setTextQuality} />
+                </Suspense>
+            ) : <div className="pdf-pane-message">Opening extracted text…</div> : (
+                <Suspense fallback={<div className="pdf-pane-message">Loading PDF…</div>}>
+                    <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
+                        sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
+                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
+                        onSource={setTiledSource} notify={tiledNotify} />
+                </Suspense>
+            );
         } else if (!session) {
             body = <div className="pdf-pane-message">Loading PDF…</div>;
         } else {

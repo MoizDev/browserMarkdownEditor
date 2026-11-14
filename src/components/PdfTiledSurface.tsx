@@ -8,7 +8,6 @@ import PdfTiledView from './PdfTiledView';
 
 interface Props {
     reading: PdfReadingBinding;
-    factory: PdfTiledSourceFactory;
     filePath: string;
     visible: boolean;
     focused: boolean;
@@ -24,7 +23,7 @@ interface Props {
 /** A view can come and go; the factory parks its immutable source in the
  * App-owned document slot, with no extra document or worker on a graph trip. */
 export default function PdfTiledSurface(props: Props) {
-    const { reading, factory, onSource } = props;
+    const { reading, onSource } = props;
     const identity = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(reading.identity.documentId), () => undefined);
     const [loaded, setLoaded] = useState<{ key: string; source: PdfTiledSource } | null>(null);
@@ -35,13 +34,17 @@ export default function PdfTiledSurface(props: Props) {
     useEffect(() => {
         if (!key) return;
         const controller = new AbortController();
-        void factory.open(reading, controller.signal).then(value => {
+        void import('../pdf/session/sourceRuntime').then(({ getPdfTiledSourceFactory }) => {
+            const factory: PdfTiledSourceFactory | undefined = getPdfTiledSourceFactory();
+            if (!factory) throw new Error('The new PDF engine is unavailable. Retry or choose Classic in settings.');
+            return factory.open(reading, controller.signal);
+        }).then(value => {
             if (!controller.signal.aborted) { setLoaded({ key, source: value }); setError(null); }
         }, failure => {
             if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'PDF could not be opened.');
         });
         return () => controller.abort();
-    }, [factory, reading, key, retry]);
+    }, [reading, key, retry]);
     useEffect(() => { if (source) onSource(source); }, [onSource, source]);
     if (error && !source) return <div className="pdf-pane-message" role="alert">{error}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button></div>;

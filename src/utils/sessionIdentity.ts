@@ -1,6 +1,4 @@
-import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
-import type { SourceOwner } from './documentBuffers';
-import type { CanvasSessionBridge } from './canvasSessionBridge';
+import type { DocumentSessionStore } from './documentSessions';
 
 export interface SessionIdentity {
     readonly serial: number;
@@ -45,12 +43,6 @@ export function getSessionIdentity(documentId: string): SessionIdentity | undefi
     });
     snapshots.set(documentId, identity);
     return identity;
-}
-
-/** Attach an engine to the App-created bridge without changing identity or slots. */
-export function attachCanvasSession<A extends SessionAdapter>(documentId: string, create: (owner: SourceOwner) => A): A | undefined {
-    const adapter = store?.get(documentId)?.adapter as CanvasSessionBridge | undefined;
-    return typeof adapter?.attach === 'function' ? adapter.attach(create) : undefined;
 }
 
 /** Optional presentation handoff, called while the old token is still current. */

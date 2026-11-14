@@ -8,7 +8,7 @@ const flights = new Map<string, Flight>();
 
 async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisitionOptions<S>, signal: AbortSignal): Promise<AcquiredNativeBoard<S>> {
     const { documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
-        emergencyReadOnlyReason, prepare, acceptConvertedSource, currentOwner, editingAuthorized } = options;
+        emergencyReadOnlyReason, prepare, acceptConvertedSource, currentOwner, sourceAuthorized, editingAuthorized } = options;
     const identity = getSessionIdentity(documentId);
     if (!identity) throw new DOMException('Board session ended', 'AbortError');
     const requireOwner = () => {
@@ -40,7 +40,8 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
             let reason: string | null = emergencyReadOnlyReason;
             let activated = false, sealed: string | null = null;
             const conversionPending = !!prepared!.conversionPending, digest = prepared!.legacyOriginalSha256;
-            const owned = prepared!.take(owner, isLiveOwner, () => reason);
+            const owned = prepared!.take(owner, isLiveOwner, () => reason ??
+                (sourceAuthorized() ? null : 'Canvas source is not currently authorized for editing.'));
             taken = true;
             try {
                 policy = onNativeCanvasReady({ owner, vaultActivation, bytesGeneration, kind,

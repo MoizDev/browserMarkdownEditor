@@ -11,7 +11,7 @@ export interface PreparedNativeBoard<S extends BoardSessionPort> {
     acceptPinnedSource?(source: DeferredSource): boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
-        readonly pdfWriteAuthority?: { canWrite(): boolean };
+        readonly pdfWriteAuthority?: { canWriteSource(): boolean; canWrite(): boolean };
         dispose(): void | Promise<void>;
     };
     dispose(): void | Promise<void>;
@@ -25,6 +25,8 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly onNativeCanvasReady: NativeCanvasReady;
     readonly emergencyReadOnlyReason: string;
     currentOwner(): boolean;
+    /** The real nonrecursive App source policy, rechecked by every session mutation. */
+    sourceAuthorized(): boolean;
     /** Final App authority; checked only after the temporary view guard is lifted. */
     editingAuthorized(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;

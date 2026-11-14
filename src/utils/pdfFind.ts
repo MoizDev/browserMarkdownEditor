@@ -19,6 +19,8 @@ export interface PdfFindEngine {
     /** Canonical text is budgeted alongside keys so result snippets/refinements
      * do not cycle the reader's small geometry cache. */
     pageText(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
+    /** Synchronous clipboard path; callers must not mutate returned token breaks. */
+    peekPageText(index0: number): PdfFindPageText | undefined;
     clearIndex(): void;
     setVisible(visible: boolean): void;
     dispose(): void;
@@ -250,6 +252,12 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
             const page = await getPage(index, signal);
             if (page.failed) throw new Error(`Could not read physical page ${index + 1}`);
             return { text: page.canonical, tokenBreaks: Array.from(page.tokenBreaks), quality: page.quality };
+        },
+        peekPageText(index) {
+            const page = retained.pages.get(index);
+            if (!page || page.failed) return undefined;
+            touch(retained);
+            return { text: page.canonical, tokenBreaks: page.tokenBreaks, quality: page.quality };
         },
         clearIndex() {
             if (!retained.visible.size && retained.hiddenSince !== undefined && Date.now() - retained.hiddenSince >= 60_000) clearCache(retained);

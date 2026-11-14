@@ -26,6 +26,7 @@ import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
 import { prepareScenePaintSource } from './sceneSource';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
+import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 
 interface Prepared {
@@ -67,13 +68,14 @@ export function createBoardRenderServices(options: {
     readonly token: RenderToken;
     readonly palettes?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly deviceScale?: number;
+    readonly fonts?: BoardFonts;
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const textIds = new Set<NodeId>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
-    const text = createBoardTextGeometry({ cooperate: options.cooperate, onFontEpoch() {
+    const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);

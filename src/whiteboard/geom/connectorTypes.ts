@@ -37,6 +37,9 @@ export interface ConnectorGeometry {
     readonly body: readonly PathOp[];
     readonly heads: readonly (readonly PathOp[])[];
     readonly label: ConnectorLabelPaint | null;
+    /** Same canonical anchor/available length passed to the label layout,
+     * including for an unlabeled connector that is about to enter editing. */
+    readonly editMetrics: Readonly<{ anchorWorld: Vec2; bodyLength: number }>;
     readonly bodyExclusions: readonly Readonly<{ outline: readonly PathOp[]; localToWorld: Affine }>[];
     readonly inkBoundsWorld: Rect;
 }

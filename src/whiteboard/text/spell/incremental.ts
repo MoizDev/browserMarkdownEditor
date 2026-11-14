@@ -13,6 +13,7 @@ interface ChangedRange {
 }
 
 const CACHE_BYTES = 8 * 1024 * 1024;
+const WORD_CACHE_BYTES = 1024 * 1024;
 const SCAN_SLICE = 16_384;
 const COMPARISON_SLICE = 8192;
 const RANGE_SLICE = 4096;
@@ -106,21 +107,50 @@ async function splice(previous: Uint32Array, changed: ChangedRange, replacement:
 export class IncrementalSpelling {
     private cached: CachedCheck | null = null;
     private epoch = 0;
+    private wordDictionary: object | null = null;
+    private readonly words = new Map<string, boolean>();
+    private wordBytes = 0;
 
-    clear(): void { this.epoch++; this.cached = null; }
+    clear(): void {
+        this.epoch++; this.cached = null; this.wordDictionary = null;
+        this.words.clear(); this.wordBytes = 0;
+    }
+
+    private correct(dictionary: object, word: string, check: (word: string) => boolean, epoch: number): boolean {
+        if (epoch !== this.epoch || word.length > 128) return check(word);
+        if (this.wordDictionary !== dictionary) {
+            this.wordDictionary = dictionary;
+            this.words.clear(); this.wordBytes = 0;
+        }
+        const existing = this.words.get(word);
+        if (existing !== undefined) {
+            this.words.delete(word); this.words.set(word, existing);
+            return existing;
+        }
+        const result = check(word), bytes = 64 + word.length * 2;
+        while (this.wordBytes + bytes > WORD_CACHE_BYTES) {
+            const oldest = this.words.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            this.words.delete(oldest);
+            this.wordBytes -= 64 + oldest.length * 2;
+        }
+        this.words.set(word, result); this.wordBytes += bytes;
+        return result;
+    }
 
     async check(text: string, dictionary: object, correct: (word: string) => boolean, context: WorkerContext): Promise<Uint32Array> {
         current(context);
         const epoch = this.epoch, cached = this.cached?.dictionary === dictionary ? this.cached : null;
+        const checkWord = (word: string) => this.correct(dictionary, word, correct, epoch);
         let result: Uint32Array;
         if (cached) {
             const changed = await changedRange(cached.text, text, context);
             if (!changed) result = cached.ranges.slice();
             else {
-                const replacement = await scan(text, changed.from, changed.newTo, correct, context);
+                const replacement = await scan(text, changed.from, changed.newTo, checkWord, context);
                 result = await splice(cached.ranges, changed, replacement, context);
             }
-        } else result = Uint32Array.from(await scan(text, 0, text.length, correct, context));
+        } else result = Uint32Array.from(await scan(text, 0, text.length, checkWord, context));
         current(context);
         if (epoch === this.epoch) {
             this.cached = text.length * 2 + result.byteLength <= CACHE_BYTES

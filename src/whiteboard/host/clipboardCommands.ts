@@ -41,7 +41,7 @@ export interface NativeClipboardCommandsOptions {
     captureWriteAuthority(): () => boolean;
     notice(message: string): void;
     onError(error: unknown): void;
-    copyPng(capture: Promise<Blob>): Promise<void>;
+    copyPng(capture: Promise<Readonly<{ image: Blob; privateImage: Blob }>>): Promise<void>;
     copySvg(capture: Promise<Blob>): Promise<void>;
     download(blob: Blob, filename: string): void;
 }
@@ -185,6 +185,16 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         void pending.catch(() => {}); // Permission denial can reject before ClipboardItem consumes its data.
         return pending;
     };
+    /** Copy-as-PNG reads the same single producer as capture, with both clipboard items from one frozen job. */
+    const capturePng = (signal: AbortSignal) => {
+        guard();
+        const prepared = options.prepareExport('copy', signal);
+        const pending = prepared.then(async job => {
+            try { return await job.clipboardPng(signal); } finally { job.release(); }
+        });
+        void pending.catch(() => {});
+        return pending;
+    };
     const download = async (extension: 'png' | 'svg', route: 'context' | 'menu', signal: AbortSignal) => {
         guard();
         const job = await options.prepareExport(route, signal);
@@ -218,7 +228,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             try { if (cut) writable(); prepare(cut); return copy.copyEvent(event, cut); }
             catch (error) { options.onError(error); return false; }
         },
-        copyAsPng: () => run(() => withController(signal => options.copyPng(capture('png', signal)))),
+        copyAsPng: () => run(() => withController(signal => options.copyPng(capturePng(signal)))),
         copyAsSvg: () => run(() => withController(signal => options.copySvg(capture('svg', signal)))),
         copyAsJson: () => run(async () => {
             guard();

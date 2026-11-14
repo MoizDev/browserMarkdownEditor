@@ -3,7 +3,6 @@ import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import { ReferenceMeasurer } from './measure';
 import { validLayoutRequest } from './layoutValidation';
-import type { Face, TextPaint } from './paint';
 
 let engine: BoardTextLayout | undefined;
 let fonts: BoardFonts | undefined;
@@ -26,21 +25,6 @@ function getEngine(): BoardTextLayout {
     engine = new BoardTextLayout(new ReferenceMeasurer(context), fonts);
     return engine;
 }
-function compactFaces(paint: TextPaint, table: readonly Face[]): { paint: TextPaint; faces: readonly Face[] } {
-    if (table.length <= 64) return { paint, faces: table.slice() };
-    const mapped = new Map<number, number>(), faces: Face[] = [];
-    const lines = paint.lines.map(line => ({ ...line, fragments: line.fragments.map(fragment => {
-        let index = mapped.get(fragment.face);
-        if (index === undefined) {
-            const face = table[fragment.face];
-            if (!face) throw new Error('Text layout face is unavailable');
-            index = faces.length; faces.push(face); mapped.set(fragment.face, index);
-        }
-        return { ...fragment, face: index };
-    }) }));
-    return { paint: { ...paint, lines }, faces };
-}
-
 /** Handler for the shared parse worker; no text resources are allocated until first use. */
 export async function layout(args: unknown, context: WorkerContext) {
     if (!validLayoutRequest(args)) throw new TypeError('Invalid board text layout request');
@@ -53,9 +37,9 @@ export async function layout(args: unknown, context: WorkerContext) {
         context.signal.throwIfAborted();
         await context.slice();
         const resolved = { ...args, fontEpoch: fonts!.epoch };
-        const paint = current.layout(resolved), measurement = current.measure(resolved);
-        const product = compactFaces(paint, current.faceTable.faces);
-        if (current.faceTable.faces.length > 4096 && engine === current) engine = undefined;
-        return { ...product, measurement };
+        const paint = current.layout(resolved);
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        const measurement = current.measure(resolved);
+        return { paint, measurement, faces: paint.faceTable.faces };
     } finally { active.delete(context); }
 }

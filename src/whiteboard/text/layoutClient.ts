@@ -72,7 +72,8 @@ export class TextLayoutClient {
     private onMain(request: TextLayoutRequest): LayoutProduct {
         const resolved = { ...request, fontEpoch: this.fonts.epoch };
         const paint = this.main.layout(resolved);
-        return { paint, measurement: this.main.measure(resolved), faces: this.main.faceTable.faces };
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        return { paint, measurement: this.main.measure(resolved), faces: paint.faceTable.faces };
     }
     /** Edited or immediately visible content never waits on a queued open-time job. */
     layoutNow(node: string, request: TextLayoutRequest): LayoutProduct {

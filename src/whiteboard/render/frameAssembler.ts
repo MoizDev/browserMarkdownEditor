@@ -25,6 +25,19 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         if (!entry || entry === latest) return;
         retained.delete(frame); entry.pin.release();
     };
+    const clear = () => {
+        const work = staging; staging = null; latest = null;
+        const entries = [...retained.values()]; retained.clear();
+        const errors: unknown[] = [];
+        if (work) {
+            try { work.job.cancel(); } catch (error) { errors.push(error); }
+            try { work.pin.release(); } catch (error) { errors.push(error); }
+        }
+        for (const entry of entries) {
+            try { entry.pin.release(); } catch (error) { errors.push(error); }
+        }
+        if (errors.length) throw new AggregateError(errors, 'Failed to release paint frame pins');
+    };
     return {
         request(pin) {
             if (disposed) { pin.release(); return; }
@@ -56,11 +69,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');
         },
         retire,
+        clear,
         dispose() {
             if (disposed) return;
-            disposed = true; dropStaging(); latest = null;
-            for (const entry of retained.values()) entry.pin.release();
-            retained.clear();
+            disposed = true; clear();
         },
     };
 }

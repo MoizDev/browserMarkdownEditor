@@ -1,5 +1,5 @@
-// Charter §0: one real-app merge/seam sanity, not another review proof run.
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+// Charter §00: one visible real-app check, with pictures but no evidence files.
+import { readFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { openBrowser } from '../../lib/browser.mjs';
@@ -78,7 +78,6 @@ try {
     const inspected = await inspectPdfOutput(written, true);
     report.data.savedDrawIds = inspected.drawRecords.map(record => record.id);
     if (sha(written) === sha(legacy) || report.data.savedDrawIds.length < 2) throw new Error('Legacy stroke did not reach the saved PDF');
-    await writeFile(path.join(out, 'legacy-saved.pdf'), written);
     await screenshots('legacy');
     report.data.p09Passed = true;
 
@@ -86,7 +85,10 @@ try {
     if (report.data.errors.length) throw new Error(report.data.errors.join('; '));
     report.data.passed = true;
 } catch (error) {
-    report.data.failure = error.stack ?? String(error); process.exitCode = 1;
+    report.data.failure = error.stack ?? String(error); process.exitCode = 1; console.error(error);
     if (page) { report.data.failureScreen = await page.locator('body').innerText(); await page.screenshot({ path: path.join(out, 'failure.png') }); }
 }
-finally { await run.close(); await writeFile(path.join(out, 'sanity.json'), `${JSON.stringify(report.data, null, 2)}\n`); console.log(JSON.stringify(report.data)); }
+finally {
+    await run.close();
+    console.log(`P-09 ${report.data.passed ? 'PASS' : 'FAIL'}: portfolio unchanged=${report.data.portfolioUnchanged}, writes=${report.data.portfolioWrites}; legacy strokes=${report.data.existingStrokes}→${report.data.savedDrawIds?.length}; page errors=${report.data.errors.length}`);
+}

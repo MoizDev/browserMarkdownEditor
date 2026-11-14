@@ -33,8 +33,10 @@ export function createRasterTileRenderer(capture: RasterTileCapture): RenderExpo
         ctx.fillRect(0, 0, tile.width, tile.height)
       }
       ctx.setTransform(scale, 0, 0, scale, -world.x * scale - tile.x, -world.y * scale - tile.y)
+      let count = 0
       for (const band of [frame.underlay, frame.content]) {
         for (const item of band) {
+          if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
           signal?.throwIfAborted()
           paintItem2d(ctx, item, resources)
         }

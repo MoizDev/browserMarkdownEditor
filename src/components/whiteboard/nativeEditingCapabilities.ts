@@ -19,6 +19,7 @@ export interface NativeEditingCapabilityContext {
     readonly host: NativeCanvasHost;
     readonly identity: NativeCanvasIdentity;
     readonly clipboard: NativeClipboardService;
+    /** Lasts for the entire visible view/capability lifetime, including loaded embeds. */
     readonly signal: AbortSignal;
     current(): boolean;
     /** App-owned source/write proof; for PDF it follows the current verified rebind. */

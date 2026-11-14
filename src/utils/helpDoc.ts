@@ -422,7 +422,13 @@ board: a notebook prints every page, and a whiteboard prints the drawn content o
 its sheet. A board with a PDF backdrop cannot be printed or exported to PDF from
 here yet; use the PDF pane's own print for that file.
 
-These operations
+With exactly one picture selected, the same menu offers
+**Replace picture…** (the new image keeps the old one's centre and longer side;
+a PDF annotation page does not offer it yet), **Crop picture** with six presets,
+and **Invert picture**. With one link card selected it offers **Fetch link
+preview**, which contacts the link's site only when you ask. A row that cannot
+run now stays on the menu and says why, such as a locked picture or a read-only
+canvas. These operations
 and navigation do not edit the source; drawing, Cut and Paste remain unavailable
 in this native viewer.
 

@@ -3,13 +3,14 @@ import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import { surfaceToWorld } from '../../platform/render/camera';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
-import { openContextMenu } from '../../utils/contextMenu';
-import { downloadBlob } from '../../utils/downloadBlob';
+import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
 import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCommands';
 import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrome/preferences';
 import type { Op } from '../../whiteboard/change/ops';
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
+import { createMediaActions, type MediaActions, type MediaSelection } from '../../whiteboard/host/mediaActions';
+import type { PictureCropPreset } from '../../whiteboard/media/crop';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
 import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
 import { createPdfEmbeddedMediaStorage } from '../../whiteboard/host/pdfEmbeddedMedia';
@@ -19,8 +20,51 @@ import type { MediaEntry } from '../../whiteboard/model/media';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
+import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
+
+const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
+    { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
+    { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
+];
+
+/** The App's own picker for a replacement: one image, chosen from the right-click that asked for it. */
+function chooseReplacementImage(): Promise<File | null> {
+    return new Promise(resolve => {
+        const input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
+        const finish = (file: File | null) => { input.onchange = null; input.oncancel = null; input.remove(); resolve(file); };
+        input.onchange = () => finish(input.files?.[0] ?? null);
+        input.oncancel = () => finish(null);
+        document.body.append(input);
+        input.click();
+    });
+}
+
+/** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
+function mediaRows(selection: MediaSelection, actions: MediaActions, fail: (error: unknown) => void,
+    pick: () => Promise<File | null>): ContextMenuEntry[] {
+    const attempt = (action: () => void | Promise<void>) => () => {
+        try { void Promise.resolve(action()).catch(fail); } catch (error) { fail(error); }
+    };
+    const rowState: { disabled?: true; reason?: string } = selection.blocked === null ? {} : { disabled: true, reason: selection.blocked };
+    if (selection.kind === 'linkcard') {
+        return [{ kind: 'command', id: 'media-card-preview', label: 'Fetch link preview', ...rowState,
+            run: attempt(() => actions.cardPreview(selection.id)) }];
+    }
+    const rows: ContextMenuEntry[] = [];
+    if (selection.replaceable) {
+        rows.push({ kind: 'command', id: 'media-replace', label: 'Replace picture…', ...rowState,
+            run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });
+    }
+    rows.push({ kind: 'submenu', id: 'media-crop', label: 'Crop picture', ...rowState,
+        entries: CROP_ROWS.map(({ preset, label }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label, ...rowState,
+            run: attempt(() => actions.crop(selection.id, preset)) })) });
+    rows.push({ kind: 'command', id: 'media-invert', label: 'Invert picture', ...rowState,
+        run: attempt(() => actions.invert(selection.id)) });
+    return rows;
+}
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -41,6 +85,8 @@ export interface NativeClipboardService {
     readonly memory: MemoryAllocator;
     readonly readMedia: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
     readonly storeMedia: StoreMedia;
+    /** The one picture/card action provider for this document; every view's menu reads its selection. */
+    readonly media: MediaActions;
     theme(): 'light' | 'dark';
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean, writable?: () => boolean): NativeClipboardBinding;
@@ -99,13 +145,18 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         if (!current() || pdfSource() !== source) throw new DOMException('PDF media source changed', 'AbortError');
         return blob;
     };
+    // Board bytes reach the host only through this guard; replacing a picture and pasting media share it.
+    const restoreMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null> => {
+        signal.throwIfAborted();
+        if (!current() || !host.canWrite(identity)) return Promise.reject(new DOMException('Board media source changed', 'AbortError'));
+        return ports.restore(entry, blob, signal);
+    };
     const storeMedia: StoreMedia = identity.kind === 'pdfInk'
         ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
-        : (entry, blob, signal) => {
-            signal.throwIfAborted();
-            if (!current() || !host.canWrite(identity)) return Promise.reject(new DOMException('Board media source changed', 'AbortError'));
-            return ports.restore(entry, blob, signal);
-        };
+        : restoreMedia;
+    // A PDF annotation page's pictures live in the PDF, so replacing one needs that page's own storage port, which is not built yet.
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current,
+        ...(identity.kind === 'pdfInk' ? {} : { restore: restoreMedia }) });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
@@ -136,12 +187,12 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 void text.catch(() => {});
                 return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]);
             },
-            download: downloadBlob,
+            download: downloadBoardExport,
             boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {
-        preferences, memory, readMedia, storeMedia,
+        preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
@@ -192,7 +243,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 event.preventDefault(); event.stopPropagation(); focus();
                 const selected = runtime.selection.getSnapshot().selected.length > 0, readonly = !canWriteView();
                 const disabled = !selected, why = 'Select content to copy.';
-                openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries: [
+                const entries: ContextMenuEntry[] = [
                     { kind: 'command', id: 'copy', label: 'Copy', disabled, ...(disabled ? { reason: why } : {}), run: commands.copy },
                     { kind: 'command', id: 'copy-png', label: 'Copy as PNG', run: commands.copyAsPng },
                     { kind: 'command', id: 'copy-svg', label: 'Copy as SVG', run: commands.copyAsSvg },
@@ -200,7 +251,17 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     { kind: 'command', id: 'export-png', label: 'Export PNG', run: () => commands.exportPng('context') },
                     { kind: 'command', id: 'export-svg', label: 'Export SVG', run: () => commands.exportSvg('context') },
                     { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
-                ] });
+                ];
+                const media = mediaActions.selection(!readonly);
+                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, mediaActions, fail, chooseReplacementImage));
+                // A video's or an animated picture's start row exists only after its image has been drawn in this view, or while it
+                // plays (so it can stop). Each is named for what it plays.
+                if ((media?.video || media?.animated) && (lease.video.shown(media.id) || lease.video.playing(media.id))) {
+                    const playing = lease.video.playing(media.id), noun = media.video ? 'video' : 'animation';
+                    entries.push({ kind: 'command', id: 'media-playback', label: playing ? `Pause ${noun}` : `Play ${noun}`,
+                        run: () => { try { if (playing) lease.video.pause(media.id); else lease.video.play(media.id); } catch (error) { fail(error); } } });
+                }
+                openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
             surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);

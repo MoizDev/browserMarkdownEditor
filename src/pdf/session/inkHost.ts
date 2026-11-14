@@ -1,0 +1,107 @@
+import type { PageGeometry } from '../../platform/types';
+import { parseJson } from '../../whiteboard/format/jsonRead';
+import type { JsonSpan } from '../../whiteboard/format/jsonRead';
+import type { HostBlock } from '../../whiteboard/model/doc';
+import type { RawJson } from '../../whiteboard/model/json';
+import { newPdfWriteId } from '../writing/writeIdentity';
+import { acquirePdfInkSource } from './inkAcquisition';
+import type { PdfEditableInkSource, PdfInkAcquisition, PdfInkAcquisitionOptions } from './inkAcquisition.types';
+
+type PdfHost = Extract<HostBlock, { kind: 'pdf-ink' }>;
+const HASH = /^[0-9a-f]{64}$/;
+const WRITE_ID = /^[0-9a-f]{32}$/;
+
+function fields(span: JsonSpan, names: readonly string[]): ReadonlyMap<string, JsonSpan> {
+    const result = new Map<string, JsonSpan>();
+    for (const [name, value] of span.fields()) {
+        if (!names.includes(name) || result.has(name)) throw new Error('Unsupported PDF ink metadata');
+        result.set(name, value);
+    }
+    if (result.size !== names.length) throw new Error('Unsupported PDF ink metadata');
+    return result;
+}
+function items(span: JsonSpan, count: number): JsonSpan[] {
+    const result: JsonSpan[] = [];
+    for (const value of span.items()) {
+        if (result.length >= count) throw new Error('Invalid PDF ink geometry');
+        result.push(value);
+    }
+    if (result.length !== count) throw new Error('Invalid PDF ink geometry');
+    return result;
+}
+function pageMatches(span: JsonSpan, page: Readonly<PageGeometry>, index: number): boolean {
+    const f = fields(span, ['index', 'width', 'height', 'rotate', 'userUnit', 'toUserSpace']);
+    const affine = items(f.get('toUserSpace')!, 6);
+    return page.index === index && f.get('index')!.number() === index && f.get('width')!.number() === page.width &&
+        f.get('height')!.number() === page.height && f.get('rotate')!.number() === page.rotate &&
+        f.get('userUnit')!.number() === page.userUnit && page.toUserSpace.length === 6 &&
+        affine.every((value, i) => value.number() === page.toUserSpace[i]);
+}
+function validHost(acq: PdfEditableInkSource, host: HostBlock, loaded: boolean): host is PdfHost {
+    try {
+        if (!acq.isCurrent() || host.kind !== 'pdf-ink' || !HASH.test(acq.source.pristineFingerprint) ||
+            !acq.pages.length || acq.pages.length > 65_536 || host.pages.length !== acq.pages.length ||
+            host.ext?.raw.has('pdf') || host.ext?.raw.has('pages')) return false;
+        const metadata = fields(parseJson(host.pdf), ['schema', 'sourceFingerprint', 'geometryEngine', 'pages', 'writeId']);
+        if (metadata.get('schema')!.number() !== 1 || metadata.get('sourceFingerprint')!.string(64) !== acq.source.pristineFingerprint) return false;
+        const engine = fields(metadata.get('geometryEngine')!, ['id', 'build', 'generation']), expected = acq.source.geometryEngine;
+        if (engine.get('id')!.string(128) !== expected.id || engine.get('build')!.string(256) !== expected.build ||
+            engine.get('generation')!.number() !== expected.generation) return false;
+        const writeId = metadata.get('writeId')!.string(32);
+        if (!WRITE_ID.test(writeId) || (loaded && acq.kind === 'native' && writeId !== acq.writeId)) return false;
+        const pages = items(metadata.get('pages')!, acq.pages.length);
+        return pages.every((value, index) => {
+            const page = acq.pages[index], size = host.pages[index];
+            return size.length === 2 && Number.isFinite(page.width) && page.width > 0 && page.width <= 14_400 &&
+                Number.isFinite(page.height) && page.height > 0 && page.height <= 14_400 &&
+                size[0] === page.width && size[1] === page.height && pageMatches(value, page, index);
+        });
+    } catch { return false; }
+}
+function metadata(acq: PdfEditableInkSource, writeId: string): RawJson {
+    const engine = acq.source.geometryEngine;
+    const json = JSON.stringify({ schema: 1, sourceFingerprint: acq.source.pristineFingerprint,
+        geometryEngine: { id: engine.id, build: engine.build, generation: engine.generation },
+        pages: acq.pages.map(page => ({ index: page.index, width: page.width, height: page.height, rotate: page.rotate,
+            userUnit: page.userUnit, toUserSpace: [...page.toUserSpace] })), writeId });
+    return parseJson(json).raw();
+}
+
+/** Plain PDFs alone may start a new board; native boards must retain their loaded host. */
+export function createPdfInkHost(acq: PdfEditableInkSource): PdfHost {
+    if (acq.kind !== 'plain' || !acq.isCurrent()) throw new Error('A current plain PDF is required for a new ink board');
+    const host: PdfHost = { kind: 'pdf-ink', pdf: metadata(acq, newPdfWriteId()),
+        pages: acq.pages.map(page => [page.width, page.height] as const), ext: null };
+    if (!validHost(acq, host, false)) throw new Error('Invalid PDF ink host geometry');
+    return host;
+}
+
+/** Unknown PDF-owned schema or fields cannot be preserved by this writer. */
+export function validateLoadedPdfInkHost(acq: PdfEditableInkSource, host: HostBlock): boolean {
+    return validHost(acq, host, true);
+}
+
+/** Pin once per frozen build job; neither the live host nor opaque extensions are modified. */
+export function pinPdfInkHostForSave(acq: PdfEditableInkSource, host: HostBlock): { host: PdfHost; writeId: string } {
+    if (!validHost(acq, host, false)) throw new Error('PDF ink host no longer matches its source');
+    const writeId = newPdfWriteId();
+    return { host: { ...host, pdf: metadata(acq, writeId) }, writeId };
+}
+
+/** A committed version becomes editable only after the new outer is independently inspected. */
+export async function rebindPdfInkSource(options: PdfInkAcquisitionOptions,
+    expected: { pristineFingerprint: string; writeId: string }): Promise<PdfInkAcquisition> {
+    if (!HASH.test(expected.pristineFingerprint) || !WRITE_ID.test(expected.writeId)) throw new Error('Invalid expected PDF ink identity');
+    const result = await acquirePdfInkSource(options);
+    let current = !options.signal?.aborted;
+    try { current = current && options.isCurrent(); } catch { current = false; }
+    if (!current || (result.kind !== 'read-only' && !result.isCurrent())) {
+        await result.release();
+        throw new DOMException('PDF ink source is no longer current', 'AbortError');
+    }
+    if (result.kind === 'read-only') return result;
+    if (result.kind !== 'native' || result.writeId !== expected.writeId || result.source.pristineFingerprint !== expected.pristineFingerprint) {
+        return { kind: 'read-only', reason: 'The saved PDF ink identity could not be verified.', release: result.release };
+    }
+    return result;
+}

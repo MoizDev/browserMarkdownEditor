@@ -84,6 +84,7 @@ export class BoardLanguageState {
     };
     async select(locale: string, persist = true): Promise<void> {
         const generation = ++this.generation;
+        if (locale === this.snapshot.locale) return;
         const table = await loadBoardLanguage(locale);
         if (generation !== this.generation) return;
         this.snapshot = { locale, table };

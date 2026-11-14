@@ -57,9 +57,13 @@ function publicHost(hostname: string): boolean {
 /** Clicks may navigate local destinations. Network-capable preview/embed use additionally
  * excludes special literal addresses and our own endpoints; this cannot detect DNS rebinding. */
 export function checkContentUrl(value: string, use: UrlUse, environment: UrlEnvironment): UrlDecision {
-    if (typeof value !== 'string' || value.length > SECURITY_LIMITS.urlCharacters || /[\u0000-\u0020\u007f]/u.test(value)
+    if (typeof value !== 'string' || value.length > SECURITY_LIMITS.urlCharacters
         || value.startsWith('//') || (use !== 'click' && use !== 'preview' && use !== 'embed')) {
         return { ok: false, reason: 'URL is not an admissible absolute address' };
+    }
+    for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index);
+        if (code <= 32 || code === 127) return { ok: false, reason: 'URL contains a control or whitespace character' };
     }
     let url: URL;
     try { url = new URL(value); }

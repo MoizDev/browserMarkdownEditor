@@ -170,11 +170,14 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             }
             const boundary = paintLine.src[1];
             const consumedBreak = boundary > paintLine.src[0] && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary - 1, boundary));
-            const crossesLine = consumedBreak ? start < boundary && end >= boundary : start <= boundary && end > boundary;
+            const crossesLine = consumedBreak ? start < boundary && end >= boundary : start < boundary && end > boundary;
             if (crossesLine && i + 1 < lines.length) {
-                const edge = line.stops[line.stops.length - 1].x;
+                const offset = consumedBreak ? boundary - 1 : boundary;
+                const stops = line.stops.filter(stop => stop.offset === offset);
+                const fallback = paintLine.direction === 'rtl' ? line.stops[0] : line.stops[line.stops.length - 1];
+                const edge = (stops.find(stop => stop.affinity === 'upstream') ?? stops[0] ?? fallback).x;
                 const x = paintLine.direction === 'rtl' ? 0 : edge;
-                result.push({ x, y: line.top, width: paintLine.direction === 'rtl' ? edge : Math.max(0, paint.box.w - edge), height: line.bottom - line.top });
+                result.push({ x, y: line.top, width: paintLine.direction === 'rtl' ? Math.max(0, edge) : Math.max(0, paint.box.w - edge), height: line.bottom - line.top });
             }
         }
         return result;

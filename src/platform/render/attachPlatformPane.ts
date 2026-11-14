@@ -494,6 +494,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (reason === 'input') { lastInputAt = performance.now(); pendingInputAt = lastInputAt; }
             lifecycle?.invalidate(reason, damage);
         },
+        startFling(samples) { if (!disposed && visible) frameLease?.startFling(samples); },
+        animateZoom(targetZ, anchor) { if (!disposed && visible) frameLease?.animateZoom(targetZ, anchor); },
+        cancelMotion() { if (!disposed && visible) frameLease?.cancelMotion(); },
         captureRegion(worldRect, maxSidePx, captureOptions) {
             if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));
             // Session capture owns its own revision lease and survives later pane unmount.

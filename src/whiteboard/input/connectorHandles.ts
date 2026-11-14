@@ -1,7 +1,9 @@
 import { isLocked } from '../change/commands';
 import { poseInParent, worldPose, worldToLocal, type ChangeGeometry } from '../change/coordinates';
-import type { NodeSetOp } from '../change/ops';
+import type { NodeSetOp, Op } from '../change/ops';
+import { prepareNotebookTransform } from './notebookTranslation';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
+import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
@@ -15,8 +17,9 @@ export interface ConnectorEndHandleOptions {
     readonly terminal: 'start' | 'end';
     readonly current: () => boolean;
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
+    readonly snap: { readonly zoom: () => number; readonly alwaysSnap: () => boolean; readonly guides: (guides: readonly BoardSnapGuide[]) => void };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
@@ -34,7 +37,8 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
     if (!node || node.kind !== 'connector' || isLocked(doc, node) || session.isReadOnly) throw new Error('Connector endpoint is not editable');
     let sample = first, keys = modifiers, generation = 0, ended = false, cleaned = false, lastMovedAt = first.time;
-    let lastSurface = options.sampleToSurface(first);
+    let lastSurface = options.sampleToSurface(first), moved = false;
+    const downSurface = lastSurface;
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined;
     const release = options.hold();
@@ -42,7 +46,9 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         && !session.isReadOnly && runtime.selection.getSnapshot() === selection && (font === undefined || runtime.render.text.fonts.epoch === font);
     const cleanup = () => {
         if (cleaned) return; cleaned = true;
-        try { options.clear(); } finally { try { scope?.release(); } finally { try { unregister?.(); } finally { release(); } } }
+        try { options.snap.guides([]); } finally {
+            try { options.clear(); } finally { try { scope?.release(); } finally { try { unregister?.(); } finally { release(); } } }
+        }
     };
     const cancel = () => { if (cleaned) return; ended = true; generation++; controller.abort(); request?.abort(); cleanup(); };
     try { unregister = options.registerPending(cancel); } catch (error) { release(); throw error; }
@@ -63,7 +69,14 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
                 { precise: input.shift || point.time - lastMovedAt >= 1000, exact: input.alt,
                     input: point.source === 'keyboard' ? 'mouse' : point.source });
             check();
-            const local = worldToLocal(doc, node, point), terminal = options.terminal;
+            let target = { x: point.x, y: point.y }, guides: readonly BoardSnapGuide[] = [];
+            // Binding wins over alignment; free endpoints follow the same snap inversion as selection movement.
+            if (!attachment && options.snap.alwaysSnap() !== input.accel) {
+                const snapped = await snapBoardBounds({ runtime, bounds: { ...target, width: 0, height: 0 }, selected: [node.id],
+                    zoom: options.snap.zoom(), current: active, signal: localRequest.signal, cooperate: options.cooperate });
+                check(); target = { x: target.x + snapped.delta.x, y: target.y + snapped.delta.y }; guides = snapped.guides;
+            }
+            const local = worldToLocal(doc, node, target), terminal = options.terminal;
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: attachment } }];
             const candidate = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             preview = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
@@ -76,12 +89,18 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             if (placement.y !== node.y) ops.push({ t: 'set', id: node.id, key: 'y', value: placement.y });
             const finalDoc = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
+            options.snap.guides(guides);
             if (commit) {
-                options.show(ops); await options.waitUntilReady(localRequest.signal); check();
-                options.armCommit();
-                try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release(); options.finishCommit(); }
-                catch (error) { options.cancelCommit(); throw error; }
-                ended = true; controller.abort(); cleanup();
+                const notebook = await prepareNotebookTransform({ runtime, ids: [node.id], preview: { doc: finalDoc, ops },
+                    signal: localRequest.signal, current: active, cooperate: options.cooperate });
+                try {
+                    const finalOps = notebook?.ops ?? ops;
+                    options.show(finalOps); await options.waitUntilReady(localRequest.signal); check();
+                    options.armCommit();
+                    try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops: finalOps }); applied.release(); options.finishCommit(); }
+                    catch (error) { options.cancelCommit(); throw error; }
+                    ended = true; controller.abort(); cleanup();
+                } finally { notebook?.release(); }
             } else options.show(ops);
         } catch (error) {
             if (!cleaned && !localRequest.signal.aborted && turn === generation) {
@@ -97,11 +116,12 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             keys = next; for (const value of samples) if (value.pointerId === first.pointerId) {
                 const surface = options.sampleToSurface(value);
                 if (surface.x !== lastSurface.x || surface.y !== lastSurface.y) lastMovedAt = value.time;
+                if (Math.hypot(surface.x - downSurface.x, surface.y - downSurface.y) >= 4) moved = true;
                 lastSurface = surface; sample = value;
             }
             void render(false);
         },
-        finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current()) { cancel(); return; } ended = true; void render(true); },
+        finish(reason: FinishReason) { if (ended) return; if (reason !== 'up' || !current() || !moved) { cancel(); return; } ended = true; void render(true); },
         cancel(_reason: CancelReason) { cancel(); },
     };
 }

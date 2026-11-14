@@ -7,6 +7,7 @@ import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { gridRectangle } from '../input/gridCreation';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
@@ -46,6 +47,7 @@ class CreationGesture implements GestureOwner {
     readonly pointerIds: ReadonlySet<number>;
     private readonly controller = new AbortController();
     private readonly revision: number;
+    private readonly toolEpoch: number;
     private readonly document: BoardRuntime['session']['doc'];
     private readonly owner: BoardRuntime['session']['owner'];
     private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
@@ -71,7 +73,8 @@ class CreationGesture implements GestureOwner {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
-        this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
+        this.revision = doc.rev; this.toolEpoch = context.runtime.tools.getSnapshot().selectionEpoch;
+        this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
         const stack = boardPageStack(doc.host);
@@ -96,6 +99,10 @@ class CreationGesture implements GestureOwner {
     private local(point: { x: number; y: number }) {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         return { x: c * dx + s * dy, y: -s * dx + c * dy };
+    }
+    private isClick(): boolean {
+        const surface = sampleSurface(this.sample, this.context.sampleToSurface);
+        return Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4;
     }
     private node(sample = this.sample, modifiers = this.modifiers): Node {
         const p = this.local(sample), style = this.style;
@@ -125,8 +132,9 @@ class CreationGesture implements GestureOwner {
             }
             case 'frame': {
                 const down = { x: this.base.x, y: this.base.y };
-                const box = moved ? figureDragBox('rectangle', down, p, modifiers) : { ...down, width: 320, height: 180 };
-                return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: 'Frame', color: null });
+                const box = moved ? figureDragBox('rectangle', down, p, modifiers)
+                    : { x: down.x - 160, y: down.y - 90, width: 320, height: 180 };
+                return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: '', color: null });
             }
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });
@@ -142,14 +150,42 @@ class CreationGesture implements GestureOwner {
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
+        if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
+            this.context.guides?.([]); return gridRectangle(node, this.parentPose);
+        }
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
-            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4
-            || (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky')) {
+            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4) {
             this.context.guides?.([]); return node;
         }
-        const { runtime } = this.context, candidate = createAddedBoardDoc(this.document, [node]);
+        const { runtime } = this.context;
         const active = () => !signal.aborted && this.valid();
+        if (node.kind === 'connector' || node.kind === 'polyline') {
+            const endpoint = (value: Extract<Node, { kind: 'connector' | 'polyline' }>) => {
+                const p = value.kind === 'connector' ? value.end : value.points[value.points.length - 1];
+                const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                const x = value.x + p.x, y = value.y + p.y;
+                return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
+            };
+            const point = endpoint(node);
+            if (node.kind === 'connector' && !modifiers.accel) {
+                const attached = await this.context.resolveAttachment(point, signal, { precise: modifiers.shift, exact: modifiers.alt,
+                    input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+                if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+                if (attached) { this.context.guides?.([]); return node; }
+            }
+            const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
+                zoom: this.context.camera.camera.z, current: active, signal });
+            if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+            const next = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
+            if (next.kind !== 'connector' && next.kind !== 'polyline') throw new Error('Creation kind changed');
+            const actual = endpoint(next), zoom = this.context.camera.camera.z;
+            this.context.guides?.(snapped.guides.filter(guide => Math.abs((guide.axis === 'x' ? actual.x : actual.y) - guide.value) * zoom <= 0.5));
+            return next;
+        }
+        if (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky') { this.context.guides?.([]); return node; }
+        const candidate = createAddedBoardDoc(this.document, [node]);
         const scope = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal, current: active });
         let bounds: ReturnType<typeof scope.logicalBounds>;
         try { bounds = scope.logicalBounds(node.id); } finally { scope.release(); }
@@ -184,6 +220,10 @@ class CreationGesture implements GestureOwner {
         this.ended = true;
         this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
+        if (this.context.kind === 'connector' && this.isClick()) {
+            this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); return;
+        }
+        if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
         void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
     }
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
@@ -278,7 +318,7 @@ class CreationGesture implements GestureOwner {
                     const applied = builder.commit(); applied.release(); this.context.preview.finishCommit();
                 } catch (error) { builder.abort(); this.context.preview.cancelCommit(); throw error; }
                 runtime.selection.replace([node.id]);
-                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id);
+                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id, this.toolEpoch, this.isClick());
             } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
@@ -294,12 +334,19 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
     return { id, begin(sample, modifiers, context) {
         if (id === 'polyline' && modifiers.shift) {
             const { runtime } = context, session = runtime.session, doc = session.doc;
-            const prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior) : undefined;
+            const choice = runtime.tools.getSnapshot(), prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior.id) : undefined;
             // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
-            if (node?.kind === 'polyline' && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
+            if (prior && choice.active.id === 'polyline' && choice.selectionEpoch === prior.epoch && node?.kind === 'polyline'
+                && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
                 && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
-                // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
-                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,
+                const first = node.points[0], last = node.points[node.points.length - 1];
+                const replaceTiny = prior.tiny && node.points.length === 2
+                    && Math.hypot(last.x - first.x, last.y - first.y) * context.camera.camera.z < 2;
+                // A click-created tiny endpoint is replaced; subsequent Shift clicks append in the same active tool flow.
+                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id,
+                    index: replaceTiny ? node.points.length - 1 : node.points.length, insert: !replaceTiny,
+                    onFinishUp: () => runtime.tools.keepToolOnce(prior.epoch), onCommit: () => runtime.tools.extendedPolyline(node.id, prior.epoch),
+                    snap: { zoom: () => context.camera.camera.z, alwaysSnap: context.alwaysSnap ?? (() => false), guides: value => context.guides?.(value) },
                     current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
                     show: ops => context.preview.showOps(ops), waitUntilReady: context.preview.waitUntilReady,
                     armCommit: context.preview.armCommit, finishCommit: context.preview.finishCommit, cancelCommit: context.preview.cancelCommit,

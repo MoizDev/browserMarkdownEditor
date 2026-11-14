@@ -6,6 +6,7 @@ import { worldPose } from '../change/coordinates';
 import { addStickyNeighbour, type StickyDirection } from '../commands/stickyNeighbour';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
+import { PresentedHistory } from '../input/presentedHistory';
 import type { NodeId } from '../model/ids';
 import type { StickyNode } from '../model/nodes';
 
@@ -33,6 +34,7 @@ function worldPoint(runtime: BoardRuntime, node: Readonly<StickyNode>, direction
 export function createStickyHandles(options: StickyHandleOptions) {
     const { runtime } = options, session = runtime.session;
     let svg: SVGSVGElement | undefined, pending: AbortController | undefined, disposed = false;
+    const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current() && options.visible();
     const selected = (): Readonly<StickyNode> | null => {
         if (!current()) return null;
@@ -40,17 +42,17 @@ export function createStickyHandles(options: StickyHandleOptions) {
         const node = session.doc.nodes.get(state.selected[0]);
         return node?.kind === 'sticky' && !isLocked(session.doc, node) ? node : null;
     };
-    const clear = () => { svg?.remove(); svg = undefined; };
+    const clear = () => { svg?.remove(); svg = undefined; presented.clear(); };
     const invalidate = () => { if (current()) options.invalidate(); else clear(); };
     const stopSelection = runtime.selection.subscribe(invalidate), stopSession = session.subscribe(invalidate);
     return {
-        hit(surface: Vec2, coarse = false): StickyDirection | null {
-            const node = selected(); if (!node || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            const view = options.view();
+        hit(surface: Vec2, coarse = false, time?: number): StickyDirection | null {
+            const node = selected(), camera = presented.at(time);
+            if (!node || !camera || ![surface.x, surface.y].every(Number.isFinite)) return null;
             // Default, calibration cut by owner: the touch target is larger than the visible button.
             const radius = coarse ? 18 : 9;
             for (const direction of directions) {
-                const p = worldToSurface(worldPoint(runtime, node, direction), view.camera);
+                const p = worldToSurface(worldPoint(runtime, node, direction), camera);
                 if (Math.hypot(surface.x - p.x, surface.y - p.y) <= radius) return direction;
             }
             return null;
@@ -59,13 +61,14 @@ export function createStickyHandles(options: StickyHandleOptions) {
             const node = selected(); if (!node || pending) return null;
             pending = new AbortController(); const request = pending, view = options.view();
             try {
-                return await addStickyNeighbour({ runtime, id: node.id, direction, reuse, zoom: view.camera.z,
+                return await addStickyNeighbour({ runtime, id: node.id, direction, reuse, zoom: presented.at()?.z ?? view.camera.z,
                     signal: request.signal, current, edit: options.edit, cooperate: options.cooperate });
             } catch (error) { if (!request.signal.aborted && current()) options.error(error); return null; }
             finally { if (pending === request) pending = undefined; }
         },
         write(frame: ScheduledFrame) {
             const node = selected(); if (!node) { clear(); return; }
+            presented.present(frame.timestamp, { ...frame.view.camera });
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);

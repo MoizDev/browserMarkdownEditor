@@ -165,7 +165,8 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
             if (!source || source.type !== 'text' || source.containerId !== sourceId || source.isDeleted === true || typeof source.text !== 'string') continue;
             const style = textStyle(source, true), textColor = colour(source.strokeColor);
             if (!style || !textColor) continue;
-            label = await plainText(source.text, options.cooperate, options.signal); labelColor = textColor; font = style.font; size = style.size; labelScale = style.scale;
+            label = await plainText(typeof source.originalText === 'string' ? source.originalText : source.text, options.cooperate, options.signal);
+            labelColor = textColor; font = style.font; size = style.size; labelScale = style.scale;
             align = style.align; valign = source.verticalAlign === 'top' ? 'start' : source.verticalAlign === 'bottom' ? 'end' : 'middle';
             absorbed.add(labelId as string); ids.set(labelId as string, ids.get(sourceId)!); break;
         }
@@ -184,7 +185,7 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
         if (element.type !== 'text') { deferred.push({ index: i, element }); continue; }
         const geometry = elementGeometry(element), stroke = colour(element.strokeColor), style = textStyle(element, false);
         if (!geometry || !stroke || !style || typeof element.text !== 'string' || !ids.has(sourceId)) { skipped++; ids.delete(sourceId); continue; }
-        const text = await plainText(element.text, options.cooperate, options.signal), width = geometry.w / style.scale;
+        const text = await plainText(typeof element.originalText === 'string' ? element.originalText : element.text, options.cooperate, options.signal), width = geometry.w / style.scale;
         if (!finite(width, 1, 1_000_000)) { skipped++; ids.delete(sourceId); continue; }
         nodes.push(createText({ id: ids.get(sourceId)!, parent: options.sheet, order: orders[i], page: -1, x: geometry.x, y: geometry.y,
             rotation: geometry.rotation, opacity: geometry.opacity, ext: null, text, color: stroke, size: style.size, font: style.font,
@@ -325,7 +326,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                         if (entry.isDeleted === true || typeof entry.id !== 'string' || typeof entry.text !== 'string') continue;
                         const style = textStyle(entry, true), color = colour(entry.strokeColor);
                         if (!style || !color) continue;
-                        label = await plainText(entry.text, options.cooperate, options.signal); check();
+                        label = await plainText(typeof entry.originalText === 'string' ? entry.originalText : entry.text, options.cooperate, options.signal); check();
                         labelColor = color; font = style.font; size = style.size; labelScale = style.scale;
                         const oldId = ids.get(entry.id); if (oldId) removed.add(oldId);
                         ids.set(entry.id, id); break;

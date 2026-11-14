@@ -4,9 +4,9 @@ import { pinPagedBoardScene } from './pagedSceneCapture';
 import type { BoardRuntime } from './runtime';
 
 /** Pins the notebook's real paper and scene at one revision; the caller owns its release. */
-export function pinNativeNotebookExport(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void): {
-    readonly revision: number; readonly snapshot: NotebookExportSnapshot; release(): void;
-} {
+export function pinNativeNotebookExport({ runtime, revision, current, onError }: {
+    readonly runtime: BoardRuntime; readonly revision: number; readonly current: () => boolean; readonly onError: (error: unknown) => void;
+}): { readonly revision: number; readonly snapshot: NotebookExportSnapshot; release(): void } {
     const doc = runtime.session.doc;
     if (!current() || doc.rev !== revision || doc.kind !== 'notebook' || doc.host.kind !== 'notebook') {
         throw new Error('A current notebook revision is required');

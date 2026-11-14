@@ -129,6 +129,9 @@ export class ClipboardCopy {
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;
+        // Once this selection owns the event, refusal must not fall through to
+        // the browser's hidden text buffer and perform an unproved native cut.
+        event.preventDefault();
         let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');

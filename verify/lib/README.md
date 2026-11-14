@@ -2,7 +2,8 @@
 
 Plain Node ESM + pinned Playwright/CfT (`verify/browser-pin.json`), no runner. Drive the **real app**,
 never import its modules. Read `scratch/HOWTO.md`; use assigned ports, own install, `hc run --bg`.
-Stop servers between runs and for timing windows. JSDoc in each `.mjs` documents exact options.
+Stop servers between runs. Under charter §0 the implementation bar is static gates + one normal
+real-app run; reviewer proofs and qualified timings are deferred. JSDoc documents exact options.
 
 ## Runnable example: `verify/guards/toolbox-smoke.mjs`
 
@@ -17,7 +18,7 @@ L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
 export BME_MODE=production                     # repeat with dev for StrictMode
 "$L" build -- node verify/guards/toolbox-smoke.mjs --prepare
 "$L" run -- node verify/guards/toolbox-smoke.mjs
-# Repeat BOTH phases with --mutant, then --binding-mutant; runs must fail their named witness.
+# Existing mutant arms are kept for deferred review, NOT implementation merge conditions.
 ```
 
 **Never build under run/bench**: it deadlocks the pool. Preparation freezes dist + build identity
@@ -62,6 +63,11 @@ OPFS is **not real disk**.
   vault-relative paths/opfsPath, start/completion times. Outside/readback **also count**. **No
   worker internals/blob bodies** (V-01b); no paused-target counters for timing. **requests:**
   recordRequests → read/stop, URL/origin/method/status/type/transfer bytes (raw-route is intercepted).
+- **targets:** instrumentTargets(page,{debuggingPort,vaultName,report}) → check/read/stop; functional
+  only, never bench; caller-range loopback port. Same runtime in window/workers, strict announced
+  worker receipts; frames deferred. See TARGETS.md: measured CfT157 WorkerLocation crash, minimal
+  sequence, and mandatory rule to take pre-resume URLs from TargetInfo, never WorkerLocation.
 - **report:** createReport({scratch,name,fixtures,...}) → data/assert(label,expected,actual)/fail/finish;
+  expected/actual are assertion-time JSON snapshots; comparison still uses the original values.
   finish in finally, unique JSON/screenshot→scratch/reports. No assertions is not a pass. Include
   fixture hashes, reload arm, build identity and awaited served binding.

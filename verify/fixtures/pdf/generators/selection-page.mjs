@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { parseArgs } from '../../lib/cli.mjs';
+import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
 
 // Courier's fixed advance makes the drag's expected prefix independent of an
 // installed font. Coordinates are recorded in PDF points, with a top-left origin.
@@ -10,14 +10,8 @@ const lines = [
   ...Array.from({ length: 12 }, (_, i) => ({ text: `Left column line ${String(i + 1).padStart(2, '0')}`, x: 72, y: 152 + i * 20, size: 12 })),
   ...Array.from({ length: 12 }, (_, i) => ({ text: `Right column line ${String(i + 1).padStart(2, '0')}`, x: 330, y: 152 + i * 20, size: 12 })),
 ];
-const args = process.argv.slice(2);
-if (args.length !== 4 || args[0] !== '--out' || args[2] !== '--seed' || !/^\d+$/.test(args[3])) {
-  throw new Error('Usage: --out <directory> --seed <uint32>');
-}
-const seed = Number(args[3]);
-if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) throw new Error('Seed must be uint32');
-const out = resolve(args[1]);
-await mkdir(out, { recursive: true });
+const { out, seed } = parseArgs(process.argv.slice(2));
+const emit = fixtureWriter(out);
 
 function pdf(pageCount, fixtureId) {
   const id = createHash('sha256').update(`${fixtureId}:1:${seed}`).digest('hex').slice(0, 32);
@@ -43,17 +37,11 @@ function pdf(pageCount, fixtureId) {
   return Buffer.from(text);
 }
 
-async function emit(file, bytes) {
-  await writeFile(resolve(out, file), bytes, { flag: 'wx' });
-  const entry = { file, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
-  console.log(JSON.stringify(entry));
-  return entry;
-}
 const fixtures = [];
 for (const [file, pages] of [['selection-page.pdf', 1], ['dense-40-selection.pdf', 40]]) {
   fixtures.push({ ...await emit(file, pdf(pages, file)), pages });
 }
-await emit('selection-geometry.json', Buffer.from(JSON.stringify({
+await emit('selection-geometry.json', jsonBytes({
   fixtures, page: { width: 612, height: 792 }, lines,
   marginStart: { x: 62, y: 87 }, titleEnd: { x: 92 + 12 * 16, y: 87 },
   titlePrefix: title.slice(0, 16), nativeStart: { x: 92 + 12 * 3, y: 87 },
@@ -62,4 +50,4 @@ await emit('selection-geometry.json', Buffer.from(JSON.stringify({
   // Native selections include line breaks. R3b compares the whitespace-normalized
   // clipboard with this independently generated text, never with the text-layer DOM.
   normalizedPageText: lines.map(l => l.text).join(' '),
-}, null, 2) + '\n'));
+}));

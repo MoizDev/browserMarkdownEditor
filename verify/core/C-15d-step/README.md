@@ -4,6 +4,16 @@ Approved extension of C9 core counters (`perf-assetJobs.md`, second extension).
 Branch `impl/ref/c-15d-step`, based only on `impl/reference`. No implementation
 branch enters this reference, and no simulation, camera or drawing rule changes.
 
+## Current status under charter section 0
+
+Functional hook ready at product commit `f04cd72`: static gates clean, one real-app
+P/B/D/scope run passed, graph screenshot inspected and unchanged. Artifacts:
+`scratch/c-e/c15-step/clean/report.json`. The missing-field reproduction is kept.
+The proof code and two already-built mutants below are preserved, NOT re-run for
+merge. Mutant execution and the overhead companion are owed to the separate
+review phase, not implementation blockers. Instrument cost remains UNKNOWN and
+absolute step-ms is uncertified. This hook adds no new drawing or user gesture.
+
 Benchmark-only `window.__perf.graph.stepMs` returns a copy of:
 `{ samples: number[], total: number, count: number }`. It records only completed
 working steps, retains the last 4096 durations, and keeps total/count for the

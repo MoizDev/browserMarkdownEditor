@@ -3,7 +3,7 @@ import type { FrameBudget, GpuReleaseReason } from '../../../platform/render/typ
 import type { PaintBand } from '../material';
 import type { PaintFrame, PaintItem } from '../paintStream';
 import type { PaintImageLease, PaintLayerResources } from '../resources';
-import { InkPath2dJob, Path2dJob } from './coverage2d';
+import { InkCoverageUnionPath2dJob, Path2dJob } from './coverage2d';
 import type { PathOrigin2d } from './coverage2d';
 import { paintItem2d } from './paint2d';
 import type { PaintResources2d, PreparedPath2d } from './paint2d';
@@ -12,7 +12,7 @@ export interface CanvasPaintAdapter {
     prepare(view: ViewState, budget: FrameBudget): void;
     /** The complete shared frame actually available to both band wrappers. */
     readyFrame(): PaintFrame | null;
-    draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand): void;
+    draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -21,7 +21,7 @@ export interface CanvasPaintAdapter {
 
 export type PaintProjection2d = (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => void;
 
-type PathJob = Path2dJob | InkPath2dJob;
+type PathJob = Path2dJob | InkCoverageUnionPath2dJob;
 type Snapshot = {
     frame: PaintFrame;
     scale: number;
@@ -151,7 +151,7 @@ export function createCanvasPaintAdapter(
                 s.paths.set(item, cached.prepared);
             } else {
                 const path = item.kind === 'ink'
-                    ? new InkPath2dJob(item.coverage, itemScale, [item.coverage.boundsLocal.x, item.coverage.boundsLocal.y])
+                    ? new InkCoverageUnionPath2dJob(item.coverage, itemScale)
                     : new Path2dJob(item.d, pathOrigin(item.d));
                 s.job = { key, item, path };
             }
@@ -187,7 +187,7 @@ export function createCanvasPaintAdapter(
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
         },
         readyFrame() { return disposed ? null : presented?.frame ?? null; },
-        draw2d(ctx, view, band) {
+        draw2d(ctx, view, band, omitNodes) {
             const s = presented;
             if (disposed || !s) return;
             const prepared: PaintResources2d = {
@@ -195,7 +195,7 @@ export function createCanvasPaintAdapter(
                 clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
                 image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
             };
-            project(ctx, view, () => { for (const item of s.frame[band]) paintItem2d(ctx, item, prepared); });
+            project(ctx, view, () => { for (const item of s.frame[band]) if (!omitNodes?.has(item.nodeId)) paintItem2d(ctx, item, prepared); });
         },
         release(reason) {
             if (reason === 'context-lost') return;

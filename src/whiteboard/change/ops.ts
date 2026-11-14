@@ -68,7 +68,7 @@ export interface ExtOp {
 type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
 export type Op = ContentOp | ExtOp | MediaFileRestore;
 
-export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert';
+export type TransactionOrigin = 'tool' | 'agent' | 'paste' | 'undo' | 'redo' | 'host' | 'revert' | 'recovery';
 export interface Transaction {
     readonly ops: readonly Op[];
     readonly origin: TransactionOrigin;

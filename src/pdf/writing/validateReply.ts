@@ -18,7 +18,7 @@ function matching(value: unknown, pattern: RegExp): string {
 }
 function outputBytes(value: unknown): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength < 1 || value.byteLength > MAX_FILE) invalidPdfReply();
-    return value.slice(0);
+    return value; // Transferred non-shared bytes are already owned by the privileged host.
 }
 function fingerprint(value: unknown): string { return matching(value, HASH); }
 function exact(actual: unknown, expected: unknown): void { if (actual !== expected) invalidPdfReply(); }
@@ -70,7 +70,7 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             const input = args as WriterOperations['writer.prepareSource']['args'];
             const o = record(value, ['writerSession', 'sourceFingerprint', 'inspection']);
             const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.pristineFingerprint);
-            result = { writerSession: id(o.writerSession), sourceFingerprint, inspection: inspection(o.inspection) };
+            result = { writerSession: matching(o.writerSession, WRITE_ID), sourceFingerprint, inspection: inspection(o.inspection) };
             break;
         }
         case 'writer.inspect': result = inspection(value); break;
@@ -120,6 +120,14 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             exact(pageCount, input.pages.length); exact(attachmentCount, 1);
             result = { bytes: outputBytes(o.bytes), revision: revision(o.revision, input.revision), writeId: writeId(o.writeId, input.writeId),
                 verification: { pageCount, attachmentCount } };
+            break;
+        }
+        case 'writer.verifyNotebookOutput': {
+            const input = args as WriterOperations['writer.verifyNotebookOutput']['args'];
+            const o = record(value, ['bytes', 'sha256', 'path', 'geometries']);
+            const path = text(o.path, 4096), pages = geometries(o.geometries);
+            if (path !== input.notebookSource.path || !pages.length) invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), sha256: fingerprint(o.sha256), path, geometries: pages };
             break;
         }
         case 'writer.rotate': {

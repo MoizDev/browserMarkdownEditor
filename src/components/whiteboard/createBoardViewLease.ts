@@ -6,7 +6,8 @@ import type { ViewerHostProps, ViewerViewHandle } from './ViewerHost';
 /** The renderer and input adapter are injected by the lazy engine entry. */
 export interface BoardViewEngine<T extends object> {
     readonly accessibility: BoardAccessibilitySource;
-    getSnapshot(): { readonly layers: ViewerHostProps<T>['layers']; readonly readOnlyReason: string | null };
+    getSnapshot(): { readonly layers: ViewerHostProps<T>['layers']; readonly readOnlyReason: string | null;
+        readonly backendPreference?: ViewerHostProps<T>['platform']['backendPreference'] };
     subscribe(listener: () => void): () => void;
     setView(view: { visible: boolean; focused: boolean; theme: 'light' | 'dark'; inverted: boolean }): void;
     dispose(): void;
@@ -23,6 +24,7 @@ export function createBoardViewLease<S extends BoardSessionPort, T extends objec
 ): BoardViewLease<T> {
     let prior: ReturnType<BoardViewEngine<T>['getSnapshot']> | undefined;
     let snapshot: BoardViewSnapshot<T> | undefined;
+    let routedPlatform = platform;
     const view: ViewerViewHandle = {
         accessibility: engine.accessibility,
         subscribe: listener => engine.subscribe(listener),
@@ -33,9 +35,13 @@ export function createBoardViewLease<S extends BoardSessionPort, T extends objec
         view,
         getSnapshot() {
             const next = engine.getSnapshot();
-            if (!snapshot || next.layers !== prior?.layers || next.readOnlyReason !== prior?.readOnlyReason) {
+            if (!snapshot || next.layers !== prior?.layers || next.readOnlyReason !== prior?.readOnlyReason
+                || next.backendPreference !== prior?.backendPreference) {
+                if (!snapshot || next.backendPreference !== prior?.backendPreference) {
+                    routedPlatform = next.backendPreference === undefined ? platform : { ...platform, backendPreference: next.backendPreference };
+                }
                 prior = next;
-                snapshot = { layers: next.layers, platform, reason: next.readOnlyReason };
+                snapshot = { layers: next.layers, platform: routedPlatform, reason: next.readOnlyReason };
             }
             return snapshot!;
         },

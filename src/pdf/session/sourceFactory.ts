@@ -1,7 +1,7 @@
 import { pageStack } from '../../platform/render';
 import type { RenderToken } from '../../platform/render';
 import type { PdfReadingBinding } from '../../types/reading';
-import { getSessionIdentity } from '../../utils/sessionIdentity';
+import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { fingerprintSnapshot } from '../../utils/snapshotFingerprint';
 import { PdfSelectionState } from '../text/selectionState';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
@@ -48,6 +48,10 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                 const live = getSessionIdentity(candidate.documentId);
                 return !!live && live.serial === candidate.session && live.bytesGeneration === candidate.bytesGeneration;
             };
+            signal.throwIfAborted();
+            await awaitSessionDisposals(id);
+            signal.throwIfAborted();
+            if (!current(token)) throw new DOMException('PDF session replaced during source release', 'AbortError');
             let entry = identity.getSlot<Entry>(sourceSlot);
             if (!entry || !matches(entry.token, token)) {
                 const holder: { binding: PdfReadingBinding } = { binding: reading };

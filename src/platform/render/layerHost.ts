@@ -7,7 +7,7 @@ import { paintCanvasIsolation } from './canvas2dContext';
 export interface LayerHostBindings {
     readonly allocator: LayerAllocators;
     generation(): number;
-    /** Qualified rebuilding GPU, even while the selected presentation is still CPU. */
+    /** Actual preparing GPU, possibly before promotion; null during CPU preparation/bridges. */
     gpuResources(): CompositorResources | null;
     compositor(): PaneCompositor | null;
     /** The scheduled candidate can differ from the currently selected display. */

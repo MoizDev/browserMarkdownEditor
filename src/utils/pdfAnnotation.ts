@@ -21,6 +21,7 @@
 import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import type { PdfDocumentSession } from './pdfDocumentSession';
+import type { PdfDisplayGeometry } from './pdfOverlay';
 import { createClassicPdfHealth, recordClassicRenderFailure, type ClassicPdfHealth } from './pdfClassicHealth';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
@@ -75,11 +76,7 @@ export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<P
 
 export const readAnnotatedPdf = readPdfRole;
 
-export interface PdfPageSize {
-    /** Page size in PDF points — the coordinate space annotations live in. */
-    width: number;
-    height: number;
-}
+export type PdfPageSize = PdfDisplayGeometry;
 
 export interface PdfPageSource {
     /** Owned by this acquisition, never shared with a cancelled predecessor. */

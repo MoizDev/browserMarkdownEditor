@@ -1,4 +1,5 @@
-import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import { version as pdfjsVersion, type PDFDocumentLoadingTask, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist';
+import type { PdfDisplayGeometry } from './pdfOverlay';
 import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
 import { createClassicPdfHealth } from './pdfClassicHealth';
 import type { ClassicPdfHealth } from './pdfClassicHealth';
@@ -12,7 +13,7 @@ export interface PdfDocumentSession {
     acquire(): Promise<{ document: PDFDocumentProxy; release(): void }>;
     acquirePage(index0: number, consumer: 'render' | 'text' | 'thumbnail' | 'agent', signal?: AbortSignal): Promise<PdfPageLease>;
     acquireRender(index0: number, signal?: AbortSignal): Promise<PdfPageLease>;
-    geometry(): Promise<Array<{ width: number; height: number }>>;
+    geometry(): Promise<PdfDisplayGeometry[]>;
     handoff(index0: number): void;
     setVisible(visible: boolean, currentPage?: number): void;
     markRendered(index0: number): void;
@@ -40,7 +41,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
     const pages = new Map<number, Entry>();
     let visible = true, currentPage = 0;
     const renderQueues = new Map<number, Promise<void>>();
-    let geometryPromise: Promise<Array<{ width: number; height: number }>> | undefined;
+    let geometryPromise: Promise<PdfDisplayGeometry[]> | undefined;
     const handoffs = new Map<number, () => void>();
     function makeEntry(index: number, doc: PDFDocumentProxy): Entry {
         const entry: Entry = {
@@ -147,8 +148,20 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
                         return await mapPool(Array.from({ length: docLease.document.numPages }, (_, i) => i), async index => {
                             const lease = await this.acquirePage(index, 'render');
                             try {
-                                const { width, height } = lease.page.getViewport({ scale: 1 });
-                                return { width, height };
+                                const page = lease.page, viewport = page.getViewport({ scale: 1 });
+                                const [a, b, c, d, e, f] = viewport.transform;
+                                const determinant = a * d - b * c;
+                                if (![a, b, c, d, e, f, viewport.width, viewport.height, determinant].every(Number.isFinite) ||
+                                    determinant === 0 || viewport.width <= 0 || viewport.height <= 0) {
+                                    throw new Error(`Invalid display geometry for PDF page ${index + 1}.`);
+                                }
+                                return {
+                                    width: viewport.width, height: viewport.height,
+                                    toUserSpace: [d / determinant, -b / determinant, -c / determinant, a / determinant,
+                                        (c * f - d * e) / determinant, (b * e - a * f) / determinant] as PdfDisplayGeometry['toUserSpace'],
+                                    rotation: page.rotate, userUnit: page.userUnit, pageIndex: index,
+                                    sourceFingerprint: docLease.document.fingerprints[0] ?? '', engine: `pdfjs/${pdfjsVersion}`,
+                                };
                             } finally { lease.release(); }
                         });
                     } finally { docLease.release(); }

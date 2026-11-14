@@ -19,6 +19,7 @@ let times = new Map<string, number>();
 const lastWrites = new Map<string, number>();
 let version = 0;
 let indexTimesReady = false;
+let indexNotifyFrame: number | undefined;
 const listeners = new Set<() => void>();
 
 // Bumped by resetFileTimes: a walk that began in the previous vault must not
@@ -60,7 +61,12 @@ export function getFileTimes(): ReadonlyMap<string, number> {
 
 export function areIndexTimesReady(): boolean { return indexTimesReady; }
 export function markIndexTimesReady(): void {
-    if (!indexTimesReady) { indexTimesReady = true; notify(); }
+    if (!indexTimesReady) {
+        indexTimesReady = true;
+        if (indexNotifyFrame !== undefined) cancelAnimationFrame(indexNotifyFrame);
+        indexNotifyFrame = undefined;
+        notify();
+    }
 }
 
 /** Called by the save funnel after a write it just made, so a sort reacts to a
@@ -89,11 +95,16 @@ export function stampFileTimes(entries: Iterable<readonly [path: string, time: n
 
 /** A worker stat begun before an own save must not overwrite its newer stamp. */
 export function stampIndexedFileTimes(entries: Iterable<readonly [path: string, time: number, startedAt: number]>): void {
-    const current: [string, number][] = [];
+    let changed = false;
     for (const [path, time, startedAt] of entries) {
-        if ((lastWrites.get(path) ?? -Infinity) < startedAt) current.push([path, time]);
+        if ((lastWrites.get(path) ?? -Infinity) >= startedAt) continue;
+        times.set(path, time);
+        for (const walk of walksInFlight) walk.set(path, time);
+        changed = true;
     }
-    stampFileTimes(current);
+    if (changed && indexNotifyFrame === undefined) {
+        indexNotifyFrame = requestAnimationFrame(() => { indexNotifyFrame = undefined; notify(); });
+    }
 }
 
 /** For a vault switch: the old vault's paths mean nothing in the new one. */
@@ -101,6 +112,8 @@ export function resetFileTimes(): void {
     generation++;
     walksInFlight.clear();
     lastWrites.clear();
+    if (indexNotifyFrame !== undefined) cancelAnimationFrame(indexNotifyFrame);
+    indexNotifyFrame = undefined;
     indexTimesReady = false;
     times = new Map();
     notify();

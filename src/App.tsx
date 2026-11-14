@@ -9,7 +9,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
-import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice } from './utils/storage';
+import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
@@ -77,6 +77,7 @@ import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import { canRebuildAnnotatedPdf, canRotatePdfRole, pdfRoleNotice } from './utils/pdfRole';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
+import { anyPending, drain, drainAll, subscribePending } from './utils/unloadCoordinator';
 import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
@@ -361,6 +362,26 @@ function foldersWithStyleFile(
 }
 
 export default function App() {
+  useEffect(() => {
+    const refuseUnclaimedDrop = (event: DragEvent) => {
+      if (event.defaultPrevented || !event.dataTransfer) return;
+      const types = event.dataTransfer.types;
+      const files = types.includes('Files');
+      const link = types.includes('text/uri-list');
+      if (!files && !link) return;
+      if (!files && event.target instanceof Element &&
+          event.target.closest('input, textarea, [contenteditable]:not([contenteditable="false"]), .cm-content')) return;
+      event.preventDefault();
+      if (event.type === 'dragover') event.dataTransfer.dropEffect = 'none';
+    };
+    window.addEventListener('dragover', refuseUnclaimedDrop, { passive: false });
+    window.addEventListener('drop', refuseUnclaimedDrop, { passive: false });
+    return () => {
+      window.removeEventListener('dragover', refuseUnclaimedDrop);
+      window.removeEventListener('drop', refuseUnclaimedDrop);
+    };
+  }, []);
+
   const {
     rootHandle,
     fileTree,
@@ -369,6 +390,7 @@ export default function App() {
     linkedVault,
     recentVaults,
     currentVaultId,
+    getVaultActivation,
     pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
@@ -544,46 +566,46 @@ export default function App() {
     } else {
       document.documentElement.removeAttribute('data-theme');
     }
-    localStorage.setItem('theme', theme);
+    writeStoredValue('theme', theme);
   }, [theme]);
 
   // Sync font sizes to CSS variables and localStorage
   useEffect(() => {
     document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
-    localStorage.setItem('editorFontSize', String(editorFontSize));
+    writeStoredValue('editorFontSize', String(editorFontSize));
   }, [editorFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--code-font-size', codeFontSize + 'px');
-    localStorage.setItem('codeFontSize', String(codeFontSize));
+    writeStoredValue('codeFontSize', String(codeFontSize));
   }, [codeFontSize]);
 
   // Not a CSS variable: the plugin is an editor extension, so each code pane
   // reconfigures its own compartment (DocumentPane).
   useEffect(() => {
-    localStorage.setItem('rainbowBrackets', String(rainbowBrackets));
+    writeStoredValue('rainbowBrackets', String(rainbowBrackets));
   }, [rainbowBrackets]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
-    localStorage.setItem('treeFontSize', String(treeFontSize));
+    writeStoredValue('treeFontSize', String(treeFontSize));
   }, [treeFontSize]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
-    localStorage.setItem('editorPadding', String(editorPadding));
+    writeStoredValue('editorPadding', String(editorPadding));
   }, [editorPadding]);
 
   useEffect(() => {
-    localStorage.setItem('tabSize', String(tabSize));
+    writeStoredValue('tabSize', String(tabSize));
   }, [tabSize]);
 
   useEffect(() => {
-    localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
+    writeStoredValue('recentVaultLimit', String(recentVaultLimit));
   }, [recentVaultLimit]);
 
   useEffect(() => {
-    localStorage.setItem('showVaultInTitle', String(showVaultInTitle));
+    writeStoredValue('showVaultInTitle', String(showVaultInTitle));
   }, [showVaultInTitle]);
 
   // The tab reads as the vault it holds, so tabs open on different vaults can
@@ -614,15 +636,15 @@ export default function App() {
       ? `left ${caretSpeed}ms ease-out, top ${caretSpeed}ms ease-out, height ${caretSpeed}ms ease-out`
       : 'none');
 
-    localStorage.setItem('caretStyle', caretStyle);
-    localStorage.setItem('caretThickness', String(caretThickness));
-    localStorage.setItem('smoothCaret', String(smoothCaret));
-    localStorage.setItem('caretSpeed', String(caretSpeed));
+    writeStoredValue('caretStyle', caretStyle);
+    writeStoredValue('caretThickness', String(caretThickness));
+    writeStoredValue('smoothCaret', String(smoothCaret));
+    writeStoredValue('caretSpeed', String(caretSpeed));
   }, [caretStyle, caretThickness, smoothCaret, caretSpeed]);
 
   // Load a Google Font by name and apply it app-wide via --font-text.
   useEffect(() => {
-    localStorage.setItem('fontFamily', fontFamily);
+    writeStoredValue('fontFamily', fontFamily);
     const linkId = 'google-font-link';
     let link = document.getElementById(linkId) as HTMLLinkElement | null;
     const family = fontFamily.trim();
@@ -659,7 +681,7 @@ export default function App() {
       root.removeProperty('--interactive-accent');
       root.removeProperty('--interactive-accent-hover');
     }
-    localStorage.setItem('accentColor', accentColor);
+    writeStoredValue('accentColor', accentColor);
   }, [accentColor]);
 
   // Same override trick for the plain-code-block ink; its stylesheet default
@@ -671,7 +693,7 @@ export default function App() {
     } else {
       root.removeProperty('--code-block-color');
     }
-    localStorage.setItem('codeBlockColor', codeBlockColor);
+    writeStoredValue('codeBlockColor', codeBlockColor);
   }, [codeBlockColor]);
 
   const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
@@ -1066,7 +1088,7 @@ export default function App() {
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
   useEffect(() => {
-    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+    writeStoredValue('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
   // Suppresses the collapse animation while drag-resizing, so the width
   // tracks the pointer instead of easing 150ms behind it.
@@ -1079,7 +1101,7 @@ export default function App() {
   // a window can shrink under a stored width.
   const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('agentPanelOpen', String(agentPanelOpen));
+    writeStoredValue('agentPanelOpen', String(agentPanelOpen));
   }, [agentPanelOpen]);
   const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
   // Whether the reader has opened the panel this session (⌘⇧X, the footer
@@ -1100,7 +1122,7 @@ export default function App() {
   // keyboard, as with the agent panel.
   const [terminalOpen, setTerminalOpen] = useState<boolean>(() => localStorage.getItem('terminalOpen') === 'true');
   useEffect(() => {
-    localStorage.setItem('terminalOpen', String(terminalOpen));
+    writeStoredValue('terminalOpen', String(terminalOpen));
   }, [terminalOpen]);
   const [terminalOpenedByUser, setTerminalOpenedByUser] = useState(false);
   const terminalOpenRef = useRef(terminalOpen);
@@ -1215,9 +1237,34 @@ export default function App() {
    * only be read (and handed over) SYNCHRONOUSLY at the point of the save — see
    * flushTab.
    */
-  const reconcileAssets = useCallback(async (file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    const dir = file.parentHandle;
-    if (!dir) return;
+  type AssetOutcome = 'retired' | 'kept' | 'skipped-detached' | 'failed';
+  interface ReconcileJob {
+    activation: number; path: string; parentHandle: FileSystemDirectoryHandle | null;
+    text: string; before: ReadonlySet<string>; after: ReadonlySet<string>;
+    measuredNames?: string[];
+  }
+  const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
+  const assetProofTreeRef = useRef(fileTree);
+  const assetReferenceRevisionRef = useRef(0);
+  const pendingAssetDropsRef = useRef(new Map<string, Set<string>>());
+  const assetOwnerRootRef = useRef(rootHandle);
+  useLayoutEffect(() => {
+    if (assetOwnerRootRef.current !== rootHandle) {
+      pendingAssetDropsRef.current.clear();
+      assetOwnerRootRef.current = rootHandle;
+    }
+    if (rootHandle) assetActivationsRef.current.set(rootHandle, getVaultActivation());
+    // The ordinary tree mirror is passive; a proof needs the committed tree
+    // before an in-flight file read can resume, not a render later.
+    assetProofTreeRef.current = fileTree;
+    assetReferenceRevisionRef.current++;
+  }, [rootHandle, fileTree, getVaultActivation]);
+
+  const reconcileAssets = useCallback(async (job: ReconcileJob): Promise<AssetOutcome> => {
+    const { activation, path, parentHandle: dir, before, after } = job;
+    const attached = () => getVaultActivation() === activation;
+    if (!attached()) return 'skipped-detached';
+    if (!dir) return 'kept';
 
     try {
       // A reference that came BACK — undo, or the same embed pasted into a
@@ -1230,12 +1277,43 @@ export default function App() {
       let reclaimed = false;
       for (const name of after) {
         if (before.has(name)) continue;
-        if (await restoreAsset(name, dir)) reclaimed = true;
+        if (!attached()) return 'skipped-detached';
+        if (await restoreAsset(name, dir, attached)) reclaimed = true;
       }
-      if (reclaimed) retryMissingAssets();
+      if (reclaimed && attached()) retryMissingAssets();
 
-      const orphaned = new Set([...before].filter(name => !after.has(name)));
-      if (orphaned.size === 0) return;
+      if (!attached()) return 'skipped-detached';
+      const folder = parentVaultPath(path);
+      const names = new Set(pendingAssetDropsRef.current.get(folder));
+      for (const name of before) if (!after.has(name)) names.add(name);
+      if (__BME_BENCH__) {
+        try { job.measuredNames = [...names]; } catch { /* Measurement cannot interrupt a job. */ }
+      }
+      if (names.size === 0) return 'kept';
+      const orphaned = new Set(names);
+      const revision = assetReferenceRevisionRef.current;
+      const proofTabs = tabsRef.current;
+      // Dirty-only save acknowledgements do not change a reference proof.
+      // Opening/closing a tab or changing its readable buffer does.
+      const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
+        && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
+          const old = proofTabs[i];
+          return tab.id === old.id && tab.file.path === old.file.path && tab.content === old.content
+            && tab.readError === old.readError && tab.representation === old.representation;
+        });
+      let retired = false;
+      const abandon = (): AssetOutcome => {
+        if (!attached()) return retired ? 'retired' : 'skipped-detached';
+        // Retain only undecided names, not a false last-SAVED embed baseline.
+        // The next real save retries once; this job never restarts itself.
+        if (names.size) pendingAssetDropsRef.current.set(folder, names);
+        else pendingAssetDropsRef.current.delete(folder);
+        return retired ? 'retired' : 'kept';
+      };
+      const own = proofTabs.find(tab => tab.file.path === path);
+      const ownText = own ? (canReadTabText(own) ? latestContentRef.current.get(path) ?? own.content : null) : job.text;
+      if (ownText === null) return abandon();
+      for (const name of orphaned) if (referencesAsset(ownText, name)) orphaned.delete(name);
 
       // Who has to be consulted before a picture is taken away — a picture
       // shared with another note must survive being removed from this one.
@@ -1249,10 +1327,9 @@ export default function App() {
       // actually dropped, which is rare; same-folder notes come first because
       // they are the overwhelmingly likely hit, and the walk stops as soon as
       // every dropped name has been spoken for.
-      const folder = parentVaultPath(file.path);
       const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(fileTreeRef.current).filter(f =>
-        f.path !== file.path && isTextFile(f.name) && f.path.startsWith(under));
+      const candidates = collectFiles(assetProofTreeRef.current).filter(f =>
+        f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
@@ -1264,27 +1341,39 @@ export default function App() {
       // the whole vault.
       for (const note of neighbours) {
         if (orphaned.size === 0) break;
+        if (!proofCurrent()) return abandon();
         // An open tab is read from its BUFFER, so an unsaved reference counts
         // just as much as a saved one — unless it could not be read at all
         // (OpenTab.readError): that buffer is no text, so it answers "keep".
-        const open = tabsRef.current.find(t => t.file.path === note.path);
+        const open = proofTabs.find(t => t.file.path === note.path);
         const text = open
-          ? (open.readError ? null : open.content)
+          ? (canReadTabText(open) ? latestContentRef.current.get(note.path) ?? open.content : null)
           : await readFile(note.handle).catch(() => null);
+        if (!proofCurrent()) return abandon();
         // A note that can't be read might say anything, so it is taken to say
         // "keep": a stale file costs nothing next to deleting a picture that is
         // still on screen somewhere.
-        if (text === null) return;
+        if (text === null) return abandon();
         for (const name of orphaned) {
           if (referencesAsset(text, name)) orphaned.delete(name);
         }
       }
 
-      for (const name of orphaned) await retireAsset(name, dir);
+      for (const name of orphaned) {
+        if (!proofCurrent()) return abandon();
+        if (await retireAsset(name, dir, proofCurrent)) {
+          retired = true;
+          names.delete(name);
+        }
+      }
+      if (!proofCurrent()) return abandon();
+      pendingAssetDropsRef.current.delete(folder);
+      return retired ? 'retired' : 'kept';
     } catch (err) {
-      console.error('Could not reconcile assets for', file.path, err);
+      console.error('Could not reconcile assets for', path, err);
+      return 'failed';
     }
-  }, [readFile, retireAsset, restoreAsset]);
+  }, [readFile, retireAsset, restoreAsset, getVaultActivation]);
 
   // Read through a ref for the same reason writeFile and rebuildGraph are: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
@@ -1305,9 +1394,23 @@ export default function App() {
    * its own errors, so this chain never rejects.
    */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const queueReconcile = useCallback((file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    reconcileQueueRef.current = reconcileQueueRef.current
-      .then(() => reconcileAssetsRef.current(file, before, after));
+  const queueReconcile = useCallback((job: ReconcileJob) => {
+    reconcileQueueRef.current = reconcileQueueRef.current.then(async () => {
+      let outcome: AssetOutcome = 'failed';
+      try { outcome = await reconcileAssetsRef.current(job); }
+      finally {
+        if (__BME_BENCH__) {
+          try {
+            const root = perfRoot();
+            const jobs = (root.assetJobs ??= { completed: [] }) as { completed: Array<{
+              activation: number; path: string; outcome: AssetOutcome; names: string[]; t: number;
+            }> };
+            jobs.completed.push({ activation: job.activation, path: job.path, outcome,
+              names: job.measuredNames ?? [...job.before].filter(name => !job.after.has(name)), t: performance.now() });
+          } catch { /* The waiting hook cannot change queue settlement. */ }
+        }
+      }
+    });
   }, []);
 
   const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
@@ -1828,6 +1931,27 @@ export default function App() {
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
   /** Documents with a write queued or running — App.hasUnsaved. */
   const flushingRef = useRef(new Map<string, number>());
+  // A report can precede React's commit; the exit guard and save must see it now.
+  const pendingRevisionsRef = useRef(new Map<string, { revision: number; saved: number }>());
+  const guardedRef = useRef(false);
+  const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
+    event.preventDefault();
+    event.returnValue = '';
+  }, []);
+  const syncExitGuard = useCallback(() => {
+    const pending = anyPending() || flushingRef.current.size > 0
+      || [...pendingRevisionsRef.current.values()].some(r => r.revision > r.saved);
+    if (pending === guardedRef.current) return;
+    guardedRef.current = pending;
+    if (pending) window.addEventListener('beforeunload', beforeUnload);
+    else window.removeEventListener('beforeunload', beforeUnload);
+  }, [beforeUnload]);
+  const reportRevision = useCallback((id: string) => {
+    const previous = pendingRevisionsRef.current.get(id);
+    pendingRevisionsRef.current.set(id, { revision: (previous?.revision ?? 0) + 1, saved: previous?.saved ?? 0 });
+    syncExitGuard();
+  }, [syncExitGuard]);
+  const pendingWritesRef = useRef(new Map<string, { revision: number; promise: Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> }>());
 
   /**
    * Keep a closing document's unsaved text when its file can no longer take it
@@ -1881,13 +2005,18 @@ export default function App() {
     // A tab restored without its text (OpenTab.readError) has an empty buffer
     // that is NOT the file: ⌘S forces a flush of the focused tab, and writing
     // that '' would erase a note the app merely failed to read.
-    if (!canFlushTab(tab) && !(contentOverride !== undefined && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    const pendingRevision = pendingRevisionsRef.current.get(tab.id);
+    const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
+    if (!canFlushTab(tab) && !((contentOverride !== undefined || pending) && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
-    if (!tab.dirty && !force) return 'skipped';
+    if (!tab.dirty && !pending && !force) return 'skipped';
     // contentOverride exists for callers who have fresher content than the tab
     // does: setTabs is async, so a caller that just produced new content would
     // otherwise race with React and write the previous buffer.
-    const snapshot = contentOverride ?? tab.content;
+    const snapshot = contentOverride ?? contentOf(path) ?? tab.content;
+    const revision = pendingRevision?.revision ?? 0;
+    const existingWrite = pendingWritesRef.current.get(tab.id);
+    if (pending && existingWrite?.revision === revision) return existingWrite.promise;
     if (__BME_BENCH__) {
       try {
         const root = perfRoot();
@@ -1933,6 +2062,10 @@ export default function App() {
     // and could retire a picture that save had just put back.
     const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
     const embedsAfter = embedsBefore && assetEmbeds(snapshot);
+    const assetJob: ReconcileJob | undefined = embedsBefore && embedsAfter ? {
+      activation: rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1,
+      path, parentHandle: file.parentHandle ?? null, text: snapshot, before: embedsBefore, after: embedsAfter,
+    } : undefined;
     if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
@@ -1971,14 +2104,17 @@ export default function App() {
         // Queued rather than awaited: reconciling reads the note's neighbours,
         // and a save's "Saved" status (and the graph rebuild below) should not
         // wait on that — but two of them must not interleave either.
-        if (embedsBefore && embedsAfter) queueReconcile(file, embedsBefore, embedsAfter);
+        if (assetJob) queueReconcile(assetJob);
         // Only clear `dirty` if the content hasn't changed since we snapshotted.
         // By id: a rename mid-write moved the document, not the write.
+        const currentRevision = pendingRevisionsRef.current.get(id);
+        if (currentRevision && revision > currentRevision.saved) currentRevision.saved = revision;
+        const current = !currentRevision || currentRevision.revision === revision;
         setTabs(prev => prev.map(t =>
-          t.id === id && t.content === snapshot ? { ...t, dirty: false } : t));
+          t.id === id && current && t.content === snapshot ? { ...t, dirty: false } : t));
         // Any column on screen, not only the focused one: with the editor split
         // the status line speaks for everything the reader can see.
-        if (visiblePathsRef.current.includes(path)) {
+        if (current && visiblePathsRef.current.includes(path)) {
           setSaveStatus('Saved');
           // Re-armed, not stacked: rapid saves used to leave a handful of live
           // timers all racing to clear the same message.
@@ -2010,16 +2146,21 @@ export default function App() {
     flushing.set(id, (flushing.get(id) ?? 0) + 1);
     const run = (chains.get(id) ?? Promise.resolve()).then(write);
     chains.set(id, run);
+    const pendingWrite = { revision, promise: run };
+    pendingWritesRef.current.set(id, pendingWrite);
+    syncExitGuard();
     try {
       return await run;
     } finally {
       const left = (flushing.get(id) ?? 1) - 1;
       if (left > 0) flushing.set(id, left); else flushing.delete(id);
       if (chains.get(id) === run) chains.delete(id);
+      if (pendingWritesRef.current.get(id) === pendingWrite) pendingWritesRef.current.delete(id);
+      syncExitGuard();
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, queueReconcile, setDiskState, keepClosingEdits]);
+  }, [clearSaveTimer, contentOf, queueReconcile, setDiskState, keepClosingEdits, syncExitGuard]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2057,6 +2198,7 @@ export default function App() {
       } catch { /* Measurement must not interrupt a content report. */ }
     }
     if (!accepted) return;
+    assetReferenceRevisionRef.current++;
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -2064,9 +2206,10 @@ export default function App() {
       setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content } : t));
       return;
     }
+    reportRevision(target.id);
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
-  }, [scheduleSave]);
+  }, [reportRevision, scheduleSave]);
 
   const updateAgentTabContent = useCallback((path: string, content: string) => {
     if (__BME_BENCH__) {
@@ -2089,9 +2232,49 @@ export default function App() {
   const flushTabNow = useCallback(async (path: string, content: string) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     if (!target || !canUpdateTabContent(target, 'annotation')) return;
+    latestContentRef.current.set(path, content);
+    reportRevision(target.id);
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     await flushTab(path, true, content);
-  }, [flushTab]);
+  }, [flushTab, reportRevision]);
+
+  const checkpointRef = useRef<Promise<void> | null>(null);
+  const checkpointAgainRef = useRef(false);
+  const checkpointAll = useCallback(() => {
+    if (checkpointRef.current) { checkpointAgainRef.current = true; return checkpointRef.current; }
+    const activation = getVaultActivation();
+    const run = (async () => {
+      do {
+        checkpointAgainRef.current = false;
+        try { await drainAll(); } catch (error) { console.error('Could not serialize pending documents:', error); }
+        if (getVaultActivation() !== activation) return;
+        const work = tabsRef.current.flatMap(tab => {
+          const revision = pendingRevisionsRef.current.get(tab.id);
+          if (!revision || revision.revision <= revision.saved) return [];
+          return [flushTab(tab.file.path, true)];
+        });
+        await Promise.allSettled(work);
+      } while (checkpointAgainRef.current && getVaultActivation() === activation);
+    })();
+    checkpointRef.current = run;
+    void run.finally(() => { if (checkpointRef.current === run) checkpointRef.current = null; });
+    return run;
+  }, [flushTab, getVaultActivation]);
+  useEffect(() => {
+    const unsubscribe = subscribePending(syncExitGuard);
+    syncExitGuard();
+    const visibility = () => { if (document.visibilityState === 'hidden') void checkpointAll(); };
+    const pagehide = () => { void checkpointAll(); };
+    document.addEventListener('visibilitychange', visibility);
+    window.addEventListener('pagehide', pagehide);
+    return () => {
+      unsubscribe();
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('pagehide', pagehide);
+      window.removeEventListener('beforeunload', beforeUnload);
+      guardedRef.current = false;
+    };
+  }, [beforeUnload, checkpointAll, syncExitGuard]);
 
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
@@ -2199,6 +2382,7 @@ export default function App() {
     // captured its baseline synchronously.
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
+      if (!flush) { pendingRevisionsRef.current.delete(doc.id); syncExitGuard(); }
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
@@ -2217,7 +2401,7 @@ export default function App() {
     // Same: the flush above captured its own diff before this ran. A closed
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
-  }, [clearSaveTimer, flushTab]);
+  }, [clearSaveTimer, flushTab, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -3918,12 +4102,14 @@ export default function App() {
    *  is not enough: an edit's save timer is armed before its render commits,
    *  a write may be in flight, and a canvas keeps strokes in its own debounce
    *  App cannot see (the reporter's hasPendingEdits). */
-  const hasUnsaved = useCallback((tab: OpenTab): boolean => (
-    tab.dirty
-    || saveTimersRef.current.has(tab.file.path)
-    || flushingRef.current.has(tab.id)
-    || !!getView(tab.file.path)?.hasPendingEdits?.()
-  ), []);
+  const hasUnsaved = useCallback((tab: OpenTab): boolean => {
+    const revision = pendingRevisionsRef.current.get(tab.id);
+    return tab.dirty
+      || !!(revision && revision.revision > revision.saved)
+      || saveTimersRef.current.has(tab.file.path)
+      || flushingRef.current.has(tab.id)
+      || !!getView(tab.file.path)?.hasPendingEdits?.();
+  }, []);
 
   /**
    * Put the file's new contents into an open document that had nothing unsaved.
@@ -3943,6 +4129,8 @@ export default function App() {
     clearSaveTimer(path);
     setBaseline(id, version);
     diskStateRef.current.delete(id);
+    pendingRevisionsRef.current.delete(id);
+    syncExitGuard();
     if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
       // The parked original would otherwise be rebuilt over the new file by
       // the next annotation save.
@@ -3965,7 +4153,7 @@ export default function App() {
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [clearSaveTimer, editorStates, updateTabContent, rememberAssetRefs]);
+  }, [clearSaveTimer, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -4270,6 +4458,8 @@ export default function App() {
       }
 
       if (action === 'save') {
+        await drain(id);
+        const savedRevision = pendingRevisionsRef.current.get(id)?.revision ?? 0;
         const data = await mine();
         if (data === null) {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
@@ -4291,6 +4481,9 @@ export default function App() {
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
         diskStateRef.current.delete(id);
+        const pendingRevision = pendingRevisionsRef.current.get(id);
+        if (pendingRevision && savedRevision > pendingRevision.saved) pendingRevision.saved = savedRevision;
+        syncExitGuard();
         clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
         setTabs(prev => prev.map(t => (t.id === id ? {
@@ -4347,7 +4540,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, syncExitGuard]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -4417,6 +4610,7 @@ export default function App() {
 
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
+    const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
     agentDepsRef.current = {
       vaultId: currentVaultId,
       root: rootHandle,
@@ -4436,7 +4630,8 @@ export default function App() {
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
         recordFileWritten(file.path);
-        if (tracksAssets(file)) queueReconcile(file, assetEmbeds(before), assetEmbeds(after));
+        if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
+          text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
         rebuildGraphRef.current();
         bumpSaveEpoch();
       },
@@ -4633,7 +4828,7 @@ export default function App() {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       // Once, at the end of the drag — not sixty writes a second.
-      localStorage.setItem('agentPanelWidth', String(width));
+      writeStoredValue('agentPanelWidth', String(width));
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };

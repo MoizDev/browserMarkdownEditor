@@ -39,6 +39,7 @@ export function useIndexGraph(options: {
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
     useEffect(() => {
         let live = true;
+        let lastStatusAt = -Infinity;
         publish(null, activation, () => live && getActivation() === activation);
         if (!root) return () => { live = false; };
         let starting: Promise<ActiveIndexGraph> | undefined;
@@ -56,7 +57,14 @@ export function useIndexGraph(options: {
                     const graph = graphForTree(snapshot, treeAtReply);
                     if (graph) { publish(graph, activation, current); onSnapshot?.(snapshot.stale); }
                 }, problem => { if (live && getActivation() === activation) onProblem(problem); }, status => {
-                    if (live && getActivation() === activation) onStatus?.(status as IndexProgress);
+                    if (!live || getActivation() !== activation) return;
+                    const progress = status as IndexProgress;
+                    const now = performance.now();
+                    // A sweep reports every eight files; avoid rerendering the
+                    // whole workspace over a thousand times in a 10k-note vault.
+                    if (progress.phase !== 'idle' && progress.done !== 0 && now - lastStatusAt < 250) return;
+                    lastStatusAt = now;
+                    onStatus?.(progress);
                 });
                 const echo = new WriteEchoFilter(async path => {
                     const handle = await resolve(path);

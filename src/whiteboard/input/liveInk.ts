@@ -7,7 +7,11 @@ export interface InkIdentity {
   readonly nodeId: string
   readonly gestureSequence: number
 }
-export interface DryInkIdentity extends InkIdentity { readonly nodeRevision: number }
+export interface DryInkIdentity extends InkIdentity {
+  readonly nodeRevision: number
+  /** Owned by the handover after publication; not a frame consumer lease. */
+  readonly release?: () => void
+}
 
 export interface InkPresentation {
   readonly tool: 'pen' | 'highlighter'
@@ -42,10 +46,21 @@ export interface WetInkSnapshot {
 // of wet versus dry is made once per frame, not by independent layer callbacks.
 export class WetInkHandover {
   private readonly pending = new Map<number, WetInkSnapshot>()
-  publish(snapshot: WetInkSnapshot): void { this.pending.set(snapshot.identity.gestureSequence, snapshot) }
+  publish(snapshot: WetInkSnapshot): void {
+    const previous = this.pending.get(snapshot.identity.gestureSequence)
+    if (previous?.dry && previous.dry !== snapshot.dry) previous.dry.release?.()
+    this.pending.set(snapshot.identity.gestureSequence, snapshot)
+  }
   clear(identity: InkIdentity): void {
     const existing = this.pending.get(identity.gestureSequence)
-    if (existing?.identity.nodeId === identity.nodeId) this.pending.delete(identity.gestureSequence)
+    if (existing?.identity.nodeId === identity.nodeId) {
+      this.pending.delete(identity.gestureSequence)
+      existing.dry?.release?.()
+    }
+  }
+  dispose(): void {
+    const pending = [...this.pending.values()]; this.pending.clear()
+    for (const entry of pending) entry.dry?.release?.()
   }
   forFrame(dryAvailable: (identity: DryInkIdentity) => boolean): readonly WetInkSnapshot[] {
     const visible: WetInkSnapshot[] = []
@@ -58,7 +73,7 @@ export class WetInkHandover {
   // bands was actually presented; dropped or stale frames retain the fallback.
   acknowledgePresented(identity: DryInkIdentity): void {
     const pending = this.pending.get(identity.gestureSequence)
-    if (pending?.dry && pending.dry.nodeId === identity.nodeId && pending.dry.nodeRevision === identity.nodeRevision) this.pending.delete(identity.gestureSequence)
+    if (pending?.dry && pending.dry.nodeId === identity.nodeId && pending.dry.nodeRevision === identity.nodeRevision) this.clear(identity)
   }
 }
 
@@ -121,7 +136,10 @@ export class LiveInk implements GestureOwner {
       this.snapshot = finished.publication
       this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo')
       if (reason === 'undo') this.handover.clear(this.context.identity)
-      else this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: this.dry })
+      else {
+        try { this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: this.dry }) }
+        catch (error) { this.dry.release?.(); throw error }
+      }
       this.context.invalidate()
     } catch (error) { this.context.error(error) }
   }

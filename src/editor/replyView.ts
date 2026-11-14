@@ -23,7 +23,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from './cmTheme';
-import { createLivePreviewPlugin } from './livePreview';
+import { createLivePreviewPlugin, livePreviewField } from './livePreview';
 import type { ImageEmbedActions } from './imageWidget';
 import { modeExtensions } from './readingMode';
 import type { Theme } from '../types';
@@ -37,6 +37,7 @@ const noImageActions: ImageEmbedActions = { confirmDelete: () => {} };
 
 /** Shared by every reply view; a Compartment is an identity key, not state. */
 const themeCompartment = new Compartment();
+const readOnlyCompartment = new Compartment();
 
 function themeExtensions(theme: Theme) {
     return theme === 'light'
@@ -45,7 +46,7 @@ function themeExtensions(theme: Theme) {
 }
 
 /** Built once: the field is a pure function of the document in read mode. */
-const readPreview = createLivePreviewPlugin(noAsset, 'read', noImageActions);
+const readPreview = createLivePreviewPlugin({ getAssetUrl: noAsset, actions: noImageActions, editable: false }, noImageActions);
 
 function replyState(text: string, theme: Theme): EditorState {
     return EditorState.create({
@@ -61,7 +62,8 @@ function replyState(text: string, theme: Theme): EditorState {
                     ?? LanguageDescription.matchFilename(languages, `x.${info}`),
             }),
             themeCompartment.of(themeExtensions(theme)),
-            modeExtensions('read'),
+            readOnlyCompartment.of(modeExtensions('read')),
+            livePreviewField,
             readPreview,
             EditorView.contentAttributes.of({ 'aria-label': 'Agent reply' }),
         ],

@@ -10,16 +10,16 @@ const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 type Budget = { items: number; commands: number };
 type Stream = { content: string; used: Set<string> };
 
-function color(value: Rgba): string {
+export function color(value: Rgba): string {
     if (!Array.isArray(value) || value.length !== 4 || value.some(v => !Number.isFinite(v) || v < 0 || v > 1)) throw new RangeError('Invalid display-list colour');
     return value.slice(0, 3).map(n).join(' ');
 }
-function alpha(value: number | undefined): number {
+export function alpha(value: number | undefined): number {
     const v = value ?? 1;
     if (!Number.isFinite(v) || v < 0 || v > 1) throw new RangeError('Invalid opacity');
     return v;
 }
-function path(commands: PathCommand[], budget: Budget): string {
+export function path(commands: PathCommand[], budget: Budget): string {
     if (!Array.isArray(commands) || (budget.commands += commands.length) > MAX_COMMANDS) throw new RangeError('Too many path commands on one page');
     return commands.map(command => {
         if (!Array.isArray(command)) throw new Error('Invalid path command');
@@ -29,21 +29,21 @@ function path(commands: PathCommand[], budget: Budget): string {
         return `${args.map(n).join(' ')} ${op === 'M' ? 'm' : op === 'L' ? 'l' : op === 'C' ? 'c' : 'h'}\n`;
     }).join('');
 }
-function evenOdd(rule: 'nonzero' | 'evenodd' | undefined): boolean {
+export function evenOdd(rule: 'nonzero' | 'evenodd' | undefined): boolean {
     if (rule !== undefined && rule !== 'nonzero' && rule !== 'evenodd') throw new Error('Invalid fill rule');
     return rule === 'evenodd';
 }
-function affine(value: Affine): Affine {
+export function affine(value: Affine): Affine {
     if (!Array.isArray(value) || value.length !== 6) throw new Error('Invalid affine transform');
     value.forEach(n);
     return value;
 }
-function multiply(a: Affine, b: Affine): Affine {
+export function multiply(a: Affine, b: Affine): Affine {
     return [a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1], a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3], a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]];
 }
 // The group may be sheared or rotated. Inverse-transform the page corners into
 // its own space so the Form BBox never clips content that can reach the page.
-function groupBounds(m: Affine, width: number, height: number): string {
+export function groupBounds(m: Affine, width: number, height: number): string {
     const det = m[0]*m[3] - m[1]*m[2];
     if (!Number.isFinite(det) || det === 0) throw new RangeError('A singular group transform cannot be exported');
     const points = [[0,0],[width,0],[0,height],[width,height]].map(([x,y]) => {
@@ -56,7 +56,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
     return new Sha256().update(bytes).digest();
 }
 
-class Resources {
+export class Resources {
     readonly objects = new PdfObjects();
     private readonly entries = new Map<string, { ref: number; kind: 'XObject' | 'ExtGState'; signature: string }>();
     private readonly images = new Map<string, string>();

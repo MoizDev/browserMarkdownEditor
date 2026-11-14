@@ -1,5 +1,5 @@
 import type { Rgba } from '../../platform/types';
-import type { DisplayPdfWriter } from './capturePdf';
+import type { PdfExportWriter } from './capturePdf';
 import type { PinExportSnapshot } from './snapshot';
 import { exportSnapshotPdf, exportSnapshotPng, exportSnapshotSvg, type SnapshotExportBounds } from './snapshotExport';
 
@@ -32,7 +32,7 @@ export class BoardExportCoordinator {
     svg(bounds: SnapshotExportBounds, signal: AbortSignal, background?: Rgba): Promise<Blob> {
         return this.begin(signal, active => exportSnapshotSvg(this.pin, bounds, active, background));
     }
-    pdf(bounds: SnapshotExportBounds, writer: DisplayPdfWriter, signal: AbortSignal): Promise<Blob> {
+    pdf(bounds: SnapshotExportBounds, writer: PdfExportWriter, signal: AbortSignal): Promise<Blob> {
         return this.begin(signal, active => exportSnapshotPdf(this.pin, bounds, writer, active));
     }
     cancel(): void {

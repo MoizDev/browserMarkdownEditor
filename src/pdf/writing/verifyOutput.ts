@@ -107,8 +107,9 @@ export async function verifyPdfWriterOutput<K extends VerifiedOperation>(op: K, 
         await verifyMark(bytes, args.writeId, signal);
     } else if (op === 'writer.buildNotebook') {
         const input = args as WriterOperations['writer.buildNotebook']['args'];
-        if (input.displayListSchema !== 1 || !Array.isArray(input.pages) || !input.pages.length ||
+        if ((input.kind === 'pre-emitted' ? !(input.pdf instanceof Blob) : input.displayListSchema !== 1) || !Array.isArray(input.pages) || !input.pages.length ||
             !input.notebookSource || !validNotebookSourcePath(input.notebookSource.path)) throw new Error('Invalid notebook export identity');
+        if (input.kind === 'pre-emitted') await verifyMark(bytes, args.writeId, signal);
     } else throw new Error('Unsupported PDF writer output');
     signal?.throwIfAborted();
 }

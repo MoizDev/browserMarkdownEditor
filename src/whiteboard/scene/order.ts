@@ -68,6 +68,17 @@ export class PaintOrder {
         if (!sheet) { sheet = { blocks: [], fenwick: new Uint32Array(1), size: 0 }; this.sheets.set(sheetId, sheet); }
         if (!Number.isInteger(first) || !Number.isInteger(deleted) || first < 0 || deleted < 0 || first + deleted > sheet.size) throw new RangeError('Invalid paint-order splice');
         if (!deleted && !inserted.length) return;
+        // A moved slot may only be inserted where its old occurrence is removed in this same
+        // splice; otherwise a single location entry would silently alias two paint positions.
+        const added = new Set<number>();
+        for (let i = 0; i < inserted.length; i++) {
+            const slot = inserted[i];
+            if (!Number.isInteger(slot) || slot < 0 || slot > 0x7fffffff || added.has(slot)) throw new RangeError('Duplicate or invalid paint-order slot');
+            if (this.has(slot) && (this.sheet(slot) !== sheetId || this.rank(slot) < first || this.rank(slot) >= first + deleted)) {
+                throw new RangeError('Paint-order slot already belongs to another interval');
+            }
+            added.add(slot);
+        }
         const begin = this.locate(sheet, first), end = this.locate(sheet, first + deleted);
         const beginRank = this.prefix(sheet, begin), endRank = this.prefix(sheet, end);
         const firstBlock = sheet.blocks[begin], lastBlock = sheet.blocks[end];
@@ -117,10 +128,14 @@ export class PaintOrder {
         if (!sheet) { sheet = { blocks: [], fenwick: new Uint32Array(1), size: 0 }; this.sheets.set(sheetId, sheet); }
         if (this.nextBlock > 0x7fffffff) throw new RangeError('Paint-order chunk identifiers exhausted');
         const slots = new Uint32Array(PAINT_ORDER_CHUNK), id = this.nextBlock++;
+        const seen = new Set<number>();
         for (let i = 0; i < count; i++) {
             const slot = input[first + i];
-            if (!Number.isInteger(slot) || slot < 0 || slot > 0x7fffffff || this.has(slot)) throw new RangeError('Duplicate or invalid bootstrap slot');
-            this.reserve(slot + 1); slots[i] = slot; this.locations[slot] = id; this.offsets[slot] = i;
+            if (!Number.isInteger(slot) || slot < 0 || slot > 0x7fffffff || this.has(slot) || seen.has(slot)) throw new RangeError('Duplicate or invalid bootstrap slot');
+            seen.add(slot); slots[i] = slot;
+        }
+        for (let i = 0; i < count; i++) {
+            const slot = slots[i]; this.reserve(slot + 1); this.locations[slot] = id; this.offsets[slot] = i;
         }
         const block: Block = { id, sheet: sheetId, slots, count, index: sheet.blocks.length };
         sheet.blocks.push(block); sheet.size += count; this.blocks.set(id, block);

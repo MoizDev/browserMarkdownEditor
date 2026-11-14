@@ -6,28 +6,49 @@ import type { Face, PaintFragment } from './paint';
 type HarfBuzzFont = import('harfbuzzjs').Font;
 type GlyphPath = ReturnType<HarfBuzzFont['glyphToJson']>;
 interface FontEntry { readonly font: HarfBuzzFont; readonly paths: Map<number, { path: GlyphPath; bytes: number }>; bytes: number }
-const loaded = new Map<string, Promise<FontEntry>>();
+interface FontSlot { promise: Promise<FontEntry>; readonly controller: AbortController; waiters: number; settled: boolean }
+const loaded = new Map<string, FontSlot>();
 const GLYPH_CACHE_BYTES = 512 * 1024;
 
 export function clearOutlineGlyphCaches(): void {
-    for (const pending of loaded.values()) void pending.then(entry => { entry.paths.clear(); entry.bytes = 0; }).catch(() => undefined);
+    for (const slot of loaded.values()) void slot.promise.then(entry => { entry.paths.clear(); entry.bytes = 0; }).catch(() => undefined);
 }
 
-async function outlineFont(face: Face): Promise<FontEntry> {
+function waitForFont(promise: Promise<FontEntry>, signal: AbortSignal): Promise<FontEntry> {
+    return new Promise((resolve, reject) => {
+        const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Text export cancelled', 'AbortError')); };
+        signal.addEventListener('abort', abort, { once: true });
+        promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); },
+            error => { signal.removeEventListener('abort', abort); reject(error); });
+        if (signal.aborted) abort();
+    });
+}
+async function outlineFont(face: Face, signal: AbortSignal): Promise<FontEntry> {
+    signal.throwIfAborted();
     const url = outlineFontUrl(face.key);
-    let pending = loaded.get(url);
-    if (!pending) {
-        pending = Promise.all([import('harfbuzzjs'), fetch(url)]).then(async ([hb, response]) => {
+    let slot = loaded.get(url);
+    if (!slot) {
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Export font deadline exceeded', 'TimeoutError')), 30_000);
+        let created!: FontSlot;
+        const promise = Promise.all([import('harfbuzzjs'), fetch(url, { signal: controller.signal })]).then(async ([hb, response]) => {
             if (!response.ok) throw new Error('Export font could not be loaded');
             const bytes = await response.arrayBuffer(), source = new hb.Face(new hb.Blob(bytes));
             const font = new hb.Font(source);
             font.setScale(source.upem, source.upem);
             return { font, paths: new Map(), bytes: 0 };
-        });
-        loaded.set(url, pending);
-        void pending.catch(() => { if (loaded.get(url) === pending) loaded.delete(url); });
+        }).then(entry => { created.settled = true; return entry; }).catch(error => {
+            if (loaded.get(url) === created) loaded.delete(url);
+            throw error;
+        }).finally(() => clearTimeout(timer));
+        created = { controller, waiters: 0, settled: false, promise };
+        loaded.set(url, created); slot = created;
     }
-    return pending;
+    slot.waiters++;
+    try { return await waitForFont(slot.promise, signal); }
+    finally {
+        slot.waiters--;
+        if (!slot.waiters && !slot.settled && loaded.get(url) === slot) { loaded.delete(url); slot.controller.abort(); }
+    }
 }
 function glyphPath(entry: FontEntry, id: number): GlyphPath {
     const old = entry.paths.get(id);
@@ -49,7 +70,7 @@ function glyphPath(entry: FontEntry, id: number): GlyphPath {
 export async function shapeTextFragment(fragment: PaintFragment, face: Face, baseline: number, context: WorkerContext): Promise<PathCommand[] | null> {
     if (fragment.systemFallback || !face.loaded) return null;
     try {
-        const [hb, entry] = await Promise.all([import('harfbuzzjs'), outlineFont(face)]);
+        const [hb, entry] = await Promise.all([import('harfbuzzjs'), outlineFont(face, context.signal)]);
         context.signal.throwIfAborted();
         const buffer = new hb.Buffer();
         buffer.addText(fragment.text); buffer.guessSegmentProperties();

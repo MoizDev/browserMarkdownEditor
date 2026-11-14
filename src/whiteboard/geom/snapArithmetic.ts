@@ -9,9 +9,9 @@ function magnitude(value: Dyadic): Dyadic { return value.n < 0n ? negate(value) 
 function compare(a: Dyadic, b: Dyadic): number { const n = dyadicSubtract(a, b).n; return n < 0n ? -1 : n > 0n ? 1 : 0; }
 function result(value: Dyadic): ExactSnapDelta {
     const interval = dyadicRatioInterval(value, ONE);
-    if (!Number.isFinite(interval.lo) || !Number.isFinite(interval.hi)) throw new RangeError('Snap displacement overflows');
-    return Object.freeze({ value, rounded: interval.lo === interval.hi ? interval.lo : interval.lo / 2 + interval.hi / 2,
-        representable: interval.lo === interval.hi });
+    const finite = Number.isFinite(interval.lo) && Number.isFinite(interval.hi);
+    return Object.freeze({ value, rounded: finite ? (interval.lo === interval.hi ? interval.lo : interval.lo / 2 + interval.hi / 2) : 0,
+        representable: finite && interval.lo === interval.hi });
 }
 /** Coordinate operands are the actual binary64 positions used by the board. */
 export function exactSnapDisplacement(target: number, source: number): ExactSnapDelta {

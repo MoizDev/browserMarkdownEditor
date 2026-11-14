@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-// eslint-disable-next-line bme/import-zones -- This PDF-only surface is wired by the contained viewer.
 import type { RawOutlineNode } from '../pdf/engine/types';
-// eslint-disable-next-line bme/import-zones -- Destinations remain typed reader data, never URLs.
 import type { PdfLinkDestination } from '../pdf/pdfLinkModel';
-// eslint-disable-next-line bme/import-zones -- The contained viewer supplies its existing document lease.
 import type { PdfPoolDocument } from '../pdf/pool/types';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import './PdfTiledOutline.css';

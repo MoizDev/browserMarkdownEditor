@@ -29,7 +29,8 @@ export class SearchResidency {
     private disposed = false;
 
     constructor(private readonly stat: (file: IndexFile, context: WorkerContext) => Promise<IndexStat>, private readonly current: () => boolean,
-        private readonly persisted: (path: string, mtime: number, size: number) => Promise<string | undefined>) {}
+        private readonly persisted: (path: string, mtime: number, size: number) => Promise<string | undefined>,
+        private readonly persist: (path: string, mtime: number, size: number, text: string) => void) {}
     private rev(path: string) { return this.revisions.get(path) ?? 0; }
     private advance(path: string) { this.revisions.set(path, this.rev(path) + 1); }
     private valid(path: string, rev: number) { return !this.disposed && this.current() && this.rev(path) === rev; }
@@ -61,8 +62,9 @@ export class SearchResidency {
         this.dirty.delete(path);
         const bytes = size <= FILE_LIMIT ? async () => new TextEncoder().encode(text).buffer : async () => new ArrayBuffer(0);
         this.sources.set(path, { revision: this.rev(path), stat: { mtime, size, bytes } });
-        this.entries.set(path, { mtime, size, text: size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined });
-        this.admit();
+        const normalized = size <= FILE_LIMIT ? text.replace(/\r\n?/g, '\n') : undefined;
+        this.entries.set(path, { mtime, size, text: normalized });
+        if (this.admit().has(path) && normalized !== undefined) this.persist(path, mtime, size, normalized);
     }
     dispose() { this.disposed = true; this.entries.clear(); this.sources.clear(); this.requested.clear(); }
     snapshot(): ReadonlyMap<string, TextEntry> { return this.entries; }
@@ -126,13 +128,17 @@ export class SearchResidency {
                 this.entries.delete(file.path);
                 try {
                     let text = await this.persisted(file.path, source.stat.mtime, source.stat.size);
-                    if (text === undefined) {
+                    const fromDisk = text === undefined;
+                    if (fromDisk) {
                         const bytes = await source.stat.bytes();
                         try { text = decodeDocumentText(bytes).replace(/\r\n?/g, '\n'); }
                         catch { /* Deterministic refusal is cached against this stat. */ }
                     }
-                    if (this.valid(file.path, source.revision) && treeGen === this.treeGen && this.sources.get(file.path) === source)
+                    if (this.valid(file.path, source.revision) && treeGen === this.treeGen && this.sources.get(file.path) === source) {
                         this.entries.set(file.path, { mtime: source.stat.mtime, size: source.stat.size, text });
+                        const stillAdmitted = this.admit().has(file.path);
+                        if (fromDisk && text !== undefined && stillAdmitted) this.persist(file.path, source.stat.mtime, source.stat.size, text);
+                    }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
                     /* Retry on a later request. */

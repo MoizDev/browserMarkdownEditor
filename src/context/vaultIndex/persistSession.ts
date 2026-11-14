@@ -65,8 +65,9 @@ export class PersistSession {
         void navigator.locks.request(`bme-index:${this.vaultId}`, { signal: this.abort.signal }, async () => {
             if (this.closed) return;
             this.held = true;
+            const released = new Promise<void>(resolve => { this.release = resolve; });
             await this.flush();
-            await new Promise<void>(resolve => { this.release = resolve; });
+            await released;
             await this.flush();
             this.held = false;
         }).catch(() => {});
@@ -74,7 +75,10 @@ export class PersistSession {
     private layout: unknown;
     mark(path: string, record: FileRecord | null, text?: string): void {
         if (this.closed) return;
-        this.dirty.set(path, { record, text });
+        const previous = this.dirty.get(path);
+        const version = previous?.textVersion ?? previous?.record;
+        const kept = record && version?.mtime === record.mtime && version.size === record.size ? previous?.text : undefined;
+        this.dirty.set(path, { record, text: record && record.size <= 4 * 1024 * 1024 ? text ?? kept : undefined });
         this.schedule();
     }
     markText(path: string, mtime: number, size: number, text: string): void {
@@ -112,7 +116,9 @@ export class PersistSession {
                     }
                 }
                 if (layout) tx.objectStore('layouts').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, layout }, this.vaultId);
-                tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, lastSweepAt: Date.now(), recordCount: entries.length }, this.vaultId);
+                const count = notes.count(range(this.vaultId));
+                count.onsuccess = () => tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR,
+                    lastSweepAt: Date.now(), recordCount: count.result }, this.vaultId);
                 await transactionDone(tx);
             } catch (error) {
                 this.problem(error instanceof DOMException && error.name === 'QuotaExceededError' ? 'quota' : 'corrupt', String(error));
@@ -124,6 +130,13 @@ export class PersistSession {
         return this.flushing;
     }
     async readText(path: string, mtime: number, size: number): Promise<string | undefined> {
+        if (this.closed) return undefined;
+        const pending = this.dirty.get(path);
+        if (pending) {
+            const version = pending.textVersion ?? pending.record;
+            return version?.mtime === mtime && version.size === size ? pending.text : undefined;
+        }
+        if (this.reset) return undefined;
         try {
             const db = await openIndexDatabase();
             const value = await requestResult(db.transaction('texts').objectStore('texts').get([this.vaultId, path])) as TextSnapshot | undefined;

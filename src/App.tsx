@@ -2544,8 +2544,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
+    const pagehide = () => { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -4502,9 +4502,12 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
-    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
+    if (vaultIdAtMove) {
+      try { await recoveryEvent({ type: 'retarget', vaultId: vaultIdAtMove, from: fromPath, to: newPath, folder: isFolder }); }
+      catch (error) { console.error('Could not move recovery records:', error); }
+    }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4540,8 +4543,11 @@ export default function App() {
     const sources = node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path];
     const destinations = sources.map(path => node.kind === 'directory' ? newPath + path.slice(node.path.length) : newPath).filter(path => path !== node.path);
     if (!await preparePdfDeparture(destinations)) return false;
-    const success = await renameFile(node, newName);
-    if (!success) return false;
+    const cancelIndexMoves = indexGraphRef.noteMoves([{ from: node.path, to: newPath }]);
+    let success: boolean;
+    try { success = await renameFile(node, newName); }
+    catch (error) { cancelIndexMoves(); throw error; }
+    if (!success) { cancelIndexMoves(); return false; }
     requeueAssetsAffected(node.path);
     requeueAssetsAffected(newPath);
     retargetExpanded(node, newPath);
@@ -4556,7 +4562,11 @@ export default function App() {
     const sources = sourceNode.kind === 'directory' ? collectFiles(sourceNode.children).map(f => f.path) : [sourceNode.path];
     const destinations = sources.map(path => sourceNode.kind === 'directory' ? newPath + path.slice(sourceNode.path.length) : newPath).filter(path => path !== sourceNode.path);
     if (!await preparePdfDeparture(destinations)) return false;
-    const success = await moveFile(sourceNode, targetDirHandle);
+    const cancelIndexMoves = indexGraphRef.noteMoves([{ from: sourceNode.path, to: newPath }]);
+    let success: boolean;
+    try { success = await moveFile(sourceNode, targetDirHandle); }
+    catch (error) { cancelIndexMoves(); throw error; }
+    if (!success) cancelIndexMoves();
     if (success) {
       requeueAssetsAffected(sourceNode.path);
       requeueAssetsAffected(newPath);
@@ -4859,6 +4869,7 @@ export default function App() {
 
   // Every batch of outside changes, after the context has patched the tree.
   useEffect(() => subscribeVaultChanges(batch => {
+    indexGraphRef.noteMoves(batch.moved);
     assetReferenceRevisionRef.current++;
     if (batch.rescan) requeueAllAssets();
     else for (const changed of [...batch.modified, ...batch.appeared, ...batch.disappeared, ...batch.moved.flatMap(m => [m.from, m.to])]) requeueAssetsAffected(changed);
@@ -5447,11 +5458,14 @@ export default function App() {
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
     const root = rootHandleRef.current;
     if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const vault = recentVaults.find(item => item.id === entry.vaultId);
+    const relative = vault && await handleIO.relativeTo(root, vault.handle);
+    if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
     const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);
-  }, [writeConflictCopy, announce]);
+  }, [writeConflictCopy, announce, recentVaults, handleIO]);
 
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.

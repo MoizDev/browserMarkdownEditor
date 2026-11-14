@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
 import { perfRoot } from '../utils/perfHooks';
+import { GraphLayoutClient } from './graphLayoutClient';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -62,14 +63,6 @@ interface GraphViewProps {
     theme: Theme;
 }
 
-/** Per-node physics state held in the simulation map. */
-interface SimNode {
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-}
-
 interface GraphMeasurement {
     ids: string[];
     ring: Array<{ step: number; x: number[]; y: number[] }>;
@@ -103,16 +96,19 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapRef = useRef<HTMLDivElement | null>(null);
 
-    // Simulation state lives in refs so the animation loop never restarts.
-    const simNodes = useRef<Map<string, SimNode>>(new Map());   // id -> { x, y, vx, vy }
+    // A StrictMode remount gets a fresh owner; disposal terminates its worker.
+    const layoutRef = useRef<GraphLayoutClient | null>(null);
+    const wakeRef = useRef<() => void>(() => {});
+    const pointerRef = useRef<number | null>(null);
+    const positionVersion = useRef(0);
+    const gridRef = useRef<{ version: number; layout: GraphLayoutClient | null; cells: Map<string, number[]> }>({ version: -1, layout: null, cells: new Map() });
     const viewRef = useRef<GraphViewport>({ scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 });
-    const draggingRef = useRef<{ id: string } | null>(null);     // { id } while dragging a node
+    const draggingRef = useRef<{ id: string; x: number; y: number } | null>(null);
     const panningRef = useRef<{ x: number; y: number } | null>(null);      // { x, y } while panning
     const movedRef = useRef<boolean>(false);       // distinguish click vs drag
     const hoverRef = useRef<string | null>(null);        // hovered node id
     const colorsRef = useRef<GraphColors>({} as GraphColors);
     const rafRef = useRef<number>(0);
-    const alphaRef = useRef<number>(1);          // simulation "temperature"; cools to rest
     const activeRef = useRef<string | null>(activeFilePath);
     const dirtyRef = useRef<boolean>(true);       // request a one-off redraw while at rest
     // Framed automatically until the reader pans, zooms or drags a node (and
@@ -188,31 +184,20 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         [nodes]
     );
 
-    // Seed positions for any new nodes; drop positions for removed nodes.
     useEffect(() => {
-        const sim = simNodes.current;
-        const ids = new Set(nodes.map(n => n.id));
-        for (const id of [...sim.keys()]) {
-            if (!ids.has(id)) sim.delete(id);
-        }
-        // Place new nodes on a spiral around the origin (deterministic, no RNG needed).
-        let i = sim.size;
-        for (const n of nodes) {
-            if (!sim.has(n.id)) {
-                const angle = i * 2.399963; // golden angle for even spread
-                const radius = 30 + 12 * Math.sqrt(i);
-                sim.set(n.id, {
-                    x: Math.cos(angle) * radius,
-                    y: Math.sin(angle) * radius,
-                    vx: 0,
-                    vy: 0,
-                });
-                i++;
-            }
-        }
-        // Re-energise the layout so it re-settles into the new topology, then rests.
-        alphaRef.current = 1;
+        const layout = new GraphLayoutClient();
+        layoutRef.current = layout;
+        return () => { layoutRef.current = null; layout.dispose(); };
+    }, []);
+
+    // Survivors retain their worker momentum on topology updates.
+    useEffect(() => {
+        const layout = layoutRef.current;
+        if (!layout) return;
+        layout.update(nodes.map(node => node.id), links);
+        positionVersion.current++;
         dirtyRef.current = true;
+        wakeRef.current();
         if (__BME_BENCH__) {
             try {
                 const data = measurementRef.current;
@@ -226,36 +211,43 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 }
             } catch { /* Measurement failures must not enter the app's path. */ }
         }
-    }, [nodes]);
+    }, [nodes, links]);
 
-    // Read theme colors from CSS variables whenever the theme flips.
     useEffect(() => {
-        const cs = getComputedStyle(document.documentElement);
-        const v = (name: string, fallback: string) => (cs.getPropertyValue(name).trim() || fallback);
-        colorsRef.current = {
-            bg: v('--background-primary', '#1e1e1e'),
-            node: v('--text-muted', '#999'),
-            nodeActive: v('--interactive-accent', '#8a5cf6'),
-            text: v('--text-normal', '#dcddde'),
-            faint: v('--text-faint', '#666'),
-            edge: theme === 'light' ? 'rgba(0,0,0,0.044)' : 'rgba(255,255,255,0.044)',
-            edgeHi: v('--interactive-accent', '#8a5cf6'),   // accent for a focused node's links
-            ring: theme === 'light' ? '#1e1e1e' : '#ffffff',
-        };
-        dirtyRef.current = true;
+        // App applies data-theme in its own effect, after this child's effect.
+        // Reading synchronously painted dark labels on a white light-mode canvas.
+        const frame = requestAnimationFrame(() => {
+            const cs = getComputedStyle(document.documentElement);
+            const v = (name: string, fallback: string) => (cs.getPropertyValue(name).trim() || fallback);
+            colorsRef.current = {
+                bg: v('--background-primary', '#1e1e1e'),
+                node: v('--text-muted', '#999'),
+                nodeActive: v('--interactive-accent', '#8a5cf6'),
+                text: v('--text-normal', '#dcddde'),
+                faint: v('--text-faint', '#666'),
+                edge: theme === 'light' ? 'rgba(0,0,0,0.044)' : 'rgba(255,255,255,0.044)',
+                edgeHi: v('--interactive-accent', '#8a5cf6'),
+                ring: theme === 'light' ? '#1e1e1e' : '#ffffff',
+            };
+            dirtyRef.current = true;
+            wakeRef.current();
+        });
+        return () => cancelAnimationFrame(frame);
     }, [theme]);
 
     // Keep the highlighted node in a ref so changing it doesn't restart the loop.
     useEffect(() => {
         activeRef.current = activeFilePath;
         dirtyRef.current = true;
+        wakeRef.current();
     }, [activeFilePath]);
 
     // Main render + physics loop.
     useEffect(() => {
         const canvas = canvasRef.current;
         const wrap = wrapRef.current;
-        if (!canvas || !wrap) return;
+        const layout = layoutRef.current;
+        if (!canvas || !wrap || !layout) return;
         const ctx = canvas.getContext('2d')!;
 
         const nodeRadius = (n: GraphNode) => nodeBaseRadius(n, maxDegree);
@@ -265,14 +257,13 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         /** Frame every node (and the label under it) in the canvas. Capped at
          *  the default zoom, so a small vault is not blown up to fill it. */
         const fit = () => {
-            const sim = simNodes.current;
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
+                const i = layout.index.get(n.id);
+                if (i === undefined) continue;
                 const r = nodeRadius(n);
-                minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r);
-                minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r);
+                minX = Math.min(minX, layout.x[i] - r); maxX = Math.max(maxX, layout.x[i] + r);
+                minY = Math.min(minY, layout.y[i] - r); maxY = Math.max(maxY, layout.y[i] + r);
             }
             if (!Number.isFinite(minX) || width <= 0 || height <= 0) return;
             const room = (size: number) => Math.max(1, size - 2 * FIT_PADDING);
@@ -310,116 +301,15 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 view.offsetY *= k;
             }
             dirtyRef.current = true;
+            wakeRef.current();
         };
         resize();
         const ro = new ResizeObserver(resize);
         ro.observe(wrap);
 
-        const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
-        const ALPHA_MIN = 0.001;      // below this the layout is considered settled
-        const DRAG_ALPHA = 0.1;       // keep a little warmth so neighbours react while dragging
-        const MIN_D2 = 100;           // clamp repulsion denominator (>=10px) — no explosions
-        const MAX_V = 8;              // clamp per-frame speed; low enough that a node can't
-                                      // overshoot its ~60px springs and fling off-screen
-
-        const step = () => {
-            const sim = simNodes.current;
-            const dragging = draggingRef.current;
-            let alpha = alphaRef.current;
-
-            // Once cooled (and not interacting) the layout is at rest — skip physics.
-            if (alpha < ALPHA_MIN && !dragging) return false;
-            if (dragging) alpha = Math.max(alpha, DRAG_ALPHA);
-
-            const REPULSION = 16000;   // strong node-to-node push so the graph breathes wide open,
-                                       // spacing nodes far enough apart to see the link mesh between them
-            const SPRING = 0.03;       // soft springs let links stretch to ~LINK_LEN without bunching
-            const LINK_LEN = 150;      // resting link distance — keeps linked notes clearly separated
-            // Gravity only needs to gently contain the layout. Kept weak (with a mild
-            // √n term) so the cloud spreads out instead of collapsing into a ball; the
-            // equilibrium radius grows ~∝ ∛n, so bigger vaults stay sparse but bounded.
-            const CENTER = 0.004 + 0.0006 * Math.sqrt(nodes.length);
-            const DAMP = 0.6;          // stronger friction — kills the velocity build-up that
-                                       // let dense graphs ride the speed clamp (was 0.82 ≈ 4.6× gain)
-
-            // Repulsion (O(n^2) — fine for typical vaults). Scaled by alpha and
-            // distance-clamped so crowded nodes can't fling each other off-screen.
-            for (let a = 0; a < nodes.length; a++) {
-                const pa = sim.get(nodes[a].id);
-                if (!pa) continue;
-                for (let b = a + 1; b < nodes.length; b++) {
-                    const pb = sim.get(nodes[b].id);
-                    if (!pb) continue;
-                    let dx = pa.x - pb.x;
-                    let dy = pa.y - pb.y;
-                    let d2 = dx * dx + dy * dy;
-                    if (d2 < 0.01) { dx = (a - b) || 1; dy = 1; d2 = dx * dx + dy * dy; }
-                    const dist = Math.sqrt(d2);
-                    const force = (REPULSION / Math.max(d2, MIN_D2)) * alpha;
-                    const fx = (dx / dist) * force;
-                    const fy = (dy / dist) * force;
-                    pa.vx += fx; pa.vy += fy;
-                    pb.vx -= fx; pb.vy -= fy;
-                }
-            }
-
-            // Link springs (also scaled by alpha).
-            for (const l of links) {
-                const ps = sim.get(l.source);
-                const pt = sim.get(l.target);
-                if (!ps || !pt) continue;
-                const dx = pt.x - ps.x;
-                const dy = pt.y - ps.y;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-                const force = (dist - LINK_LEN) * SPRING * alpha;
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                ps.vx += fx; ps.vy += fy;
-                pt.vx -= fx; pt.vy -= fy;
-            }
-
-            // Gravity toward center + integrate (friction + speed clamp).
-            for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
-                if (dragging && dragging.id === n.id) {
-                    p.vx = 0; p.vy = 0;
-                    continue;
-                }
-                p.vx += -p.x * CENTER * alpha;
-                p.vy += -p.y * CENTER * alpha;
-                p.vx *= DAMP;
-                p.vy *= DAMP;
-                p.vx = Math.max(-MAX_V, Math.min(MAX_V, p.vx));
-                p.vy = Math.max(-MAX_V, Math.min(MAX_V, p.vy));
-                p.x += p.vx;
-                p.y += p.vy;
-            }
-
-            // Cool toward rest (unless actively dragging, which holds it warm).
-            if (!dragging) alphaRef.current = alpha + (0 - alpha) * ALPHA_DECAY;
-            if (__BME_BENCH__) {
-                try {
-                    const data = measurementRef.current;
-                    if (data) {
-                        const x: number[] = [], y: number[] = [];
-                        for (const id of data.ids) {
-                            const position = sim.get(id)!;
-                            x.push(position.x);
-                            y.push(position.y);
-                        }
-                        // Independent RAF clocks rarely expose the same latest
-                        // step; retain all 300 settling steps for exact TB-GR pairs.
-                        data.ring.push({ step: ++data.steps, x, y });
-                        if (data.ring.length > 512) data.ring.shift();
-                    }
-                } catch { /* Measurement failures must not enter the app's path. */ }
-            }
-            return true;
-        };
-
+        const labelWidths = new Map<string, number>();
+        let labelFont = '';
         const draw = () => {
-            const sim = simNodes.current;
             const view = viewRef.current;
             const c = colorsRef.current;
             const hovered = hoverRef.current;
@@ -441,9 +331,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             // Edges. When a node is focused its links glow blue and radiate out,
             // while every other edge fades right back (the Obsidian focus look).
             for (const l of links) {
-                const ps = sim.get(l.source);
-                const pt = sim.get(l.target);
-                if (!ps || !pt) continue;
+                const s = layout.index.get(l.source), t = layout.index.get(l.target);
+                if (s === undefined || t === undefined) continue;
+                const sx = tx(layout.x[s]), sy = ty(layout.y[s]);
+                const ex = tx(layout.x[t]), ey = ty(layout.y[t]);
+                if (Math.max(sx, ex) < -1.4 || Math.min(sx, ex) > width + 1.4 ||
+                    Math.max(sy, ey) < -1.4 || Math.min(sy, ey) > height + 1.4) continue;
                 const isHi = hovered && (l.source === hovered || l.target === hovered);
                 if (isHi) {
                     ctx.strokeStyle = c.edgeHi;
@@ -455,8 +348,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     ctx.lineWidth = 1;
                 }
                 ctx.beginPath();
-                ctx.moveTo(tx(ps.x), ty(ps.y));
-                ctx.lineTo(tx(pt.x), ty(pt.y));
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(ex, ey);
                 ctx.stroke();
             }
             ctx.globalAlpha = 1;
@@ -466,15 +359,33 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             // cloud) and only appear on hover, on the active note, or once you
             // zoom in — so the graph never turns into a wall of text.
             const showAllLabels = view.scale > 1.5;
+            const fontSize = Math.max(9, 11 * Math.min(1.3, view.scale));
+            const font = `${fontSize}px var(--font-ui), sans-serif`;
+            if (font !== labelFont) { labelFont = font; labelWidths.clear(); }
+            ctx.font = font;
             for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
-                const x = tx(p.x), y = ty(p.y);
+                const i = layout.index.get(n.id);
+                if (i === undefined) continue;
+                const x = tx(layout.x[i]), y = ty(layout.y[i]);
                 const r = nodeRadius(n) * Math.max(0.6, Math.min(1.6, view.scale));
 
                 const isHovered = hovered && n.id === hovered;
                 const isActive = n.id === active;
                 const isNeighbour = neighbours && neighbours.has(n.id);
+                const ringed = isHovered || (isActive && !hovered);
+                const circleVisible = x + r + 4 >= 0 && x - r - 4 <= width && y + r + 4 >= 0 && y - r - 4 <= height;
+                let labelVisible = false;
+                if (showAllLabels || ringed) {
+                    let labelWidth = labelWidths.get(n.name);
+                    if (labelWidth === undefined) {
+                        const metrics = ctx.measureText(n.name);
+                        labelWidth = Math.max(metrics.width, 2 * metrics.actualBoundingBoxLeft, 2 * metrics.actualBoundingBoxRight) + 4;
+                        labelWidths.set(n.name, labelWidth);
+                    }
+                    labelVisible = x + labelWidth / 2 >= 0 && x - labelWidth / 2 <= width &&
+                        y + r + 3 + fontSize * 2 >= 0 && y + r + 3 - fontSize <= height;
+                }
+                if (!circleVisible && !labelVisible) continue;
                 // At rest every node is fully opaque. Only while hovering does the
                 // hovered node stay at 100% while the rest fade back.
                 let nodeAlpha = 1;
@@ -487,7 +398,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 ctx.fill();
 
                 // Ring marks the hovered node, or the active note when not hovering.
-                const ringed = isHovered || (isActive && !hovered);
                 if (ringed) {
                     ctx.lineWidth = 2;
                     ctx.strokeStyle = c.ring;
@@ -501,7 +411,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 if (showAllLabels || ringed) {
                     ctx.globalAlpha = 1;
                     ctx.fillStyle = c.text;
-                    ctx.font = `${Math.max(9, 11 * Math.min(1.3, view.scale))}px var(--font-ui), sans-serif`;
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'top';
                     ctx.fillText(n.name, x, y + r + 3);
@@ -511,40 +420,56 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             ctx.restore();
         };
 
-        const loop = () => {
-            // A frame includes auto-fit + drawing; G0 must not report those as physics.
-            let stepStarted: number | undefined;
-            if (__BME_BENCH__) {
-                try { stepStarted = performance.now(); }
-                catch { /* A measurement failure must not stop the layout. */ }
-            }
-            const moved = step();
-            if (__BME_BENCH__) {
-                try {
-                    const stepFinished = performance.now();
-                    const data = measurementRef.current;
-                    if (moved && stepStarted !== undefined && data) {
-                        const ms = stepFinished - stepStarted;
-                        data.stepMs.samples.push(ms);
-                        if (data.stepMs.samples.length > 4096) data.stepMs.samples.shift();
-                        data.stepMs.total += ms;
-                        data.stepMs.count++;
-                    }
-                } catch { /* A measurement failure must not stop the layout. */ }
-            }
-            // The camera follows the layout while it settles, until the reader takes over.
-            if (moved && autoFitRef.current) fit();
-            // Only repaint when something actually changed — a settled graph idles.
-            if (moved || dirtyRef.current) {
-                draw();
-                dirtyRef.current = false;
-            }
-            rafRef.current = requestAnimationFrame(loop);
+        let alive = true, pending = false, working = true;
+        const schedule = () => {
+            if (alive && !rafRef.current) rafRef.current = requestAnimationFrame(loop);
         };
-        loop();
+        const loop = () => {
+            rafRef.current = 0;
+            if (dirtyRef.current) { draw(); dirtyRef.current = false; }
+            if (pending || !working) return;
+            pending = true;
+            const drag = draggingRef.current;
+            const i = drag ? layout.index.get(drag.id) : undefined;
+            const pin = drag && i !== undefined ? { id: drag.id, x: layout.x[i], y: layout.y[i] } : null;
+            void layout.tick(pin).then(frame => {
+                pending = false;
+                if (!alive) return;
+                if (!frame) { if (!layout.failed) schedule(); return; }
+                // A newer pointer move must win over an older in-flight frame.
+                const current = draggingRef.current;
+                if (current) {
+                    const index = layout.index.get(current.id);
+                    if (index !== undefined) { layout.x[index] = current.x; layout.y[index] = current.y; }
+                }
+                working = frame.working || !!current;
+                if (frame.moved) {
+                    positionVersion.current++;
+                    if (autoFitRef.current) fit();
+                    dirtyRef.current = true;
+                    if (__BME_BENCH__) {
+                        const data = measurementRef.current;
+                        if (data) {
+                            data.steps = frame.steps;
+                            data.ring.push({ step: frame.steps, x: Array.from(layout.x), y: Array.from(layout.y) });
+                            if (data.ring.length > 512) data.ring.shift();
+                            data.stepMs.samples.push(frame.stepMs);
+                            if (data.stepMs.samples.length > 4096) data.stepMs.samples.shift();
+                            data.stepMs.total += frame.stepMs; data.stepMs.count++;
+                        }
+                    }
+                }
+                if (working || dirtyRef.current) schedule();
+            });
+        };
+        wakeRef.current = () => { working = true; schedule(); };
+        schedule();
 
         return () => {
+            alive = false;
+            wakeRef.current = () => {};
             cancelAnimationFrame(rafRef.current);
+            rafRef.current = 0;
             ro.disconnect();
         };
     }, [nodes, links, adjacency, maxDegree]);
@@ -562,43 +487,68 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     };
 
     const hitTest = (clientX: number, clientY: number): GraphNode | null => {
-        const sim = simNodes.current;
+        const layout = layoutRef.current;
+        if (!layout) return null;
         const w = screenToWorld(clientX, clientY);
-        let best: GraphNode | null = null;
-        let bestD = Infinity;
-        for (const n of nodes) {
-            const p = sim.get(n.id);
-            if (!p) continue;
-            const dx = p.x - w.x;
-            const dy = p.y - w.y;
-            const d = dx * dx + dy * dy;
-            const r = nodeBaseRadius(n, maxDegree) + 6;
-            if (d < r * r && d < bestD) { best = n; bestD = d; }
+        const grid = gridRef.current, cellSize = 64;
+        if (grid.version !== positionVersion.current || grid.layout !== layout) {
+            grid.cells.clear(); grid.version = positionVersion.current; grid.layout = layout;
+            for (let i = 0; i < nodes.length; i++) {
+                const key = `${Math.floor(layout.x[i] / cellSize)},${Math.floor(layout.y[i] / cellSize)}`;
+                let cell = grid.cells.get(key);
+                if (!cell) grid.cells.set(key, cell = []);
+                cell.push(i);
+            }
         }
-        return best;
+        const scale = viewRef.current.scale;
+        const reach = (29 * Math.max(0.6, Math.min(1.6, scale)) + 6) / scale;
+        let bestIndex = -1, bestD = Infinity;
+        for (let gx = Math.floor((w.x - reach) / cellSize); gx <= Math.floor((w.x + reach) / cellSize); gx++) {
+            for (let gy = Math.floor((w.y - reach) / cellSize); gy <= Math.floor((w.y + reach) / cellSize); gy++) {
+                for (const i of grid.cells.get(`${gx},${gy}`) ?? []) {
+                    const dx = layout.x[i] - w.x, dy = layout.y[i] - w.y;
+                    const d = dx * dx + dy * dy;
+                    const r = (nodeBaseRadius(nodes[i], maxDegree) * Math.max(0.6, Math.min(1.6, scale)) + 6) / scale;
+                    if (d < r * r && (d < bestD || (d === bestD && i < bestIndex))) { bestIndex = i; bestD = d; }
+                }
+            }
+        }
+        return bestIndex < 0 ? null : nodes[bestIndex];
     };
 
     const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (pointerRef.current !== null) return;
+        pointerRef.current = e.pointerId;
         e.currentTarget.setPointerCapture?.(e.pointerId);
         movedRef.current = false;
         const hit = hitTest(e.clientX, e.clientY);
         if (hit) {
             autoFitRef.current = false;
-            draggingRef.current = { id: hit.id };
-            alphaRef.current = Math.max(alphaRef.current, 0.3); // wake neighbours
+            const layout = layoutRef.current;
+            const i = layout?.index.get(hit.id);
+            if (layout && i !== undefined) {
+                draggingRef.current = { id: hit.id, x: layout.x[i], y: layout.y[i] };
+                layout.wake(0.3);
+                wakeRef.current();
+            }
         } else {
             panningRef.current = { x: e.clientX, y: e.clientY };
         }
     };
 
     const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (pointerRef.current !== null && pointerRef.current !== e.pointerId) return;
         const view = viewRef.current;
         if (draggingRef.current) {
             movedRef.current = true;
             const w = screenToWorld(e.clientX, e.clientY);
-            const p = simNodes.current.get(draggingRef.current.id);
-            if (p) { p.x = w.x; p.y = w.y; p.vx = 0; p.vy = 0; }
+            const layout = layoutRef.current;
+            const i = layout?.index.get(draggingRef.current.id);
+            draggingRef.current.x = w.x; draggingRef.current.y = w.y;
+            if (layout && i !== undefined) { layout.x[i] = w.x; layout.y[i] = w.y; }
+            positionVersion.current++;
             dirtyRef.current = true;
+            wakeRef.current();
             return;
         }
         if (panningRef.current) {
@@ -608,6 +558,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             view.offsetY += e.clientY - panningRef.current.y;
             panningRef.current = { x: e.clientX, y: e.clientY };
             dirtyRef.current = true;
+            wakeRef.current();
             return;
         }
         // Hover detection.
@@ -618,16 +569,20 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             setHoverName(hit ? hit.name : null);
             if (wrapRef.current) wrapRef.current.style.cursor = hit ? 'pointer' : 'grab';
             dirtyRef.current = true;
+            wakeRef.current();
         }
     };
 
-    const onPointerUp = () => {
-        if (draggingRef.current && !movedRef.current) {
+    const endPointer = (pointerId: number, cancelled: boolean) => {
+        if (pointerRef.current !== pointerId) return;
+        pointerRef.current = null;
+        if (!cancelled && draggingRef.current && !movedRef.current) {
             const node = nodes.find(n => n.id === draggingRef.current!.id);
             if (node && !node.unresolved && onOpenNode) onOpenNode(node);
         }
         draggingRef.current = null;
         panningRef.current = null;
+        wakeRef.current();
     };
 
     const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
@@ -645,12 +600,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         view.offsetY -= my * (newScale / view.scale - 1);
         view.scale = newScale;
         dirtyRef.current = true;
+        wakeRef.current();
     };
 
     const resetView = () => {
         autoFitRef.current = true;
         fitRef.current();
         dirtyRef.current = true;
+        wakeRef.current();
     };
 
     if (!nodes.length) {
@@ -681,8 +638,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 style={{ cursor: 'grab' }}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerLeave={() => { hoverRef.current = null; setHoverName(null); dirtyRef.current = true; }}
+                onPointerUp={e => endPointer(e.pointerId, false)}
+                onPointerCancel={e => endPointer(e.pointerId, true)}
+                onLostPointerCapture={e => endPointer(e.pointerId, true)}
+                onPointerLeave={() => { hoverRef.current = null; setHoverName(null); dirtyRef.current = true; wakeRef.current(); }}
                 onWheel={onWheel}
             >
                 <canvas ref={canvasRef} />

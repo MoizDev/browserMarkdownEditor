@@ -115,6 +115,13 @@ export default defineConfig([
     },
   },
   {
+    // P-02a: one value caller of pdf.js's getDocument (eslint.rules.ts says why).
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/utils/pdfClassicOpen.ts'],
+    plugins: { bme: bmePlugin },
+    rules: { 'bme/classic-pdf-open': 'error' },
+  },
+  {
     // The VaultAgent helper is a Bun program, not browser code; `shared/` is
     // imported by both sides, so it may assume neither's globals beyond these.
     files: ['helper/**/*.ts', 'shared/**/*.ts'],
@@ -212,15 +219,8 @@ export default defineConfig([
         { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/epub/bridge.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
       ]],
-      // G-INV-FS. Baseline: the files that call the File System Access API
-      // outside src/context/ today (invariants §1 item 2). It may only shrink.
-      'bme/fs-access': ['error', [
-        'src/App.tsx',
-        'src/utils/agentHost.ts',
-        'src/utils/entryNames.ts',
-        'src/utils/recentVaults.ts',
-        'src/utils/vaultAgentStore.ts',
-      ]],
+      // G-INV-FS: all File System Access calls stay in src/context/.
+      'bme/fs-access': ['error', []],
     },
   },
 ])

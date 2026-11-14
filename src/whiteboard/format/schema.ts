@@ -1,4 +1,8 @@
 import { NODE_DEFAULTS } from '../model/defaults';
+import { MEDIA_MIMES } from '../model/media';
+import type { MediaMime } from '../model/media';
+export { MEDIA_MIMES } from '../model/media';
+export type { MediaMime } from '../model/media';
 
 // FMT-1; native-format §§3,5,6,10. These are file types, not the live model.
 export const NATIVE_VERSION = [1, 0] as const;
@@ -10,6 +14,7 @@ export const FORMAT_LIMITS = Object.freeze({
     points: 1_000_000,
     textChars: 1_000_000,
     richTextDepth: 32,
+    richTextBlocks: 100_000, // R-W30: checked lexically, before materializing any block/run arrays.
     jsonDepth: 128, // security §3.2 also bounds inert future values
     idChars: 128,
     sheets: 1_000, // 40 is the creation UI's cap, not a file rejection rule
@@ -29,11 +34,6 @@ export type MediaId = `sha256:${string}`;
 export type Bounds = readonly [number, number, number, number];
 export type RecordCategory = 'pen' | 'view' | 'paper' | 'host' | 'media' | 'sheet' | 'node' | 'opaque' | 'end';
 export const RECORD_ORDER: readonly RecordCategory[] = ['pen', 'view', 'paper', 'host', 'media', 'sheet', 'node', 'opaque', 'end'];
-export const MEDIA_MIMES = [
-    'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml',
-    'video/mp4', 'video/webm', 'video/quicktime',
-] as const; // security SEC-4, not the older model §8 list (which omitted AVIF)
-export type MediaMime = typeof MEDIA_MIMES[number];
 
 export interface NativeHeader extends FutureFields {
     readonly format: 'board';
@@ -361,7 +361,7 @@ function json(value: unknown, depthLimit: number = FORMAT_LIMITS.jsonDepth) {
 function richText(value: unknown, field: string): number {
     const rt = object(value, field);
     const blocks = array(rt.b, `${field}.b`);
-    if (blocks.length < 1 || blocks.length > FORMAT_LIMITS.textChars + 1) refuse('limit', field, 'Rich text has an invalid block count');
+    if (blocks.length < 1 || blocks.length > FORMAT_LIMITS.richTextBlocks) refuse('limit', field, 'Rich text has an invalid block count');
     let total = blocks.length - 1; // the plain-text projection has a newline between blocks
     for (const entry of blocks) {
         const block = array(entry, field);

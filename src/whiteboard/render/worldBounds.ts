@@ -9,7 +9,7 @@ import { createFillPointJob } from '../geom/fillPoint';
 import type { PathOp, Vec2 } from '../geom/path';
 import { nextDown, nextUp } from '../geom/numeric';
 import { exactAffinePoint } from '../geom/exactAffine';
-import { exactPoint, exactLineBetween, exactSide, exactPointIntervals } from '../geom/homogeneous';
+import { exactPoint, exactLineBetween, exactSide, exactPointIntervals, type ExactLine } from '../geom/homogeneous';
 import { inkCoverageChunks, type PaintClip, type PaintItem, type PaintNodeSource } from './paintStream';
 
 export class BoardBoundsUncertified extends Error {
@@ -24,6 +24,9 @@ export interface BoardPaintBoundsOptions {
     readonly includeInvisible?: boolean;
 }
 export interface BoardPaintBounds { readonly bounds: Box | null; readonly errorWorld: number }
+type ClipRegion = readonly ClippedTubeClip[];
+interface ClipPlan { readonly inner: readonly ConvexClipPolygon[]; readonly outer: readonly ConvexClipPolygon[]; readonly planes: readonly ExactLine[] }
+const flipLine = (line: ExactLine): ExactLine => ({ a: { n: -line.a.n, e: line.a.e }, b: { n: -line.b.n, e: line.b.e }, c: { n: -line.c.n, e: line.c.e } });
 const union = (a: Box | null, b: Box): Box => a
     ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 const pointBox = (p: Vec2): Box => [p.x, p.y, p.x, p.y];
@@ -86,15 +89,41 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         for (const prior of paths.values()) release(prior.lease);
         paths.clear(); paths.set(commands, { path: result, lease }); return result;
     };
-    const clipCache = new Map<readonly PaintClip[], { value: ClippedTubeClip | 'empty'; lease?: ByteLease }>();
-    const clipEnvelope = async (clips: readonly PaintClip[]): Promise<ClippedTubeClip | 'empty' | null> => {
+    const clipCache = new Map<readonly PaintClip[], { value: ClipRegion | 'empty'; lease?: ByteLease }>();
+    const clipEnvelope = async (clips: readonly PaintClip[]): Promise<ClipRegion | 'empty' | null> => {
         if (!clips.length) return null;
         const cached = clipCache.get(clips); if (cached) return cached.value;
         const innerPolygons: ConvexClipPolygon[] = [], outerPolygons: ConvexClipPolygon[] = [], temporary: ByteLease[] = [];
         let hasCurve = false;
+        const differences: { polygon: ConvexClipPolygon; edges: readonly ExactLine[] }[][] = [];
         for (const clip of clips) {
+            if (clip.fillRule === 'evenodd') {
+                const contours: Vec2[][] = [];
+                let contour: Vec2[] | undefined, open = false;
+                for (const command of clip.d) {
+                    if (command[0] === 'M') { if (open) throw new BoardBoundsUncertified('Open exclusion contour'); contour = []; contours.push(contour); open = true; }
+                    if (command[0] === 'C') throw new BoardBoundsUncertified('Curved exclusion contour requires its own certified partition');
+                    if (command[0] === 'Z') open = false;
+                    else { if (!contour || !open) throw new BoardBoundsUncertified('Invalid exclusion contour'); contour.push({ x: command[1], y: command[2] }); }
+                    await checkpoint();
+                }
+                if (open || contours.length !== 2) throw new BoardBoundsUncertified('Exclusion must have its actual two closed contours');
+                const operands = [];
+                for (const points of contours) {
+                    if (points.length !== 4) throw new BoardBoundsUncertified('Exclusion is not a rectangular halo');
+                    const world = points.map(point => exactAffinePoint(clip.localToWorld, point));
+                    let edges = world.map((point, i) => exactLineBetween(point, world[(i + 1) % world.length]));
+                    const winding = exactSide(edges[0], world[2]);
+                    if (!winding) throw new BoardBoundsUncertified('Degenerate exclusion contour');
+                    if (winding < 0) edges = edges.map(flipLine);
+                    for (const edge of edges) for (const point of world) {
+                        if (exactSide(edge, point) < 0) throw new BoardBoundsUncertified('Non-convex exclusion contour'); await checkpoint();
+                    }
+                    operands.push({ polygon: { points, localToWorld: clip.localToWorld }, edges });
+                }
+                differences.push(operands); continue;
+            }
             const points: Vec2[] = [];
-            if (clip.fillRule !== 'nonzero') throw new BoardBoundsUncertified(`Non-convex exclusion clip ${clip.key}`);
             let closed = false, curved = false, moved = false;
             for (const command of clip.d) {
                 if (command[0] === 'M') { if (moved) throw new BoardBoundsUncertified(`Multiple clip contours ${clip.key}`); moved = true; }
@@ -119,18 +148,38 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                 innerPolygons.push(polygon); outerPolygons.push(polygon);
             }
         }
-        const count = (polygons: readonly ConvexClipPolygon[]) => polygons.reduce((n, polygon) => n + ('points' in polygon ? polygon.points.length : polygon.length), 0);
-        const lease = reserve((count(outerPolygons) + (hasCurve ? count(innerPolygons) : 0)) * 8192 + 1024 * 1024);
-        const result = await finishJob(createConvexClipJob(outerPolygons, tolerance / 32));
-        if (result.status === 'uncertain') throw new BoardBoundsUncertified(result.reason);
-        let value: ClippedTubeClip | 'empty';
-        if (result.status === 'empty') value = 'empty';
-        else if (!hasCurve) value = { inner: result.inner, outer: result.outer };
-        else {
-            const inside = await finishJob(createConvexClipJob(innerPolygons, tolerance / 32));
-            if (inside.status === 'uncertain') throw new BoardBoundsUncertified(inside.reason);
-            value = { inner: inside.status === 'empty' ? [] : inside.inner, outer: result.outer };
+        let plans: ClipPlan[] = [{ inner: innerPolygons, outer: outerPolygons, planes: [] }];
+        for (const operands of differences) {
+            const next: ClipPlan[] = [];
+            // Even/odd with two convex contours is their SYMMETRIC difference,
+            // not just subtraction: a halo can extend outside the outer box.
+            for (const plan of plans) for (let side = 0; side < 2; side++) {
+                const positive = operands[side], negative = operands[1 - side];
+                for (let edge = 0; edge < negative.edges.length; edge++) {
+                    next.push({ inner: [...plan.inner, positive.polygon], outer: [...plan.outer, positive.polygon],
+                        planes: [...plan.planes, ...negative.edges.slice(0, edge), flipLine(negative.edges[edge])] });
+                    if (next.length > 256) throw new BoardBoundsUncertified('Exclusion partition exceeds its work budget');
+                    await checkpoint();
+                }
+            }
+            plans = next;
         }
+        const count = (polygons: readonly ConvexClipPolygon[]) => polygons.reduce((n, polygon) => n + ('points' in polygon ? polygon.points.length : polygon.length), 0);
+        const lease = reserve(plans.reduce((n, plan) => n + count(plan.outer) + (hasCurve ? count(plan.inner) : 0) + plan.planes.length, 0) * 8192 + 1024 * 1024);
+        const pieces: ClippedTubeClip[] = [];
+        for (const plan of plans) {
+            const result = await finishJob(createConvexClipJob(plan.outer, tolerance / 32, plan.planes));
+            if (result.status === 'uncertain') throw new BoardBoundsUncertified(result.reason);
+            if (result.status === 'empty') continue;
+            if (!hasCurve) pieces.push({ inner: result.inner, outer: result.outer });
+            else {
+                const inside = await finishJob(createConvexClipJob(plan.inner, tolerance / 32, plan.planes));
+                if (inside.status === 'uncertain') throw new BoardBoundsUncertified(inside.reason);
+                pieces.push({ inner: inside.status === 'empty' ? [] : inside.inner, outer: result.outer });
+            }
+            await checkpoint();
+        }
+        const value: ClipRegion | 'empty' = pieces.length ? pieces : 'empty';
         for (const allocation of temporary) release(allocation);
         for (const prior of clipCache.values()) if (prior.lease) release(prior.lease);
         clipCache.clear();
@@ -209,8 +258,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         if (!Number.isFinite(error) || error > tolerance) throw new BoardBoundsUncertified('Filled path and frame enclosure did not converge');
         return { bounds: upper, errorWorld: error };
     };
-    const measureItem = async (item: PaintItem) => {
-        const envelope = await clipEnvelope(item.clips); if (envelope === 'empty') return;
+    const measureItemInClip = async (item: PaintItem, envelope: ClippedTubeClip | null) => {
         if (item.kind === 'ink') {
             if (!visible(item.material.color)) return;
             for (const coverage of inkCoverageChunks(item.coverage)) {
@@ -250,6 +298,12 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
             if (stroke.cap !== 'round' || stroke.join !== 'round') throw new BoardBoundsUncertified('Non-round path stroke requires its actual join/cap boundary');
             for (const curve of curves(path, false)) { accept(await tube(curve, stroke.width / 2, item.localToWorld, clip)); await checkpoint(); }
         }
+    };
+    const measureItem = async (item: PaintItem) => {
+        const region = await clipEnvelope(item.clips);
+        if (region === 'empty') return;
+        if (region === null) await measureItemInClip(item, null);
+        else for (const piece of region) { await measureItemInClip(item, piece); await checkpoint(); }
     };
     try {
         current();

@@ -28,7 +28,7 @@ export async function validOutlineRequest(value: unknown, context: WorkerContext
         if (!rectangle(paint.decorations[i]) || !color(material.decorations[i])) return false;
         if (++work % 1024 === 0) { context.signal.throwIfAborted(); await context.slice(); }
     }
-    let glyphs = 0, textLength = 0;
+    let glyphs = 0;
     for (const line of paint.lines) {
         if (!object(line) || !finite(line.top) || !finite(line.bottom) || line.bottom < line.top || !finite(line.baseline) || !Array.isArray(line.fragments)) return false;
         if (++work % 1024 === 0) { context.signal.throwIfAborted(); await context.slice(); }
@@ -41,8 +41,7 @@ export async function validOutlineRequest(value: unknown, context: WorkerContext
                 || !finite(face.size) || face.size <= 0 || !finite(face.ascent) || !finite(face.descent)
                 || typeof face.key.bold !== 'boolean' || typeof face.key.italic !== 'boolean'
                 || !['draw', 'sans', 'serif', 'mono'].includes(face.key.family as string)) return false;
-            glyphs++; textLength += fragment.text.length;
-            if (textLength > 8_000_000) return false;
+            glyphs++;
             if (++work % 1024 === 0) { context.signal.throwIfAborted(); await context.slice(); }
         }
     }

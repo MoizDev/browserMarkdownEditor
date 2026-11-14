@@ -665,6 +665,7 @@ function DocumentPane({
     /** Restored without its text (OpenTab.readError): this pane shows only
      *  that, and builds no view, drawing or notebook — each would take the
      *  empty buffer for the document and save it over the file. */
+    const unsupported = tab.representation.loadedKind === 'unsupported';
     const unreadable = !!tab.readError || (!isCanvas && !canReadTabText(tab));
     const preferences = useSyncExternalStore(subscribeReadingPreferences,getReadingPreferences);
     const readerIdentity = reading.identityForTab(tab);
@@ -1466,16 +1467,19 @@ function DocumentPane({
                         onDrop={(e) => e.preventDefault()}
                     >
                         <span className="unread-pane-title" data-tooltip={file.name}>
-                            Couldn’t read <strong>{file.name}</strong>
+                            {unsupported ? 'Can’t open ' : 'Couldn’t read '}<strong>{file.name}</strong>
                         </span>
                         <span className="unread-pane-hint">
-                            Another program may be using it, it may not be downloaded yet, or it
-                            can’t be opened right now. Nothing was changed, and its tab is kept.
+                            {unsupported
+                                ? 'This file’s format is not supported by this build. Nothing was changed, and its tab is kept.'
+                                : 'Another program may be using it, it may not be downloaded yet, or it can’t be opened right now. Nothing was changed, and its tab is kept.'}
                         </span>
                         <span className="unread-pane-detail" data-tooltip={tab.readError}>{tab.readError}</span>
-                        <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
-                            {retrying ? 'Trying…' : 'Try again'}
-                        </button>
+                        {!unsupported && (
+                            <button className="pdf-pane-action" disabled={retrying} onClick={retryRead}>
+                                {retrying ? 'Trying…' : 'Try again'}
+                            </button>
+                        )}
                     </div>
                 )}
                 {texReading && (

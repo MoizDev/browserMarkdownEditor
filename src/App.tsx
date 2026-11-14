@@ -25,7 +25,7 @@ import { sameStat, type DiskVersion } from './utils/diskVersion';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -2968,7 +2968,7 @@ export default function App() {
       if (isEpubFile(file.name)) kinds.epub = true;
       else if (isPdfFile(file.name)) kinds.pdf = true;
       else if (isNotebookFile(file.name)) kinds.notebook = true;
-      else if (isCanvasFile(file.name)) kinds.drawing = true;
+      else if (isDrawingFile(file.name)) kinds.drawing = true;
       if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);

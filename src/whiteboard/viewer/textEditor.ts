@@ -127,7 +127,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const request = new SpellingMenuRequest({
             revision: () => doc.rev,
             suggest: word => spell ? spell.suggest(word) : Promise.resolve([]),
-            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’\-]+$/u.test(word),
+            canAdd: word => word.length <= 64 && /^[\p{L}\p{M}'’-]+$/u.test(word),
             add: word => options.spelling.add(word),
             replace: (match, suggestion) => { replaceMisspelling({ ...match, revision, node }, suggestion); },
             open: rows => options.ui.spellingMenu(x, y, rows),

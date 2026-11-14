@@ -1217,7 +1217,7 @@ export default function App() {
       return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
         && policy.activation === identity.vaultActivation && policy.kind === identity.kind
         && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasHostedNativeOwner(entry, identity.documentId);
+        && hasWritableHostedNativeOwner(entry, identity.documentId);
     };
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();

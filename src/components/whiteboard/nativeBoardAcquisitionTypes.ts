@@ -22,6 +22,7 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly attachCanvasSession: AttachCanvasSession;
     readonly onNativeCanvasReady: NativeCanvasReady;
     readonly emergencyReadOnlyReason: string;
+    currentOwner(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
     acceptConvertedSource?: (source: DeferredSource, originalDigest: string) => void;

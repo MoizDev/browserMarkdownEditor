@@ -55,7 +55,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     if (!runtime || runtime.session !== board) throw new Error('Native editor requires the acquired board runtime');
     const { identity, nativeCanvasHost: host } = props;
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
-    const language = useNativeBoardLanguage(onError);
+    const language = useNativeBoardLanguage(onUnavailable);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
     const [notice, setNotice] = useState<string | null>(null), [inverted, setInverted] = useState(false);
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);

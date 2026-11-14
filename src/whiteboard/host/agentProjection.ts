@@ -3,6 +3,8 @@ import { createBoardAgentAdapter, type AgentAdapterHost } from '../agent/adapter
 import { listAgentSheets, type AgentGeometry, type ShapePage, type ShapeQuery } from '../agent/shapes';
 import type { BoardDoc, BoardKind } from '../model/doc';
 import type { SampleStore } from '../ink/samples';
+import type { PngCapture } from '../export/capturePng';
+import type { BoardSession } from '../session/BoardSession';
 import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
@@ -86,5 +88,33 @@ export async function readClosedAgentProjection(options: {
                 return result;
             } finally { projection.dispose(); }
         } finally { acquired.dispose(); }
+    }, options.job);
+}
+
+/** The view pins its real frame and image leases before any asynchronous encoding. */
+export async function captureLiveAgentProjection(options: {
+    readonly session: BoardSession;
+    readonly authority: JobAuthority;
+    readonly job: JobOptions;
+    isCurrent(): boolean;
+    pin(): { readonly revision: number; readonly capture: PngCapture; release(): void };
+}): Promise<Blob> {
+    return options.authority.run(async context => {
+        const guard = (revision: number) => {
+            options.authority.assertContext(context);
+            if (!options.isCurrent() || options.session.doc.rev !== revision) throw new DOMException('Board capture is stale', 'AbortError');
+        };
+        options.authority.assertContext(context);
+        if (!options.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
+        const pin = options.pin();
+        try {
+            guard(pin.revision);
+            if (pin.capture.frame.sceneRevision !== pin.revision) throw new Error('Capture frame revision does not match the board');
+            const { capturePng } = await import('../export/capturePng');
+            guard(pin.revision);
+            const blob = await capturePng(pin.capture, context.signal);
+            guard(pin.revision);
+            return blob;
+        } finally { pin.release(); }
     }, options.job);
 }

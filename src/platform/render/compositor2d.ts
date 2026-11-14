@@ -162,8 +162,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     constructor(private readonly options: Compositor2DOptions<T>) {
         this.surface.width = 0; this.surface.height = 0;
-        this.surface.style.width = '100%'; this.surface.style.height = '100%'; this.surface.style.display = 'block';
-        const display = this.surface.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+        this.surface.style.width = '0px'; this.surface.style.height = '0px'; this.surface.style.display = 'block';
+        const display = this.surface.getContext('2d', { alpha: true, colorSpace: 'srgb', desynchronized: false, willReadFrequently: false });
         if (!display) throw new Error('Canvas 2D is unavailable');
         this.display = display;
         this.surface.addEventListener('contextlost', () => { this.presentedKey = ''; this.report = null; });
@@ -778,12 +778,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (this.surface.height !== height) this.surface.height = height;
             return { width: this.surface.width, height: this.surface.height, complete: true, generation: this.target.generation };
         });
-        if (!actual?.complete || !this.healthy()) return false;
+        if (!actual?.complete || !this.healthy() || metrics.backingWidth !== this.surface.width || metrics.backingHeight !== this.surface.height) return false;
         this.display.save();
         try { this.display.resetTransform(); this.display.globalAlpha = 1; this.display.globalCompositeOperation = 'copy'; this.blit(this.display, back.canvas, 0, 0); }
         finally { this.display.restore(); }
         this.displayReserved = this.backing.reservedBytes;
-        return this.healthy() && metrics.backingWidth === this.surface.width && metrics.backingHeight === this.surface.height;
+        if (!this.healthy()) return false;
+        this.surface.style.width = `${metrics.viewport.width}px`;
+        this.surface.style.height = `${metrics.viewport.height}px`;
+        return true;
     }
 
     private quad(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,

@@ -1,4 +1,6 @@
 import { decodeDocumentText } from './diskVersion';
+import { IndexSessionGuard } from './indexSessionGuard';
+import type { ReadOnlyFileSnapshot } from '../types/reading';
 /**
  * Graph utilities — parse note-to-note links and build a graph
  * (nodes + edges + backlinks) for the Neural Brain view and the
@@ -76,11 +78,56 @@ interface LinkCacheEntry {
     targets: string[];
 }
 
-let linkCache = new Map<string, LinkCacheEntry>();
+export interface GraphBuildToken {
+    activation: number;
+    generation: number;
+    treeRevision: number;
+    indexRevision: number;
+    request: number;
+}
 
-/** Forget every cached extraction — a different vault may reuse paths. */
-export function clearLinkCache(): void {
-    linkCache = new Map();
+/** A directory can return after a switch; an activation and its maps cannot. */
+export class LinkIndexSession extends IndexSessionGuard {
+    readonly cache = new Map<string, LinkCacheEntry>();
+    readonly lifetime = new AbortController();
+    treeRevision = 0;
+    indexRevision = 0;
+    requestedGeneration = 0;
+    completedGeneration = 0;
+    fileTree: FileTreeNode[] = [];
+    members = new Set<string>();
+
+    commitTree(tree: FileTreeNode[]): void {
+        if (tree === this.fileTree) return;
+        this.fileTree = tree;
+        this.treeRevision++;
+        this.indexRevision++;
+        const members = new Set(getNoteResolver(tree).files.map(file => file.path));
+        for (const path of this.members) if (!members.has(path)) this.advance(path);
+        this.members = members;
+        // Only the committed whole tree owns membership, never a finishing build.
+        for (const path of this.cache.keys()) if (!members.has(path)) this.cache.delete(path);
+    }
+
+    token(): GraphBuildToken {
+        return { activation: this.activation, generation: this.generation, treeRevision: this.treeRevision,
+            indexRevision: this.indexRevision, request: this.requestedGeneration };
+    }
+
+    owns(token: GraphBuildToken): boolean {
+        return this.current() && token.activation === this.activation && token.generation === this.generation
+            && token.treeRevision === this.treeRevision && token.request === this.requestedGeneration;
+    }
+
+    accepts(token: GraphBuildToken): boolean {
+        return this.owns(token) && token.indexRevision === this.indexRevision;
+    }
+
+    override dispose(): void {
+        super.dispose();
+        this.lifetime.abort();
+        this.cache.clear();
+    }
 }
 
 /**
@@ -93,35 +140,49 @@ export function clearLinkCache(): void {
  * does not add or remove a link, i.e. nearly all of them — the rebuild is not
  * worth running: the graph it would produce is the graph on screen.
  */
-export function primeLinks(path: string, mtime: number, size: number, text: string): boolean {
+export function primeLinks(session: LinkIndexSession, path: string, mtime: number, size: number, text: string): boolean {
+    if (!session.current() || !session.members.has(path)) return false;
     let targets: string[];
     try { targets = extractLinks(text); }
     catch { targets = []; }
-    const prev = linkCache.get(path);
-    linkCache.set(path, { schema: LINK_SCHEMA, mtime, size, targets });
-    return !prev || prev.schema !== LINK_SCHEMA || prev.targets.length !== targets.length
+    const prev = session.cache.get(path);
+    const changed = !prev || prev.schema !== LINK_SCHEMA || prev.targets.length !== targets.length
         || targets.some((t, i) => t !== prev.targets[i]);
+    session.advance(path);
+    session.cache.set(path, { schema: LINK_SCHEMA, mtime, size, targets });
+    if (changed) session.indexRevision++;
+    return changed;
 }
 
-async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<string[]> {
-    const entry = linkCache.get(node.path);
+type AcquireSnapshot = (handle: FileSystemFileHandle, signal?: AbortSignal) => Promise<ReadOnlyFileSnapshot>;
+
+async function linksFor(session: LinkIndexSession, node: FileTreeFileNode, revalidate: boolean,
+    token: GraphBuildToken, acquire: AcquireSnapshot): Promise<string[] | null> {
+    if (!session.owns(token)) return null;
+    const pathToken = session.capture(node.path);
+    const entry = session.cache.get(node.path);
     const cached = entry?.schema === LINK_SCHEMA ? entry : undefined;
-    // The caller knows nothing on disk has moved since the last build (one of
-    // this app's own saves, already primed above). Believing it is the whole
-    // saving: a `getFile()` is a round trip to the browser's file thread, and
-    // there is one per note in the vault.
     if (!revalidate && cached) return cached.targets;
-    const file = await node.handle.getFile();
-    const prev = cached;
-    if (prev && prev.mtime === file.lastModified && prev.size === file.size) return prev.targets;
-    // Normalized exactly as readFile does, so link extraction sees the same
-    // text the editor and the search index do.
-    const bytes = await file.arrayBuffer(); // IO failures remain retryable.
-    let targets: string[];
-    try { targets = extractLinks(decodeDocumentText(bytes).replace(/\r\n?/g, '\n')); }
-    catch { targets = []; } // A deterministic refusal costs one payload read per version.
-    linkCache.set(node.path, { schema: LINK_SCHEMA, mtime: file.lastModified, size: file.size, targets });
-    return targets;   // Only links survive; the decoded or rejected payload is released.
+    let snapshot: ReadOnlyFileSnapshot | undefined;
+    try {
+        snapshot = await acquire(node.handle, session.lifetime.signal);
+        if (!session.owns(token)) return null;
+        if (!session.acceptsPath(pathToken)) return session.cache.get(node.path)?.targets ?? null;
+        if (cached && cached.mtime === snapshot.stat.lastModified && cached.size === snapshot.stat.size) return cached.targets;
+        const bytes = await snapshot.blob.arrayBuffer(); // IO failures remain retryable.
+        if (!session.owns(token)) return null;
+        // A save supersedes this read, even if the disk stat happened to match.
+        if (!session.acceptsPath(pathToken)) return session.cache.get(node.path)?.targets ?? null;
+        let targets: string[];
+        try { targets = extractLinks(decodeDocumentText(bytes).replace(/\r\n?/g, '\n')); }
+        catch { targets = []; }
+        session.cache.set(node.path, { schema: LINK_SCHEMA, mtime: snapshot.stat.lastModified, size: snapshot.stat.size, targets });
+        return targets;
+    } catch (error) {
+        if (!session.owns(token)) return null;
+        if (!session.acceptsPath(pathToken)) return session.cache.get(node.path)?.targets ?? null;
+        throw error;
+    } finally { snapshot?.dispose(); }
 }
 
 /**
@@ -129,8 +190,8 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
  *
  * Reads only files whose (lastModified, size) have moved since the last build —
  * see the link cache above — and with `revalidate` false does not even stat the
- * ones it has already extracted, which is what a save after `primeLinks` wants. Reads its own text rather than taking a readFile
- * callback, because it needs the File object for that validation anyway.
+ * ones it has already extracted, which is what a save after `primeLinks` wants.
+ * The context capability acquires one immutable snapshot; the cache hit never reads its payload.
  *
  * @param {Array} fileTree  nested file tree from FileSystemContext
  * @returns {{ nodes, links, backlinks, outlinks }}
@@ -139,8 +200,10 @@ async function linksFor(node: FileTreeFileNode, revalidate: boolean): Promise<st
  *   backlinks: { [id]: [sourceId, ...] }
  *   outlinks:  { [id]: [targetId, ...] }
  */
-export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promise<GraphData> {
-    const resolver = getNoteResolver(fileTree);
+export async function buildGraph(session: LinkIndexSession, token: GraphBuildToken,
+    acquire: AcquireSnapshot, revalidate = true): Promise<GraphData | null> {
+    if (!session.accepts(token)) return null;
+    const resolver = getNoteResolver(session.fileTree);
     const files = resolver.files;
 
     const nodesMap = new Map<string, GraphNode>();
@@ -164,21 +227,13 @@ export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): P
     // read for every file that hasn't changed since the last rebuild. With
     // `revalidate` false it is neither: every note already extracted is taken
     // from the cache, and only a note this build has never seen is opened.
-    const targetsPerFile = await mapPool(files, f => linksFor(f, revalidate).catch(() => [] as string[]));
-
-    // Track the vault: drop entries for files that have been deleted or renamed,
-    // so the cache can never outgrow the notes it describes.
-    if (linkCache.size > files.length) {
-        const live = new Set(files.map(f => f.path));
-        for (const path of [...linkCache.keys()]) {
-            if (!live.has(path)) linkCache.delete(path);
-        }
-    }
+    const targetsPerFile = await mapPool(files, f => linksFor(session, f, revalidate, token, acquire).catch(() => [] as string[]));
+    if (!session.accepts(token) || targetsPerFile.some(targets => targets === null)) return null;
 
     for (let fi = 0; fi < files.length; fi++) {
         const f = files[fi];
 
-        for (const raw of targetsPerFile[fi]) {
+        for (const raw of targetsPerFile[fi]!) {
             const key = baseName(raw).toLowerCase();
             if (!key) continue;
 

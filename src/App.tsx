@@ -7,7 +7,7 @@ import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMe
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
-import { buildGraph, clearLinkCache, primeLinks } from './utils/graph';
+import { buildGraph, LinkIndexSession, primeLinks, type GraphBuildToken } from './utils/graph';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { perfRoot, reportVault } from './utils/perfHooks';
@@ -439,7 +439,8 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
+  const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
 
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
@@ -1788,9 +1789,29 @@ export default function App() {
   const noteResolverRef = useRef(noteResolver);
   useEffect(() => { noteResolverRef.current = noteResolver; }, [noteResolver]);
 
-  // A different vault may reuse paths — never resolve links from the old one's
-  // cached extractions (mirrors FileExplorer clearing the search cache).
-  useEffect(() => { clearLinkCache(); }, [rootHandle]);
+  const graphRequestRef = useRef(0);
+  const graphRunnerRef = useRef<{
+    session: LinkIndexSession;
+    pending: boolean;
+    revalidate: boolean;
+    active: { token: GraphBuildToken; revalidate: boolean } | null;
+    running: Promise<void> | null;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const activation = getVaultActivation();
+    let runner = graphRunnerRef.current;
+    if (!runner || !runner.session.current() || runner.session.activation !== activation) {
+      runner?.session.dispose();
+      runner = { session: new LinkIndexSession(activation, () => getVaultActivation() === activation),
+        pending: false, revalidate: false, active: null, running: null };
+      graphRunnerRef.current = runner;
+      const owner = runner;
+      setGraph(prev => graphRunnerRef.current === owner && owner.session.current()
+        ? { activation, data: EMPTY_GRAPH } : prev);
+    }
+    runner.session.commitTree(fileTree);
+  }, [rootHandle, fileTree, getVaultActivation]);
+  useLayoutEffect(() => () => { graphRunnerRef.current?.session.dispose(); }, []);
 
   // Same reasoning for the window.open blob URLs: a different vault can hold the
   // same path, and (mtime, size) alone could match, so drop them with the vault
@@ -1814,25 +1835,50 @@ export default function App() {
    * `getFile()` round trips, one per note, every time the autosave landed —
    * because a cache HIT still had to open the file to find out it was a hit.
    */
-  const rebuildGraph = useCallback(async (revalidate = true) => {
-    if (!fileTree || fileTree.length === 0) {
-      // Through the same identity guard as the built graph below: a fresh empty
-      // object here would re-seed GraphView on every tree change just as surely.
-      setGraph(prev => sameGraph(prev, EMPTY_GRAPH) ? prev : EMPTY_GRAPH);
-      return;
-    }
-    try {
-      const g = await buildGraph(fileTree, revalidate);
-      // Keep the OLD object when nothing about the graph changed. A fresh
-      // identity on every save propagates all the way into GraphView's effects,
-      // which re-seed the simulation (alpha = 1) and tear down and rebuild the
-      // RAF loop and ResizeObserver — so an unrelated tab autosaving used to
-      // visibly re-heat the Neural Brain view while the user was looking at it.
-      setGraph(prev => sameGraph(prev, g) ? prev : g);
-    } catch (err) {
-      console.error('Failed to build link graph:', err);
-    }
-  }, [fileTree]);
+  const rebuildGraph = useCallback((revalidate = true): Promise<void> => {
+    const runner = graphRunnerRef.current;
+    if (!runner?.session.current()) return Promise.resolve();
+    const { session } = runner;
+    if (!revalidate && !runner.pending && runner.active && session.accepts(runner.active.token)) return runner.running!;
+    session.requestedGeneration = ++graphRequestRef.current;
+    runner.pending = true;
+    // A newer save must not discard an unfinished external revalidation.
+    runner.revalidate ||= revalidate || !!runner.active?.revalidate;
+    if (runner.running) return runner.running;
+    runner.running = (async () => {
+      try {
+        while (runner.pending && session.current()) {
+          const validate = runner.revalidate;
+          runner.pending = false;
+          runner.revalidate = false;
+          const token = session.token();
+          runner.active = { token, revalidate: validate };
+          try {
+            const data = await buildGraph(session, token, readFileSnapshot, validate);
+            const current = () => graphRunnerRef.current === runner && session.accepts(token);
+            if (data && current()) {
+              // Ownership is checked again when React executes the updater.
+              setGraph(prev => !current() ? prev
+                : prev.activation === session.activation && sameGraph(prev.data, data) ? prev
+                  : { activation: session.activation, data });
+            } else if (session.current() && !runner.pending) {
+              // A prime/tree change can invalidate a build without a new caller.
+              session.requestedGeneration = ++graphRequestRef.current;
+              runner.pending = true;
+              runner.revalidate ||= validate;
+            }
+          } catch (err) {
+            if (session.current()) console.error('Failed to build link graph:', err);
+            // Pending newer work survives failure; the failed request itself settles.
+          } finally {
+            session.completedGeneration = token.request;
+            runner.active = null;
+          }
+        }
+      } finally { runner.running = null; }
+    })();
+    return runner.running;
+  }, [readFileSnapshot]);
 
   // AT IDLE, not the moment a tree lands. The first build reads every note in
   // the vault (nothing is cached yet) — measured at 1,000 reads and 2.6MB on a
@@ -1840,7 +1886,7 @@ export default function App() {
   // thread, so the notes the reader actually asked for arrived behind an index
   // nobody had looked at yet. Nothing on screen waits for the graph: the Neural
   // Brain view and the backlinks count fill in when it lands.
-  useEffect(() => onIdle(() => { void rebuildGraph(); }), [rebuildGraph]);
+  useEffect(() => onIdle(() => { void rebuildGraph(); }), [rebuildGraph, rootHandle, fileTree]);
 
   // ── Per-tab autosave ────────────────────────────────────────────────────
   // rebuildGraph/writeFile are read through refs so the save helpers keep a
@@ -1995,6 +2041,8 @@ export default function App() {
     // still wait for it.
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
+    const graphSessionAtCall = graphRunnerRef.current?.session;
+    const graphActivationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
 
     // Held: the DiskBar is asking. Nothing is written over the file — but a tab
     // going away keeps its text beside it rather than taking it along.
@@ -2077,8 +2125,9 @@ export default function App() {
         // they did not, and then the graph on screen is already the right one
         // and no rebuild runs at all. When they did, the rebuild is told not to
         // revalidate: nothing else on disk has changed, so it needs no handles.
-        const linksMoved = isMarkdownFile(file.name)
-          && primeLinks(path, result.version.lastModified, result.version.size, snapshot);
+        const linksMoved = isMarkdownFile(file.name) && graphSessionAtCall?.activation === graphActivationAtCall
+          && graphSessionAtCall.current()
+          && primeLinks(graphSessionAtCall, path, result.version.lastModified, result.version.size, snapshot);
         if (linksMoved) rebuildGraphRef.current(false);
         // Notifies the vault-search index (see utils/saveEpoch.ts) so a file that
         // was edited, saved and then closed is re-read from disk. Deliberately not
@@ -4526,7 +4575,7 @@ export default function App() {
         recordFileWritten(file.path);
         if (tracksAssets(file)) queueReconcile({ activation, path: file.path, parentHandle: file.parentHandle ?? null,
           text: after, before: assetEmbeds(before), after: assetEmbeds(after) });
-        rebuildGraphRef.current();
+        if (getVaultActivation() === activation) void rebuildGraphRef.current();
         bumpSaveEpoch();
       },
       renameEntry: handleRenameFile,
@@ -4873,6 +4922,7 @@ export default function App() {
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
+            key={getVaultActivation()}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

@@ -774,7 +774,15 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const getVaultActivation = useCallback(() => vaultActivationRef.current, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
         // A→B→A is not the original activation, even if a handle is reused.
-        if (rootHandleRef.current !== handle) vaultActivationRef.current++;
+        if (rootHandleRef.current !== handle) {
+            vaultActivationRef.current++;
+            // A new index must never adopt the outgoing tree while its walk is pending.
+            // The ticket fence also rejects an old A walk after returning to A.
+            treePublishedRef.current = ++treeTicketRef.current;
+            fileTreeRef.current = [];
+            treeOwnerRef.current = null;
+            setFileTree([]);
+        }
         rootHandleRef.current = handle;
         setRootHandle(handle);
     }, []);

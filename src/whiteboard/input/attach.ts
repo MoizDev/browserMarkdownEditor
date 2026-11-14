@@ -295,6 +295,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
+  const flush = () => {
+    services.cancelPendingGestures()
+    if (cursor.active) cursor.escape()
+    pointer.interrupt('flush')
+  }
+  const stopFlush = view.bindFlush?.(flush)
   const stopCursor = view.a11y.bindKeyboardCursor?.(() => {
     if (!current()) return
     const viewport = view.camera.viewport
@@ -313,9 +319,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         const cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled) return true
       }
-      if (id === 'undo' && pointer.interrupt('undo')) return true
-      if (id === 'undo' && editable()) { services.history.undo(); return true }
+      if (id === 'undo') {
+        const cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('undo') || cancelled) return true
+        if (editable()) { services.history.undo(); return true }
+      }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
+      if (id.startsWith('style.')) flush()
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
       if (id === 'pan.hold') {
         spaceHeld = true
@@ -382,8 +392,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   updateMirror()
   const detach = () => {
     if (!live) return
-    services.cancelPendingGestures()
-    cursor.dispose(); stopCursor?.()
+    flush()
+    stopFlush?.(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('auxclick', auxclick)

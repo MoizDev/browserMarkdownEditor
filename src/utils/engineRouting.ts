@@ -8,6 +8,9 @@ export type PdfViewer = 'classic' | 'tiled';
 // Add an engine here only when its host and lazy import are in this build.
 // The same availability list drives the controls and the synchronous router.
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw'];
+// This lazy host reads native drawing/notebook bytes only. Do not offer it as
+// a legacy converter or as a PDF-ink/edit engine before those hosts are wired.
+const NATIVE_VIEWER_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook'];
 export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['classic', 'tiled'] : ['classic'];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
@@ -35,6 +38,7 @@ export function routeEngines(nativeKind?: CanvasEngineKind) {
         // settings are off or its stored switch names a missing engine.
         const engine = kind === nativeKind
             ? AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === 'board')
+                ?? (NATIVE_VIEWER_KINDS.includes(kind) ? 'viewer' : undefined)
                 ?? AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === 'viewer') ?? 'unavailable'
             : AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === value) ?? 'tldraw';
         return [kind, { engine, emergencyReadOnly: enabled && stored(emergencyKey(kind)) === 'true' }];

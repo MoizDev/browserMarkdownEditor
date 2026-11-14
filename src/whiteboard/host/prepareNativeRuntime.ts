@@ -151,7 +151,9 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     mediaAsset(id) {
                         const entry = doc.media.get(id), blob = store.get(id);
                         if (!entry || !blob || !(MEDIA_MIMES as readonly string[]).includes(entry.mime)) return undefined;
-                        return { id, hash: id.slice(7), extension: mediaExtension(entry.mime as MediaMime), file: store.currentFile(id) ?? entry.file, blob };
+                        // This names the reference encoded in the recipe, not a resolver's
+                        // alternate disk location; copy restoration must detect and remap it.
+                        return { id, hash: id.slice(7), extension: mediaExtension(entry.mime as MediaMime), file: entry.file, blob };
                     },
                     retainMedia: id => store.retain(id, 'journal'),
                 }, append: (capture, source) => host.appendJournal(identity, source, capture), onError: options.onError });

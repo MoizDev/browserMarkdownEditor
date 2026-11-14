@@ -321,11 +321,9 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         void run();
     };
 
-    // A file dropped from the desktop on an UNCANCELLED target navigates the
-    // whole app away to that file, taking every unsaved buffer with it. This
-    // menu is a plain div over the workspace, so it is one more surface that
-    // has to refuse a drop itself (the same rule as .view-content and the
-    // split divider).
+    // An unclaimed desktop-file drop opened a separate browser tab in D11;
+    // the app and dirty note stayed open. This surface consumes its own drops
+    // before the window-level fallback, just like the split divider.
     const cancelDrop = (e: React.DragEvent) => e.preventDefault();
 
     return (

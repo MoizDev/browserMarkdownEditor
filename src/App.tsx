@@ -34,6 +34,8 @@ import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import { recoveryAdapter } from './utils/recoveryAdapters';
+import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
+import { createRecoveryFunnel } from './utils/recoveryFunnel';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -515,6 +517,13 @@ export default function App() {
     } catch { /* Keep Retry available. */ }
   }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
+  const rebuildIndex = useCallback(() => {
+    const activation = getVaultActivation();
+    void indexGraphRef.whenReady().then(owner => {
+      if (owner.activation === activation && activation === getVaultActivation()) return owner.client.rebuild();
+    }).catch(() => {});
+  }, [indexGraphRef, getVaultActivation]);
+
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
   // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
@@ -981,6 +990,14 @@ export default function App() {
     setSaveStatus(message);
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
   }, []);
+  const [recoveryJournal] = useState(() => createRecoveryJournal({
+    refused: () => announce('Recovery storage may be evicted by the browser.'),
+    failed: () => announce('Could not write recovery storage; keep your edits open.'),
+  }));
+  const [recoveryEvent] = useState(() => createRecoveryFunnel(recoveryJournal, error => {
+    console.error('Could not capture recovery changes:', error);
+    announce('Could not capture recovery changes; keep your edits open.');
+  }));
   useEffect(() => subscribeRenderStatus(announce), [announce]);
   useEffect(() => {
     const showRestoreNotice = () => {
@@ -2527,8 +2544,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') void checkpointAll(); };
-    const pagehide = () => { void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
+    const pagehide = () => { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -2538,7 +2555,7 @@ export default function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, syncExitGuard]);
+  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryEvent]);
 
   const preparePdfPrint = useCallback(async (path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -4485,8 +4502,9 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
+    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -5387,9 +5405,14 @@ export default function App() {
   }, []);
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
-    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle || sessionRootRef.current !== rootHandle || sessionVaultIdRef.current !== entry.vaultId) return 'unavailable';
+    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle) return 'unavailable';
     try {
+      const vault = recentVaults.find(item => item.id === entry.vaultId);
+      if (!vault) return 'unavailable';
+      const relative = await handleIO.relativeTo(rootHandle, vault.handle);
+      if (!relative || relative.length !== 0 || rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
       const handle = await resolveFileHandle(entry.path);
+      if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
       if (!handle) return 'copy';
       const snapshot = await readFileSnapshot(handle);
       try {
@@ -5402,7 +5425,7 @@ export default function App() {
         return version.hash === entry.fingerprint ? 'match' : 'copy';
       } finally { snapshot.dispose(); }
     } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
-  }, [rootHandle, currentVaultId, resolveFileHandle, readFileSnapshot]);
+  }, [rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle, readFileSnapshot]);
 
   const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
     const tab = tabsRef.current.find(t => t.file.path === entry.path);
@@ -5566,6 +5589,7 @@ export default function App() {
           onForgetRecentVault={forgetRecentVault}
           onPinRecentVault={pinRecentVault}
           onChangeVault={pickDirectorySafely}
+          onRebuildIndex={rebuildIndex}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}
           agentOpen={agentPanelOpen}
@@ -5581,7 +5605,7 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
-        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} />}
+        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
             <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>

@@ -57,10 +57,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (current(session) !== owner) { await persistence.close(); return null; }
         owner.store.hydrate(records);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
-        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner, (path, mtime, size) => {
-            const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
-            return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
-        });
+        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
+            (path, mtime, size) => owner.readPersistedText(path, mtime, size));
         return null;
     },
     async close(value) {
@@ -166,6 +164,15 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
             path: file.path, name: file.path.slice(file.path.lastIndexOf('/') + 1),
             text: isTextFile(file.path) && !isCanvasFile(file.path) ? liveOverlays.get(file.path)?.text ?? resident.snapshot().get(file.path)?.text : undefined,
         })), { signal: context.signal, vaultToken: active, isCurrent: () => current(args.session) === active && active.store.treeGen === treeGen });
+    },
+    rebuild(value) {
+        const { session } = value as SessionArgs;
+        const active = current(session);
+        if (active) {
+            active.store.rebuild();
+            searchText?.invalidate(active.store.files.map(file => file.path));
+        }
+        return null;
     },
     fgio(value) {
         const { session, active } = value as SessionArgs & { active: number };

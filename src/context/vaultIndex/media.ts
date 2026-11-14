@@ -17,7 +17,7 @@ export class BoardMediaIndex {
     private readonly facts = new Map<string, MediaFact>();
     private readonly listeners = new Set<() => void>();
     private files: IndexFile[] = [];
-    private listedFolders = new Set<string>();
+    private listingKeys = new Map<string, string>();
     private complete = false;
     private epoch = 0;
     private disposed = false;
@@ -34,7 +34,7 @@ export class BoardMediaIndex {
         if (this.disposed) return;
         const epoch = ++this.epoch;
         this.complete = false;
-        this.listedFolders = new Set(assetNames.keys());
+        this.listingKeys = new Map([...assetNames].map(([folder, names]) => [folder, JSON.stringify([...new Set(names)].sort())]));
         this.files = files.filter(file => isCanvasFile(file.path)).map(file => ({ ...file }));
         const boards = this.files;
         const paths = new Set(boards.map(file => file.path));
@@ -117,7 +117,8 @@ export class BoardMediaIndex {
             const fact = this.facts.get(file.path);
             if (fact) boards.push({ path: fact.path, mtime: fact.mtime, size: fact.size, names: [...fact.names] });
         }
-        return { folder, fresh: !this.disposed && this.complete && this.listedFolders.has(folder) && boards.length === files.length, boards };
+        return { folder, fresh: !this.disposed && this.complete && this.listingKeys.has(folder) && boards.length === files.length,
+            boards, listingKey: this.listingKeys.get(folder) };
     }
 
     subscribe(listener: () => void): () => void {
@@ -131,7 +132,7 @@ export class BoardMediaIndex {
         this.epoch++;
         this.complete = false;
         this.files = [];
-        this.listedFolders.clear();
+        this.listingKeys.clear();
         this.facts.clear();
         this.listeners.clear();
     }

@@ -6,7 +6,7 @@ import { canReadTabText,readingCapabilities,getReadingSurface,subscribeReadingSu
 import type { ReaderIntegration } from '../types/reading';
 import EpubReaderHost from './EpubReaderHost';
 import WordEmphasisToggle from './WordEmphasisToggle';
-import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { EditorView, keymap, drawSelection } from '@codemirror/view';
 import { Compartment, EditorState } from '@codemirror/state';
 import type { ChangeDesc, Extension } from '@codemirror/state';
@@ -57,6 +57,7 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { ASSETS_DIR } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { readRecord, flushRecord, scopedKey, removeStoredValue } from '../utils/storage';
+import { subscribeDocumentViewRetarget } from '../utils/documentViewRetarget';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
@@ -212,6 +213,9 @@ function flushFolds(path: string): void {
     }
     foldDebounce.delete(path);
 }
+
+const unsubscribeViewRetarget = subscribeDocumentViewRetarget(from => { flushScroll(from); flushFolds(from); });
+if (import.meta.hot) import.meta.hot.dispose(unsubscribeViewRetarget);
 
 /** Debounced fold persistence for one document. */
 function rememberFolds(path: string, state: EditorState): void {
@@ -496,10 +500,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
 interface DocumentPaneProps {
     reading: ReaderIntegration;
     tab: OpenTab;
-    /** What this pane's EditorState is cached under — the same string React
-     *  keys the pane by, so a pane and its state are one thing. It is NOT the
-     *  path: see EditorPane's paneKey. */
-    stateKey: string;
     /** Which column this is. Every pane-scoped action names it rather than a
      *  path, because closing the column, and stepping its history, outlive the
      *  document that happens to be showing. */
@@ -549,15 +549,6 @@ interface DocumentPaneProps {
     /** Settings → Colour brackets by depth. Code panes only; reconfigured
      *  live through a compartment, like the theme and the indent width. */
     rainbowBrackets: boolean;
-    /**
-     * Per-document EditorStates (doc + undo history + selection + search
-     * panel), owned by App — so they survive the graph view, which unmounts
-     * EditorPane — and shared by every pane, so a document that leaves the
-     * screen and comes back is exactly where it was left. Keyed by `tab.id` —
-     * the document, not its path, which a rename can hand to a different
-     * document (see OpenTab.id).
-     */
-    stateCache: Map<string, EditorState>;
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
     markdownSessions: MarkdownSessionHost;
@@ -605,15 +596,13 @@ function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBu
  * Everything document-scoped lives here — the CodeMirror view, its
  * compartments, the paste/scroll/wikilink handlers and the drawing canvas — so
  * that showing N documents side by side is N of these rather than a special
- * case inside the editor. React keys the component by document (`paneKey`,
- * `OpenTab.id | path`), which is why there is no tab-swap logic in it at all:
+ * case inside the editor. React keys the component by document (`OpenTab.id`),
+ * which is why there is no tab-swap logic in it at all:
  * a pane shows one document for its whole life, and switching tabs mounts and
  * unmounts panes instead of re-pointing one.
  *
- * The state cache is what makes that free. A pane caches its EditorState on the
- * way out and adopts it on the way in, so undo history and selection survive
- * every tab switch exactly as they did when a single view was re-pointed — and
- * still never reach across documents.
+ * The App-owned Markdown session retains the EditorState across pane unmounts,
+ * so undo history and selection survive a tab switch or graph-view trip.
  *
  * A canvas document (a drawing, a PDF) builds no view: it never held text, and
  * the surface that draws it is either the drawing pane below or the PdfPane
@@ -621,7 +610,6 @@ function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBu
  */
 function DocumentPane({
     tab,
-    stateKey,
     paneId,
     isFocused,
     isSplit,
@@ -631,7 +619,6 @@ function DocumentPane({
     theme,
     tabSize,
     rainbowBrackets,
-    stateCache,
     contentOf,
     documentBuffers,
     markdownSessions,
@@ -695,6 +682,19 @@ function DocumentPane({
 
     const viewRef = useRef<EditorView | null>(null);
     const detachViewRef = useRef<(() => void) | undefined>(undefined);
+    const destroyView = useCallback(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        cancelReadingConfiguration(view);
+        cancelWordReadingAnchor(view);
+        detachViewRef.current?.();
+        detachViewRef.current = undefined;
+        view.destroy();
+        viewRef.current = null;
+    }, []);
+    // TeX read mode swaps the container without unmounting this pane. A ref's
+    // transient null on an ordinary re-render must not destroy the live view.
+    useLayoutEffect(() => { if (texReading) destroyView(); }, [texReading, destroyView]);
     /** True only while setEditorContainer builds the view — see there. */
     const buildingViewRef = useRef(false);
 
@@ -887,7 +887,6 @@ function DocumentPane({
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
     const metadataUpdate = (update: MarkdownSessionUpdate) => {
-        stateCache.set(documentId, update.state);
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath === undefined) return;
         if (update.docChanged) {
@@ -1000,13 +999,16 @@ function DocumentPane({
                             const currentPath = markdownSessions.pathOf(documentId);
                             if (currentPath === undefined || !blob) return true;
                             const parentHandle = markdownSessions.parentHandleOf(documentId);
-                            const assetFolder = joinVaultPath(parentVaultPath(currentPath), ASSETS_DIR);
+                            const folder = parentVaultPath(currentPath);
+                            const assetFolder = joinVaultPath(folder, ASSETS_DIR);
                             const adapter = markdownSessions.get(documentId);
                             saveAsset(filename, blob, parentHandle).then(() => {
                                 // A move during the write must not insert a reference
                                 // to a picture saved beside the old destination.
                                 if (!adapter || markdownSessions.get(documentId) !== adapter) return;
-                                if (markdownSessions.parentHandleOf(documentId) !== parentHandle) {
+                                const latestPath = markdownSessions.pathOf(documentId);
+                                if (latestPath === undefined) return;
+                                if (parentVaultPath(latestPath) !== folder) {
                                     onNotify('The note moved while its picture was saving. Paste it again in the new folder.');
                                     return;
                                 }
@@ -1087,7 +1089,6 @@ function DocumentPane({
                 EditorState.create({ doc: initial, extensions: history() }), () => documentBuffers.get(documentId)?.source));
             if (!adapter) return;
             adapter.configure(editorExtensions(), metadataUpdate);
-            stateCache.set(documentId, adapter.state);
             const view = new EditorView({ state: adapter.state, parent: node });
             detachViewRef.current = adapter.attach(view);
             viewRef.current = view;
@@ -1100,7 +1101,7 @@ function DocumentPane({
             // Every grammar is a dynamic import, so a code pane paints at once
             // in plain text and takes its colours a tick later. A cached state
             // already carries one, and loadCodeLanguage leaves it alone.
-            if (codeLanguage) void loadCodeLanguage(view, codeLanguage);
+            if (isCode) void loadCodeLanguage(view, codeLanguage, codeLanguage === null);
 
             if (cached) {
                 const restoreSelection = captureReadingSelection(view);
@@ -1143,19 +1144,9 @@ function DocumentPane({
         }
     };
 
-    // Hand the document's state back to the cache on the way out. Nothing to
-    // cache for a canvas document — it never built a view, and a blank doc
-    // stored under its path is exactly the wrong thing to restore.
+    // Detach the view; the App-owned session retains the document state.
     useEffect(() => () => {
-        const view = viewRef.current;
-        if (view) {
-            cancelReadingConfiguration(view); cancelWordReadingAnchor(view);
-            stateCache.set(documentId, view.state);
-            detachViewRef.current?.();
-            detachViewRef.current = undefined;
-            view.destroy();
-            viewRef.current = null;
-        }
+        destroyView();
         // Scrolling and then switching tabs inside the debounce must not lose
         // where the reader was — write it now rather than drop it. Keyed by
         // path, so this finds the timer the handler actually armed even when
@@ -1164,7 +1155,7 @@ function DocumentPane({
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath !== undefined) { flushScroll(currentPath); flushFolds(currentPath); }
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
-    }, [documentId, markdownSessions, stateCache]);
+    }, [documentId, markdownSessions, destroyView]);
 
     /* ── Live settings → the open view ────────────────────────────────────
        The three effects below carry a CHANGE of setting into a view that is
@@ -1177,6 +1168,13 @@ function DocumentPane({
        changes still require a full render, while a context change touches only
        the image widgets. */
     const settled = useRef(false);
+    const previousCodeLanguage = useRef(codeLanguage?.description);
+    useEffect(() => {
+        if (previousCodeLanguage.current === codeLanguage?.description) return;
+        previousCodeLanguage.current = codeLanguage?.description;
+        const view = viewRef.current;
+        if (view && isCode) void loadCodeLanguage(view, codeLanguage, true);
+    }, [codeLanguage, isCode]);
 
     useEffect(() => {
         if (!settled.current) return;

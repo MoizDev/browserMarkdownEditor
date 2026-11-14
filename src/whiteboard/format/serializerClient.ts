@@ -19,6 +19,7 @@ export interface SerializerCheckpoint extends PinnedBoardBuild {
     /** Called only after the versioned write succeeded, never on conflict or a failed write. */
     written(): Promise<void>;
     product(): SerializerProduct | undefined;
+    baseline(): SerializerPrime | undefined;
 }
 export interface SerializerSession {
     /** O(changed): records are already encoded from a pinned revision on the calling thread. */
@@ -185,6 +186,9 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
                     return serial(async () => advanceBaseline(target, product));
                 },
                 product() { return built; },
+                baseline() {
+                    return built ? Object.freeze({ revision: built.revision, baseline: built.blob, index: built.index, header: target.header }) : undefined;
+                },
             });
         },
         dispose() { if (!disposed) { disposed = true; loaded = undefined; client.dispose(); } },

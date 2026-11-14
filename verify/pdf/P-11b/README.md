@@ -17,18 +17,11 @@ BUILD_WORKTREE=<fixed-source> BUILD_DIST=<its-production-output> CHROME=<pinned-
   http://localhost:6480 <book-corpus> <first-font-corpus> <fresh-results>
 ```
 
-Before P-00/V-01a are integrated, the explicitly approved interim environment is:
-
-```sh
-VERIFY_IDENTITY_MODULE=/Users/adham/Developer/bme-impl/scratch/p-f/toolbox-527faea/identity.mjs
-VERIFY_TOOLBOX_COMMIT=527faea
-PDF_BOOK_MANIFEST_COMMIT=77b908f
-```
-
-The helper is exported **unmodified** from its committed source. The adapter refuses a different
-file and records its full commit and SHA; after integration leave these variables unset to use the
-in-tree helper and manifest. All app/PDF/worker (including `.mjs`) served bodies bind to emitted
-hashes via raw-route mode, drained before assertions. No app module is imported into the page.
+P-00/V-01a are integrated. Use the in-tree helper and manifest without scratch-copy or old
+manifest overrides. The adapter accepts only committed `verify/lib/identity.mjs` and records its
+full commit and SHA. Historical reports retain their actual approved 527faea/77b908f provenance.
+All app/PDF/worker (including `.mjs`) served bodies bind to emitted hashes via raw-route mode,
+drained before assertions. No app module is imported into the page.
 
 | Part | Contract |
 |---|---|

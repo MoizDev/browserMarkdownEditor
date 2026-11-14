@@ -4,9 +4,11 @@ import App from './App'
 import { FileSystemProvider } from './context/FileSystemContext'
 import './index.css'
 import { installTooltips } from './utils/tooltip'
+import { installPenPriority } from './utils/penPriority'
 
 // Once, at module scope — outside React, so StrictMode's double effects never
 // install it twice (it is idempotent regardless) and no component owns it.
+installPenPriority()
 installTooltips()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

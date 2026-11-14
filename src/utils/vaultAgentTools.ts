@@ -977,7 +977,9 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     ctx.ensureLive();
     let r: CanvasApplyResult;
     try {
-        r = view.canvas.apply(ops);
+        r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+        } });
     } catch (err) {
         throw new ToolError(`the canvas refused the change: ${err instanceof Error ? err.message : String(err)}. Nothing was applied.`);
     }

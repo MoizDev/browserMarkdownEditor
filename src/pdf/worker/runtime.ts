@@ -284,6 +284,15 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
                 return result;
             }),
+            'doc.inspectLegacyInk': serial(async (value, ctx) => {
+                const { key, item } = lookup(value), info = item.doc.info();
+                if (info.encrypted) return { kind: 'read-only', reason: 'encrypted' };
+                if (info.signatureCount !== 0) return { kind: 'read-only', reason: 'signed' };
+                const { inspectLegacyPdfInk } = await import('../writing/legacyInkInspection');
+                const result = await inspectLegacyPdfInk(item.sourceBlob, () => ctx.slice());
+                if (closed || ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError');
+                return result;
+            }),
             'doc.inspectInk': serial(async (value, ctx) => {
                 const { key, item } = lookup(value), inspection = await ensureInspection(key, item, ctx);
                 try { if (ctx.cancelled || docs.get(key) !== item) throw new DOMException('PDF inspection cancelled', 'AbortError'); return inspection.result; }

@@ -18,7 +18,7 @@ import { beginPdfPageWork, failPdfPage, clearPdfPageFailure, releasePdfPageStatu
 import { canSteal, homeWorker, maximumWorkers, poolBudget, recycleCeiling } from './routing';
 import { renderPdfPageBitmap } from './bitmap';
 import { createPdfReplyValidators } from './validation';
-import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe, validatePdfInkInspection, validatePdfInkMedia } from './validateControl';
+import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe, validatePdfInkInspection, validatePdfInkMedia, validatePdfLegacyInspection } from './validateControl';
 import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { PDF_FONT_CATALOGUE } from '../fonts/catalogue';
 import type { PdfFontId } from '../fonts/catalogue';
@@ -590,6 +590,7 @@ class Pool implements PdfPool {
             }
             case 'doc.outline': return validators.outline(value, job.doc.info!.pageCount);
             case 'doc.inspectInk': return validatePdfInkInspection(value);
+            case 'doc.inspectLegacyInk': return validatePdfLegacyInspection(value);
             case 'doc.inkMedia': return validatePdfInkMedia(value);
             case 'doc.attachment': return validators.attachmentBytes(value, job.args.maxBytes as number);
             case 'page.release': return record(value, []);

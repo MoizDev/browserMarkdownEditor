@@ -234,6 +234,7 @@ function FileExplorer({
         return rows;
     }, [displayTree, expandedPaths, createRequest]);
     const [viewport, setViewport] = useState({ top: 0, height: 0, rowHeight: 28 });
+    const [draggedPath, setDraggedPath] = useState<string | null>(null);
     const updateViewport = useCallback(() => {
         const tree = treeRef.current;
         if (!tree) return;
@@ -254,6 +255,14 @@ function FileExplorer({
     const rootOffset = creatingInRoot ? viewport.rowHeight : 0;
     const start = Math.max(0, Math.floor((viewport.top - rootOffset) / viewport.rowHeight) - TREE_OVERSCAN);
     const end = Math.min(visibleRows.length, Math.ceil((viewport.top + viewport.height - rootOffset) / viewport.rowHeight) + TREE_OVERSCAN);
+    // A native drag ends if its source unmounts. Keep just that row, even when
+    // auto-scrolling carries the viewport far away from it.
+    const draggedIndex = draggedPath ? visibleRows.findIndex(row => !row.createRow && row.node.path === draggedPath) : -1;
+    const rowIndices = Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i);
+    if (draggedIndex >= 0 && (draggedIndex < start || draggedIndex >= end)) {
+        rowIndices.push(draggedIndex);
+        rowIndices.sort((a, b) => a - b);
+    }
     const revealPathRef = useRef<string | null>(null);
     const focusPathRef = useRef<string | null>(null);
     useLayoutEffect(() => {
@@ -783,6 +792,8 @@ function FileExplorer({
                 <div
                     ref={treeRef}
                     className={`nav-files-container${rootDragOver ? ' drag-over-root' : ''}`}
+                    onDragStartCapture={e => setDraggedPath((e.target as HTMLElement).closest<HTMLElement>('.tree-item[data-path]')?.dataset.path ?? null)}
+                    onDragEndCapture={() => setDraggedPath(null)}
                     onDragEnter={handleRootDragEnter}
                     onDragOver={handleRootDragOver}
                     onDragLeave={handleRootDragLeave}
@@ -806,10 +817,14 @@ function FileExplorer({
                             />
                         </div>
                     )}
-                    <div style={{ height: start * viewport.rowHeight }} />
-                    {visibleRows.slice(start, end).map(({ node, depth, createRow }) => (
+                    {rowIndices.map((index, position) => {
+                        const { node, depth, createRow } = visibleRows[index];
+                        const key = `${node.path}${createRow ? '/\u0000create' : ''}`;
+                        const gap = index - (position ? rowIndices[position - 1] + 1 : 0);
+                        return <React.Fragment key={key}>
+                        {gap > 0 && <div key="gap" style={{ height: gap * viewport.rowHeight }} />}
                         <TreeNode
-                            key={`${node.path}${createRow ? '/\u0000create' : ''}`}
+                            key="row"
                             node={node}
                             depth={depth}
                             createRow={createRow}
@@ -831,8 +846,9 @@ function FileExplorer({
                             onRenameFile={onRenameFile}
                             onImportFiles={onImportFiles}
                         />
-                    ))}
-                    <div style={{ height: (visibleRows.length - end) * viewport.rowHeight }} />
+                        </React.Fragment>;
+                    })}
+                    <div style={{ height: (visibleRows.length - (rowIndices.at(-1) ?? -1) - 1) * viewport.rowHeight }} />
                 </div>
             )}
         </div>

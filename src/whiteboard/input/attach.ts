@@ -174,9 +174,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
         return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
       }
-      if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
-      if (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey)) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
-      if (event.button !== 0) return null
+      if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
+      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
+      if (event.type === 'pointerdown' && event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
         const source = services.zoomBrush()

@@ -44,6 +44,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         inspections.delete(key); inspectionBytes -= entry.bytes; inspector?.release(entry.result.id);
     };
     const fonts = new Map<PdfFontId, Uint8Array>();
+    const fontProfiles = new Map<string, string>();
     let fontEpoch = 0;
     let geometryEventAt = -Infinity;
     let memoryEventAt = -Infinity;
@@ -72,6 +73,14 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                     context.emit('font.needed', { ids, docKey: key, ...(typeof args.page === 'number' ? { page: args.page } : {}) });
                     throw new PdfEngineError('FontPending', 'PDF fonts are being installed');
                 } finally {
+                    const key = value && typeof value === 'object' ? (value as { docKey?: unknown }).docKey : undefined;
+                    if (!closed && typeof key === 'string' && docs.has(key)) {
+                        const ids = [...fonts.keys()].sort(), mask = JSON.stringify(ids);
+                        if (fontProfiles.get(key) !== mask) {
+                            context.emit('font.profile', { docKey: key, ids });
+                            fontProfiles.set(key, mask);
+                        }
+                    }
                     if (!closed && performance.now() - memoryEventAt >= 500) {
                         memoryEventAt = performance.now();
                         try {
@@ -197,6 +206,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 catch (error) { source.close(); throw error; }
             }),
             'doc.close': serial(value => { const args = record(value); if (typeof args.docKey !== 'string') throw bad('RangeError', 'Invalid PDF document key');
+                fontProfiles.delete(args.docKey);
                 const item = docs.get(args.docKey); if (item) { docs.delete(args.docKey); dropInspection(args.docKey); item.clone?.close(); item.doc.close(); item.source.close(); } return {}; }),
             'page.text': serial(async (value, ctx): Promise<PageTextReply> => {
                 const { args, key, item } = lookup(value), page = pageNumber(args.page, item), info = item.doc.info();
@@ -328,5 +338,5 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
             }),
             'worker.stats': serial(() => ({ heapBytes: backend?.heapBytes() ?? writer?.heapBytes() ?? 0, docs: docs.size, pagesLoaded: [...docs.values()].reduce((sum, item) => sum + item.doc.residentPages() + (item.clone?.residentPages() ?? 0), 0), blockCacheBytes: [...docs.values()].reduce((sum, item) => sum + item.source.cachedBytes, 0) })),
         } });
-    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); for (const resolve of turns.splice(0)) resolve(); };
+    return () => { if (closed) return; closed = true; stop(); for (const item of docs.values()) { item.clone?.close(); item.doc.close(); item.source.close(); } docs.clear(); fontProfiles.clear(); inspections.clear(); inspectionBytes = 0; inspector?.dispose(); fonts.clear(); backend?.close?.(); void writer?.close(); channel.port1.close(); channel.port2.close(); for (const resolve of turns.splice(0)) resolve(); };
 }

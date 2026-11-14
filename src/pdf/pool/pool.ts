@@ -3,7 +3,7 @@ import type { ContainedPort, Priority, WorkerClient } from '../../platform/worke
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
 import type { PageGeometry } from '../../platform/types';
-import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey } from '../worker/protocol';
+import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey, parsePdfDocKey } from '../worker/protocol';
 import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
@@ -97,7 +97,7 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
         silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
         restartPolicy: role === 'writer' ? { delaysMs: [0], maxFailures: 1, windowMs: 60_000 } :
             { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
-        events: role === 'render' ? ['font.needed', 'page.geometry', 'dying', 'worker.memory'] : ['worker.memory'],
+        events: role === 'render' ? ['font.needed', 'font.profile', 'page.geometry', 'dying', 'worker.memory'] : ['worker.memory'],
     });
     client.on('worker.memory', value => {
         try {
@@ -221,6 +221,21 @@ class Pool implements PdfPool {
                 if (data.page !== undefined) integer(data.page, 0, this.docs.get(data.docKey)!.info!.pageCount - 1);
                 slot.needed.set(data.docKey, [...new Set(data.ids as PdfFontId[])]);
             } catch { slot.openRequests.clear(); void client.recycle('Invalid PDF font request').catch(() => {}); }
+        });
+        client.on('font.profile', value => {
+            try {
+                const data = record(value, ['docKey', 'ids']);
+                if (typeof data.docKey !== 'string') invalidPdfReply();
+                parsePdfDocKey(data.docKey);
+                if (!Array.isArray(data.ids) || data.ids.length > 14 ||
+                    data.ids.some(id => typeof id !== 'string' || !Object.hasOwn(PDF_FONT_CATALOGUE, id)) ||
+                    new Set(data.ids).size !== data.ids.length) invalidPdfReply();
+                const doc = this.docs.get(data.docKey);
+                if (!doc || doc.closing) return;
+                if (!slot.opens.has(data.docKey)) invalidPdfReply();
+                for (const id of data.ids as PdfFontId[]) doc.fonts.add(id);
+                for (const id of data.ids as PdfFontId[]) notePdfFontProvided(doc.key, id);
+            } catch { slot.openRequests.clear(); void client.recycle('Invalid PDF font profile').catch(() => {}); }
         });
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;

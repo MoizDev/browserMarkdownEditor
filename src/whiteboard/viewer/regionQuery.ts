@@ -16,6 +16,7 @@ import { createVectorRegionJob, vectorNarrowDescriptor } from '../geom/vectorNar
 import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
 import { boardFrameAncestors } from '../geom/ancestorFrames';
+import { createPolygonTriangulationJob } from '../geom/polygonTriangulation';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -118,6 +119,18 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 if ((i & 255) === 255) { await cooperate(); check(); }
             }
             check();
+            let regions: readonly (readonly Vec2[])[] = [points];
+            if (query.kind === 'polygon' && !query.containment && points.length > 3) {
+                const triangulation = createPolygonTriangulationJob(points);
+                try {
+                    for (;;) {
+                        const value = triangulation.step({ deadline: performance.now() + 3, maxWork: 128 });
+                        if (value.status === 'pending') { await cooperate(); check(); continue; }
+                        if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                        regions = value.triangles; break;
+                    }
+                } finally { triangulation.cancel(); }
+            }
             const margin = query.kind === 'swept' ? query.radiusCss : 0;
             const worldBox: [number, number, number, number] = [camera.x + (minX - margin) / camera.z, camera.y + (minY - margin) / camera.z,
                 camera.x + (maxX + margin) / camera.z, camera.y + (maxY + margin) / camera.z];
@@ -126,11 +139,10 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             const queue: SpatialRef[] = [], hits = new Map<NodeId, number>();
             const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number }>();
             cursor = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: worldBox, order: 'forward' } });
-            const narrow = async (ref: SpatialRef) => {
+            const narrowPart = async (ref: SpatialRef, regionPoints: readonly Vec2[]) => {
                 check();
                 const resolved = scene.resolveSpatial(ref);
                 if (!resolved) throw stale();
-                const cached = evaluated.get(resolved.id); if (cached) return cached;
                 const node = doc.nodes.get(resolved.id);
                 if (!node) throw stale();
                 if (node.kind === 'group') return undefined;
@@ -140,7 +152,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     groups.set(selected, Math.max(groups.get(selected) ?? -Infinity, resolved.rank));
                 const prepared = await options.geometry.prepareForPick(node, signal); check();
                 const hasCertifiedVector = !!prepared.vector && !!vectorNarrowDescriptor(prepared.vector);
-                let localPoints: readonly Vec2[] = points, partialFrame = false;
+                let localPoints: readonly Vec2[] = regionPoints, partialFrame = false;
                 const frameClips: PointClipContour[] = [];
                 for (const ancestor of boardFrameAncestors(doc, node)) {
                         const frameWorld = matrix(doc, ancestor.id), toFrame = inverse(frameWorld, 1e12), record = scene.worldBounds(node.id);
@@ -160,7 +172,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
                                 localPoints = clipPolygon(localPoints, polygon);
                                 if (!localPoints.length) {
-                                    const result = { selected, hit: false, rank: resolved.rank }; evaluated.set(node.id, result); return result;
+                                    return { selected, hit: false, rank: resolved.rank };
                                 }
                                 if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                             }
@@ -306,9 +318,28 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();
-                const result = { selected, hit, rank: resolved.rank }; evaluated.set(node.id, result);
-                if (hit && !(query.kind === 'polygon' && query.containment && selected !== node.id))
-                    hits.set(selected, Math.max(hits.get(selected) ?? -Infinity, resolved.rank));
+                return { selected, hit, rank: resolved.rank };
+            };
+            const narrow = async (ref: SpatialRef) => {
+                check(); const resolved = scene.resolveSpatial(ref); if (!resolved) throw stale();
+                const cached = evaluated.get(resolved.id); if (cached) return cached;
+                let result: Awaited<ReturnType<typeof narrowPart>> = undefined, uncertain: BoardRegionUncertain | undefined;
+                for (const regionPoints of regions) {
+                    try {
+                        result = await narrowPart(ref, regionPoints);
+                        if (!result || result.hit) break;
+                    } catch (error) {
+                        if (!(error instanceof BoardRegionUncertain)) throw error;
+                        uncertain ??= error;
+                    }
+                    await cooperate(); check();
+                }
+                if (!result?.hit && uncertain) throw uncertain;
+                if (result) {
+                    evaluated.set(resolved.id, result);
+                    if (result.hit && !(query.kind === 'polygon' && query.containment && result.selected !== resolved.id))
+                        hits.set(result.selected, Math.max(hits.get(result.selected) ?? -Infinity, result.rank));
+                }
                 return result;
             };
             let done = false, queueIndex = 0;

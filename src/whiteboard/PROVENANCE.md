@@ -270,6 +270,8 @@ third-party code included (normally "none") · date.
 | `input/prediction.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture; browser Pointer Events and Ink APIs; no tldraw source | none | 2026-11-13 |
 | `input/frame.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture and shared scheduler contract; no tldraw source | none | 2026-11-13 |
 | `input/liveInk.ts` | lane w-f | F-INK-001/006/007; R-19 | ink §§3,7; input §§4,9 | Ink design and public SampleBuilder; no tldraw source | none | 2026-11-13 |
+| `input/sessionInk.ts` | lane w-f | F-INK-006/007; R-19 | ink §§3,7; input §9 | Public model, session transaction and sample admission APIs; no tldraw source | none | 2026-11-13 |
+| `input/continueInk.ts` | lane w-f | F-INK-010 | ink spec; ink architecture §3 | Public immutable sample and transaction APIs; no tldraw source | none | 2026-11-13 |
 | `input/basicTools.ts` | lane w-f | F-INK-008/009; F-INPUT-010 | input §§6–7; ink spec | Input and ink behavioural specifications; injected hierarchy and transaction services; no tldraw source | none | 2026-11-13 |
 | `input/laserTrail.ts` | lane w-f | F-INK-009 | input §7; ink spec | Input and ink behavioural specifications; shared scheduler deadline seam; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |

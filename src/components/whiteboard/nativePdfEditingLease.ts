@@ -1,5 +1,6 @@
 import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
 import type { NativePdfViewerSource } from './NativePdfViewer';
+import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
 
 type ViewOptions = Parameters<typeof createNativeViewLease>[0];
 type PdfSource = ReturnType<NativePdfViewerSource['getSnapshot']>['source'];
@@ -24,11 +25,14 @@ export async function createNativePdfEditingLease(options: {
 }): Promise<NativeViewLease> {
     const { host, identity, sourceState, signal } = options;
     signal.throwIfAborted();
-    if (identity.kind !== 'pdfInk' || !host.canWriteSource(identity)) throw new Error('The PDF source is not eligible for editing');
+    if (identity.kind !== 'pdfInk' || getPdfInkSourceState(identity.documentId) !== sourceState || !host.canWriteSource(identity)) {
+        throw new Error('The PDF source is not eligible for editing');
+    }
     const snapshot = sourceState.getSnapshot(), source: PdfSource = snapshot.source;
     const current = () => {
         const state = sourceState.getSnapshot(), outer = host.outerIdentity(identity.documentId), token = source.source.token;
-        return state.status === 'ready' && state.source === source && source.isCurrent() && host.isCurrent(identity)
+        return getPdfInkSourceState(identity.documentId) === sourceState && state.status === 'ready' && state.source === source
+            && source.isCurrent() && host.isCurrent(identity)
             && !!outer && host.isCurrent(outer) && outer.documentId === token.documentId && outer.session === token.session
             && outer.vaultActivation === token.vaultEpoch && outer.bytesGeneration === token.bytesGeneration;
     };

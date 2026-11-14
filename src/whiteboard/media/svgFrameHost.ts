@@ -56,7 +56,7 @@ export const svgFrameFactory: SvgFrameFactory = {
             signal.throwIfAborted();
         } catch (error) { dispose(); throw error; }
         return {
-            async request(operation, blob, requestSignal) {
+            async request(operation, blob, requestSignal, size) {
                 if (used || (profile === 'svg-xml' ? operation !== 'header' : operation !== 'probe')) throw new Error('Invalid SVG frame operation');
                 if (blob.size > LIMIT) throw new RangeError('SVG files must be at most 5 MiB');
                 used = true;
@@ -73,7 +73,7 @@ export const svgFrameFactory: SvgFrameFactory = {
                         if ((await ack).seq !== sequence++) throw new Error('Invalid SVG chunk acknowledgement');
                     }
                     const reply = wait('result');
-                    frame.port.postMessage({ v: 1, token, type: 'finish', seq: sequence });
+                    frame.port.postMessage({ v: 1, token, type: 'finish', seq: sequence, size });
                     return (await reply).result;
                 } finally { requestSignal.removeEventListener('abort', cancel); }
             },

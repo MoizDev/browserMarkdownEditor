@@ -11,7 +11,7 @@ import { svgFrameFactory } from './svgFrameHost';
 // port deliberately cannot fall back to a detached parser in the vault origin.
 export interface SvgAdmissionProfile {
     header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number; readonly rgbaBytes: number }>;
-    probe(blob: Blob, signal: AbortSignal): Promise<void>;
+    probe(blob: Blob, width: number, height: number, signal: AbortSignal): Promise<void>;
 }
 interface WorkerInspection {
     readonly id: MediaId;
@@ -94,7 +94,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             } catch {
                 await worker.recycle('SVG worker probe failed', { lazy: true }).catch(() => undefined);
                 signal.throwIfAborted();
-                await svg.probe(typed, signal);
+                await svg.probe(typed, size.width, size.height, signal);
             }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();

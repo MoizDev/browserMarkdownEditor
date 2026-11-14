@@ -2,7 +2,7 @@ import type { ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
-import type { FrameBudget, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
@@ -26,6 +26,7 @@ export interface BoardLayersOptions {
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame, context?: ViewerPaintPresentation) => void;
+    readonly onDrawn?: (revision: number, frame: PaintFrame, context: ViewerPaintPresentation) => void;
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -142,8 +143,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedContext: ViewerPaintPresentation | null = null;
     type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation };
     const drawn = new Map<PaintBand, Drawn>();
-    let drawSource: PaintFrame | null = null, prepareToken: RenderToken | null = null;
+    let drawSource: PaintFrame | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
     let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
+    let announced = new WeakMap<RenderToken, { underlay: Drawn; content: Drawn }>();
     const recordDraw = (band: PaintBand, value: Drawn) => {
         // Accepted acknowledgements retain this exact frozen budget token. Revision alone cannot
         // distinguish a coarse summary from its fine replacement of the SAME immutable source.
@@ -153,6 +155,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         let bands = drawTokens.get(prepareToken);
         if (!bands) { bands = new Map(); drawTokens.set(prepareToken, bands); }
         bands.set(band, value);
+        const underlay = bands.get('underlay'), content = bands.get('content');
+        if (!underlay || !content || underlay.frame !== content.frame || underlay.omit !== content.omit || underlay.ink !== content.ink
+            || underlay.context.frameId !== content.context.frameId || !sameView(underlay.context.view, content.context.view)
+            || !sameOmission(underlay.context.omittedNodeIds, content.context.omittedNodeIds)) return;
+        const old = announced.get(prepareToken);
+        if (old?.underlay === underlay && old.content === content) return;
+        announced.set(prepareToken, { underlay, content });
+        options.onDrawn?.(value.frame.sceneRevision, value.frame, value.context);
     };
     const inkFrames = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
     const inkFrame = (frame: PaintFrame, ink: ReadonlySet<string>): PaintFrame => {
@@ -201,7 +211,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); drawSource = null; prepareToken = null;
+        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             deferredClear = true; collectRetired(); presented = null; presentedContext = null;
@@ -249,7 +259,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
         if (!adapter || disposed || lastPrepareFrame === budget.frameId) return;
-        lastPrepareFrame = budget.frameId; prepareToken = budget.token;
+        lastPrepareFrame = budget.frameId; prepareToken = budget.token; prepareFrameId = budget.frameId;
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);
@@ -296,13 +306,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null, ink = drawnBand?.ink;
         if (!drawnBand || !frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
         const context = drawnBand.context;
-        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink || ackToken !== token
+        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink || ackToken !== token || ackContext?.frameId !== context.frameId
             || !sameView(ackContext?.view, context.view) || !sameOmission(ackContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
             ackFrame = frame; ackOmit = omit; ackInk = ink; ackToken = token; ackContext = context; ackMask = 0;
         }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
-        if (presented === frame && presentedOmit === omit && presentedInk === ink && sameView(presentedContext?.view, context.view)
+        if (presented === frame && presentedOmit === omit && presentedInk === ink && presentedContext?.frameId === context.frameId
+            && sameView(presentedContext?.view, context.view)
             && sameOmission(presentedContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
         }
@@ -329,7 +340,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
-                    const context = Object.freeze({ view: copyView(view), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
+                    if (!prepareToken) return;
+                    const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },
@@ -338,7 +351,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
-                    const context = Object.freeze({ view: copyView(view), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
+                    if (!prepareToken) return;
+                    const context = Object.freeze({ view: copyView(view), frameId: prepareFrameId,
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },

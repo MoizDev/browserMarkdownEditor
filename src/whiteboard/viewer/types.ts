@@ -1,4 +1,5 @@
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
+import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
@@ -67,6 +68,7 @@ export interface ViewerEngine {
     setView(params: ViewerViewParams): void;
     focusNode(id: string): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
+    connectEmbeds(port: EmbedPresentationPort | null): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,

@@ -1,7 +1,8 @@
 import type { Rect, ViewState } from '../types';
 import type {
-    CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
+    CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
 } from './compositor.types';
+import { paintCanvasIsolation } from './canvas2dContext';
 import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import type { ClipToken, FrameEncoder, GpuPass, GroupToken, PipelineHandle, RectI, SamplerHandle, TextureHandle, UniformSlice } from './gfx/api';
@@ -92,6 +93,7 @@ export class GpuCompositor implements PaneCompositor {
     #surfaceGeneration = allocateSurfaceGeneration();
     #host: PaneSurfaceHost | null = null;
     #layers: readonly CompositorLayer[] = [];
+    readonly #isolationInventory: IsolationReservation[] = [];
     #layout: Readonly<PageStack> | null = null;
     #appearance: CompositorAppearance = { background: [0, 0, 0, 1], inverted: false };
     #metrics: ReadySurfaceMetrics | null = null;
@@ -120,12 +122,19 @@ export class GpuCompositor implements PaneCompositor {
         const currentDevice = () => !this.#disposed && this.#available ? options.owner.resources : null;
         this.resources = Object.freeze({ owner: this,
             get device() { return currentDevice(); },
+            reserveIsolation: (request: IsolationReservation) => {
+                this.#check();
+                this.#isolationInventory.push(Object.freeze({ ...request, bounds: Object.freeze({ ...request.bounds }),
+                    targets: request.targets ? Object.freeze({ ...request.targets, bounds: Object.freeze({ ...request.targets.bounds }) }) : undefined }));
+            },
+            paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
     }
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }
     get retryPending(): boolean { return this.#retryPending; }
+    get isolationInventory(): readonly IsolationReservation[] { return this.#isolationInventory; }
 
     attach(host: PaneSurfaceHost): void {
         this.#check();
@@ -198,8 +207,10 @@ export class GpuCompositor implements PaneCompositor {
         this.#prepared = null;
     }
 
-    prepareFrame(view: ViewState, budget: FrameBudget): void {
+    prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.#check();
+        const view = frame.view;
+        this.#isolationInventory.length = 0;
         const snapshot = this.#snapshot;
         if (!snapshot || snapshot.view !== view || budget.cameraEpoch !== view.epoch ||
             budget.token.deviceGeneration !== this.target.generation) return;
@@ -267,7 +278,8 @@ export class GpuCompositor implements PaneCompositor {
                         this.#encodings.delete(owned);
                         this.#retryPending = false;
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
-                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp),
+                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
+                            staleVersion: coverage.some(item => item.staleVersion),
                             qualityScale: snapshot.metrics!.qualityScale });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),

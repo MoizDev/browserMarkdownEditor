@@ -1,4 +1,22 @@
 import type { Rect } from '../types';
+import type { IsolationPaintOptions } from './compositor.types';
+import type { RectI } from './gfx/api';
+
+type IsolationPainter = (ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions,
+    paint: (isolatedCtx: CanvasRenderingContext2D) => void) => void;
+const isolationOwners = new WeakMap<CanvasRenderingContext2D, IsolationPainter>();
+
+export function registerCanvasIsolation(ctx: CanvasRenderingContext2D, painter: IsolationPainter): void {
+    isolationOwners.set(ctx, painter);
+}
+
+/** Context ownership, not the currently selected backend, chooses the admitted 2D pool. */
+export function paintCanvasIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions,
+    paint: (isolatedCtx: CanvasRenderingContext2D) => void): void {
+    const owner = isolationOwners.get(ctx);
+    if (!owner) throw new Error('The 2D context has no admitted isolation owner');
+    owner(ctx, bounds, options, paint);
+}
 
 export type CanvasImageCall = (source: CanvasImageSource, sourceRect: Rect, destRect: Rect, draw: () => void) => void;
 

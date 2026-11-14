@@ -291,11 +291,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
-                    prepareFrame: (view: ViewState, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
+                    prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         const drawing = drawCompositor();
-                        drawing?.prepareFrame(view, budget);
+                        drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
                         if (drawing === compositor && mirror && options.session.mirrors) lifecycle?.prepare2D(mirror, budget);
+                    },
+                    finishPrepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
+                        drawCompositor()?.finishPrepareFrame?.(frame, budget);
                     },
                     encode: (frame: ScheduledFrame) => {
                         lastFrameInterval = frame.intervalMs;
@@ -343,7 +346,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
-                                    complete, sharp, viewEpoch: frame.view.epoch, revision });
+                                    complete, sharp, staleVersion: drawing.coverage(frame).staleVersion,
+                                    viewEpoch: frame.view.epoch, revision });
                                 if (lastQuality !== qualityScale) {
                                     lastQuality = qualityScale;
                                     reportRenderQuality(options.paneId, qualityScale);

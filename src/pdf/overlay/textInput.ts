@@ -139,6 +139,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
         }
     };
     const cancel = (event: PointerEvent) => { if (drag?.id === event.pointerId) stop(drag); };
+    const lost = (event: PointerEvent) => { if (drag?.id === event.pointerId && !drag.ended) stop(drag); };
     const menu = (event: MouseEvent) => { if (visible) { event.preventDefault(); host.contextMenu(event.clientX, event.clientY, false); } };
     const key = (event: KeyboardEvent) => {
         if (!visible || event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
@@ -150,7 +151,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
     element.addEventListener('pointerdown', down); element.addEventListener('pointermove', move);
     element.addEventListener('pointerleave', leave); element.addEventListener('keydown', key);
     element.addEventListener('pointerup', up); element.addEventListener('pointercancel', cancel);
-    element.addEventListener('lostpointercapture', cancel);
+    element.addEventListener('lostpointercapture', lost);
     element.addEventListener('contextmenu', menu);
     return {
         refreshPointer: () => { if (visible && drag) update(drag); },
@@ -168,7 +169,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
             hoverAbort?.abort(); element.style.cursor = '';
             element.removeEventListener('pointerdown', down); element.removeEventListener('pointermove', move);
             element.removeEventListener('pointerup', up); element.removeEventListener('pointercancel', cancel);
-            element.removeEventListener('lostpointercapture', cancel);
+            element.removeEventListener('lostpointercapture', lost);
             element.removeEventListener('pointerleave', leave); element.removeEventListener('keydown', key);
             element.removeEventListener('contextmenu', menu);
         },

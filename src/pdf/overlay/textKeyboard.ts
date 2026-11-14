@@ -72,6 +72,7 @@ async function move(host: PdfTextKeyboardHost, point: TextPoint, movement: Movem
     preferredX: number | undefined): Promise<{ point: TextPoint; x?: number }> {
     const current = await host.page(point.page, signal);
     signal.throwIfAborted();
+    point = { ...point, offset: Math.max(0, Math.min(current.text.length, point.offset)) };
     if (movement.kind === 'edge') {
         const line = lineAt(current, point.offset), range = line >= 0 ? lineRange(current.sel.charU16, current.sel.lines, line) : undefined;
         return { point: { ...point, offset: range ? movement.direction < 0 ? range.from : range.to : point.offset,

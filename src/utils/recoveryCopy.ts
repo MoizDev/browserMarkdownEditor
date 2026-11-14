@@ -1,20 +1,34 @@
 import type { RecoveryEntry } from './recoveryJournal';
 
 type CopyData = string | Uint8Array | Blob;
-type Serializer = (payload: unknown, signal: AbortSignal) => Promise<CopyData>;
+export interface RecoveryMediaAsset {
+    readonly id: string;
+    readonly hash: string;
+    readonly extension: string;
+    readonly file: string | null;
+    readonly blob: Blob;
+}
+type Serializer = (payload: unknown, signal: AbortSignal, mediaFiles?: ReadonlyMap<string, string>) => Promise<CopyData>;
+type MediaGetter = (payload: unknown) => readonly RecoveryMediaAsset[];
 
 // Registration belongs to the document kind, not a particular session: journal
 // entries can outlive the session that captured them.
-const serializers = new Map<string, { serialize: Serializer }>();
+const serializers = new Map<string, { serialize: Serializer; media?: MediaGetter }>();
 
-export function registerRecoveryCopySerializer(kind: string, serialize: Serializer): () => void {
-    const registration = { serialize };
+export function registerRecoveryCopySerializer(kind: string, serialize: Serializer, media?: MediaGetter): () => void {
+    const registration = { serialize, media };
     serializers.set(kind, registration);
     return () => { if (serializers.get(kind) === registration) serializers.delete(kind); };
 }
 
+export function recoveryCopyMedia(entry: Pick<RecoveryEntry, 'kind' | 'copy'>): readonly RecoveryMediaAsset[] {
+    const copy = entry.copy;
+    if (!copy || typeof copy !== 'object' || copy instanceof Uint8Array || copy instanceof Blob || copy.kind !== 'recipe') return [];
+    return serializers.get(entry.kind)?.media?.(copy.payload) ?? [];
+}
+
 export async function materializeRecoveryCopy(entry: Pick<RecoveryEntry, 'kind' | 'copy'>,
-    signal: AbortSignal): Promise<CopyData> {
+    signal: AbortSignal, mediaFiles?: ReadonlyMap<string, string>): Promise<CopyData> {
     signal.throwIfAborted();
     const copy = entry.copy;
     if (typeof copy === 'string' || copy instanceof Uint8Array || copy instanceof Blob) return copy;
@@ -25,7 +39,7 @@ export async function materializeRecoveryCopy(entry: Pick<RecoveryEntry, 'kind' 
     }
     const registration = serializers.get(entry.kind);
     if (!registration) throw new Error(`No recovery copy serializer registered for ${entry.kind}`);
-    const result = await registration.serialize(copy.payload, signal);
+    const result = await registration.serialize(copy.payload, signal, mediaFiles);
     signal.throwIfAborted();
     if (typeof result !== 'string' && !(result instanceof Uint8Array) && !(result instanceof Blob)) {
         throw new Error('Invalid serialized recovery copy');

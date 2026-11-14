@@ -31,7 +31,7 @@ export interface ReaderCallbacks {
  onReaderLocation(token:ReaderToken,location:ReaderLocation,cause:LocationCause):void;
  onNotify(message:string):void;
 }
-export interface PdfReadingBinding extends ReaderCallbacks {identity:ReaderIdentity;initialRecord?:PdfTextRecordRead;emphasisEnabled:boolean;typography:ReadingTypography;onEmphasisChange(enabled:boolean):void;onTypographyChange(typography:ReadingTypography):void;registerKeyboardTarget(path:string,take:()=>void):()=>void}
+export interface PdfReadingBinding extends ReaderCallbacks {identity:ReaderIdentity;acquireSnapshot(identity:ReaderIdentity,signal:AbortSignal):Promise<ReadOnlyFileSnapshot>;initialRecord?:PdfTextRecordRead;emphasisEnabled:boolean;typography:ReadingTypography;onEmphasisChange(enabled:boolean):void;onTypographyChange(typography:ReadingTypography):void;registerKeyboardTarget(path:string,take:()=>void):()=>void}
 export interface ReaderIntegration extends ReaderCallbacks {
  identityForTab(tab:import('./index').OpenTab):ReaderIdentity;
  acquireSnapshot(identity:ReaderIdentity,signal:AbortSignal):Promise<ReadOnlyFileSnapshot>;

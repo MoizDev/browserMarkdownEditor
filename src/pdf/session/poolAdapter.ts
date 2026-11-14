@@ -7,8 +7,8 @@ import type { TiledDocumentPool } from './documentSession';
  * or close workers. The producer is built against that exact source lease. */
 export function tiledPoolAdapter(pool: PdfPool, producer: (document: PdfPoolDocument) => PdfTileProducer): TiledDocumentPool {
     return {
-        async open(blob, token, source, signal) {
-            const document = await pool.open({ blob, token, source, signal, priority: 0 });
+        async open(blob, token, source, signal, password) {
+            const document = await pool.open({ blob, token, source, signal, password, priority: 0 });
             try {
                 const pages = document.info.pages;
                 return {

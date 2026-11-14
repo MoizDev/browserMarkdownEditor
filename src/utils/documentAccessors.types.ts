@@ -7,3 +7,9 @@ export interface DocumentAccessors {
     revisionOf(path: string): BufferRevision | undefined;
     useDocumentRevision(documentId: string): BufferRevision | undefined;
 }
+
+/** Identity-based reads for a newly seeded document before its pane attaches. */
+export interface DocumentIdentityAccessors {
+    contentForDocument(documentId: string): string | undefined;
+    snapshotForDocument(documentId: string): BufferSnapshot | undefined;
+}

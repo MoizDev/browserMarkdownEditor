@@ -140,6 +140,7 @@ interface EditorPaneProps {
      *  debounced save can land after its pane has gone away. */
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
     onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
@@ -313,7 +314,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1118,6 +1119,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             content={tab.content}
                             onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
+                            attachCanvasSession={attachCanvasSession}
                             onFlushNow={onFlushNow}
                             onPreparePrint={onPreparePdfPrint}
                             onOpenNotebookSource={onOpenNotebookSource}
@@ -1179,6 +1181,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             content={tab.content}
                             onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
+                            attachCanvasSession={attachCanvasSession}
                             onConfirm={onConfirm}
                             theme={theme}
                             disk={tab.disk}

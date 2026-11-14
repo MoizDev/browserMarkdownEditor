@@ -32,19 +32,20 @@ export function pairMathTokens(doc: Text, tokens: readonly number[], code: reado
 
 /** Resume pairing before the first edited line and reuse the suffix once pairing converges. */
 export function updateBlockPairs(previous: readonly BlockPair[], oldDoc: Text, doc: Text,
-    changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[]): BlockPair[] {
+    changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[], codeChanged: readonly CharRange[]): BlockPair[] {
     let firstOld = oldDoc.length, lastNew = 0;
     changes.iterChangedRanges((fromA, _toA, _fromB, toB) => {
         firstOld = Math.min(firstOld, oldDoc.lineAt(fromA).from);
         lastNew = Math.max(lastNew, doc.lineAt(toB).to);
     });
-    if (changes.empty) return previous.map(pair => ({ ...pair,
-        accepted: !!pair.latex && !overlapsRange(code, pair.from, pair.to) }));
+    if (changes.empty) return previous.map(pair => overlapsRange(codeChanged, pair.from, pair.to)
+        ? { ...pair, accepted: !!pair.latex && !overlapsRange(code, pair.from, pair.to) } : pair);
     let prefix = 0;
     while (prefix < previous.length && previous[prefix].to <= firstOld) prefix++;
     const mapPair = (pair: BlockPair): BlockPair => {
         const from = changes.mapPos(pair.from, 1), to = changes.mapPos(pair.to, -1);
-        return { from, to, latex: pair.latex, accepted: !!pair.latex && !overlapsRange(code, from, to) };
+        return { from, to, latex: pair.latex, accepted: overlapsRange(codeChanged, from, to)
+            ? !!pair.latex && !overlapsRange(code, from, to) : pair.accepted };
     };
     const result = previous.slice(0, prefix).map(mapPair);
     const start = result.length ? result[result.length - 1].to : 0;

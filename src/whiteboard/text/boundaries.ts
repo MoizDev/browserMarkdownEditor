@@ -1,10 +1,10 @@
 import type { Block, RichText } from './richText';
-import { projectionBlockStart, projectionLength, projectionPosition } from './projection';
+import { ensureProjectionSteps, projectionBlockStart, projectionLength, projectionPosition } from './projection';
 import { WeakIdentityLru } from './weakLru';
 import { WordBlockIndex } from './wordIndex';
 import { runIndex } from './runIndex';
 import { GraphemeNavigator } from './graphemes';
-import { finishTextStepsCooperative } from './cooperative';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 import type { PlainTextOptions } from './plainText';
 
 export interface BoundarySelection { readonly anchor: number; readonly focus: number }
@@ -29,22 +29,26 @@ export function inheritWordBoundaries(before: RichText, after: RichText, first: 
 }
 export function clearWordBoundaries(): void { emptyWords.clear(); }
 
-function endsWithCR(block: Block): boolean {
+function* endsWithCRSteps(block: Block): Generator<void, boolean> {
+    let count = 0;
     for (let index = block.runs.length - 1; index >= 0; index--) {
         const text = block.runs[index].text;
         if (text.length) return text.charCodeAt(text.length - 1) === 13;
+        if ((++count & 255) === 0) yield;
     }
     return false;
 }
+function endsWithCR(block: Block): boolean { return finishTextSteps(endsWithCRSteps(block)); }
 
-function blockString(block: Block): string {
+function* blockStringSteps(block: Block): Generator<void, string> {
     if (block.runs.length === 1) return block.runs[0].text;
     const parts: string[] = [];
-    let current = '';
+    let current = '', count = 0;
     for (const run of block.runs) {
         if (current && current.length + run.text.length > 4096) { parts.push(current); current = ''; }
         if (run.text.length > 4096) parts.push(run.text);
         else current += run.text;
+        if ((++count & 255) === 0) yield;
     }
     if (current) parts.push(current);
     return parts.join('');
@@ -63,30 +67,37 @@ export class TextBoundaries {
         this.entries = new WeakIdentityLru(byteLimit, entryLimit);
     }
 
-    private entry(block: Block): BlockEntry {
+    private *entrySteps(block: Block): Generator<void, BlockEntry> {
         const cached = this.entries.get(block);
         if (cached) return cached;
-        const text = blockString(block);
+        const text = yield* blockStringSteps(block);
         // Charge for the retained string and both possible ICU segmentation views.
         const bytes = 512 + text.length * 12;
         const result: BlockEntry = { text, bytes };
         this.entries.set(block, result, bytes);
         return result;
     }
+    private entry(block: Block): BlockEntry { return finishTextSteps(this.entrySteps(block)); }
 
     private clamp(text: RichText, offset: number): number {
         return Math.max(0, Math.min(projectionLength(text), Number.isFinite(offset) ? Math.floor(offset) : 0));
     }
 
     /** A block separator participates in CRLF when the preceding block ends in CR. */
-    isBoundary(text: RichText, offset: number): boolean {
-        if (!text.blocks.length || !Number.isSafeInteger(offset) || offset < 0 || offset > projectionLength(text)) return false;
+    *isBoundarySteps(text: RichText, offset: number): Generator<void, boolean> {
+        if (!text.blocks.length || !Number.isSafeInteger(offset) || offset < 0) return false;
+        yield* ensureProjectionSteps(text);
+        if (offset > projectionLength(text)) return false;
         const point = projectionPosition(text, offset);
         if (point.offset === 0 && point.length !== 0) return true;
         if (point.offset === point.length)
-            return point.index + 1 >= text.blocks.length || !endsWithCR(point.block);
-        const entry = this.entry(point.block);
+            return point.index + 1 >= text.blocks.length || !(yield* endsWithCRSteps(point.block));
+        const entry = yield* this.entrySteps(point.block);
         return (entry.graphemes ??= new GraphemeNavigator(entry.text)).isBoundary(point.offset);
+    }
+    isBoundary(text: RichText, offset: number): boolean { return finishTextSteps(this.isBoundarySteps(text, offset)); }
+    isBoundaryCooperative(text: RichText, offset: number, options: PlainTextOptions): Promise<boolean> {
+        return finishTextStepsCooperative(this.isBoundarySteps(text, offset), options);
     }
 
     /** One extended grapheme in projection order, including a CR+separator pair. */

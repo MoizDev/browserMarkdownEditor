@@ -1,5 +1,5 @@
 import { textBoundaries } from './boundaries';
-import { projectionLength } from './projection';
+import { ensureProjectionSteps, projectionLength } from './projection';
 import type { TextSpliceMap } from './rangeMap';
 import type { RichText } from './richText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
@@ -68,6 +68,8 @@ function* common(before: RichText, after: RichText, reverse: boolean, limit: num
  */
 export function* deriveRichTextChangeSteps(before: RichText, after: RichText): Generator<void, RichTextChange | null> {
     if (before === after) return null;
+    yield* ensureProjectionSteps(before);
+    yield* ensureProjectionSteps(after);
     const oldLength = projectionLength(before), newLength = projectionLength(after);
     const limit = Math.min(oldLength, newLength);
     let from = yield* common(before, after, false, limit);

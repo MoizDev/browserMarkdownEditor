@@ -3,7 +3,7 @@ import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjectionSteps, projectionLength, projectionPosition } from './projection';
 import { inheritWordBoundaries, textBoundaries } from './boundaries';
 import { blockOccurrenceOrigin, carrierForTail, carrierOccurrence, carrierSource, coalesceCarrierSteps, mapCarrier, mapCarrierIdentity, runOccurrenceOrigin, runOrigin, sliceCarrierSteps, trackBlock, trackBlockIdentity, trackRunIdentity } from './carriers';
-import { firstRunAt, runContaining, runIndex } from './runIndex';
+import { firstRunAt, runContaining, runIndex, runIndexSteps } from './runIndex';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
@@ -53,8 +53,6 @@ export const EMPTY_RICH_TEXT: RichText = {
 };
 
 export class RichTextLimitError extends RangeError {}
-
-const blockTextLength = (block: Block): number => runIndex(block).length;
 
 function sameMarks(a: Marks, b: Marks): boolean {
     return a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.code === b.code
@@ -132,7 +130,8 @@ function slicedRun(run: Run, text: string, origin?: object): Run {
     return trackRunIdentity({ ...run, text }, origin);
 }
 function* sliceRunSteps(text: RichText, blockIndex: number, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Generator<void, Run[]> {
-    const block = text.blocks[blockIndex], runs: Run[] = [], indexed = runIndex(block);
+    const block = text.blocks[blockIndex], runs: Run[] = [];
+    const indexed = yield* runIndexSteps(block);
     let visited = 0;
     for (let i = firstRunAt(indexed, from); i < block.runs.length; i++) {
         if ((++visited & 255) === 0) yield;
@@ -158,7 +157,7 @@ function emptyRun(text: RichText, blockIndex: number, offset: number, preserveOr
 }
 
 function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: boolean): Generator<void, RichFragment> {
-    if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
+    if (to < from || !(yield* textBoundaries.isBoundarySteps(text, from)) || !(yield* textBoundaries.isBoundarySteps(text, to)))
         throw new RangeError('Rich-text slice must use grapheme boundaries');
     const first = locate(text, from);
     const last = locate(text, to);
@@ -174,7 +173,7 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
         if (((i - first.block) & 255) === 255) yield;
         const block = text.blocks[i];
         const start = i === first.block ? first.offset : 0;
-        const end = i === last.block ? last.offset : blockTextLength(block);
+        const end = i === last.block ? last.offset : (yield* runIndexSteps(block)).length;
         const runs = yield* sliceRunSteps(text, i, start, end, from === to, preserveOrigins);
         const { carriers: _carriers, ...base } = block;
         const carriers = yield* sliceCarrierSteps(block, start, end, preserveOrigins, index => carrierOccurrence(text, i, index));
@@ -215,7 +214,7 @@ function* spliceCarrierSteps(text: RichText, firstIndex: number, before: readonl
     const last = before.length - 1, output: BlockCarrier[][] = [];
     for (let index = 0; index < insert.blocks.length; index++) { output.push([]); if ((++work & 255) === 0) yield; }
     const lastOutput = output.length - 1;
-    const suffixStart = (lastOutput === 0 ? firstOffset : 0) + blockTextLength(insert.blocks[lastOutput]);
+    const suffixStart = (lastOutput === 0 ? firstOffset : 0) + (yield* runIndexSteps(insert.blocks[lastOutput])).length;
     const insertedSources = new Set<object>(), insertedTails = new Set<object>();
     for (let b = 0; b < insert.blocks.length; b++) {
         const block = insert.blocks[b];
@@ -261,7 +260,7 @@ function* spliceCarrierSteps(text: RichText, firstIndex: number, before: readonl
         if ((++work & 255) === 0) yield;
         const origin = block.tail !== undefined && block.tail !== '[]' ? blockOccurrenceOrigin(text, firstIndex + index) : undefined;
         if (index > 0 && origin && !insertedTails.has(origin))
-            place(carrierForTail(block, 0, blockTextLength(block), origin), index);
+            place(carrierForTail(block, 0, (yield* runIndexSteps(block)).length, origin), index);
     }
     for (let index = 0; index < insert.blocks.length; index++) {
         const block = insert.blocks[index], offset = index === 0 ? firstOffset : 0;
@@ -272,7 +271,7 @@ function* spliceCarrierSteps(text: RichText, firstIndex: number, before: readonl
         }
         if ((++work & 255) === 0) yield;
         if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOccurrenceOrigin(insert, index) !== blockOccurrenceOrigin(text, firstIndex))
-            output[0].push(carrierForTail(block, offset, offset + blockTextLength(block), blockOccurrenceOrigin(insert, index)));
+            output[0].push(carrierForTail(block, offset, offset + (yield* runIndexSteps(block)).length, blockOccurrenceOrigin(insert, index)));
     }
     const result: (readonly BlockCarrier[] | undefined)[] = [];
     for (const carriers of output) {
@@ -295,11 +294,12 @@ export interface RichSpliceResult {
 // into it; without that explicit mode opaque zero-length runs would duplicate.
 export function* spliceRichTextSteps(text: RichText, from: number, to: number, insert: RichFragment,
     wholeBlocks = false): Generator<void, RichSpliceResult> {
-    if (to < from || insert.blocks.length === 0 || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
-        throw new RangeError('Invalid rich splice or grapheme boundary');
+    if (to < from || insert.blocks.length === 0 || !(yield* textBoundaries.isBoundarySteps(text, from))
+        || !(yield* textBoundaries.isBoundarySteps(text, to))) throw new RangeError('Invalid rich splice or grapheme boundary');
     const first = locate(text, from);
     const last = locate(text, to);
-    if (wholeBlocks && (first.offset !== 0 || last.offset !== blockTextLength(text.blocks[last.block])))
+    const lastLength = (yield* runIndexSteps(text.blocks[last.block])).length;
+    if (wholeBlocks && (first.offset !== 0 || last.offset !== lastLength))
         throw new RangeError('Whole-block splice is not block-aligned');
     const count = text.blocks.length - (last.block - first.block + 1) + insert.blocks.length;
     if (count > MAX_TEXT_BLOCKS) throw new RichTextLimitError('Rich text exceeds 100000 blocks');
@@ -308,10 +308,9 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
     if (wholeBlocks) after = insert.blocks; // Exact history/rollback snapshot, already validated.
     else {
         const startBlock = text.blocks[first.block];
-        const endBlock = text.blocks[last.block];
         const mappedCarriers = yield* spliceCarrierSteps(text, first.block, before, first.offset, last.offset, insert);
         const prefix = yield* sliceRunSteps(text, first.block, 0, first.offset, false, true);
-        const suffix = yield* sliceRunSteps(text, last.block, last.offset, blockTextLength(endBlock), from === to, true);
+        const suffix = yield* sliceRunSteps(text, last.block, last.offset, lastLength, from === to, true);
         const retained = new Set<object>();
         let work = 0;
         for (const run of prefix) { if (opaqueRun(run)) retained.add(runOrigin(run)); if ((++work & 255) === 0) yield; }
@@ -322,7 +321,8 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
         for (const run of suffix) { if (opaqueRun(run)) retained.add(runOrigin(run)); if ((++work & 255) === 0) yield; }
         const anchors: Run[] = [];
         for (let b = 0; b < before.length; b++) {
-            const block = before[b], indexed = runIndex(block);
+            const block = before[b];
+            const indexed = yield* runIndexSteps(block);
             const low = b === 0 ? first.offset : 0, high = b + 1 === before.length ? last.offset : indexed.length;
             for (let r = firstRunAt(indexed, low); r < indexed.count; r++) {
                 const position = indexed.starts[r], run = block.runs[r];
@@ -336,8 +336,13 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
         }
         const blocks: Block[] = [];
         for (let i = 0; i < insert.blocks.length; i++) {
-            const fragment = insert.blocks[i];
-            const runs = [...(i === 0 ? prefix : []), ...(i === 0 ? anchors : []), ...fragment.runs, ...(i + 1 === insert.blocks.length ? suffix : [])];
+            const fragment = insert.blocks[i], runs: Run[] = [];
+            const groups: readonly (readonly Run[])[] = [i === 0 ? prefix : [], i === 0 ? anchors : [], fragment.runs,
+                i + 1 === insert.blocks.length ? suffix : []];
+            for (const group of groups) for (const run of group) {
+                runs.push(run);
+                if ((++work & 255) === 0) yield;
+            }
             // Existing first-block attributes live outside the replaced character
             // range. Newline-bearing fragment blocks carry their own attributes.
             const base = i === 0 ? startBlock : fragment;
@@ -351,10 +356,10 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
     }
     let segmentLength = after.length - 1;
     for (let i = 0; i < after.length; i++) {
-        segmentLength += blockTextLength(after[i]);
+        segmentLength += (yield* runIndexSteps(after[i])).length;
         if ((i & 255) === 255) yield;
     }
-    const replacedLength = last.start + blockTextLength(text.blocks[last.block]) - first.start;
+    const replacedLength = last.start + lastLength - first.start;
     const length = projectionLength(text) - replacedLength + segmentLength;
     if (length > MAX_TEXT_LENGTH) throw new RichTextLimitError('Rich text exceeds 1000000 UTF-16 units');
     const blocks: Block[] = [];

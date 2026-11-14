@@ -1,5 +1,7 @@
 import type { Block } from './richText';
 import { WeakIdentityLru } from './weakLru';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
+import type { PlainTextOptions } from './plainText';
 
 /** UTF-16 run starts, including the endpoint; duplicate starts are zero-width anchors. */
 export interface RunIndex {
@@ -13,25 +15,30 @@ const BYTE_LIMIT = 8 * 1024 * 1024;
 const ENTRY_LIMIT = 256;
 const cache = new WeakIdentityLru<Block, CachedRunIndex>(BYTE_LIMIT, ENTRY_LIMIT);
 
-function construct(block: Block): CachedRunIndex {
+function* constructSteps(block: Block): Generator<void, CachedRunIndex> {
     const runs = block.runs, starts = new Uint32Array(runs.length + 1);
     let length = 0;
     for (let index = 0; index < runs.length; index++) {
         starts[index] = length;
         length += runs[index].text.length;
         if (!Number.isSafeInteger(length) || length > 0xffffffff) throw new RangeError('Text block exceeds index limits');
+        if ((index & 255) === 255) yield;
     }
     starts[runs.length] = length;
     // Entries retain only offsets; the weak key does not pin runs or opaque raw data.
     return { index: { starts, length, count: runs.length }, bytes: 256 + starts.byteLength };
 }
 
-export function runIndex(block: Block): RunIndex {
+export function* runIndexSteps(block: Block): Generator<void, RunIndex> {
     const hit = cache.get(block);
     if (hit) return hit.index;
-    const built = construct(block);
+    const built = yield* constructSteps(block);
     cache.set(block, built, built.bytes);
     return built.index;
+}
+export function runIndex(block: Block): RunIndex { return finishTextSteps(runIndexSteps(block)); }
+export function runIndexCooperative(block: Block, options: PlainTextOptions): Promise<RunIndex> {
+    return finishTextStepsCooperative(runIndexSteps(block), options);
 }
 
 function lowerBound(values: Uint32Array, value: number): number {

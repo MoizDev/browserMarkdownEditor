@@ -2,7 +2,7 @@ import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { SECURITY_LIMITS } from '../security/limits';
 import { textBoundaries } from './boundaries';
 import { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
-import { projectionLength } from './projection';
+import { ensureProjectionSteps, projectionLength } from './projection';
 import { mapTextSelectionTo, normalizeTextSelection, type TextAffinity, type TextSpliceMap } from './rangeMap';
 import { sliceRichText, sliceRichTextCooperative, spliceRichText, spliceRichTextCooperative, type Block, type RichFragment, type RichText } from './richText';
 import type { RichSelection } from './rich';
@@ -210,12 +210,13 @@ export async function applyRichTransactionCooperative(initial: RichText, operati
     };
     const fenced: PlainTextOptions = { ...options, cooperate: async () => { check(); await options.cooperate(); check(); } };
     check();
+    await finishTextStepsCooperative(ensureProjectionSteps(initial), fenced);
     let text = initial, current = normalizeTextSelection(initial, selection, affinity), started = performance.now();
     const inverseSelection = current, inverses: RichSpliceOperation[] = [], maps: (TextSpliceMap | null)[] = [];
     for (const operation of operations) {
         check();
-        if (operation.to < operation.from || !textBoundaries.isBoundary(text, operation.from) || !textBoundaries.isBoundary(text, operation.to))
-            throw new RangeError('Rich splice must use grapheme boundaries');
+        if (operation.to < operation.from || !(await textBoundaries.isBoundaryCooperative(text, operation.from, fenced))
+            || !(await textBoundaries.isBoundaryCooperative(text, operation.to, fenced))) throw new RangeError('Rich splice must use grapheme boundaries');
         await validateRichFragmentCooperative(operation.insert, fenced);
         const old = await sliceRichTextCooperative(text, operation.from, operation.to, fenced, true);
         const local = await deriveRichTextChangeCooperative(old, operation.insert, fenced);

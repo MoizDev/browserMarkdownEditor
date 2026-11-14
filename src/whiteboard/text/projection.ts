@@ -113,11 +113,15 @@ function* buildSteps(blocks: readonly Block[]): Generator<void, Tree | null> {
     };
     return leaves.length ? make(0, leaves.length) : null;
 }
-function build(blocks: readonly Block[]): Tree | null { return finishTextSteps(buildSteps(blocks)); }
 function indexed(tree: Tree | null): ProjectionIndex { return { tree, length: tree ? tree.units - 1 : 0 }; }
+export function* ensureProjectionSteps(text: RichText): Generator<void, void> {
+    if (indexes.has(text)) return;
+    const tree = yield* buildSteps(text.blocks);
+    if (!indexes.has(text)) indexes.set(text, indexed(tree));
+}
 function indexFor(text: RichText): ProjectionIndex {
     let index = indexes.get(text);
-    if (!index) { index = indexed(build(text.blocks)); indexes.set(text, index); }
+    if (!index) { finishTextSteps(ensureProjectionSteps(text)); index = indexes.get(text)!; }
     return index;
 }
 

@@ -184,5 +184,13 @@ export class VaultIndexClient {
         this.worker.reset();
         void this.sweep('user').catch(() => {});
     }
-    dispose(): void { this.disposed = true; this.stopForeground(); this.worker.dispose(); }
+    dispose(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.stopForeground();
+        // The worker owns the write-behind batch and releases its vault lock
+        // only after the batch has committed.
+        void this.worker.request('close', { session: this.session }, control)
+            .catch(() => {}).finally(() => this.worker.dispose());
+    }
 }

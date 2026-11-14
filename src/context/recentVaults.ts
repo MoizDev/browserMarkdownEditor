@@ -12,6 +12,7 @@
 import { get, set } from 'idb-keyval';
 import type { RecentVault, StoredVault } from '../types';
 import { MAX_STORED_VAULTS } from '../utils/recentVaults';
+import { forgetIndex } from './vaultIndex/persistence';
 
 const IDB_KEY = 'recent-vaults';
 
@@ -109,6 +110,8 @@ export function rememberVault(handle: FileSystemDirectoryHandle): Promise<{ list
 
         const next = trim([entry, ...list.filter((_, i) => i !== existing)]);
         await set(IDB_KEY, next);
+        const retained = new Set(next.map(vault => vault.id));
+        for (const vault of list) if (!retained.has(vault.id)) void forgetIndex(vault.id);
         return { list: next, id: entry.id };
     });
 }
@@ -153,6 +156,7 @@ export function forgetVault(id: string): Promise<StoredVault[]> {
     return serialize(async () => {
         const next = (await readList()).filter(v => v.id !== id);
         await set(IDB_KEY, next);
+        void forgetIndex(id);
         return next;
     });
 }

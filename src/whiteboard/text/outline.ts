@@ -5,7 +5,7 @@ import { outlineFontUrl } from './outlineFonts';
 import type { Face, PaintFragment, PaintRect } from './paint';
 import type { OutlineWorkerRequest } from './outlineTypes';
 
-const fonts = new BoardFonts(self.fonts);
+const fonts = new BoardFonts((globalThis as unknown as { fonts: FontFaceSet }).fonts);
 const loaded = new Map<string, Promise<import('harfbuzzjs').Font>>();
 async function outlineFont(face: Face): Promise<import('harfbuzzjs').Font> {
     const url = outlineFontUrl(face.key);

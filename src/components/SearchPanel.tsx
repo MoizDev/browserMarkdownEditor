@@ -8,6 +8,7 @@ import type { VaultTextCache, FileSearchResult } from '../utils/vaultSearch';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 
 interface SearchPanelProps {
+    readSnapshot: (handle: FileSystemFileHandle) => Promise<File>;
     fileTree: FileTreeNode[];
     /** Owned by FileExplorer so indexed text survives closing the panel. */
     cache: VaultTextCache;
@@ -44,7 +45,7 @@ function rowKeyHandler(activate: () => void) {
  * tree in the sidebar. Matches file names and file contents (VSCode-style),
  * grouped per file; clicking a row opens the file (and jumps to the match).
  */
-export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
+export default function SearchPanel({ readSnapshot, fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
     // Subscribed rather than passed down: routing this through the memoized
     // FileExplorer re-rendered the entire file tree after every save (see
     // utils/saveEpoch.ts). Only this component, only while search is open.
@@ -71,10 +72,10 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
     // are unchanged, so calls after the first are a cheap stat pass.
     const refreshIndex = useCallback(() => {
         const seq = ++syncSeqRef.current;
-        cache.sync(textFiles).then(snapshot => {
+        cache.sync(textFiles, readSnapshot).then(snapshot => {
             if (seq === syncSeqRef.current) setIndex(snapshot);
         });
-    }, [cache, textFiles]);
+    }, [cache, textFiles, readSnapshot]);
 
     // Sync on mount, on tree changes, and after each save-flush lands (a file
     // edited then CLOSED would otherwise keep serving its pre-edit disk text).

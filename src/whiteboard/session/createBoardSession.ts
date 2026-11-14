@@ -231,7 +231,14 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         subscribe: channel.subscribe.bind(channel),
         hasPendingEdits: pendingState,
         onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
-        checkpoint() { guard(); try { scheduler.flushNow(); return capture(); } finally { notifyPending(); } },
+        checkpoint() {
+            // Admission checkpoints revision zero while the UI's temporary write seal is still closed.
+            // A checkpoint captures immutable content, not a C2 mutation or permission to write the file.
+            if (notifyingPending || disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
+            if (recovering) throw new ApplyFailed('read-only', 'Recovery is in progress');
+            if (applyController.isReadOnly) throw new ApplyFailed('read-only', 'Cannot capture a board after an unsafe transaction failure', true);
+            try { scheduler.flushNow(); return capture(); } finally { notifyPending(); }
+        },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
             // A first format conversion can write admitted revision zero without a model edit.

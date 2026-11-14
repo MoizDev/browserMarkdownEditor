@@ -1,6 +1,6 @@
 import type { ExtBag, RawJson } from '../model/json';
 import type { MediaId } from '../model/media';
-import { scanRawMedia, visitNodeRaw, visitRichTextRaw, type NodeRawCarrier } from '../model/rawMedia';
+import { pdfHostMediaRawValues, scanRawMedia, visitNodeRaw, visitRichTextRaw, type NodeRawCarrier } from '../model/rawMedia';
 import type { Block } from '../text/richText';
 
 export interface PreservedDelta {
@@ -27,6 +27,13 @@ export class RawChanges {
         if (before === after) return;
         if (before !== undefined) this.add(before, -1);
         if (after !== undefined) this.add(after, 1);
+    }
+    pdf(before: RawJson, after: RawJson): void {
+        if (before === after) return;
+        // Source fingerprints are PDF-owned bookkeeping, not media. Use the
+        // same structural partition as native admission, including unknown tails.
+        for (const raw of pdfHostMediaRawValues(before)) if (raw !== null) this.add(raw, -1);
+        for (const raw of pdfHostMediaRawValues(after)) if (raw !== null) this.add(raw, 1);
     }
     private map(before: ReadonlyMap<string, RawJson> | undefined, after: ReadonlyMap<string, RawJson> | undefined): void {
         if (before === after) return;

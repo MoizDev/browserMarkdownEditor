@@ -496,6 +496,23 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
     }
     return OK;
 }
+/** Admission checks a repaired, indexed record without pretending it is a new
+ * create op (which would reject its already-present id and opaque records). */
+export function validateLoadedNode(context: ValidationContext, node: Node, index: number): ValidationResult {
+    try {
+        if (node.kind === 'opaque') return finalNode(context, node, index);
+        if (!extension(node.ext)) return refuse('schema', index, node.id, 'Invalid preservation metadata');
+        for (const key of COMMON) {
+            const result = field(context, node.kind, node.id, key, Reflect.get(node, key), index);
+            if (!result.ok) return result;
+        }
+        for (const key of FIELDS[node.kind]) {
+            const result = field(context, node.kind, node.id, key, Reflect.get(node, key), index);
+            if (!result.ok) return result;
+        }
+        return finalNode(context, node, index);
+    } catch { return refuse('schema', index, node.id, 'Malformed loaded node'); }
+}
 function incomingAttachments(context: ValidationContext, id: NodeId, index: number): ValidationResult {
     const incoming = context.doc.attachedTo.get(id);
     if (!incoming) return OK;

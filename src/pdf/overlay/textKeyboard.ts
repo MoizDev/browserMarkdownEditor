@@ -12,6 +12,8 @@ export interface PdfTextKeyboardHost {
     /** Visible pane request, priority 0. */
     page(page: number, signal: AbortSignal): Promise<PdfSelectionReply>;
     findOpen(): boolean;
+    /** Cancel an asynchronous clipboard gather before clearing selection. */
+    cancelCopy?(): boolean;
     /** The find owner closes the bar and retains its current hit as selection. */
     closeFindPreservingHit(): void;
 }
@@ -124,6 +126,7 @@ export function bindPdfTextKeyboard(root: HTMLElement, host: PdfTextKeyboardHost
         const target = event.target;
         if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [role="dialog"], [role="menu"]'))) return;
         if (event.key === 'Escape') {
+            if (host.cancelCopy?.()) { event.preventDefault(); return; }
             if (host.findOpen()) { event.preventDefault(); host.closeFindPreservingHit(); }
             else if (host.selection.getSnapshot().selection) { event.preventDefault(); host.selection.clear(); }
             preferredX = undefined;

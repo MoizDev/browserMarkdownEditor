@@ -88,8 +88,8 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
         controller.current = {
             updateView(view) {
                 const { camera, viewport } = view;
-                mirror.element.style.transform = `translate(${-camera.x * camera.z}px, ${-camera.y * camera.z}px) scale(${camera.z})`;
                 if (!pageRects.length || camera.z <= 0) return;
+                mirror.setViewport(camera.x, camera.y, camera.z);
                 const first = pageAtY(camera.y), last = pageAtY(camera.y + viewport.height / camera.z);
                 for (let page = Math.max(0, first - 1); page <= Math.min(pageRects.length - 1, last + 1); page++) {
                     const rect = pageRects[page], transform = pagePresentation(rect, view).surface;

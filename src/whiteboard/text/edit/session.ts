@@ -1,5 +1,5 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
-import { sliceRichText, type RichFragment } from '../richText';
+import { sliceRichText, type Block, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -28,6 +28,7 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     compositionFormat(event: Event): void;
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
+    blocks(selection: EditSelection, kind: Block['kind'] | 'indent' | 'outdent'): { readonly transaction: import('../../change/ops').Transaction; readonly selection: EditSelection };
     changed(selection: EditSelection): void;
     requestChrome(): void;
     reducedMotion(): boolean;
@@ -75,7 +76,7 @@ export class TextEditSession {
             setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
             fragment: (from, text, marks) => services.fragment(from, text, marks),
             format: (mark, from, to) => services.format(mark, from, to),
-            link: (url, from, to) => services.link(url, from, to),
+            link: (url, from, to) => services.link(url, from, to), enter: selection => services.enter(selection),
             typing: (kind, before, after, change) => this.typingHistory.begin(kind, before, after, change),
             completeTyping: (kind, after) => this.typingHistory.complete(kind, after),
             markTransformation: () => this.typingHistory.mark(),
@@ -236,6 +237,25 @@ export class TextEditSession {
                     try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.services.announce(`${command} formatting changed`); }
                     catch (error) { this.services.reportError(error); }
                     this.host.sync();
+                } else if (command === 'enter') {
+                    try { this.selection = this.controller.enter(this.selection); this.services.changed(this.selection); }
+                    catch (error) { this.services.reportError(error); }
+                    this.resetBlink();
+                    this.host.sync();
+                } else if (command.startsWith('heading-') || command === 'ordered-list' || command === 'bullet-list' || command === 'indent' || command === 'outdent') {
+                    const kind: Block['kind'] | 'indent' | 'outdent' = command === 'ordered-list' ? 'ol' : command === 'bullet-list' ? 'ul'
+                        : command === 'indent' || command === 'outdent' ? command : command === 'heading-0' ? 'p' : `h${command.slice(-1)}` as Block['kind'];
+                    this.typingHistory.close();
+                    this.services.history.open('Format text blocks');
+                    try {
+                        const result = this.services.blocks(this.selection, kind);
+                        this.services.apply(result.transaction);
+                        this.selection = result.selection;
+                        this.services.setSelection(result.selection);
+                        this.services.changed(result.selection);
+                        this.services.announce('Text block formatting changed');
+                    } catch (error) { this.services.reportError(error); }
+                    finally { this.services.history.close(); this.host.sync(); }
                 } else {
                     if (command === 'undo' || command === 'redo' || command === 'finish') this.typingHistory.close();
                     this.services.command(command, this.selection);

@@ -38,7 +38,7 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
         if (!host || identity === null) return;
         const [session, bytesGeneration] = identity.split(':').map(Number);
         let cancelled = false;
-        void import('../../platform/render/attachPlatformPane').then(({ attachPlatformPane }) => {
+        void import('../../platform/render/cpuEntry').then(({ attachPlatformPane }) => {
             if (cancelled) return;
             const state = current.current;
             const attached = attachPlatformPane(host, {

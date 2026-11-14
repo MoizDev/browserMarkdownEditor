@@ -5,6 +5,7 @@ import { sheetId, type NodeId, type SheetId } from '../../model/ids';
 import type { MediaId } from '../../model/media';
 import type { Node } from '../../model/nodes';
 import type { SampleLease } from '../../model/samples';
+import type { ImportRichText } from '../../text/rich';
 import { SampleStore } from '../../ink/samples';
 import { ReportBuilder, type ImportReport } from '../report';
 import { scaleImportedNode } from '../scale';
@@ -13,7 +14,7 @@ import { readBinding, resolveBinding, type LegacyBinding } from './bindings';
 import { backdropRole, readShape, shapeBase, type LegacyShape } from './common';
 import { readLegacyEnvelope, type LegacyEnvelope, type LegacyObject } from './envelope';
 import { unknownShapeFields, unknownShapeProperties } from './fields';
-import { readLabelledShape, type RichTextReader } from './labelled';
+import { readLabelledShape } from './labelled';
 import { readInlineAsset, type AdmitLegacyMedia, type ImportedMedia } from './media';
 import { readPictureShape } from './pictures';
 import { readLegacySheet } from './sheets';
@@ -22,7 +23,7 @@ import { readStroke } from './stroke';
 export interface LegacyRecordOptions {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
     readonly samples: SampleStore;
-    readonly rich: RichTextReader;
+    readonly rich: ImportRichText;
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
     readonly assertCurrent: () => void;
@@ -109,6 +110,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             const imported = await readInlineAsset(record, options.admitMedia, options.signal);
             options.assertCurrent();
             assetIds.set(id, imported.entry.id); media.push(imported);
+            if (!ordinaryAssets.has(id)) preserve({ assetId: id, media: imported.entry.id }, id, 'orphan-asset');
         } catch (error) {
             options.signal?.throwIfAborted();
             options.assertCurrent();
@@ -173,7 +175,13 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                     endpoints = { start: resolvedStart.end, end: resolvedEnd.end };
                 }
                 node = readBasicShape(shape, base) ?? readPictureShape(shape, base, assetIds, bookmarks)
-                    ?? readLabelledShape(shape, base, options.rich, endpoints);
+                    ?? readLabelledShape(shape, base, (value, owner) => {
+                        const rich = options.rich(value);
+                        for (const reason of rich.repairs) report.repair(owner, reason);
+                        if (rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
+                        for (const reason of rich.unrepresentable) report.refuse(owner, reason);
+                        return rich.text;
+                    }, endpoints);
             }
             if (!node) {
                 preserve(shape.source, shape.id, 'shape');

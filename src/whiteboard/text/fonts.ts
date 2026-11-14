@@ -63,9 +63,9 @@ export function fontSupports(key: FontKey, text: string): boolean {
     return true;
 }
 
-/** CSS at the fixed reference size; unregistered aliases naturally use the fallback. */
-export function fontCss(face: FontDescriptor): string {
-    return `${face.style} ${face.weight} 64px "${face.familyName}", ${face.fallback}`;
+/** A fallback paint must remain fallback even if the alias subsequently loads. */
+export function fontCss(face: FontDescriptor, loaded = true): string {
+    return `${face.style} ${face.weight} 64px ${loaded ? `"${face.familyName}", ` : ''}${face.fallback}`;
 }
 
 type Listener = (epoch: number, key: FontKey) => void;
@@ -79,7 +79,8 @@ export class BoardFonts {
     get epoch(): number { return this.currentEpoch; }
     isLoaded(key: FontKey): boolean { return this.loaded.has(fontDescriptor(key).url); }
     subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-    async ensure(key: FontKey, waitMs = 100): Promise<boolean> {
+    /** Wait for the actual face; export workers must not substitute a timeout stand-in. */
+    load(key: FontKey): Promise<boolean> {
         const descriptor = fontDescriptor(key);
         let load = this.loads.get(descriptor.url);
         if (!load) {
@@ -93,6 +94,10 @@ export class BoardFonts {
             }, () => false);
             this.loads.set(descriptor.url, load);
         }
+        return load;
+    }
+    async ensure(key: FontKey, waitMs = 100): Promise<boolean> {
+        const load = this.load(key);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, waitMs)); });
         try { return await Promise.race([load, timeout]); }

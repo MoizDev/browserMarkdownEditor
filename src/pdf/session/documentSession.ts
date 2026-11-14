@@ -23,7 +23,7 @@ export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {
     return JSON.stringify(pages.map(page => [page.index, page.width, page.height, page.rotate, page.userUnit, ...page.toUserSpace]));
 }
 
-interface Slot { value: unknown; dispose?: () => void }
+interface Slot { value: unknown; dispose?: () => void | Promise<void> }
 
 /**
  * App/session lifetime, not a component lifetime. The source snapshot and
@@ -38,16 +38,23 @@ export class PdfTiledDocumentSession {
     private document: OpenTiledDocument | null = null;
     private closing: Promise<void> | null = null;
     private closed = false;
+    private captureUsers = 0;
+    private readonly captureWaiters = new Set<() => void>();
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: Blob, private readonly pool: TiledDocumentPool,
-        private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
+        private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; stat: { lastModified: number; size: number }; dispose(): void }>,
+        private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean,
+        private readonly onStableBlob?: (blob: Blob, stat: { lastModified: number; size: number }, signal: AbortSignal) => void) {}
 
     open(): Promise<OpenTiledDocument> {
         if (this.closed || !this.isTokenCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
         if (!this.opening) {
             this.opening = (async () => {
-                const blob = await stablePdfBlob(this.file, this.controller.signal);
+                const snapshot = await this.acquireSnapshot(this.controller.signal);
+                let blob: Blob;
+                try { blob = await stablePdfBlob(snapshot.blob, this.controller.signal); }
+                finally { snapshot.dispose(); }
+                this.onStableBlob?.(blob, snapshot.stat, this.controller.signal);
                 const opened = await this.pool.open(blob, this.token, this.source, this.controller.signal);
                 if (this.closed || !this.isTokenCurrent(this.token)) {
                     await opened.close();
@@ -62,13 +69,31 @@ export class PdfTiledDocumentSession {
         return this.opening;
     }
 
+    /** Captures pin the source until their async work has actually settled.
+     * Hiding a pane never cancels this signal; closing the session does. */
+    async acquireCapture(): Promise<{ document: OpenTiledDocument; signal: AbortSignal; release(): void }> {
+        if (this.closed) throw new DOMException('PDF session closed', 'AbortError');
+        this.captureUsers++;
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            if (--this.captureUsers === 0) { for (const wake of this.captureWaiters) wake(); this.captureWaiters.clear(); }
+        };
+        try {
+            const document = await this.open();
+            if (this.closed) throw new DOMException('PDF session closed', 'AbortError');
+            return { document, signal: this.controller.signal, release };
+        } catch (error) { release(); throw error; }
+    }
+
     isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
 
     getSlot<T>(key: symbol): T | undefined { return this.slots.get(key)?.value as T | undefined; }
-    setSlot<T>(key: symbol, value: T, dispose?: () => void): void {
+    setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>): void {
         if (this.closed) throw new Error('PDF session is closed');
         if (this.slots.has(key)) throw new Error('PDF session slot is already occupied');
-        this.slots.set(key, { value, dispose });
+        this.slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });
     }
 
     close(): Promise<void> {
@@ -78,12 +103,13 @@ export class PdfTiledDocumentSession {
         this.closing = (async () => {
             // A late successful open closes itself after observing `closed`.
             if (this.opening) await this.opening.catch(() => undefined);
+            if (this.captureUsers) await new Promise<void>(resolve => this.captureWaiters.add(resolve));
             const document = this.document;
             this.document = null;
             const slots = [...this.slots.values()];
             this.slots.clear();
             const failures: unknown[] = [];
-            for (const slot of slots) try { slot.dispose?.(); } catch (error) { failures.push(error); }
+            for (const slot of slots) try { await slot.dispose?.(); } catch (error) { failures.push(error); }
             try { await document?.close(); } catch (error) { failures.push(error); }
             if (failures.length) throw new AggregateError(failures, 'PDF session could not be closed cleanly');
         })();

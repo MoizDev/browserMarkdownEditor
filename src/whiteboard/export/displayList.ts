@@ -25,7 +25,7 @@ function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCo
   })
 }
 
-async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
+export async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
   const commands: PathCommand[] = []
   const job = new InkOutlineJob(coverage, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
   try {
@@ -38,7 +38,7 @@ async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSi
   } catch (error) { job.cancel(); throw error }
 }
 
-async function displayItem(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal): Promise<PageDisplayItem> {
+export async function paintItemDisplay(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal): Promise<PageDisplayItem> {
   let leaf: PageDisplayItem
   if (item.kind === 'image') {
     const data = await image(item, signal)
@@ -88,7 +88,7 @@ export async function paintFrameDisplayList(
     for (const item of band) {
       if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
       signal?.throwIfAborted()
-      items.push(await displayItem(item, scale, image, signal))
+      items.push(await paintItemDisplay(item, scale, image, signal))
     }
   }
   signal?.throwIfAborted()

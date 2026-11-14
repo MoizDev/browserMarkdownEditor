@@ -36,6 +36,8 @@ export interface GestureOwner {
   readonly pointerIds: ReadonlySet<number>
   readonly kind: GestureKind
   update(samples: readonly RealSample[], modifiers: Modifiers): void
+  suspend?(): void
+  discard?(): void
   finish(reason: FinishReason): void
   cancel(reason: CancelReason): void
 }

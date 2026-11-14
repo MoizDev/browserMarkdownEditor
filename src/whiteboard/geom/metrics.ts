@@ -1,4 +1,4 @@
-import { splitCubic } from './flatten';
+import { splitCubic, splitCubicAt } from './flatten';
 import { nextDown, nextUp } from './numeric';
 import type { Cubic, Vec2 } from './path';
 
@@ -80,28 +80,34 @@ export interface LengthParameter { readonly lower: number; readonly upper: numbe
 export function invertCubicLength(curve: Cubic, target: number, error: number): LengthParameter {
     if (!Number.isFinite(target) || target < 0 || !(error > 0) || !Number.isFinite(error)) throw new RangeError('Invalid length query');
     if (target === 0) return { lower: 0, upper: 0 };
-    let budget = error / 4;
+    let budget = error / 16, low = 0, high = 1;
+    const bounds = (c: Cubic) => {
+        const table = cumulativeLengthTable(cubicLengthTable(c, budget));
+        return table[table.length - 1];
+    };
+    if (target >= bounds(curve).upper) return { lower: 1, upper: 1 };
+    const prefix = (t: number) => bounds(splitCubicAt(curve, t)[0]);
     for (;;) {
-        const table = cubicLengthTable(curve, budget, error / 4);
-        let lowerLength = 0, upperLength = 0, first = -1, last = -1;
-        for (let i = 0; i < table.length; i++) {
-            const s = table[i];
-            if (lowerLength <= target && nextUp(upperLength + s.upper) >= target) {
-                if (first < 0) first = i;
-                last = i;
-            }
-            lowerLength = Math.max(0, nextDown(lowerLength + s.lower));
-            upperLength = nextUp(upperLength + s.upper);
+        const left = splitCubicAt(curve, high)[0];
+        const interval = low === 0 ? left : splitCubicAt(left, low / high)[1];
+        if (bounds(interval).upper <= error) return { lower: low, upper: high };
+        const mid = (low + high) / 2;
+        if (mid === low || mid === high) throw new RangeError('Length inversion cannot be refined at this precision');
+        const middle = prefix(mid);
+        if (middle.upper < target) { low = mid; continue; }
+        if (middle.lower > target) { high = mid; continue; }
+        // A target at exactly the midpoint remains enclosed, so use both quarter
+        // probes instead of falsely deciding which side owns an uncertain value.
+        const a = (low + mid) / 2, b = (mid + high) / 2;
+        const before = prefix(a), after = prefix(b);
+        let progressed = false;
+        if (before.upper < target) { low = a; progressed = true; }
+        if (after.lower > target) { high = b; progressed = true; }
+        if (!progressed) {
+            const next = budget / 2;
+            if (next === 0 || next === budget) throw new RangeError('Length inversion cannot be refined at this precision');
+            budget = next;
         }
-        if (target >= upperLength) return { lower: 1, upper: 1 };
-        if (first >= 0) {
-            let extent = 0;
-            for (let i = first; i <= last; i++) extent = nextUp(extent + table[i].upper);
-            if (extent <= error) return { lower: table[first].t0, upper: table[last].t1 };
-        }
-        const next = budget / 2;
-        if (next === 0 || next === budget) throw new RangeError('Length inversion cannot be refined at this precision');
-        budget = next;
     }
 }
 export function cubicPoint(c: Cubic, t: number): Vec2 {

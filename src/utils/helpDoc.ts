@@ -44,6 +44,8 @@ Under the tabs, while the file tree is showing, is a row of buttons for the tree
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
 
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
 
@@ -119,6 +121,8 @@ opens that note and scrolls to the line it matched, then puts the tree back. EPU
 them is not text.
 
 ### Drag and Drop
+Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
+
 You can drag and drop files and folders within the file tree to reorganize your vault:
 - Drag any item and drop it onto a folder to move it inside that folder.
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.

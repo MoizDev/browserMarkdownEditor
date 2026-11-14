@@ -64,10 +64,11 @@ function normalizedRuns(runs: readonly Run[]): readonly Run[] {
 }
 
 export function normalizeRichText(text: RichText): RichText {
+    if (!text.blocks.length) return EMPTY_RICH_TEXT;
     let blocks: Block[] | undefined;
     for (let i = 0; i < text.blocks.length; i++) {
         const block = text.blocks[i];
-        const runs = normalizedRuns(block.runs);
+        const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
         if (runs !== block.runs && !blocks) blocks = text.blocks.slice(0, i);
         if (blocks) blocks.push(runs === block.runs ? block : { ...block, runs });
     }

@@ -65,7 +65,7 @@ const KEYS = {
     sheet: ['id', 'name', 'order', 'ext'], recordDelete: ['t', 'op', 'id'],
     sheetSet: ['t', 'op', 'id', 'key', 'value'], board: ['t', 'key', 'value'], mediaAdd: ['t', 'op', 'entry'],
     ext: ['t', 'target', 'id', 'value'], mediaDrop: ['t', 'op', 'id', 'restoreMissing'],
-    mediaFile: ['t', 'op', 'id', 'file'],
+    mediaFile: ['t', 'op', 'id', 'file'], mediaFileRestore: ['t', 'op', 'id', 'file', 'restoreExt'],
 } as const;
 const VALUES = {
     dir: ['auto', 'ltr', 'rtl'], snap: ['none', 'center', 'edge-point', 'edge'],
@@ -438,7 +438,9 @@ export function validateOp(context: ValidationContext, op: unknown, opIndex: num
                 }
             case 'media':
                 if (op.op === 'set-file') {
-                    if (!closed(op, KEYS.mediaFile) || typeof op.id !== 'string' || !MEDIA_HASH.test(op.id)
+                    const restores = 'restoreExt' in op;
+                    if ((restores && (context.origin !== 'revert' || !extension(op.restoreExt)))
+                        || !closed(op, restores ? KEYS.mediaFileRestore : KEYS.mediaFile) || typeof op.id !== 'string' || !MEDIA_HASH.test(op.id)
                         || !isSafeMediaFile(op.file)) return refuse('V-9', opIndex, null, 'Media filename must be a bounded safe .Assets leaf or null');
                     return doc.media.has(op.id as MediaId) ? OK : refuse('V-9', opIndex, null, 'Media does not exist');
                 }

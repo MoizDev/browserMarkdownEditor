@@ -182,7 +182,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     options.surface.addEventListener('paste', paste);
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
-        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen, commands: options.commands, ink: ink.ink,
+        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen, commands: options.commands,
+        ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,

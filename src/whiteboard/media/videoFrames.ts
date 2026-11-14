@@ -239,8 +239,6 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
                 throw error;
             }
         },
-        // Only the base assembler holds physical source pins; the decorated frames add no GPU work of their own.
-        whenRetired: () => base.whenRetired(),
         retire(frame) {
             const source = original(frame), held = versions.get(source);
             if (frame === source) {

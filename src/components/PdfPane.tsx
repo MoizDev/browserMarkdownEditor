@@ -94,6 +94,7 @@ export interface PdfPaneProps {
 interface PdfSource {
     entry: object;
     role: PdfRole;
+    session?: PdfDocumentSession;
     handle: FileSystemFileHandle;
     path: string;
 }
@@ -149,12 +150,24 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const roleNotice = source && pdfRoleNotice(source) || (!disk ? foreignNotice : undefined);
     const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld);
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
+    const sessionVersion = useRef<string | undefined>(undefined);
+    const pristineSession = useRef<{ version: string; session: PdfDocumentSession } | undefined>(undefined);
     const generation = useRef(0);
+    useLayoutEffect(() => {
+        session?.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+        pristineSession.current?.session.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+    }, [session, isVisible, file.path, loadedSource]);
+    useEffect(() => () => { void pristineSession.current?.session.dispose().catch(console.error); }, []);
     const returnEpoch = useRef(0);
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
     const [textReader, setTextReader] = useState<PdfTextReader | null>(null);
     useLayoutEffect(() => { textReader?.setVisible(isVisible); }, [textReader, isVisible]);
     const [textSurface, setTextSurface] = useState(false);
+    const previousMode = useRef(mode);
+    useLayoutEffect(() => {
+        if (previousMode.current !== mode && isVisible) session?.handoff(readPdfViewPos(file.path)?.page ?? 0);
+        previousMode.current = mode;
+    }, [mode, session, isVisible, file.path]);
     const lastReturnRevision = useRef<number | undefined>(undefined);
     const textAnchor = useRef<PdfTextAnchor | undefined>(undefined);
     const [initialTextAnchor, setInitialTextAnchor] = useState<PdfTextAnchor>();
@@ -229,6 +242,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         }
         if (returnEpoch.current !== epoch) return;
         if (readPdfNavigationRevision(file.path) !== revision) return;
+        session.handoff(checkpoint.page);
         textAnchor.current = next;
         setInitialTextAnchor(next);
         textSurfaceRef.current = true;
@@ -261,6 +275,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             } else setMappingNotice('Returned to the physical page.');
         }
         if (returnEpoch.current !== epoch) return;
+        session?.handoff(target.page);
         writePdfViewPos(file.path, target);
         lastReturnRevision.current = readPdfNavigationRevision(file.path);
         textSurfaceRef.current = false;
@@ -377,8 +392,29 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     }
                     b?.onReaderVersion(b.identity, current.version);
                 }
+                let annotationSession: PdfDocumentSession | undefined;
+                if (isEditablePdfRole(role)) {
+                    if (role.kind === 'plain') {
+                        if (session && sessionVersion.current === current.version.hash && !viewStaleRef.current) annotationSession = session;
+                        else {
+                            annotationSession = createPdfDocumentSession(role.original, ++generation.current);
+                            sessionVersion.current = current.version.hash;
+                            viewStaleRef.current = false;
+                            setSession(annotationSession);
+                        }
+                    } else {
+                        const cached = pristineSession.current;
+                        if (cached?.version === current.version.hash) annotationSession = cached.session;
+                        else {
+                            if (cached) void cached.session.dispose().catch(console.error);
+                            annotationSession = createPdfDocumentSession(role.original, ++generation.current);
+                            pristineSession.current = { version: current.version.hash, session: annotationSession };
+                        }
+                    }
+                    annotationSession.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+                }
                 displayedVersion.current = current.version;
-                setSource({ role, handle, path: file.path, entry: annotateEntry });
+                setSource({ role, session: annotationSession, handle, path: file.path, entry: annotateEntry });
             } catch (err) {
                 if (inspected) revokePdfRole(inspected);
                 console.error('Could not open PDF:', err);
@@ -425,6 +461,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 }
                 viewStaleRef.current = false;
                 setViewError(null);   // a later read succeeded — clear ITS stale failure
+                sessionVersion.current = version.hash;
                 setSession(createPdfDocumentSession(bytes, ++generation.current));
             } catch (err) {
                 // Surfaced, not just logged: this is now the ONLY read a plain
@@ -514,7 +551,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     </button>
                 </div>
             );
-        } else if (mode === 'edit' && editableSource) {
+        } else if (mode === 'edit' && editableSource && loadedSource?.session) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
@@ -524,6 +561,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         key={file.path}
                         filePath={file.path}
                         original={editableSource.original}
+                        session={loadedSource.session}
                         emphasisEnabled={reading?.emphasisEnabled ?? false}
                         onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
                         // Only an unsaved buffer outranks this fresh role read.

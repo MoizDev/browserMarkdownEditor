@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { openClassicPdf } from './pdfClassicOpen';
+import { mapPool } from './pool';
 import { forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
@@ -8,6 +9,8 @@ export interface PdfDocumentSession {
     acquire(): Promise<{ document: PDFDocumentProxy; release(): void }>;
     acquirePage(index0: number, consumer: 'render' | 'text' | 'thumbnail' | 'agent', signal?: AbortSignal): Promise<PdfPageLease>;
     acquireRender(index0: number, signal?: AbortSignal): Promise<PdfPageLease>;
+    geometry(): Promise<Array<{ width: number; height: number }>>;
+    handoff(index0: number): void;
     setVisible(visible: boolean, currentPage?: number): void;
     markRendered(index0: number): void;
     dispose(): Promise<void>;
@@ -17,10 +20,10 @@ const aborted = () => new DOMException('PDF operation cancelled', 'AbortError');
 
 /** The retained pane owns disposal; changing surfaces releases consumers, never
  * the document. In particular, an old surface cannot destroy a new one's proxy. */
-export function createPdfDocumentSession(bytes: Uint8Array, generation: number): PdfDocumentSession {
+export function createPdfDocumentSession(bytes: Uint8Array, generation: number, purpose: 'viewer' | 'agent' = 'viewer'): PdfDocumentSession {
     const opening = new AbortController();
     let taskReady = false;
-    const loadingTask = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal }).then(openedTask => { taskReady = true; return openedTask; });
+    const loadingTask = openClassicPdf({ bytes, purpose, signal: opening.signal }).then(openedTask => { taskReady = true; return openedTask; });
     const loadedDocument = loadingTask.then(openedTask => openedTask.promise);
     // A pane can be closed before its first consumer awaits worker startup.
     void loadedDocument.catch(() => {});
@@ -33,6 +36,8 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
     const pages = new Map<number, Entry>();
     let visible = true, currentPage = 0;
     const renderQueues = new Map<number, Promise<void>>();
+    let geometryPromise: Promise<Array<{ width: number; height: number }>> | undefined;
+    const handoffs = new Map<number, () => void>();
     function makeEntry(index: number, doc: PDFDocumentProxy): Entry {
         const entry: Entry = {
             owner, index, users: 0, visible, current: currentPage, rendered: false, lastUsed: 0,
@@ -87,12 +92,13 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
                 }
                 parsedPageBusy(entry);
                 entry.users++;
+                handoffs.get(index0)?.();
                 const owned = entry;
                 let held = true;
                 const release = () => {
                     if (!held) return;
                     held = false;
-                    if (--owned.users === 0 && pages.get(index0) === owned) parsedPageIdle(owned);
+                    if (--owned.users === 0 && !closing && pages.get(index0) === owned) parsedPageIdle(owned);
                     releaseDocument();
                 };
                 try {
@@ -105,6 +111,43 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
                 releaseDocument();
                 throw error;
             }
+        },
+        handoff(index0) {
+            if (!visible || closing || handoffs.has(index0)) return;
+            const entry = pages.get(index0);
+            if (!entry) return;
+            const releaseDocument = hold();
+            parsedPageBusy(entry);
+            entry.users++;
+            let timer: ReturnType<typeof setTimeout>;
+            const release = () => {
+                if (handoffs.get(index0) !== release) return;
+                handoffs.delete(index0);
+                clearTimeout(timer);
+                if (--entry.users === 0 && !closing && pages.get(index0) === entry) parsedPageIdle(entry);
+                releaseDocument();
+            };
+            handoffs.set(index0, release);
+            timer = setTimeout(release, 5000);
+        },
+        geometry() {
+            if (!geometryPromise) {
+                const pending = (async () => {
+                    const docLease = await this.acquire();
+                    try {
+                        return await mapPool(Array.from({ length: docLease.document.numPages }, (_, i) => i), async index => {
+                            const lease = await this.acquirePage(index, 'render');
+                            try {
+                                const { width, height } = lease.page.getViewport({ scale: 1 });
+                                return { width, height };
+                            } finally { lease.release(); }
+                        });
+                    } finally { docLease.release(); }
+                })();
+                geometryPromise = pending;
+                void pending.catch(() => { if (geometryPromise === pending) geometryPromise = undefined; });
+            }
+            return geometryPromise;
         },
         async acquireRender(index0, signal) {
             const lease = await this.acquirePage(index0, 'render', signal);
@@ -132,6 +175,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
         setVisible(next, current = currentPage) {
             visible = next;
             currentPage = current;
+            if (!visible) for (const release of handoffs.values()) release();
             parsedPageVisibility(owner, visible, pages.values(), currentPage);
         },
         markRendered(index0) {
@@ -141,6 +185,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
         dispose() {
             if (disposal) return disposal;
             closing = true;
+            for (const release of handoffs.values()) release();
             forgetParsedPages(owner);
             // Startup has no lease yet; once loaded, retain the original
             // document/page lease ordering rather than destroying mid-render.

@@ -20,7 +20,7 @@
 
 import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
-import { openClassicPdf } from './pdfClassicOpen';
+import type { PdfDocumentSession } from './pdfDocumentSession';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // Role extraction uses the build worker's read-only inventory operation; this
@@ -90,7 +90,7 @@ export interface PdfPageSource {
      * page is re-rendered sharp.
      */
     renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
-    /** Tear down the pdf.js worker. */
+    /** Release this source's document lease, not the pane-owned session. */
     close(): Promise<void>;
 }
 
@@ -108,54 +108,56 @@ export interface PdfPageSource {
  * show strokes baked into the backdrop while the editable copies of those same
  * strokes load on top, i.e. everything doubled.
  */
-export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
-    // The render task must outlive this call so pages can be rasterized on
-    // demand. Unlike the short role-read job, its close() belongs to the caller.
-    const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop' });
-    const doc = await task.promise;
-
-    const sizes: PdfPageSize[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-        const page = await doc.getPage(i);
-        const { width, height } = page.getViewport({ scale: 1 });
-        sizes.push({ width, height });
-    }
+export async function openPdfPages(session: PdfDocumentSession): Promise<PdfPageSource> {
+    const docLease = await session.acquire();
+    let sizes: PdfPageSize[];
+    try { sizes = await session.geometry(); }
+    catch (error) { docLease.release(); throw error; }
+    let closed = false;
 
     return {
         sizes,
         async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
-            const page = await doc.getPage(index + 1);
-            const viewport = page.getViewport({ scale });
+            if (closed) throw new DOMException('PDF source closed', 'AbortError');
+            const lease = await session.acquireRender(index, signal);
+            const page = lease.page;
+            let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.ceil(viewport.width);
-            canvas.height = Math.ceil(viewport.height);
-            const context = canvas.getContext('2d');
-            if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
-            const emphasis = emphasisEnabled || onEmphasisResult ? await bindPdfNativeEmphasis(page, context, emphasisEnabled) : undefined;
             let rendering: import('pdfjs-dist').RenderTask | undefined;
             const cancel = () => rendering?.cancel();
-            const current = () => !signal?.aborted;
+            const current = () => !closed && !signal?.aborted;
             signal?.addEventListener('abort', cancel);
             try {
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
+                session.markRendered(index);
+                const viewport = page.getViewport({ scale });
+                canvas.width = Math.ceil(viewport.width);
+                canvas.height = Math.ceil(viewport.height);
+                const context = canvas.getContext('2d');
+                if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
+                emphasis = emphasisEnabled || onEmphasisResult ? await bindPdfNativeEmphasis(page, context, emphasisEnabled) : undefined;
                 signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
                 rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
                 await rendering.promise;
                 await emphasis?.verify({ viewport }, task => { rendering = task; }, current);
                 signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
                 if (emphasis) onEmphasisResult?.({ ...emphasis.result });
                 const blob = await new Promise<Blob | null>(res =>
                     canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
                 signal?.throwIfAborted();
+                if (!current()) throw new DOMException('PDF source closed', 'AbortError');
                 if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
                 return URL.createObjectURL(blob);
             } finally {
                 signal?.removeEventListener('abort', cancel);
                 emphasis?.dispose();
                 canvas.width = canvas.height = 0;
-                page.cleanup();
+                lease.release();
             }
         },
-        close: () => task.destroy(),
+        async close() { if (!closed) { closed = true; docLease.release(); } },
     };
 }
 

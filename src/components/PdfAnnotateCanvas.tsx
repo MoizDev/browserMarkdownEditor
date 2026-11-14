@@ -16,10 +16,8 @@ import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
-import * as pdfjs from 'pdfjs-dist';
-import type { PDFDocumentLoadingTask } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
-import { pdfWorker } from '../utils/pdfWorker';
+import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
 import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import './PdfNativeEmphasis.css';
@@ -35,6 +33,8 @@ interface PdfAnnotateCanvasProps {
     filePath: string;
     /** Pristine original PDF bytes (never the stamped ones — see pdfAnnotation.ts). */
     original: Uint8Array;
+    /** The pristine document session, shared with the reader when bytes match. */
+    session: PdfDocumentSession;
     /** Serialized tldraw snapshot of existing annotations, '' if none yet. */
     snapshot: string;
     /** Path-explicit: a debounced save can land after a tab switch. */
@@ -148,12 +148,12 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-async function pageText(doc: pdfjs.PDFDocumentProxy, pageNumber: number): Promise<string> {
-    const page = await doc.getPage(pageNumber);
+async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
+    const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
-        return projectPdfPageV1(content.items, pdfPageGeometry(page)).text;
-    } finally { page.cleanup(); }
+        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
+    } finally { lease.release(); }
 }
 
 /** Decode an image and draw it over the whole `w`×`h` of `ctx`. */
@@ -193,7 +193,7 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
@@ -235,15 +235,6 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
     /** The page under the top edge (0-based) and how far into it, as the view
      *  watch last saw them — the position the agent is told. */
     const viewPosRef = useRef({ top: 0, offset: 0 });
-    /** A text-only pdf.js document of the original, opened the first time the
-     *  agent asks for page text and closed with the canvas. `PdfPageSource`
-     *  keeps its own document private, and page text is the one thing this
-     *  canvas has no other way to give: its pages are pictures. */
-    const textDocRef = useRef<PDFDocumentLoadingTask | null>(null);
-    useEffect(() => () => {
-        void textDocRef.current?.destroy();
-        textDocRef.current = null;
-    }, [original]);
 
     /** Every page's box on the canvas — the same layout the save path maps
      *  strokes back through. */
@@ -301,7 +292,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
 
         (async () => {
             try {
-                source = await openPdfPages(original);
+                source = await openPdfPages(session);
                 if (cancelled) { await source.close(); return; }
 
                 // Geometry is enough to lay out and mount the canvas — no need to
@@ -337,7 +328,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             for (const image of images) if (image) URL.revokeObjectURL(image.url);
             void source?.close();
         };
-    }, [original, filePath]);
+    }, [session, filePath]);
 
     const handleMount = useCallback((editor: Editor) => {
         if (!pages) return;
@@ -761,16 +752,15 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 return png;
             },
             pdfText: async (pageNumbers) => {
-                if (!textDocRef.current) {
-                    textDocRef.current = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
-                }
-                const doc = await textDocRef.current.promise;
-                const out: Array<{ page: number; text: string }> = [];
-                for (const n of pageNumbers) {
-                    if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
-                    out.push({ page: n, text: await pageText(doc, n) });
-                }
-                return out;
+                const doc = await session.acquire();
+                try {
+                    const out: Array<{ page: number; text: string }> = [];
+                    for (const n of pageNumbers) {
+                        if (!Number.isInteger(n) || n < 1 || n > doc.document.numPages) continue;
+                        out.push({ page: n, text: await pageText(session, n) });
+                    }
+                    return out;
+                } finally { doc.release(); }
             },
             // Strokes in the debounce or mid-export are edits App cannot see yet
             // (App.checkOpenDocs): reloading the PDF from disk over them would
@@ -825,7 +815,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 void runFlush(true);
             }
         };
-    }, [filePath, original, pages, boxes]);
+    }, [filePath, original, session, pages, boxes]);
 
     const renderThumbnail = useCallback((index: number, scale: number) => {
         const source = sourceRef.current;

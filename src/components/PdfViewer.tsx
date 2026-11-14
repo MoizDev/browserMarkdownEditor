@@ -16,7 +16,6 @@ import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
-import { mapPool } from '../utils/pool';
 import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
 import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
@@ -433,23 +432,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 documentLease = await session.acquire();
                 if (cancelled) { documentLease.release(); return; }
                 const doc = documentLease.document;
-                // Every page's size, because the scroll height depends on all
-                // of them — but not ONE AT A TIME. Each is a round trip to the
-                // pdf.js worker and nothing is drawn until the last one lands,
-                // so a 200-page document showed "Loading PDF…" for 200 of them
-                // in a row (measured: 565ms, and it grows with the page count).
-                // Bounded rather than unleashed, for the reason utils/pool.ts
-                // gives; `mapPool` keeps the results in page order.
-                const dims = await mapPool(
-                    Array.from({ length: doc.numPages }, (_, i) => i),
-                    async (i) => {
-                        const lease = await session.acquirePage(i, 'render');
-                        try {
-                            const vp = lease.page.getViewport({ scale: 1 });
-                            return { w: vp.width, h: vp.height };
-                        } finally { lease.release(); }
-                    },
-                );
+                // Geometry is retained with the document across surface mounts;
+                // its first acquisition is bounded-concurrent in the session.
+                const dims = (await session.geometry()).map(({ width, height }) => ({ w: width, h: height }));
                 if (cancelled) return;
                 const ds: DocState = { doc, dims, gen };
                 // Set the ref synchronously: the re-anchor layout effect (which

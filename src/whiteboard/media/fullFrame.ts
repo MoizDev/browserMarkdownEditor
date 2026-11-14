@@ -49,8 +49,10 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
         try {
             let scratchBytes = info.mime === 'image/avif' ? 4 * (2 ** 26) : bytes;
             if (info.mime === 'image/svg+xml') {
-                const preflight = await boardWorker('decode').request<boolean>('svgPreflight', { blob }, owner,
-                    { priority: 0, deadlineMs: 5000, signal: combined }, options.isCurrent);
+                const decoder = boardWorker('decode'); let preflight: boolean;
+                try { preflight = await decoder.request<boolean>('svgPreflight', { blob }, owner,
+                    { priority: 0, deadlineMs: 5000, signal: combined }, options.isCurrent); }
+                catch (error) { if (combined.aborted) await decoder.recycle('SVG preflight cancelled').catch(() => undefined); throw error; }
                 check(); if (preflight !== true) throw new Error('Invalid SVG preflight response');
                 const [{ createSvgAdmissionProfile }, { svgFrameFactory }] = await Promise.all([import('./svgProfile'), import('./svgFrameHost')]);
                 check();

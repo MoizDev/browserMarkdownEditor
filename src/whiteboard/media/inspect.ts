@@ -49,7 +49,12 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         if (!parsing) throw new Error('Not enough memory to inspect this SVG');
         let size: Awaited<ReturnType<SvgAdmissionProfile['header']>>;
         try {
-            if (await call<boolean>('svgPreflight', { blob }, 5000) !== true) throw new Error('Invalid SVG preflight response');
+            try {
+                if (await call<boolean>('svgPreflight', { blob }, 5000) !== true) throw new Error('Invalid SVG preflight response');
+            } catch (error) {
+                if (signal.aborted) await worker.recycle('SVG preflight cancelled').catch(() => undefined);
+                throw error;
+            }
             signal.throwIfAborted();
             size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
             signal.throwIfAborted();

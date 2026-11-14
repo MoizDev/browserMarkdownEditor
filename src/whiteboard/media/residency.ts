@@ -203,8 +203,14 @@ export class MediaResidency implements PaintImageProvider {
                 if (!parsing) throw new Error('Not enough memory to inspect this SVG');
                 try {
                     const typed = source.blob.slice(0, source.blob.size, 'image/svg+xml');
-                    const passed = await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
-                        { priority: 1, deadlineMs: 5000, signal }, () => current());
+                    let passed: boolean;
+                    try {
+                        passed = await this.worker.request<boolean>('svgPreflight', { blob: typed }, job.identity,
+                            { priority: 1, deadlineMs: 5000, signal }, () => current());
+                    } catch (error) {
+                        if (signal.aborted && this.visible && !this.disposed) await this.worker.recycle('SVG preflight cancelled').catch(() => undefined);
+                        throw error;
+                    }
                     if (passed !== true) throw new Error('Invalid SVG preflight response');
                     const profile = createSvgAdmissionProfile(svgFrameFactory, job.identity, () => current());
                     const dimensions = await profile.header(typed, AbortSignal.any([signal, AbortSignal.timeout(5000)]));

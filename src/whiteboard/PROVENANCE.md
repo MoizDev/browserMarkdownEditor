@@ -152,7 +152,7 @@ third-party code included (normally "none") · date.
 | `import/records/fields.ts` | w-o | IMP-1, E-IMP-3 | import §§2–3,6 | Observed common/shape properties and unknown-field refusal | none | 2026-11-13 |
 | `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; shared style metrics; rich reader injected | none | 2026-11-13 |
 | `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format and w-q SEC-W4 admission seam | none | 2026-11-13 |
-| `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed picture, video and bookmark fields | none | 2026-11-13 |
+| `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2; media §11 | Observed picture, video and bookmark fields; inert remote preview URLs never fetched on import | none | 2026-11-13 |
 | `import/records/view.ts` | w-o | IMP-1 | import §3; current-format §§2,6 | Documented session, camera and UI fields | none | 2026-11-13 |
 | `import/scale.ts` | w-o | IMP-3, E-IMP-9 | import §3.1; contracts C2.3 | Uniform page-local transformation of public model records, text/sticky scale applied once | none | 2026-11-13 |
 | `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
@@ -160,6 +160,7 @@ third-party code included (normally "none") · date.
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
 | `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-7 | import §§1–3,6 | Documented record families; bounded media admission, inert legacy-record retention, duplicate-safe async page bounds and job identity checks | none | 2026-11-13 |
 | `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source/metadata retention, job identity checks, text/geometry page preparation and model admission | none | 2026-11-13 |
+| `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces and own cubic world bounds; connectors delegated to their provider | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
 | `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 

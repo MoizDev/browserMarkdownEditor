@@ -1314,6 +1314,8 @@ export default function App() {
 
     try {
       const treeAtStart = assetProofTreeRef.current;
+      const under = folder ? `${folder}/` : '';
+      const treeFiles = collectFiles(treeAtStart);
       const boards: Array<{ path: string; handle?: FileSystemFileHandle }> = [];
       const diskBoardPaths = new Set<string>();
       for await (const [name, handle] of handleIO.entries(dir)) {
@@ -1323,11 +1325,16 @@ export default function App() {
           boards.push({ path: boardPath, handle: handle as FileSystemFileHandle });
         }
       }
+      // Descendant notes can resolve an ancestor's assets. A board of any
+      // unknown format there must therefore keep the ancestor's pictures too.
+      for (const file of treeFiles) {
+        if (file.path.startsWith(under) && isCanvasFile(file.name) && !boards.some(board => board.path === file.path)) boards.push({ path: file.path, handle: file.handle });
+      }
       for (const tab of tabsRef.current) {
-        if (isCanvasFile(tab.file.name) && parentVaultPath(tab.file.path) === folder && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
+        if (isCanvasFile(tab.file.name) && tab.file.path.startsWith(under) && !boards.some(board => board.path === tab.file.path)) boards.push({ path: tab.file.path });
       }
       for (const boardPath of unsavedBoardContentRef.current.keys()) {
-        if (parentVaultPath(boardPath) === folder && !boards.some(board => board.path === boardPath)) boards.push({ path: boardPath });
+        if (boardPath.startsWith(under) && !boards.some(board => board.path === boardPath)) boards.push({ path: boardPath });
       }
       const assetNames = boards.length || job.board ? await assetNamesIn(dir) : new Set<string>();
       if (!attached()) return 'skipped-detached';
@@ -1390,14 +1397,15 @@ export default function App() {
       };
       const own = proofTabs.find(tab => tab.file.path === path);
       const ownText = own ? (canReadTabText(own) ? proofContents.get(path) ?? own.content : null) : job.text;
-      const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(treeAtStart).filter(f =>
+      const candidates = treeFiles.filter(f =>
         f.path !== path && isTextFile(f.name) && f.path.startsWith(under));
       const neighbours = [
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
       ];
-      const notes = [async () => ownText, ...neighbours.map(note => async () => {
+      // The saved note may have replaced an embed with a plain link; its
+      // newer unsaved buffer also counts, but must not erase that disk proof.
+      const notes = [async () => job.text, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
         if (open) return canReadTabText(open) ? proofContents.get(note.path) ?? open.content : null;
         if (isCanvasFile(note.name)) {

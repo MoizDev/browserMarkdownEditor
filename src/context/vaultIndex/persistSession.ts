@@ -3,7 +3,7 @@ import { INDEX_EXTRACTOR, INDEX_SCHEMA, openIndexDatabase, requestResult, transa
 
 type StoredNote = Omit<FileRecord, 'path' | 'rev' | 'text'>;
 type TextSnapshot = { mtime: number; size: number; text: string };
-type Change = { record: FileRecord | null; text?: string };
+type Change = { record?: FileRecord | null; text?: string; textVersion?: { mtime: number; size: number } };
 const range = (vault: string) => IDBKeyRange.bound([vault, ''], [vault, '\uffff']);
 
 function validNote(value: unknown): value is StoredNote {
@@ -77,6 +77,12 @@ export class PersistSession {
         this.dirty.set(path, { record, text });
         this.schedule();
     }
+    markText(path: string, mtime: number, size: number, text: string): void {
+        if (this.closed) return;
+        const existing = this.dirty.get(path);
+        this.dirty.set(path, { ...existing, text, textVersion: { mtime, size } });
+        this.schedule();
+    }
     private schedule(): void {
         if (!this.held || this.closed || this.timer) return;
         this.timer = setTimeout(() => { this.timer = undefined; void this.flush(); }, 2000);
@@ -95,11 +101,15 @@ export class PersistSession {
                 if (reset) { notes.delete(range(this.vaultId)); texts.delete(range(this.vaultId)); tx.objectStore('layouts').delete(this.vaultId); }
                 for (const [path, change] of entries) {
                     const key = [this.vaultId, path];
-                    if (!change.record) { notes.delete(key); texts.delete(key); continue; }
-                    const { path: _path, rev: _rev, text: _text, ...record } = change.record;
-                    notes.put(record, key);
-                    if (change.text !== undefined) texts.put({ mtime: record.mtime, size: record.size, text: change.text }, key);
-                    else texts.delete(key);
+                    if (change.record === null) { notes.delete(key); texts.delete(key); continue; }
+                    if (change.record) {
+                        const { path: _path, rev: _rev, text: _text, ...record } = change.record;
+                        notes.put(record, key);
+                        if (change.text !== undefined) texts.put({ ...(change.textVersion ?? { mtime: record.mtime, size: record.size }), text: change.text }, key);
+                        else texts.delete(key);
+                    } else if (change.textVersion && change.text !== undefined) {
+                        texts.put({ ...change.textVersion, text: change.text }, key);
+                    }
                 }
                 if (layout) tx.objectStore('layouts').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, layout }, this.vaultId);
                 tx.objectStore('vaults').put({ schema: INDEX_SCHEMA, extractorVersion: INDEX_EXTRACTOR, lastSweepAt: Date.now(), recordCount: entries.length }, this.vaultId);

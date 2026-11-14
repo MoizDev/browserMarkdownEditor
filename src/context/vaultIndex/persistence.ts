@@ -2,7 +2,7 @@ import type { StoredGraphLayout } from '../../utils/graphLayoutStore';
 
 // A schema bump gets a new database name, so an older app never opens a newer schema.
 export const INDEX_SCHEMA = 1;
-export const INDEX_EXTRACTOR = 1;
+export const INDEX_EXTRACTOR = 2;
 export const INDEX_DATABASE = `bme-vault-index-v${INDEX_SCHEMA}`;
 export type IndexLayout = StoredGraphLayout;
 
@@ -17,6 +17,12 @@ export function openIndexDatabase(): Promise<IDBDatabase> {
         request.onerror = () => reject(request.error);
         request.onblocked = () => reject(new Error('Index database is blocked'));
         request.onsuccess = () => {
+            void indexedDB.databases().then(databases => {
+                for (const entry of databases) {
+                    const match = /^bme-vault-index-v(\d+)$/.exec(entry.name ?? '');
+                    if (match && Number(match[1]) < INDEX_SCHEMA) indexedDB.deleteDatabase(entry.name!);
+                }
+            }).catch(() => {});
             const db = request.result;
             db.onversionchange = () => { db.close(); database = undefined; };
             resolve(db);

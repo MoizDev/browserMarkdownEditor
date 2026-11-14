@@ -22,6 +22,9 @@ export class IndexEngine {
     readPersistedText(path: string, mtime: number, size: number): Promise<string | undefined> {
         return this.persistence?.readText(path, mtime, size) ?? Promise.resolve(undefined);
     }
+    persistSearchText(path: string, mtime: number, size: number, text: string): void {
+        this.persistence?.markText(path, mtime, size, text);
+    }
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,

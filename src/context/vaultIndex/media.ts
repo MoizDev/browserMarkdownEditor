@@ -1,7 +1,7 @@
 import { boardMediaRefs } from '../../utils/boardMediaRefs';
 import { isCanvasFile } from '../../utils/fileTypes';
 import { Limiter } from '../../utils/pool';
-import type { IndexBoardMedia, IndexFile, IndexMediaSnapshot } from '../../utils/vaultIndex/types';
+import type { IndexBoardMedia, IndexFile, IndexMediaFacts, IndexMediaSnapshot } from '../../utils/vaultIndex/types';
 import type { IndexReader } from './reader';
 
 interface MediaFact extends IndexBoardMedia { signature: string }
@@ -73,6 +73,28 @@ export class BoardMediaIndex {
         await Promise.all(Array.from({ length: Math.min(2, boards.length) }, worker));
         if (epoch !== this.epoch || this.disposed) return;
         this.complete = true;
+        this.notify();
+    }
+
+    dump(): Record<string, IndexMediaFacts> {
+        return Object.fromEntries([...this.facts].map(([path, fact]) => [path, {
+            mtime: fact.mtime, size: fact.size, signature: fact.signature,
+            listingKey: fact.signature, names: [...fact.names],
+        }]));
+    }
+
+    restore(facts: Record<string, IndexMediaFacts>): void {
+        if (this.disposed) return;
+        this.epoch++;
+        this.complete = false;
+        this.facts.clear();
+        for (const [path, fact] of Object.entries(facts)) {
+            if (!isCanvasFile(path) || !fact || !Number.isFinite(fact.mtime) || !Number.isFinite(fact.size)
+                || fact.size < 0 || typeof fact.listingKey !== 'string' || !Array.isArray(fact.names)
+                || !fact.names.every(name => typeof name === 'string')) continue;
+            this.facts.set(path, { path, mtime: fact.mtime, size: fact.size,
+                signature: fact.listingKey, names: [...fact.names] });
+        }
         this.notify();
     }
 

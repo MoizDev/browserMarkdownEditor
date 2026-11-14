@@ -1,7 +1,7 @@
 import type { StoredGraphLayout } from '../../utils/graphLayoutStore';
 
 // A schema bump gets a new database name, so an older app never opens a newer schema.
-export const INDEX_SCHEMA = 1;
+export const INDEX_SCHEMA = 2;
 export const INDEX_EXTRACTOR = 2;
 export const INDEX_DATABASE = `bme-vault-index-v${INDEX_SCHEMA}`;
 export type IndexLayout = StoredGraphLayout;
@@ -19,7 +19,7 @@ export function openIndexDatabase(): Promise<IDBDatabase> {
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open(INDEX_DATABASE, 1);
         request.onupgradeneeded = () => {
-            for (const name of ['vaults', 'notes', 'texts', 'layouts']) request.result.createObjectStore(name);
+            for (const name of ['vaults', 'notes', 'texts', 'layouts', 'media']) request.result.createObjectStore(name);
         };
         request.onerror = () => reject(request.error);
         request.onblocked = () => reject(new Error('Index database is blocked'));
@@ -60,12 +60,13 @@ export async function forgetIndex(vaultKey: string): Promise<void> {
         channel.close();
         await navigator.locks.request(`bme-index:${vaultKey}`, async () => {
             const db = await openIndexDatabase();
-            const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+            const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts', 'media'], 'readwrite');
             const keyRange = IDBKeyRange.bound([vaultKey, ''], [vaultKey, '\uffff']);
             tx.objectStore('vaults').delete(vaultKey);
             tx.objectStore('notes').delete(keyRange);
             tx.objectStore('texts').delete(keyRange);
             tx.objectStore('layouts').delete(vaultKey);
+            tx.objectStore('media').delete(vaultKey);
             await transactionDone(tx);
         });
     } catch { /* Forgetting the recent entry must not fail on cache errors. */ }

@@ -36,6 +36,7 @@ export interface NativeBoardImageExportResult {
 export interface NativeBoardImageExportJob {
     readonly revision: number;
     run(signal: AbortSignal): Promise<NativeBoardImageExportResult>;
+    runAs(format: 'png' | 'svg', signal: AbortSignal): Promise<NativeBoardImageExportResult>;
     release(): void;
 }
 
@@ -85,9 +86,7 @@ export function createNativeBoardImageExport(options: NativeBoardImageExportOpti
     let started = false, released = false;
     const release = () => { if (!released) { released = true; lifetime.abort(); snapshot.release(); } };
     const revision = snapshot.revision;
-    return {
-        revision,
-        async run(signal) {
+    const runAs = async (format: 'png' | 'svg', signal: AbortSignal): Promise<NativeBoardImageExportResult> => {
             if (released || started) throw new Error('Board image export job is no longer available');
             started = true;
             const active = AbortSignal.any([signal, lifetime.signal]);
@@ -117,7 +116,6 @@ export function createNativeBoardImageExport(options: NativeBoardImageExportOpti
                 return { blob, revision, scope: selected ? 'selection' : 'sheet', world: { ...world }, scale,
                     reduced: clipboard && scale < 2 - 1e-9 };
             } finally { release(); }
-        },
-        release,
     };
+    return { revision, run: signal => runAs(format, signal), runAs, release };
 }

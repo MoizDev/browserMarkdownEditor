@@ -9,6 +9,7 @@ import type { BlockPair } from './analysisMath';
 import { mergeAnalysisRanges, treeDelta } from './analysisTree';
 import { scanObjects, updateObjects } from './analysisObjects';
 import { codeRangesForTree } from '../utils/mathRegions';
+import { incrementalEditorEnabled } from '../utils/engineRouting';
 import { overlapsRange } from '../utils/rangeSearch';
 import type { CharRange } from '../utils/rangeSearch';
 
@@ -69,6 +70,13 @@ function updateCodeRanges(previous: readonly CharRange[], tree: Tree, tr: Transa
 function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     const state = tr.state, tree = syntaxTree(state);
     if (!tr.docChanged && tree === previous.tree) return previous;
+    if (!incrementalEditorEnabled()) {
+        const full = analyzeDocFull(state), rev = previous.rev + 1;
+        const whole = [{ from: 0, to: state.doc.length }];
+        full.rev = rev;
+        full.delta = { forRev: rev, changed: whole, treeChanged: whole };
+        return full;
+    }
     const treeChanged = treeDelta(previous.tree, tree, tr.changes, state.doc, tr.startState.doc);
     const codeRanges = updateCodeRanges(previous.codeRanges, tree, tr, treeChanged);
     const lines = tr.docChanged ? updateLineScans(previous.lines, tr.changes, tr.startState.doc, state.doc) : previous.lines;

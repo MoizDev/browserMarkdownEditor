@@ -213,6 +213,7 @@ third-party code included (normally "none") · date.
 | `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
 | `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, atomic conditional set-file batch and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
+| `host/pinMediaRestore.ts` | lane w-k | C7.1/5; F-INT-004 | integration §4; media §8 | Pinned media leases, revision-fenced restoration and atomic filename-change batch; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 

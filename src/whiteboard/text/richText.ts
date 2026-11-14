@@ -76,14 +76,24 @@ function normalizedRuns(runs: readonly Run[]): readonly Run[] {
     return output ? output.length ? output : [runs[0]] : runs;
 }
 
+const normalizedBlocks = new WeakMap<Block, Block>();
+function normalizedBlock(block: Block): Block {
+    const cached = normalizedBlocks.get(block);
+    if (cached) return cached;
+    const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
+    const result = runs === block.runs ? block : trackBlock({ ...block, runs }, block);
+    normalizedBlocks.set(block, result);
+    normalizedBlocks.set(result, result);
+    return result;
+}
+
 export function normalizeRichText(text: RichText): RichText {
     if (!text.blocks.length) return EMPTY_RICH_TEXT;
     let blocks: Block[] | undefined;
     for (let i = 0; i < text.blocks.length; i++) {
-        const block = text.blocks[i];
-        const runs = block.runs.length ? normalizedRuns(block.runs) : [{ text: '', marks: {} }];
-        if (runs !== block.runs && !blocks) blocks = text.blocks.slice(0, i);
-        if (blocks) blocks.push(runs === block.runs ? block : trackBlock({ ...block, runs }, block));
+        const block = text.blocks[i], normalized = normalizedBlock(block);
+        if (normalized !== block && !blocks) blocks = text.blocks.slice(0, i);
+        if (blocks) blocks.push(normalized);
     }
     return blocks ? { blocks } : text;
 }

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ActiveFile, Theme } from '../../types';
 import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
 import type { HostedBoardAdapter } from './boardSessionAdapter';
+import { NativeCanvasEditing, type NativeEditingRenderContext, type NativeEditingViewOptions } from './NativeCanvasEditing';
+import { createNativePdfEditingLease } from './nativePdfEditingLease';
 import ViewerHost from './ViewerHost';
 import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
@@ -154,20 +156,28 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
     props: NativePdfViewerProps; lease: NativeViewLease; onFocus(): void; register(focus: () => void): () => void;
     inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null;
 }) {
-    const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
-    const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const theme = useCallback(() => latest.current.theme, []);
     const notice = useCallback((message: string) => latest.current.onNotice(message), []);
     const viewer = useNativeClipboard(lease, props.host, props.identity, theme, notice);
+    return <PdfAttachedFrame props={props} lease={lease} viewer={viewer} onFocus={onFocus} register={register}
+        inverted={inverted} setInverted={setInverted} cover={cover} reason={reason} readOnly />;
+}
+
+function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, editingChrome }: {
+    props: NativePdfViewerProps; lease: NativeViewLease; viewer: NativeViewLease['view']; onFocus(): void; register(focus: () => void): () => void;
+    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; readOnly: boolean; editingChrome?: ReactNode;
+}) {
+    const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
+    const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const pages = lease.runtime.session.doc.host.kind === 'pdf-ink' ? lease.runtime.session.doc.host.pages.length : 0;
     return <div style={{ position: 'relative', width: '100%', height: '100%' }}>
         <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
-            readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-            chrome={<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
+            readOnly={readOnly} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+            chrome={<>{editingChrome}<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {
                     const page = event.currentTarget.valueAsNumber;
                     if (Number.isFinite(page) && pages) lease.jump(Math.max(0, Math.min(pages - 1, Math.floor(page) - 1)));
@@ -176,14 +186,70 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
                 <span>{Math.round(navigation.zoom * 100)}%</span>
                 <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
                 <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
-            </div>} />
+            </div></>} />
         {cover && <div className="native-pdf-updating" role={reason ? 'alert' : 'status'} style={{ position: 'absolute', inset: 0,
             zIndex: 10, display: 'grid', placeItems: 'center', background: props.theme === 'dark' ? '#181818' : '#fff',
             color: props.theme === 'dark' ? '#fff' : '#111' }}>{reason ?? 'Updating PDF view…'}</div>}
     </div>;
 }
 
+function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps; onUnavailable(error: unknown): void }) {
+    const latest = useRef(props);
+    useLayoutEffect(() => { latest.current = props; }, [props]);
+    const [updating, setUpdating] = useState(false);
+    const createLease = useCallback((editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
+        const value = latest.current;
+        return createNativePdfEditingLease({ board: value.board, host: value.host, identity: value.identity,
+            sourceState: value.sourceState, editing, signal, limits: value.zoomLimits, insets: value.insets,
+            parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: false },
+            isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
+            emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
+            onError: value.onError, onNotice: notice });
+    }, []);
+    const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={latest.current}
+        context={context} updating={updating} />, [updating]);
+    return <NativeCanvasEditing props={{ identity: props.identity, nativeCanvasHost: props.host, isVisible: props.isVisible,
+        isFocused: props.isFocused, theme: props.theme }} board={props.board} adapter={props.adapter}
+        factory={props.host.createEditingCapabilities} createLease={createLease} renderView={renderView}
+        onError={props.onError} onUnavailable={onUnavailable} />;
+}
+
+function PdfEditingAttached({ props, context, updating }: { props: NativePdfViewerProps; context: NativeEditingRenderContext; updating: boolean }) {
+    const { lease } = context, source = useSyncExternalStore(props.sourceState.subscribe, props.sourceState.getSnapshot, props.sourceState.getSnapshot);
+    const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
+    const [minimapOpen, setMinimapOpen] = useState(false);
+    const token = lease.view.sourceToken, actual = source.source.source.token;
+    const paired = !!token && token.documentId === actual.documentId && token.session === actual.session
+        && token.vaultEpoch === actual.vaultEpoch && token.bytesGeneration === actual.bytesGeneration;
+    const cover = updating || source.status !== 'ready' || !paired;
+    useLayoutEffect(() => {
+        if (cover) { lease.editing?.setInputEnabled(false); lease.editing?.cancelViewWork('pdf-source-updating'); }
+        else if (props.isVisible) lease.editing?.setInputEnabled(true);
+        lease.refreshAuthority();
+    }, [lease, cover, source, props.isVisible]);
+    const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;
+    const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
+    const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
+    const chrome = context.chrome({ minimapOpen, setMinimapOpen, inverted: context.inverted,
+        setInverted: context.setInverted, zoom: navigation.zoom });
+    return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
+        inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
+        readOnly={props.board.isReadOnly || !props.host.canWrite(props.identity)} editingChrome={chrome} />;
+}
+
 export default function NativePdfViewer(props: NativePdfViewerProps) {
+    // This is the view route, not write authority; a rebind must not unmount
+    // the editing view and discard its camera while its source is covered.
+    const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk' && props.host.canWriteSource(props.identity)
+        && typeof props.adapter.activateEditing === 'function');
+    const [unavailable, setUnavailable] = useState(false), { onNotice } = props;
+    const onUnavailable = useCallback((error: unknown) => {
+        setUnavailable(true);
+        if (!(error instanceof DOMException && error.name === 'AbortError')) onNotice(error instanceof Error ? error.message : String(error));
+    }, [onNotice]);
     if (props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
+    if (!unavailable && openedAsEditing) {
+        return <PdfEditingView props={props} onUnavailable={onUnavailable} />;
+    }
     return <PdfView props={props} sourceState={props.sourceState} />;
 }

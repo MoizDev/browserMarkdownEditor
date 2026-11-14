@@ -1,6 +1,6 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { RenderToken } from '../../platform/render/types';
-import type { MediaId } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import type { PaintImageLease, PaintImageProvider } from '../render/resources';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { inspectMedia } from './inspect';
@@ -18,6 +18,7 @@ export interface SafeFullFrameLease {
 export interface BoardPaintImageOptions {
     readonly media: MediaStore;
     readonly memory: MemoryAllocator;
+    entry?(id: MediaId): MediaEntry | undefined;
     readBlob(id: MediaId, signal: AbortSignal): Promise<Blob>;
     identity(token: RenderToken): BoardJobIdentity;
     isCurrent(token: RenderToken, identity: BoardJobIdentity): boolean;
@@ -69,6 +70,11 @@ export function createBoardPaintImages(options: BoardPaintImageOptions): PaintIm
             isCurrent: identity => current(job) && identity.session === job.identity.session && identity.epoch === job.identity.epoch && identity.revision === job.identity.revision });
         if (!current(job)) throw aborted();
         if (info.id !== job.id) throw new Error('Media bytes do not match their content hash');
+        if (options.entry) {
+            const entry = options.entry(job.id);
+            if (!entry || entry.id !== job.id || entry.mime !== info.mime || entry.bytes !== blob.size
+                || entry.w !== info.width || entry.h !== info.height || entry.animated !== info.animated) throw new Error('Media bytes do not match their board entry');
+        }
         const lease = await options.decodeFullFrame(blob, info, job.identity, signal);
         try {
             if (!current(job)) throw aborted();

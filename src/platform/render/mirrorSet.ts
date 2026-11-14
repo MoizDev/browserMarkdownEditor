@@ -114,6 +114,7 @@ export class MirrorSet<T extends object> {
     private readonly retained: MemoryCacheHandle;
     private readonly retiring: MemoryCacheHandle;
     private readonly entries = new Map<string, EntryRecord>();
+    private readonly adopting = new Set<string>();
     private retainedBytes = 0;
     private retiringBytes = 0;
     private activeBorrows = 0;
@@ -156,19 +157,23 @@ export class MirrorSet<T extends object> {
         if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes !== lease.bytes || !entry.id) {
             throw new RangeError('Invalid mirror allocation');
         }
-        if (this.released || this.entries.has(entry.id) || !this.isCurrent(token) ||
+        if (this.released || this.entries.has(entry.id) || this.adopting.has(entry.id) || !this.isCurrent(token) ||
             entry.key.documentToken !== renderTokenKey(token)) return false;
-        if (!this.governor.transferLease(lease, this.retained)) return false;
-        const record: EntryRecord = {
-            entry: Object.freeze({ ...entry, key: Object.freeze({ ...entry.key }) }), lease,
-            borrows: 0, closing: false, finishing: false,
-        };
-        this.entries.set(entry.id, record);
-        this.retainedBytes += entry.bytes;
-        if (entry.tier === 'exact') this.exactEntries++;
-        else { this.lowEntries++; if (entry.neededByCurrentFrame) this.protectedLow.add(entry.id); }
-        if (this.released || !this.isCurrent(token)) this.closeEntry(record);
-        return true;
+        // Admission can synchronously evict another cache and reenter this session.
+        this.adopting.add(entry.id);
+        try {
+            if (!this.governor.transferLease(lease, this.retained)) return false;
+            const record: EntryRecord = {
+                entry: Object.freeze({ ...entry, key: Object.freeze({ ...entry.key }) }), lease,
+                borrows: 0, closing: false, finishing: false,
+            };
+            this.entries.set(entry.id, record);
+            this.retainedBytes += entry.bytes;
+            if (entry.tier === 'exact') this.exactEntries++;
+            else { this.lowEntries++; if (entry.neededByCurrentFrame) this.protectedLow.add(entry.id); }
+            if (this.released || !this.isCurrent(token)) this.closeEntry(record);
+            return true;
+        } finally { this.adopting.delete(entry.id); }
     }
 
     /** Commit only ids whose CPU copy survived. A sharp GPU frame alone is not a CPU mirror proof. */
@@ -223,6 +228,7 @@ export class MirrorSet<T extends object> {
                     records.push(record);
                     const pixels = this.storage.read(record.entry.id);
                     if (pixels) values.push(Object.freeze({ entry: record.entry, pixels }));
+                    else { records.pop(); this.returnEntry(record); }
                 }
             } catch (error) {
                 all(records.map(record => () => this.returnEntry(record)));
@@ -274,7 +280,14 @@ export class MirrorSet<T extends object> {
         this.released = true;
         this.frame = null;
         try { all([...this.entries.values()].map(record => () => this.closeEntry(record))); }
-        finally { this.retained.close(); this.retiring.close(); }
+        finally {
+            // Failed transfers must remain retryable; closing the destination early would strand
+            // the retained lease forever. Already-retiring borrows can drain after both close.
+            if (![...this.entries.values()].some(record => !record.closing)) {
+                this.retained.close();
+                this.retiring.close();
+            }
+        }
     }
 
     /** Explicit retry for a failed owner close; no timer or optimistic lease return. */
@@ -318,9 +331,9 @@ export class MirrorSet<T extends object> {
         record.finishing = true;
         try {
             this.storage.close(record.entry.id);
+            this.retiring.release(record.lease);
             this.entries.delete(record.entry.id);
             this.retiringBytes -= record.entry.bytes;
-            this.retiring.release(record.lease);
         } finally { record.finishing = false; }
     }
 }

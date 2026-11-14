@@ -3,6 +3,7 @@ import type { WorkerContext } from '../../platform/workers/serve';
 import type { DisplayPdfPage } from './types';
 import { ascii, PdfObjects, pdfNumber as n } from './pdfObjects';
 import { normalizeImage } from './image';
+import { Sha256 } from '../../utils/sha256';
 
 const MAX_ITEMS = 1_000_000, MAX_COMMANDS = 1_000_000, MAX_PAGES = 100_000, MAX_DEPTH = 64;
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
@@ -52,8 +53,7 @@ function groupBounds(m: Affine, width: number, height: number): string {
     return [Math.min(...points.map(p=>p[0])), Math.min(...points.map(p=>p[1])), Math.max(...points.map(p=>p[0])), Math.max(...points.map(p=>p[1]))].map(n).join(' ');
 }
 async function digest(bytes: Uint8Array): Promise<string> {
-    const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
-    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+    return new Sha256().update(bytes).digest();
 }
 
 class Resources {

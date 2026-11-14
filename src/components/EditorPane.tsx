@@ -22,7 +22,7 @@ import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, 
 // Read the same resolved component idle prefetch filled, not a second lazy payload.
 import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
 import type { PdfPaneComponent } from './pdfPaneModule';
-import { useActivated } from './floatingSlot';
+import { useActivated, useFloatingSlot } from './floatingSlot';
 
 /**
  * One PDF tab's reading binding, built once per document rather than once per
@@ -55,11 +55,7 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     const module = useSyncExternalStore(subscribePdfPaneModule, getPdfPaneModuleSnapshot);
     // A float must stay in its column during a cold restore (and divider drag),
     // not cover the note beside it. Keep this off props so host memo still holds.
-    const loadingStyle = React.useMemo<React.CSSProperties | undefined>(() => rest.isVisible ? {
-        left: `calc(var(--pane-x-${rest.slotIndex ?? 0}) * 1%)`,
-        width: `calc(var(--pane-w-${rest.slotIndex ?? 0}) * 1%)`,
-        right: 'auto',
-    } : undefined, [rest.isVisible, rest.slotIndex]);
+    const loadingStyle = useFloatingSlot(rest.isVisible, rest.slotIndex ?? 0, rest.slotLeft ?? 0, rest.slotWidth ?? 100);
     useEffect(() => {
         if (activated && module.status === 'unloaded') void loadPdfPane().catch(() => {});
     }, [activated, module.status]);
@@ -753,7 +749,18 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
         const drag = resizeRef.current;
         if (!drag) return;                  // a lost capture after a normal pointerup
         resizeRef.current = null;
-        if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+        if (drag.frame !== null) {
+            cancelAnimationFrame(drag.frame);
+            if (commit) {
+                const k = drag.edge;
+                const pair = drag.start[k] + drag.start[k + 1];
+                const left = clampEdge(drag.start[k] + ((drag.x - drag.x0) / drag.total) * 100, pair, drag.floor);
+                drag.live = drag.start.slice();
+                drag.live[k] = left;
+                drag.live[k + 1] = pair - left;
+                writePaneVars(drag.live);
+            }
+        }
         if (drag.handle.hasPointerCapture?.(drag.pointerId)) {
             drag.handle.releasePointerCapture(drag.pointerId);
         }

@@ -4,6 +4,8 @@
   right: 12px;
   top: 12px;
   max-width: min(360px, calc(100% - 24px));
+  max-height: min(45%, 280px);
+  overflow: auto;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   background: var(--background-primary);
@@ -12,5 +14,5 @@
   font-size: 12px;
   line-height: 1.4;
 }
-.pdf-capabilities-notice summary { cursor: pointer; color: var(--text-normal); }
+.pdf-capabilities-notice strong { color: var(--text-normal); }
 .pdf-capabilities-notice > div { margin-top: 4px; }

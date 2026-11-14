@@ -32,17 +32,18 @@ export class GpuIsolationPlan {
 
     constructor(width: number, height: number) { this.#width = width; this.#height = height; }
 
-    own(depth: number, multiply: boolean): void {
-        this.#ownDepth = depth;
+    own(depth: number, multiply: boolean, bounds: Readonly<RectI> = { x: 0, y: 0, width: this.#width, height: this.#height }): void {
+        this.#count(depth);
+        this.#ownDepth = Math.max(this.#ownDepth, depth);
         this.#multiply ||= multiply;
-        if (depth) this.#entry({ x: 0, y: 0, width: this.#width, height: this.#height }, 'rgba8', 1, false);
+        if (depth) this.#entry(bounds, 'rgba8', 1, false);
     }
 
     declare(value: LayerIsolationDeclaration): void {
         this.#count(value.depth); this.#count(value.maskDepth);
         const samples = value.samples ?? 1, format = value.format ?? 'rgba8', stencil = value.stencil ?? false;
         const entry = this.#entry(value.bounds, format, samples, stencil);
-        entry.groups = Math.max(entry.groups, value.depth + value.maskDepth);
+        entry.groups = Math.max(entry.groups, this.#sum(value.depth, value.maskDepth));
         this.#multiply ||= value.multiply === true;
         if (value.targets) {
             this.#count(value.targets.count);
@@ -72,9 +73,9 @@ export class GpuIsolationPlan {
         }
         return [...this.#entries.values()].map(entry => ({ width: entry.right - entry.left, height: entry.bottom - entry.top, format: entry.format,
             samples: entry.samples, stencil: entry.stencil,
-            count: Math.max(entry.shortfall, entry.groups + entry.external +
-                (entry.format === 'rgba8' && entry.samples === 1 && !entry.stencil ? this.#ownDepth : 0) +
-                (this.#multiply && entry.samples === 1 && !entry.stencil ? 1 : 0)) }))
+            count: Math.max(entry.shortfall, this.#sum(entry.groups, entry.external,
+                entry.format === 'rgba8' && entry.samples === 1 && !entry.stencil ? this.#ownDepth : 0,
+                this.#multiply && entry.samples === 1 && !entry.stencil ? 1 : 0)) }))
             .filter(entry => entry.count > 0 && entry.width > 0 && entry.height > 0);
     }
 
@@ -95,5 +96,13 @@ export class GpuIsolationPlan {
         return entry;
     }
     #key(format: TextureFormat, samples: Samples, stencil: boolean): string { return `${format}:${samples}:${stencil}`; }
-    #count(count: number): void { if (!Number.isSafeInteger(count) || count < 0 || count > 64) throw new ArenaError('invalid-input'); }
+    #count(count: number): void { if (!Number.isSafeInteger(count) || count < 0) throw new ArenaError('invalid-input'); }
+    #sum(...counts: number[]): number {
+        let total = 0;
+        for (const count of counts) {
+            total += count;
+            if (!Number.isSafeInteger(total)) throw new ArenaError('out-of-budget');
+        }
+        return total;
+    }
 }

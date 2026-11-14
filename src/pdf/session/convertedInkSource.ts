@@ -64,7 +64,7 @@ export async function createConvertedPdfInkSource(ready: PdfLegacyConversionRead
             writeSafety: ready.writeSafety, legacyOriginalSha256: ready.legacyOriginalSha256, legacySnapshot: ready.snapshot, legacyMigration,
             isCurrent: current,
             release() {
-                if (!releasePromise) { released = true; releasePromise = Promise.resolve().then(() => ready.release()); }
+                if (!releasePromise) { released = true; media.clear(); releasePromise = Promise.resolve().then(() => ready.release()); }
                 return releasePromise;
             },
             async readMedia(name, signal) {

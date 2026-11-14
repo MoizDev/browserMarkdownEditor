@@ -17,6 +17,7 @@ import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
 import { boardFrameAncestors } from '../geom/ancestorFrames';
 import { createPolygonTriangulationJob } from '../geom/polygonTriangulation';
+import { createNonconvexContainmentJob } from '../geom/nonconvexContainmentJob';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -145,7 +146,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             if (!worldBox.every(Number.isFinite)) throw new RangeError('Board region bounds overflow');
             const worldToCss: Affine = [camera.z, 0, 0, camera.z, -camera.x * camera.z, -camera.y * camera.z];
             const queue: SpatialRef[] = [], hits = new Map<NodeId, number>();
-            const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number }>();
+            const groups = new Map<NodeId, number>(), evaluated = new Map<NodeId, { readonly selected: NodeId; readonly hit: boolean; readonly rank: number; readonly whole?: boolean }>();
             cursor = scene.spatialCursor({ sheetId: sheet, purpose: 'selectable', request: { kind: 'box', box: worldBox, order: 'forward' } });
             const narrowPart = async (ref: SpatialRef, regionPoints: readonly Vec2[]) => {
                 check();
@@ -180,7 +181,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
                                 localPoints = clipPolygon(localPoints, polygon);
                                 if (!localPoints.length) {
-                                    return { selected, hit: false, rank: resolved.rank };
+                                    return { selected, hit: false, rank: resolved.rank, whole: false };
                                 }
                                 if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                             }
@@ -190,7 +191,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 const localQuery: RegionQuery = query.kind === 'polygon'
                     ? { kind: 'polygon', points: localPoints, localToSurface, containment: query.containment }
                     : { kind: 'swept', points: localPoints, localToSurface, radiusCss: query.radiusCss };
-                let hit = false;
+                let hit = false, whole = false;
                 if (prepared.ink) {
                     let uncertain = false, any = false, all = true;
                     for (const coverage of prepared.ink) {
@@ -223,15 +224,28 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     void vector.key;
                     const descriptor = vectorNarrowDescriptor(vector);
                     if (descriptor) {
-                        const job = partialFrame ? createClippedVectorRegionJob(descriptor, localQuery, frameClips) : createVectorRegionJob(descriptor, localQuery);
-                        try {
-                            for (;;) {
-                                check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
-                                if (value.status === 'pending') { await cooperate(); continue; }
-                                if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
-                                hit = value.status === 'hit'; break;
-                            }
-                        } finally { job.cancel(); }
+                        if (decomposedContainment && !partialFrame && query.kind === 'polygon') {
+                            const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface });
+                            try {
+                                for (;;) {
+                                    check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (value.status === 'pending') { await cooperate(); continue; }
+                                    if (value.status !== 'uncertain') { whole = true; hit = value.status === 'hit'; }
+                                    break;
+                                }
+                            } finally { job.cancel(); }
+                        }
+                        if (!whole) {
+                            const job = partialFrame ? createClippedVectorRegionJob(descriptor, localQuery, frameClips) : createVectorRegionJob(descriptor, localQuery);
+                            try {
+                                for (;;) {
+                                    check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (value.status === 'pending') { await cooperate(); continue; }
+                                    if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                    hit = value.status === 'hit'; break;
+                                }
+                            } finally { job.cancel(); }
+                        }
                     } else {
                         if (partialFrame) throw new BoardRegionUncertain('Clipped vector has no certified narrow descriptor');
                         hit = vector.region(localQuery).hit;
@@ -326,7 +340,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();
-                return { selected, hit, rank: resolved.rank };
+                return { selected, hit, rank: resolved.rank, whole };
             };
             const narrow = async (ref: SpatialRef) => {
                 check(); const resolved = scene.resolveSpatial(ref); if (!resolved) throw stale();
@@ -335,15 +349,15 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 for (const regionPoints of regions) {
                     try {
                         result = await narrowPart(ref, regionPoints);
-                        if (!result || result.hit) break;
+                        if (!result || result.hit || result.whole) break;
                     } catch (error) {
                         if (!(error instanceof BoardRegionUncertain)) throw error;
                         uncertain ??= error;
                     }
                     await cooperate(); check();
                 }
-                if (!result?.hit && uncertain) throw uncertain;
-                if (result && !result.hit && decomposedContainment)
+                if (!result?.hit && !result?.whole && uncertain) throw uncertain;
+                if (result && !result.hit && !result.whole && decomposedContainment)
                     throw new BoardRegionUncertain('Containment spans a non-convex lasso partition');
                 if (result) {
                     evaluated.set(resolved.id, result);

@@ -8,7 +8,7 @@ import type { NodeRecord } from '../model/nodes';
 import { scanRawMedia, visitExtRaw, visitHostRaw, visitNodeRaw, visitPreservedRaw } from '../model/rawMedia';
 import type { UiBlock } from '../model/styles';
 import type { SavedView } from './encode';
-import { hasNativeMarker, JsonReadError, parseJson } from './jsonRead';
+import { hasNativeMarker, hasNativeMarkerIncremental, JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
 import { readHeader, readRecord } from './readModel';
 import type { MappedRecord } from './readModel';
@@ -102,6 +102,7 @@ async function* lines(source: ByteSource, state: StreamState, options: ReadOptio
                 start = i + 1;
             }
             add(part.subarray(start));
+            if (options.cooperate) await options.cooperate();
         }
     }
     if (length) yield take();
@@ -175,7 +176,7 @@ class Records {
             this.problem(error.code === 'limit' ? 'limit' : 'header', error.message);
         }
     }
-    record(root: JsonSpan, position: ReadPosition, reformatted: boolean): void {
+    async record(root: JsonSpan, position: ReadPosition, reformatted: boolean): Promise<void> {
         if (this.recordsSeen >= FORMAT_LIMITS.records) throw new ReadFailure('limit', 'Native input exceeds five million records');
         this.recordsSeen++;
         if (this.endSeen) this.problem('syntax', 'The end record is not last', position);
@@ -184,7 +185,7 @@ class Records {
             return;
         }
         try {
-            const mapped = readRecord(root, this.header.kind, { options: this.options, issue: this.issue, position });
+            const mapped = await readRecord(root, this.header.kind, { options: this.options, issue: this.issue, position });
             this.keep(mapped, position, reformatted);
         } catch (error) {
             if (!(error instanceof JsonReadError)) throw error;
@@ -263,10 +264,10 @@ function recordType(root: JsonSpan): string | null {
     for (const [key, value] of root.fields()) if (key === 'type') return value.kind === 'string' ? value.string(128) : null;
     return null;
 }
-function headerLine(text: string): JsonSpan | null {
+async function headerLine(text: string, cooperate?: () => Promise<void>): Promise<JsonSpan | null> {
     if (!text.endsWith('[')) return null;
     try {
-        const root = parseJson(text + ']}');
+        const root = cooperate ? await parseJsonIncremental(text + ']}', cooperate) : parseJson(text + ']}');
         let last: readonly [string, JsonSpan] | undefined;
         for (const field of root.fields()) last = field;
         return last?.[0] === 'records' && last[1].kind === 'array' ? root : null;
@@ -323,9 +324,9 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 // mistake a compact nested object in a pretty legacy snapshot for an envelope.
                 if (rootLine) {
                     rootLine = false;
-                    native ||= hasNativeMarker(text);
-                    const header = headerLine(text);
-                    if (header && hasNativeMarker(header.source)) {
+                    native ||= options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
+                    const header = await headerLine(text, options.cooperate);
+                    if (header && (options.cooperate ? await hasNativeMarkerIncremental(header.source, options.cooperate) : hasNativeMarker(header.source))) {
                         native = true; streaming = true; records.open(header);
                     }
                 }
@@ -347,7 +348,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             haveRecord = true; lastComma = comma;
             let root: JsonSpan;
             try {
-                root = parseJson(body);
+                root = options.cooperate ? await parseJsonIncremental(body, options.cooperate) : parseJson(body);
                 if (recordType(root) !== null) { recordLines = true; state.fallback = null; }
             } catch (error) {
                 if (!(error instanceof JsonReadError)) throw error;
@@ -355,7 +356,8 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 records.problem(error.code, error.message, position);
                 continue;
             }
-            records.record(root, position, reformatted);
+            await records.record(root, position, reformatted);
+            if (options.cooperate) await options.cooperate();
         }
         ioComplete = true;
         if (options.byteLength !== undefined && options.byteLength !== state.bytesRead) throw new ReadFailure('io', 'Source length changed while opening the board');
@@ -369,7 +371,8 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
     if (!native && state.probeBytes) {
         // A prefix may end inside a multi-byte character. This probe only recognizes the marker;
         // full line/fallback decoding is fatal and remains the authority for UTF-8 admission.
-        native = hasNativeMarker(new TextDecoder().decode(state.probe.subarray(0, state.probeBytes)));
+        const probe = new TextDecoder().decode(state.probe.subarray(0, state.probeBytes));
+        native = options.cooperate ? await hasNativeMarkerIncremental(probe, options.cooperate) : hasNativeMarker(probe);
     }
     state.probe = new Uint8Array(0);
     if (!fatal && state.whitespaceOnly) return result('empty', null, true);
@@ -382,9 +385,10 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             const bomBytes = text.startsWith('\ufeff') ? 3 : 0;
             if (bomBytes) { text = text.slice(1); reformatted = true; }
             if (!white(text)) return result('empty', null, true);
-            native ||= hasNativeMarker(text);
-            const root = parseJson(text);
-            if (!hasNativeMarker(text)) return result('other', null, true);
+            const marked = options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
+            native ||= marked;
+            const root = options.cooperate ? await parseJsonIncremental(text, options.cooperate) : parseJson(text);
+            if (!marked) return result('other', null, true);
             native = true;
             records = new Records(safeOptions); // Failed line guesses admitted no samples.
             records.open(root);
@@ -399,7 +403,8 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 for (let i = cursor; i < item.start; i++) if (text.charCodeAt(i) === 10) line++;
                 const length = byteUnits(text, item.start, item.end);
                 const position = { ordinal: records.recordsSeen, line, byteOffset: offset + bomBytes, byteLength: length };
-                records.record(item, position, true);
+                await records.record(item, position, true);
+                if (options.cooperate) await options.cooperate();
                 // Advance only to the start: the next span's prefix includes this record once.
                 cursor = item.start;
             }

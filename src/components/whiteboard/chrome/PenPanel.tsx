@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import './chrome.css';
 
 export interface PenSwatch {
@@ -14,6 +14,7 @@ export interface PenPanelProps {
     readonly indicatorOutline: string;
     readonly sliderPosition: number;
     readonly widthLabel: string;
+    readonly mixedWidthLabel?: string;
     readonly hideLabel: string;
     readonly showLabel: string;
     readonly collapsed: boolean;
@@ -28,15 +29,20 @@ export interface PenPanelProps {
 
 export function PenPanel(props: PenPanelProps) {
     const dragging = useRef(false);
+    const commit = useRef(props.commitWidth);
+    useEffect(() => { commit.current = props.commitWidth; }, [props.commitWidth]);
+    useEffect(() => () => {
+        if (dragging.current) { dragging.current = false; commit.current(); }
+    }, []);
     const finish = () => {
         if (!dragging.current) return;
         dragging.current = false;
-        props.commitWidth();
+        commit.current();
     };
     const toggleLabel = props.collapsed ? props.showLabel : props.hideLabel;
     return <div className="board-pen-panel">
         <button type="button" className="board-chrome-tool board-pen-toggle" aria-label={toggleLabel}
-            data-tooltip={toggleLabel} aria-expanded={!props.collapsed} onClick={() => props.setCollapsed(!props.collapsed)}>
+            data-tooltip={toggleLabel} aria-expanded={!props.collapsed} onClick={() => { finish(); props.setCollapsed(!props.collapsed); }}>
             {props.collapsed && <span className="board-pen-indicator" aria-hidden="true"
                 style={{ background: props.nextColorCss, outlineColor: props.indicatorOutline }} />}
             {toggleLabel}
@@ -50,9 +56,10 @@ export function PenPanel(props: PenPanelProps) {
                 </button>)}
             </div>
             <input type="range" min={0} max={1} step={0.001} value={props.sliderPosition} aria-label={props.widthLabel}
+                aria-valuetext={props.mixedWidthLabel}
                 data-tooltip={props.widthLabel} disabled={props.disabled}
                 onPointerDown={() => { dragging.current = true; props.beginWidth(); }}
-                onPointerUp={finish} onPointerCancel={finish} onBlur={finish}
+                onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish} onBlur={finish}
                 onChange={event => {
                     if (!dragging.current) props.beginWidth();
                     props.changeWidth(Number(event.currentTarget.value));

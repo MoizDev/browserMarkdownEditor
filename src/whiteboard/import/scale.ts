@@ -13,8 +13,8 @@ export function scaleImportedNode(node: Node, scale: number): Node {
                 rMin: base.widthModel.rMin * scale, rMax: base.widthModel.rMax * scale } };
         case 'figure': return { ...base, w: base.w * scale, h: base.h * scale, growY: base.growY * scale,
             width: base.width * scale, labelScale: base.labelScale * scale };
-        case 'text': return { ...base, w: base.w * scale, scale: base.scale * scale };
-        case 'sticky': return { ...base, growY: base.growY * scale, scale: base.scale * scale };
+        case 'text': return { ...base, scale: base.scale * scale };
+        case 'sticky': return { ...base, scale: base.scale * scale };
         case 'connector': return { ...base, start: end(base.start, scale), end: end(base.end, scale),
             bend: base.bend * scale, width: base.width * scale, labelScale: base.labelScale * scale };
         case 'polyline': return { ...base, points: base.points.map(p => point(p, scale)), width: base.width * scale };

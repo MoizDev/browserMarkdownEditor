@@ -21,6 +21,8 @@ export interface ReadIssue {
 export interface ReadOptions {
     readonly byteLength?: number; // getFile()'s fact, checked before any decoding; streaming count is checked too.
     readonly signal?: AbortSignal;
+    /** Worker governor cooperation point; absent for direct callers. */
+    readonly cooperate?: () => Promise<void>;
     readonly expectedKind?: BoardKind;
     readonly pdfPages?: readonly (readonly [number, number])[]; // Current host PageGeometry if authored host record is absent.
     // R-W28/29: the host owns admission leases and cleanup. It can wrap admitEncoded's SampleLease

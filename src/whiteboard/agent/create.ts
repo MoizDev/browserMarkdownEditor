@@ -1,5 +1,5 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { TxBuilder } from '../change/ops';
+import type { CommandBuilder } from '../change/ops';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type SheetId } from '../model/ids';
@@ -16,7 +16,7 @@ export interface CreateContext {
     readonly sheet: SheetId;
     /** Zero-based physical page; ignored on an unpaged board. */
     readonly currentPage: number;
-    readonly builder: TxBuilder;
+    readonly builder: CommandBuilder;
 }
 export interface CreatedShape { readonly id: Node['id']; readonly notes: readonly string[] }
 

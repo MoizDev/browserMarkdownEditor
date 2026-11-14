@@ -1,6 +1,7 @@
 import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
+import type { RenderToken } from '../../platform/render/types';
 import { createPlatformCapturer } from '../../platform/render/captureRuntime';
 import type { CompositorCaptureOptions } from '../../platform/render/compositor.types';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
@@ -27,6 +28,9 @@ export interface NativePdfBackdrop {
     readonly pages: readonly { readonly width: number; readonly height: number }[];
     captureSnapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
     assertCaptureCurrent(): void;
+    /** Source-bound fields are supplied by the PDF owner; a changed source revokes this backdrop. */
+    readonly sourceToken?: RenderToken;
+    isCurrentSource?(): boolean;
     setVisible(visible: boolean, focused: boolean): void;
     notePresentation?(): void;
     dispose(): void;
@@ -257,9 +261,13 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                if (presentation && parameters.visible && current() && presentation.token.documentId === token.documentId &&
-                    presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
-                    presentation.token.bytesGeneration === token.bytesGeneration) backdrop?.notePresentation?.();
+                const source = backdrop?.sourceToken;
+                if (presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
+                    presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+                    presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
+                    (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
+                        presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
+                        presentation.token.bytesGeneration === source.bytesGeneration))) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.

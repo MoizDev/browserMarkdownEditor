@@ -29,7 +29,7 @@ import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
 import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
-import { insertionFragment, marksAt, plain } from '../text/richOperations';
+import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
@@ -466,20 +466,22 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
             if (!editor || !node || !text) return null;
             const selection = { ...editor.getSelection() }, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
-            let href: string | null = null;
-            if (from === to) href = marksAt(text, from).link ?? null;
-            else {
+            let href: string | null = null, target: EditSelection | undefined;
+            if (from === to) {
+                const link = linkRangeAt(text, from);
+                if (link) { href = link.url; target = { anchor: link.from, focus: link.to }; }
+            } else {
                 const runs = sliceRichText(text, from, to).blocks.flatMap(block => block.runs).filter(run => run.text.length);
                 const first = runs[0]?.marks.link;
                 if (first && runs.every(run => run.marks.link === first)) href = first;
             }
-            return { node: node.id, revision: doc.rev, selection, href };
+            return { node: node.id, revision: doc.rev, selection, href, target };
         },
-        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection }, href: string | null) {
+        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection; readonly target?: EditSelection }, href: string | null) {
             const editor = manager.current?.editor, selection = editor?.getSelection();
             if (!editor || active !== context.node || doc.rev !== context.revision || !selection
                 || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;
-            return editor.applyLink(href, context.selection);
+            return editor.applyLink(href, context.target ?? context.selection);
         },
         pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
         cutText(node: NodeId, revision: number, selection: EditSelection) {

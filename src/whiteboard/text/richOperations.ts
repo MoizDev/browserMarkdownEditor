@@ -44,6 +44,26 @@ export function marksAt(value: RichText, offset: number): Marks {
     }
     return {};
 }
+export function linkRangeAt(value: RichText, offset: number): { readonly from: number; readonly to: number; readonly url: string } | null {
+    check(value, offset);
+    const found = position(value, offset), runs = found.block.runs;
+    let at = 0, chosen = -1;
+    for (let index = 0; index < runs.length; index++) {
+        const end = at + runs[index].text.length;
+        if ((found.offset > at && found.offset <= end) || (found.offset === 0 && at === 0 && end > 0)) { chosen = index; break; }
+        at = end;
+    }
+    if (chosen < 0 || !runs[chosen].marks.link) return null;
+    const url = runs[chosen].marks.link!;
+    let first = chosen, last = chosen;
+    while (first > 0 && runs[first - 1].marks.link === url) first--;
+    while (last + 1 < runs.length && runs[last + 1].marks.link === url) last++;
+    let from = found.start;
+    for (let index = 0; index < first; index++) from += runs[index].text.length;
+    let to = from;
+    for (let index = first; index <= last; index++) to += runs[index].text.length;
+    return from < to && isTextGraphemeBoundary(value, from) && isTextGraphemeBoundary(value, to) ? { from, to, url } : null;
+}
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
     const { block } = position(value, from);

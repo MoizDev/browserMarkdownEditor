@@ -159,8 +159,8 @@ third-party code included (normally "none") · date.
 | `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
 | `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
-| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; bounded media admission, inert retention and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
-| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | In-memory source/metadata retention and typed failures, shared paper normalization API (`utils/paper.ts` read), orphan page retention and injected repair/admission seam | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; media admission/orphan retention, inert records and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | Source/metadata retention, model raw-media indexing, shared paper normalization API (`utils/paper.ts` read), orphan pages and injected admission | none | 2026-11-13 |
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces and own cubic world bounds; connectors delegated to their provider | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; outgoing runs and pressure retained for host re-admission | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
@@ -239,6 +239,7 @@ third-party code included (normally "none") · date.
 | `geom/flatten.ts` | lane w-g | GE-1 | geometry §2.4 | Design; w-e's bounded ink cubic flattening job, de Casteljau splitting and circular sagitta bound | none | 2026-11-13 |
 | `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded prefix inversion | none | 2026-11-13 |
 | `geom/transforms.ts` | lane w-g | GE-4; F-XFORM-001/003/004/005/006/007/008/010/011 | geometry §6.2–6.4 | Design; oriented-frame resize, signed crossings, rotation and parent-local translation | none | 2026-11-13 |
+| `geom/translation.ts` | lane w-g | GE-4; F-XFORM-001/002/003/011 | geometry §6.1–6.2 | Design; model world-pose/page conversion, immutable gesture snapshots and ordinary transaction ops | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
@@ -336,6 +337,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract, cached by paper/page-list identity; no tldraw source | none | 2026-11-13 |
 | `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24, WB-D29, M-6 | document-model §6; change-and-history §2 | Specs and owned model/apply/locked-deletion interfaces, structured counts for localized confirmation; no tldraw source | none | 2026-11-13 |
+| `host/notebookController.ts` | lane w-l | F-NB-002/003/004/006/007/008, C7 | notebook; change-and-history §2 | Owned notebook commands, session gesture queue and revision-guarded confirmation; no tldraw source | none | 2026-11-13 |
 | `host/sheetController.ts` | lane w-l | F-SHEET-002/003/004/005/006, C7 | sheets; change-and-history §2 | Owned sheet commands, session gesture queue and revision-guarded confirmation; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
 | `host/notebookBackdrop.ts` | lane w-l | F-NB-004/005, C2.1 | notebook §F-NB-004; contracts C2.1 | Procedural paper and own paint-stream contracts; no tldraw source | none | 2026-11-13 |

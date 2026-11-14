@@ -12,7 +12,7 @@ import { isValidKey } from '../model/orderKey';
 import type { OrderKey } from '../model/orderKey';
 import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS } from '../model/styles';
 import type { UiBlock } from '../model/styles';
-import type { Block, Marks, RichText, Run } from '../text/richText';
+import { normalizeRichText, type Block, type Marks, type RichText, type Run } from '../text/richText';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
 import { JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
@@ -187,13 +187,16 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
         const blockTuple = await prefix(sourceBlock, 5, cooperate), values = blockTuple.values;
         if (values.length < 4) fail('Rich block needs kind, level, direction and runs', sourceBlock);
         const kind = await enumeration(values[0], BLOCKS, 'p', context, () => { unknown = true; });
-        const level = number(values[1]);
+        const originalLevel = number(values[1]);
+        const level = kind === 'p' ? 0 : Math.min(7, Math.max(0, Math.trunc(originalLevel)));
+        if (level !== originalLevel) repaired = true;
         const dir = await enumeration(values[2], DIRECTIONS, DIRECTIONS[0], context, () => { unknown = true; });
         const runs: Run[] = [];
-        let firstEmpty: Run | undefined, sourceRunCount = 0, firstEmptyUnknown = false, discardedEmptyUnknown = false;
+        let sourceRunCount = 0;
         const sourceRuns = cooperate ? values[3].itemsIncremental(cooperate) : values[3].items();
         for await (const sourceRun of sourceRuns) {
             sourceRunCount++;
+            if (sourceRunCount > FORMAT_LIMITS.textChars + 1) fail('Rich run count exceeds limit', values[3], true);
             const runTuple = await prefix(sourceRun, 2, cooperate), run = runTuple.values;
             if (!run.length) fail('Rich run needs text', sourceRun);
             const length = run[0].stringLength(FORMAT_LIMITS.textChars);
@@ -214,36 +217,57 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
                         marks[key] = true;
                     }
                 }
+                if (hasUnknownMarks) {
+                    const entries: string[] = [];
+                    for (const [key, value] of markFields) {
+                        if (!MARKS.includes(key)) entries.push(`${JSON.stringify(key)}:${cooperate ? await value.rawIncremental(cooperate) : value.raw()}`);
+                    }
+                    const previous = marks.x;
+                    const rawText = previous === undefined ? `{${entries.join(',')}}` : `{"previous":${previous},"unknown":{${entries.join(',')}}}`;
+                    const preserved = cooperate ? await parseJsonIncremental(rawText, cooperate) : parseJson(rawText);
+                    marks.x = cooperate ? await preserved.rawIncremental(cooperate) : preserved.raw();
+                    repaired = true;
+                }
             }
             const extra = runTuple.tail;
             const original = cooperate ? await run[0].stringIncremental(FORMAT_LIMITS.textChars, cooperate) : run[0].string(FORMAT_LIMITS.textChars);
             const clean = await normalizeRun(original, cooperate);
             if (clean !== original) repaired = true;
-            if (clean.includes('\n')) fail('Rich run contains a paragraph break', run[0]);
             const value: Run = { text: clean, marks: marks as Marks, ...(extra === undefined ? {} : { tail: extra }) };
-            if (!length) {
-                const carriesUnknown = hasUnknownMarks || extra !== undefined || marks.x !== undefined;
-                if (firstEmpty === undefined) { firstEmpty = value; firstEmptyUnknown = carriesUnknown; }
-                else discardedEmptyUnknown ||= carriesUnknown;
-            } else runs.push(value);
+            runs.push(value);
         }
-        if (!sourceRunCount) fail('Rich block needs at least one run', values[3]);
-        // R-W30: empty runs carry no text. Unknown content on an omitted empty run cannot be thrown
-        // away; decline that record instead of pretending the repair was lossless.
-        if (discardedEmptyUnknown || (runs.length > 0 && firstEmptyUnknown)) fail('An empty run contains unknown content that cannot be removed losslessly', values[3]);
-        if (!runs.length) runs.push(firstEmpty!);
-        if (runs.length !== sourceRunCount) { repaired = true; note(context, 'repair', 'Removed empty rich-text runs'); }
-        if (runs.length > chars + blocks.length + 1) fail('Rich run expansion exceeds text plus blocks', values[3], true);
+        if (!sourceRunCount) { runs.push({ text: '', marks: {} }); repaired = true; }
+        if (runs.length > chars + blocks.length + 1 && runs.some(run => run.text.length === 0 && (run.tail !== undefined || run.marks.x !== undefined)))
+            fail('Rich run expansion exceeds text plus blocks', values[3], true);
         const start = values[4] === undefined ? undefined : number(values[4]);
+        if (start !== undefined && kind !== 'ol') { unknown = true; repaired = true; }
         const extra = blockTuple.tail;
-        blocks.push({
-            kind: kind as Block['kind'], level, dir: dir as Block['dir'], runs,
-            ...(start === undefined ? {} : { start }), ...(extra === undefined ? {} : { tail: extra })
-        });
+        let current: Run[] = [], first = true;
+        const flush = () => {
+            if (blocks.length >= FORMAT_LIMITS.richTextBlocks) fail('Rich text block count exceeds limit', sourceBlock, true);
+            blocks.push({ kind: kind as Block['kind'], level, dir: dir as Block['dir'],
+                runs: current.length ? current : [{ text: '', marks: {} }],
+                ...(first && start !== undefined && kind === 'ol' ? { start } : {}), ...(first && extra !== undefined ? { tail: extra } : {}) });
+            current = []; first = false;
+        };
+        for (const run of runs) {
+            const parts = run.text.split('\n');
+            if (parts.length > 1) repaired = true;
+            for (let i = 0; i < parts.length; i++) {
+                if (parts[i] || parts.length === 1 || run.tail !== undefined || run.marks.x !== undefined)
+                    current.push({ ...run, text: parts[i], ...(i > 0 ? { tail: undefined } : {}) });
+                if (i + 1 < parts.length) flush();
+                if (cooperate && i > 0 && i % 1024 === 0) await cooperate();
+            }
+            if (cooperate) await cooperate();
+        }
+        flush();
     }
-    if (!blocks.length) fail('Rich text needs at least one block', sourceBlocks);
+    if (!blocks.length) { blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); repaired = true; }
+    const value = normalizeRichText({ blocks });
+    if (value.blocks !== blocks) repaired = true;
     if (repaired) note(context, 'repair', 'Normalized rich text while retaining its unknown content');
-    return { value: { blocks }, unknown, repaired };
+    return { value, unknown, repaired };
 }
 async function endpoint(span: JsonSpan, context: ModelReadContext): Promise<{ value: unknown; unknown: boolean; }> {
     const fields = await fieldMap(span, context.options.cooperate);

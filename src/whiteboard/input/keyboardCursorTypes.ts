@@ -11,6 +11,7 @@ export interface KeyboardCursorServices {
   update(sample: RealSample, modifiers: Modifiers): void
   finish(): void
   escape(): void
+  undo(): void
 }
 export interface KeyboardCursor {
   readonly active: boolean
@@ -18,5 +19,6 @@ export interface KeyboardCursor {
   move(dx: number, dy: number, coarse: boolean, modifiers: Modifiers): void
   enter(modifiers: Modifiers): boolean
   escape(): boolean
+  undo(): boolean
   dispose(): void
 }

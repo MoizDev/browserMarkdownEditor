@@ -258,6 +258,7 @@ third-party code included (normally "none") · date.
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
+| `geom/arrangement.types.ts` | lane w-g | GE-4; F-ARR-006/007/009/010 | geometry §6.6–6.7 | Design; selection bounds and shared page geometry service contracts | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |
@@ -280,7 +281,7 @@ third-party code included (normally "none") · date.
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; scale-aware boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
 | `geom/polylineTypes.ts` | lane w-h | F-LINE-001/003 | geometry §§1, 9 | Model and geometry type contracts; no tldraw source | none | 2026-11-13 |
-| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
+| `geom/connectorTypes.ts` | lane w-h | F-CONN-001/004, E-GEO-7/25 | geometry §8 | Connector body, arrowhead, incident-end, atomic-detach and attachment geometry type contracts; no tldraw source | none | 2026-11-13 |
 | `geom/heads.ts` | lane w-h | F-CONN-001, WB-D20, E-GEO-5/25 | geometry §8.3 | Independent head recipes, shared width metric and certified arc conversion; no tldraw source | none | 2026-11-13 |
 | `geom/connectors.ts` | lane w-h | F-CONN-001, E-GEO-5/6 | geometry §8.2 | Signed-sagitta circle construction and shared certified arc conversion from design; no tldraw source | none | 2026-11-13 |
 | `geom/polylines.ts` | lane w-h | F-LINE-001/003/004 | geometry §9 | Independent chord-weighted Hermite recipe from design, ordered model handles; no tldraw source | none | 2026-11-13 |
@@ -365,6 +366,7 @@ third-party code included (normally "none") · date.
 | `input/revealTypes.ts` | lane w-f | WB-D33; RV-56; E-INPUT-28 | input §8.4 | Public camera-reveal contracts; no tldraw source | none | 2026-11-13 |
 | `input/reveal.ts` | lane w-f | WB-D33; RV-56; E-INPUT-28 | input §8.4 | Independent minimum-pan calculation and C1 controller; no tldraw source | none | 2026-11-13 |
 | `input/keyboardCursorTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard cursor contracts; no tldraw source | none | 2026-11-13 |
+| `input/keyboardCursor.ts` | lane w-f | F-A11Y-002; R-19 | input §8.3 | Keyboard cursor uses the same tool command route; no tldraw source | none | 2026-11-13 |
 | `input/scrollKeysTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard navigation contracts; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |
 

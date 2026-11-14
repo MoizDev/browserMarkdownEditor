@@ -72,7 +72,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                     legacyOriginalSha256: prepared.legacyOriginalSha256 });
                 if (!policy) throw new DOMException('Board session ended', 'AbortError');
                 if (policy.emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');
-                if (taken && prepared.conversionPending && !policy.emergencyReadOnly) {
+                if (taken && prepared.conversionPending && !policy.emergencyReadOnly && !adapter.board.isReadOnly) {
                     const source = adapter.checkpoint();
                     if (typeof source === 'string') throw new Error('Legacy conversion did not produce a deferred source');
                     acceptConvertedSource!(source, prepared.legacyOriginalSha256!);

@@ -1,3 +1,5 @@
+import { getPlatformRuntime } from '../../platform/render/platformRuntime';
+import { DEFAULT_PAPER } from '../../utils/paper';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
 import { Limiter } from '../../utils/pool';
@@ -15,6 +17,7 @@ import { acquireNativeBoardFromHost } from './acquireFromHost';
 import { createBoardEncoderBounds } from './encoderBounds';
 import { createEmptyNativeBytes } from './emptyNative';
 import { createBoardJournal } from './journal';
+import { acquireLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
 import { createNativeMediaRestore } from './nativeMediaRestore';
 import { createOwnedBoardRuntime, type OwnedBoardRuntime } from './ownedRuntime';
 import { primeNativeLoad } from './primeNative';
@@ -33,6 +36,8 @@ export interface PrepareNativeRuntimeOptions {
     onHistoryLimit(): void;
 }
 
+let legacyMemorySerial = 0;
+
 /** Preparation owns admission and creator leases until take transfers one runtime. */
 export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions) {
     const { host, identity, signal } = options;
@@ -48,6 +53,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
     let services: ReturnType<typeof createBoardRenderServices> | undefined;
     let serializer: ReturnType<typeof createSerializerSession> | undefined;
     const creatorLeases: MediaLease[] = [];
+    let legacy: LegacyBoardAcquisition | undefined;
     let transferred = false, disposed = false, owned: OwnedBoardRuntime | undefined;
     const releaseCreators = () => { for (const lease of creatorLeases.splice(0)) lease.release(); };
     const disposePreparation = () => {
@@ -57,10 +63,42 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         serializer?.dispose();
         services?.dispose();
         media?.clear();
-        admitted.dispose();
+        try { legacy?.dispose(); } finally { admitted.dispose(); }
     };
     try {
-        const acquired = admitted.acquisition;
+        let acquired = admitted.acquisition, nativeBytes = admitted.bytes;
+        if (acquired.status === 'read-only' && acquired.report.format === 'other' && acquired.report.complete
+            && acquired.report.bytesRead === original.size && original.size > 0) {
+            const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
+                session: identity.session, bytesGeneration: identity.bytesGeneration };
+            const job = { session: `${identity.documentId}:${identity.session}`, epoch: identity.vaultActivation,
+                revision: identity.bytesGeneration };
+            const now = performance.now();
+            let live = 0;
+            const cache = getPlatformRuntime().governor.register({ id: `legacy-acquisition:${identity.documentId}:${++legacyMemorySerial}`,
+                owner: token, pool: 'cpu', kind: 'working', class: 'critical', hiddenAt: null,
+                lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict: () => {} });
+            const memory = {
+                reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
+                release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
+            };
+            try {
+                legacy = await acquireLegacyBoard({ bytes: original, kind: options.representation === 'drawing' ? 'whiteboard' : 'notebook',
+                    host: options.representation === 'drawing' ? { kind: 'whiteboard' }
+                        : { kind: 'notebook', paper: { ...DEFAULT_PAPER }, ext: null },
+                    token, zMax: options.zMax, memory, nativeReport: acquired.report, identity: job,
+                    isCurrent: candidate => candidate.session === job.session && candidate.epoch === job.epoch
+                        && candidate.revision === job.revision && host.isCurrent(identity), signal });
+            } finally { cache.close(); }
+            signal.throwIfAborted();
+            if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+            if (legacy.status !== 'editable') {
+                const issues = legacy.legacyReport.unrepresentable.map(issue => issue.reason).join('; ');
+                throw new Error(`Legacy board could not be converted${issues ? `: ${issues}` : '.'}`);
+            }
+            acquired = legacy.native;
+            nativeBytes = legacy.bytes;
+        }
         if (acquired.status !== 'editable') {
             const issues = acquired.report.issues.map(issue => issue.reason).join('; ');
             throw new Error(`Board could not be opened for editing${issues ? `: ${issues}` : '.'}`);
@@ -68,6 +106,10 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         const { load, samples } = acquired, doc = load.doc;
         media = new MediaStore();
         const store = media;
+        if (legacy?.status === 'editable') for (const [id, blob] of legacy.media) {
+            creatorLeases.push(store.retain(id, 'journal'));
+            store.put(id, blob);
+        }
         const references = new Set<MediaId>();
         for (const [id, refs] of doc.mediaRefs) if (refs.size) references.add(id);
         for (const [id, count] of doc.preservedMediaRefs) if (count > 0) references.add(id);
@@ -76,6 +118,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             signal.throwIfAborted();
             const entry = doc.media.get(id);
             if (!entry) return;
+            if (legacy?.status === 'editable' && legacy.media.has(id)) return;
             const read = await admitted.media.read(entry, signal);
             signal.throwIfAborted();
             if (!read) return;
@@ -119,7 +162,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             savedView: () => options.savedView?.() ?? load.savedView,
             mediaRefs: doc.mediaRefs, preservedMediaRefs: doc.preservedMediaRefs,
         };
-        const { prime, records } = await primeNativeLoad(load, admitted.bytes, encoder, undefined, signal);
+        const { prime, records } = await primeNativeLoad(load, nativeBytes, encoder, undefined, signal);
         if (!prime.lines) throw new Error('Native recovery needs an indexed initial baseline');
         const lines = prime.lines, overrides = prime.overrides ?? [];
         const initialRecords = function* (): IterableIterator<RecordVersion> {
@@ -132,7 +175,8 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         signal.throwIfAborted();
         if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         return {
-            legacyOriginalSha256: null,
+            legacyOriginalSha256: legacy?.status === 'editable' ? legacy.originalSha256.slice('sha256:'.length) : null,
+            conversionPending: legacy?.status === 'editable',
             media: store,
             runtime: () => owned?.runtime,
             take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
@@ -176,7 +220,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     }, builds: { pinMedia } });
                     transferred = true;
                     releaseCreators();
-                    admitted.dispose();
+                    try { legacy?.dispose(); } finally { admitted.dispose(); }
                     let closed = false;
                     return { board: owned.board, dispose() {
                         if (closed) return;

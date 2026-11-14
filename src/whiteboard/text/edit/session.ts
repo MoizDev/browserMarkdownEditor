@@ -30,6 +30,9 @@ export interface EditSessionServices extends EditTransactions {
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
+    isStandaloneText(): boolean;
+    // Joins deletion to the last text step, or cancels an empty creation.
+    removeEmptyText(): void;
     finish(): void;
 }
 
@@ -90,6 +93,7 @@ export class TextEditSession {
             },
             commitComposition: change => this.replace(change, 'composition'),
             keydown: event => this.keydown(event),
+            contextMenu: (x, y) => services.menu(x, y),
             characterBounds: (start, end) => {
                 const layout = services.layout();
                 return layout.caret.characterBounds(start, end).map(rect => clientBounds(rect, layout.localToClient));
@@ -145,6 +149,14 @@ export class TextEditSession {
     }
 
     private keydown(event: KeyboardEvent): void {
+        if (!event.isComposing && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+            event.preventDefault(); event.stopPropagation();
+            const layout = this.services.layout();
+            const caret = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+            const at = point(layout.localToClient, caret.x, caret.bottom);
+            this.services.menu(at.x, at.y);
+            return;
+        }
         handleEditKey(event, {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
@@ -222,6 +234,8 @@ export class TextEditSession {
         if (this.closed) return;
         this.host.finishComposition(commitComposition);
         this.closed = true;
-        this.pointer.dispose(); this.host.dispose(); this.services.finish();
+        this.pointer.dispose(); this.host.dispose();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        this.services.finish();
     }
 }

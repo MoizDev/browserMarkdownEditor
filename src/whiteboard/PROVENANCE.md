@@ -234,6 +234,7 @@ third-party code included (normally "none") · date.
 | `text/layout.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 6–7 | Unicode itemizer and bidi reordering, face metrics and canvas measurement, heading sizes from spec/text F-TEXT-012, shared SHA-256 for paint keys; own layout implementation | none | 2026-11-13 |
 | `text/caretIndex.ts` | lane w-n | T-4, T-5 | text §§5.3–5.6 | Independent reference-size prefix measurement and grapheme-index geometry | none | 2026-11-13 |
 | `text/edit/bindingTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Session, shared layout, composition paint and pane-view binding contract | none | 2026-11-13 |
+| `text/edit/managerTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Pane-owned editing manager, text tool creation, select/enter/type and lifecycle contracts | none | 2026-11-13 |
 | `text/edit/binding.ts` | lane w-n | T-4, T-5 | text §§5–6 | W-i's edit session and rich adapter, shared history/layout, IME overlay and pane transforms; frame name as plain text | none | 2026-11-13 |
 | `text/layoutWorkerHandler.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform shared-worker protocol; w-d coordinated parse-worker integration | none | 2026-11-13 |
 | `text/layoutClient.ts` | lane w-n | T-1, T-2, T-4 | text §§2–3, 7.2; threading §§2–3 | Main/worker layout compatibility selection, worker-host interface, vault/session and node-revision stale reply rejection | none | 2026-11-13 |
@@ -292,6 +293,9 @@ third-party code included (normally "none") · date.
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
+| `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
+| `tools/transform.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; cancellable derived preview, pending preflight and atomic pointer-up apply | none | 2026-11-13 |
+| `tools/transformDrivers.ts` | lane w-g | GE-4; F-XFORM-001/004/008 | geometry §6.1–6.3 | Design; input adapters for translation, resize and rotation snapshot plans | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

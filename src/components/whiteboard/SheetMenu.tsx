@@ -1,33 +1,33 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Sheet } from '../../whiteboard/model/doc';
-import type { SheetId } from '../../whiteboard/model/ids';
 import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
 import { dismissOnEscape } from '../../utils/escapeDismiss';
 import './sheetMenu.css';
 
+export interface SheetMenuEntry { readonly id: string; readonly name: string }
+
 export interface SheetMenuProps {
     readonly anchor: HTMLElement;
-    readonly sheets: readonly Sheet[];
-    readonly current: SheetId;
+    readonly sheets: readonly SheetMenuEntry[];
+    readonly current: string;
     readonly readOnly: boolean;
     readonly close: () => void;
-    readonly select: (id: SheetId) => void;
+    readonly select: (id: string) => void;
     readonly create: () => void;
-    readonly rename: (id: SheetId, name: string) => void;
-    readonly duplicate: (id: SheetId) => void;
-    readonly remove: (id: SheetId) => void;
-    readonly move: (id: SheetId, destination: number) => void;
+    readonly rename: (id: string, name: string) => void;
+    readonly duplicate: (id: string) => void;
+    readonly remove: (id: string) => void;
+    readonly move: (id: string, destination: number) => void;
 }
 
 /** Logical sheets are independent of the paper-page navigator on paged hosts. */
 export function SheetMenu({ anchor, sheets, current, readOnly, close, select, create, rename, duplicate, remove, move }: SheetMenuProps) {
     const panel = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
-    const [editing, setEditing] = useState<SheetId | null>(null);
+    const [editing, setEditing] = useState<string | null>(null);
     const [name, setName] = useState('');
     const cancelled = useRef(false);
     const closeRef = useRef(close);
-    closeRef.current = close;
+    useEffect(() => { closeRef.current = close; }, [close]);
     const rect = anchor.getBoundingClientRect();
     useEffect(() => {
         panel.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -40,7 +40,7 @@ export function SheetMenu({ anchor, sheets, current, readOnly, close, select, cr
         return () => { escape(); document.removeEventListener('pointerdown', outside); };
     }, [anchor]);
     useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
-    const finishRename = (sheet: Sheet) => {
+    const finishRename = (sheet: SheetMenuEntry) => {
         if (!cancelled.current && name.trim() && name !== sheet.name) rename(sheet.id, name.trim());
         cancelled.current = false;
         setEditing(null);

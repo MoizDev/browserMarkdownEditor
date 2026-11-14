@@ -2264,6 +2264,25 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return { status: 'written' as const, version, handle };
     }), [withMutation, patchTreeDirs]);
 
+    // A staged export must not recreate a deleted parent or truncate an existing
+    // target. The name check has the same FSA check/create gap as conflict copies.
+    const createStagedExport = useCallback((parent: FileSystemDirectoryHandle, name: string, parentPath: string, bytes: Uint8Array, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => withMutation(async () => {
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        if (await entryExists(parent, name)) return { status: 'exists' as const };
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        const handle = await parent.getFileHandle(name, { create: true });
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        const writable = await handle.createWritable();
+        try {
+            await writable.write(bytes as Uint8Array<ArrayBuffer>);
+            if (root !== rootHandleRef.current || !isCurrent()) { await writable.abort(); return { status: 'cancelled' as const }; }
+            await writable.close();
+        } catch (error) { await writable.abort().catch(() => {}); throw error; }
+        const version = await versionAfterWrite(handle, bytes);
+        if (root === rootHandleRef.current) await patchTreeDirs(root, [parentPath]);
+        return { status: 'written' as const, version, handle };
+    }), [withMutation, patchTreeDirs]);
+
     /** A fresh handle for a vault path, walked down from the root: what a tab's
      *  stored handle is checked against, since that one may be stale. Null if any
      *  component is missing (or is the wrong kind). */
@@ -2545,6 +2564,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
+        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
@@ -2589,6 +2609,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
+        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,

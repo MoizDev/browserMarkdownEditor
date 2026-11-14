@@ -1083,15 +1083,21 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     assertCanvasPath(path, !!ctx.host.canvasShapePage);
     await requireFile(ctx, path);
     const ops = a.ops as CanvasOp[];
-    const view = await liveCanvas(ctx, path);
-    ctx.ensureLive();
-    if (ctx.signal?.aborted) throw new ToolError('Canvas edit cancelled. Nothing was applied.');
-    if (!ctx.host.canvasWritable(path)) throw new ToolError('This canvas is open read-only. Nothing was applied.');
     let r: CanvasApplyResult;
     try {
-        r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {
-            try { ctx.ensureLive(); return !ctx.signal?.aborted && ctx.host.canvasWritable(path); } catch { return false; }
+        const native = await ctx.host.canvasApplyNative?.(path, ops, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
         } });
+        if (native) r = native;
+        else {
+            const view = await liveCanvas(ctx, path);
+            ctx.ensureLive();
+            if (ctx.signal?.aborted) throw new ToolError('Canvas edit cancelled. Nothing was applied.');
+            if (!ctx.host.canvasWritable(path)) throw new ToolError('This canvas is open read-only. Nothing was applied.');
+            r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted && ctx.host.canvasWritable(path); } catch { return false; }
+            } });
+        }
     } catch (err) {
         throw new ToolError(`the canvas refused the change: ${err instanceof Error ? err.message : String(err)}. Nothing was applied.`);
     }

@@ -11,10 +11,10 @@
 // App's state changes. The wire protocol with the helper is
 // shared/vaultAgentProtocol.ts; what each pane reports is utils/viewRegistry.ts.
 
-import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
+import type { AgentId, CanvasOp, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { CanvasShapePage, CanvasShapeQuery, TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
@@ -127,6 +127,9 @@ export interface VaultToolHost {
     /** Session-owned live read or C5-admitted closed read; null means not a new board. */
     canvasShapePage?(path: string, query: CanvasShapeQuery,
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
+    /** Actual session mutation; null selects a genuinely different loaded representation. */
+    canvasApplyNative?(path: string, ops: CanvasOp[],
+        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasApplyResult | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands

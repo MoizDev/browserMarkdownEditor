@@ -75,6 +75,9 @@ export interface AgentHostDeps {
         readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
         readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
         isCurrent(): boolean;
+        canWrite(): boolean;
+        activateEditing(): void;
+        readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     }>;
     /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
     canvasShapePage?: VaultToolHost['canvasShapePage'];
@@ -236,6 +239,23 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
             const { readNativeCanvasShapePage } = await import('./nativeCanvasAgentRead');
             return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
+        async canvasApplyNative(path, ops, guard) {
+            const deps = getDeps();
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
+            if (!openTabAt(deps, path)) {
+                const node = findNode(deps.fileTree, path);
+                if (!node || node.kind !== 'file') throw new Error('The canvas file is unavailable');
+                if (!await deps.addTabQuietly(node, 'read')) throw new Error('The canvas could not be opened');
+            }
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
+            const { applyNativeCanvasOperations } = await import('./nativeCanvasAgentMutation');
+            return applyNativeCanvasOperations({ deps: getDeps(), path, ops,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
         closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,

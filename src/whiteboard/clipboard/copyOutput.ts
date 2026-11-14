@@ -1,3 +1,4 @@
+import type { BoardRuntime } from '../host/runtime';
 import type { CopySnapshot } from './snapshot';
 import { pngCrc32 } from './pngDensity';
 
@@ -31,15 +32,23 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     return new Blob(parts, { type: 'image/x-board+png' });
 }
 /** Capture is the real export port; promises are installed while user activation is live. */
-export async function copyBoardPng(capture: (signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
+export async function copyBoardPng(runtime: BoardRuntime, capture: (signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
     current: () => boolean, pixelsPerWorldUnit = 2): Promise<void> {
-    const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
+    const session = runtime.session;
+    const check = () => { signal.throwIfAborted(); if (runtime.session !== session || !current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
     check();
-    const image = capture(signal).then(blob => { check(); return new Blob([blob], { type: 'image/png' }); });
-    const privateImage = image.then(async blob => { const output = await pngWithClipboardDensity(blob, pixelsPerWorldUnit, signal); check(); return output; });
-    // Some browsers reject the custom type synchronously before consuming either promise.
-    void privateImage.catch(() => undefined);
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]);
+    const captured = runtime.jobs.run(async context => {
+        const blob = await capture(context.signal); context.assertCurrent(); check();
+        const image = new Blob([blob], { type: 'image/png' });
+        const privateImage = await pngWithClipboardDensity(image, pixelsPerWorldUnit, context.signal);
+        context.assertCurrent(); check();
+        return { image, privateImage };
+    }, { signal, deadlineMs: 120_000 });
+    const image = captured.then(value => value.image), privateImage = captured.then(value => value.privateImage);
+    // The OS promise must be installed during the gesture; unsupported custom formats fall back to standard PNG.
+    void image.catch(() => undefined); void privateImage.catch(() => undefined);
+    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]); }
+    catch { check(); await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]); }
     check();
 }
 /** The caller supplies the real escaped/exported SVG; the clipboard holds plain text only. */

@@ -1,6 +1,7 @@
 import type { Rect } from '../../platform/types';
 import { worldPose } from '../change/coordinates';
 import type { BoardDoc } from '../model/doc';
+import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import { boardFrameAncestors } from './ancestorFrames';
 import { createExactConvexIntersectionJob, type ExactConvexOperand } from './exactConvexIntersection';
@@ -25,19 +26,23 @@ function rectangle(x0: number, y0: number, x1: number, y1: number): readonly Vec
 /** Exact visible logical AABB for rectangular semantics clipped by convex
  * ancestor frames. Other partial geometry is refused, never approximated. */
 export async function prepareVisibleSnapBounds(doc: BoardDoc, id: NodeId, bounds: Readonly<Rect>, options: {
-    readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
+    readonly runtime: BoardRuntime; readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<Rect | null> {
     const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Visible snap bounds became stale', 'AbortError'); };
     check(); const node = doc.nodes.get(id); if (!node) throw new Error('Snap target disappeared');
     const pose = worldPose(doc, id);
-    if (!['figure', 'text', 'sticky', 'clip', 'linkcard', 'embed', 'picture', 'frame'].includes(node.kind)
-        || (node.kind !== 'frame' && pose.rotation !== 0)) throw new Error('Frame-clipped snap target requires exact visible geometry');
+    if (!['figure', 'text', 'sticky', 'clip', 'linkcard', 'embed', 'picture', 'frame'].includes(node.kind))
+        throw new Error('Frame-clipped snap target requires exact visible geometry');
     if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0)
         throw new RangeError('Visible snap rectangle is degenerate');
-    const operands: ExactConvexOperand[] = node.kind === 'frame'
-        ? [{ points: rectangle(0, 0, node.w, node.h), transform: [Math.cos(pose.rotation), Math.sin(pose.rotation), -Math.sin(pose.rotation), Math.cos(pose.rotation), pose.x, pose.y] }]
-        : [{ points: rectangle(bounds.x, bounds.y, sum(bounds.x, bounds.width), sum(bounds.y, bounds.height)) }];
+    const prepared = await options.runtime.render.prepareForPick(node, options.signal, doc); check();
+    const local = prepared.vector?.boxLocal;
+    if (!local || ![local.x, local.y, local.width, local.height].every(Number.isFinite) || local.width <= 0 || local.height <= 0)
+        throw new Error('Visible snap target has no rectangular logical geometry');
+    const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+    const operands: ExactConvexOperand[] = [{ points: rectangle(local.x, local.y, sum(local.x, local.width), sum(local.y, local.height)),
+        transform: [c, s, -s, c, pose.x, pose.y] }];
     for (const frame of boardFrameAncestors(doc, node)) {
         const pose = worldPose(doc, frame.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         operands.push({ points: rectangle(0, 0, frame.w, frame.h), transform: [c, s, -s, c, pose.x, pose.y] });

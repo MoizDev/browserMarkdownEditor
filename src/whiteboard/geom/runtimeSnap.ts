@@ -83,7 +83,7 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
                     || (candidate.rank === old.rank && (candidate.source < old.source || (candidate.source === old.source && candidate.edge < old.edge)))))));
         type Neighbour = { readonly id: NodeId; readonly edge: number; readonly distance: number; readonly rank: number };
         let left: Neighbour | undefined, right: Neighbour | undefined, above: Neighbour | undefined, below: Neighbour | undefined;
-        const candidateBounds: Readonly<Rect>[] = [];
+        const candidateBounds: Readonly<Rect>[] = [], boundsById = new Map<NodeId, Readonly<Rect>>();
         const nearer = (value: Neighbour, old: Neighbour | undefined) => !old || value.distance < old.distance
             || (value.distance === old.distance && (value.rank > old.rank || (value.rank === old.rank && value.id < old.id)));
         let visited = 0; const visibility = createSnapVisibility(doc);
@@ -91,10 +91,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
             check(); if (++visited % 256 === 0) { await cooperate(); check(); }
             const logical = scope.logicalBounds(id), relation = visibility(id, logical);
             if (relation === 'hidden') continue;
-            const other = relation === 'partial' ? await prepareVisibleSnapBounds(doc, id, logical, { signal, cooperate,
+            const other = relation === 'partial' ? await prepareVisibleSnapBounds(doc, id, logical, { runtime, signal, cooperate,
                 current: () => { try { check(); return true; } catch { return false; } } }) : logical;
             check(); if (!other) continue;
-            const rank = scope.rank(id); candidateBounds.push(other);
+            const rank = scope.rank(id); candidateBounds.push(other); boundsById.set(id, other);
             const overlapY = Math.min(other.y + other.height, bounds.y + bounds.height) - Math.max(other.y, bounds.y);
             const overlapX = Math.min(other.x + other.width, bounds.x + bounds.width) - Math.max(other.x, bounds.x);
             if (overlapY >= 0) {
@@ -164,6 +164,15 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
                 throw new Error('Snap gap neighbours changed during simultaneous correction');
             if (++visited % 256 === 0) { await cooperate(); check(); }
         }
-        check(); return { delta: { x: dx, y: dy }, guides: [...(x?.guides ?? []), ...(y?.guides ?? [])] };
+        const adjusted = (guide: BoardSnapGuide): BoardSnapGuide => {
+            if (guide.kind === 'equal-gap') return { ...guide, value: guide.value + (guide.axis === 'x' ? dx : dy) };
+            const target = boundsById.get(guide.target); if (!target) throw new Error('Snap guide target disappeared');
+            return guide.axis === 'x'
+                ? { ...guide, from: Math.min(bounds.y + dy, target.y), to: Math.max(bounds.y + dy + bounds.height, target.y + target.height) }
+                : { ...guide, from: Math.min(bounds.x + dx, target.x), to: Math.max(bounds.x + dx + bounds.width, target.x + target.width) };
+        };
+        const guides = [...(x?.guides ?? []), ...(y?.guides ?? [])].map(adjusted);
+        if (guides.some(guide => ![guide.value, guide.from, guide.to].every(Number.isFinite))) throw new RangeError('Snap guide overflows');
+        check(); return { delta: { x: dx, y: dy }, guides };
     } finally { scope.release(); }
 }

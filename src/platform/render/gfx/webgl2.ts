@@ -24,6 +24,7 @@ import type { BenchmarkPaintDomain } from '../benchmarkPaintDomain';
 import type { Webgl2Coverage, CoverageFrameTag } from './webgl2Coverage';
 
 const coverageModule = __BME_BENCH__ ? await import('./webgl2Coverage') : null;
+const gpuStateModule = __BME_BENCH__ ? await import('./benchmarkGpuState') : null;
 const coverageShaders = __BME_BENCH__ ? await import('./webgl2CoverageShaders') : null;
 const coveragePerf = __BME_BENCH__ ? await import('../renderPerf') : null;
 const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : null;
@@ -80,9 +81,9 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     memory(): ArenaMemory;
     leaseMemory(lease: ByteLease): ArenaLeaseMemory;
     cpuStagingMemory(): ArenaMemory;
-    prepareCoverageFrame(tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void): boolean;
-    commitCoverage(serial: number): void;
-    cancelCoverage(serial: number): void;
+    readonly prepareCoverageFrame?: (tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void) => boolean;
+    readonly commitCoverage?: (serial: number) => void;
+    readonly cancelCoverage?: (serial: number) => void;
 }
 
 type BufferDesc = { bytes: number; uses: readonly BufferUse[]; pack?: boolean };
@@ -120,7 +121,7 @@ interface NativeTexture {
 interface NativeTarget {
     color: TextureHandle;
     colorTexture: NativeTexture;
-    coverage: NativeTexture | null;
+    coverage?: NativeTexture | null;
     samples: Samples;
     stencil: boolean;
     capture: boolean;
@@ -187,9 +188,9 @@ interface FrameWork {
     surfaceRevision: number;
     issued: number | null;
     finished: boolean;
-    coverage: CoveragePlan | null;
+    coverage?: CoveragePlan | null;
 }
-type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; width: number; height: number };
+type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; standInRatio: number; width: number; height: number };
 type CoverageRoot = { width: number; height: number; texture: TextureHandle; target: TargetHandle };
 
 const CAPABILITY_SHADER: ShaderModule = {
@@ -243,8 +244,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly resources: GfxDevice = this;
     readonly uploadMeterAvailable: boolean;
     readonly #services: Webgl2Services;
-    readonly #measurementWorking: MemoryAllocator;
-    readonly #measurementProgram: MemoryAllocator;
+    declare readonly prepareCoverageFrame?: Webgl2Owner['prepareCoverageFrame'];
+    declare readonly commitCoverage?: Webgl2Owner['commitCoverage'];
+    declare readonly cancelCoverage?: Webgl2Owner['cancelCoverage'];
     readonly #arena: ResourceArena<Descriptors, Objects>;
     readonly #parallel: KHR_parallel_shader_compile | null;
     readonly #timer: Webgl2Timer;
@@ -261,15 +263,25 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #programSignatures = new Map<string, string>();
     readonly #samplers = new Map<'nearest' | 'linear', SamplerHandle>();
     readonly #attachments = new Map<TextureHandle, TargetHandle>();
-    #coverageTextures = new WeakMap<WebGLTexture, TextureHandle>();
+    get #coverageTextures() { return this.#aux().textures; }
+    set #coverageTextures(value: WeakMap<WebGLTexture, TextureHandle>) { this.#aux().textures = value; }
     readonly #pool: Webgl2TargetPool;
     readonly #frames = new Map<ArenaEncoding, FrameWork>();
-    readonly #coverageTickets = new Map<number, { commit(): void; cancel(): void }>();
-    #coverage: Webgl2Coverage | null = null;
-    #coveragePrograms: { classify: WebGLProgram; reduce: WebGLProgram } | null = null;
-    #coverageCompiling = false;
-    #coverageRoot: CoverageRoot | null = null;
-    #coveragePlan: CoveragePlan | null = null;
+    get #coverageTickets() { return this.#aux().tickets; }
+    get #coverage() { return this.#aux().counter; }
+    set #coverage(value: Webgl2Coverage | null) { this.#aux().counter = value; }
+    get #coveragePrograms() { return this.#aux().programs; }
+    set #coveragePrograms(value: { classify: WebGLProgram; reduce: WebGLProgram } | null) { this.#aux().programs = value; }
+    get #coverageRoot() { return this.#aux().root; }
+    set #coverageRoot(value: CoverageRoot | null) { this.#aux().root = value; }
+    get #coveragePlan() { return this.#aux().plan; }
+    set #coveragePlan(value: CoveragePlan | null) { this.#aux().plan = value; }
+    get #measurementWorking() { return this.#aux().working; }
+    get #measurementProgram() { return this.#aux().program; }
+    #aux() {
+        if (__BME_BENCH__ && gpuStateModule) return gpuStateModule.states.get(this)!;
+        throw new ArenaError('unsupported');
+    }
     readonly #controlledFrames = new WeakMap<FrameEncoder, ControlledFrame>();
     readonly #uniformSlots: UniformSlot[] = [];
     readonly #pipelines = new Set<NativePipeline>();
@@ -300,6 +312,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             await owner.#qualify(preparation.signal);
             await owner.#prepareComposition(preparation.signal);
+            if (__BME_BENCH__) await owner.#prepareCoveragePrograms().catch(() => {});
             return owner;
         } catch (error) {
             owner.dispose(error instanceof ArenaError && error.code === 'lost' ? 'context-lost' : 'creation-failed');
@@ -316,10 +329,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#canvas = preparation.canvas;
         this.generation = preparation.generation;
         this.#services = services;
-        this.#measurementWorking = benchmarkMemory && services.measurementPaneId
-            ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.working) : services.working;
-        this.#measurementProgram = benchmarkMemory && services.measurementPaneId
-            ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.program) : services.program;
+        if (__BME_BENCH__ && gpuStateModule) {
+            const working = benchmarkMemory && services.measurementPaneId
+                ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.working) : services.working;
+            const program = benchmarkMemory && services.measurementPaneId
+                ? benchmarkMemory.measurementAllocator(services.measurementPaneId, 'gpu', services.program) : services.program;
+            gpuStateModule.states.set(this, gpuStateModule.createState(working, program));
+            this.prepareCoverageFrame = this.#prepareCoverageFrame.bind(this);
+            this.commitCoverage = serial => { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.commit(); };
+            this.cancelCoverage = serial => { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.cancel(); };
+        }
         this.uploadMeterAvailable = typeof services.recordUpload === 'function';
         // Query once per generation, never to reconstruct state in a frame (design:276–277).
         const parameter = (name: number): number => {
@@ -390,53 +409,69 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     get uniformRingBytes(): number { return this.#uniformBytes; }
 
-    prepareCoverageFrame(tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void): boolean {
-        if (!coverageModule || !coverageShaders || !coveragePerf) return false;
+    async #prepareCoveragePrograms(): Promise<void> {
+        if (!__BME_BENCH__ || !coverageShaders) return;
+        const state = this.#aux();
+        if (state.programs) return;
+        if (state.programTask) return state.programTask;
+        const shaders = coverageShaders;
+        const make = (id: string, fragment: string): ShaderModule => ({ id, revision: 1,
+            glsl: { vertex: shaders.COVERAGE_REDUCE_VERTEX, fragment },
+            layout: { uniforms: [], textures: [], attributes: [] } });
+        const task = Promise.all([
+            this.#program(make('benchmark-coverage-classify', shaders.COVERAGE_CLASSIFY_FRAGMENT), this.#work.signal),
+            this.#program(make('benchmark-coverage-reduce', shaders.COVERAGE_SUM_FRAGMENT), this.#work.signal),
+        ]).then(([a, b]) => {
+            if (this.#paused || this.#disposed || this.#lost) return;
+            const classify = this.#arena.validate(a, 'pipeline'), reduce = this.#arena.validate(b, 'pipeline');
+            if (classify.role === 'program' && reduce.role === 'program') {
+                state.programHandles = [a, b];
+                state.programs = { classify: classify.program, reduce: reduce.program };
+            }
+        }).finally(() => { if (state.programTask === task) state.programTask = null; });
+        state.programTask = task;
+        return task;
+    }
+
+    #prepareCoverageFrame(tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void): boolean {
+        if (!__BME_BENCH__ || !coverageModule || !coveragePerf) return false;
         const width = this.#canvas?.width ?? 0, height = this.#canvas?.height ?? 0;
-        if (!this.#coveragePrograms && !this.#coverageCompiling) {
-            this.#coverageCompiling = true;
-            const make = (id: string, fragment: string): ShaderModule => ({ id, revision: 1,
-                glsl: { vertex: coverageShaders.COVERAGE_REDUCE_VERTEX, fragment },
-                layout: { uniforms: [], textures: [], attributes: [] } });
-            void Promise.all([
-                this.#program(make('benchmark-coverage-classify', coverageShaders.COVERAGE_CLASSIFY_FRAGMENT), this.#work.signal),
-                this.#program(make('benchmark-coverage-reduce', coverageShaders.COVERAGE_SUM_FRAGMENT), this.#work.signal),
-            ]).then(([a, b]) => {
-                const classify = this.#arena.validate(a, 'pipeline'), reduce = this.#arena.validate(b, 'pipeline');
-                if (classify.role === 'program' && reduce.role === 'program') this.#coveragePrograms = { classify: classify.program, reduce: reduce.program };
-                wake();
-            }).catch(() => {}).finally(() => { this.#coverageCompiling = false; });
-        }
+        if (!this.#coveragePrograms) void this.#prepareCoveragePrograms().then(wake).catch(() => {});
         let root: CoverageRoot | null = null;
         try {
             if (this.#coveragePrograms && width > 0 && height > 0) {
                 this.#coverage ??= new coverageModule.Webgl2Coverage({ generation: this.generation, gl: () => this.#healthy(),
-                    memory: this.#measurementWorking, reset: () => this.#reset(), schedulePoll: this.#services.schedulePoll,
+                    memory: this.#measurementWorking,
+                    cpuMemory: benchmarkMemory && this.#services.measurementPaneId
+                        ? benchmarkMemory.measurementAllocator(this.#services.measurementPaneId, 'cpu', this.#services.cpuStaging) : this.#services.cpuStaging,
+                    reset: () => this.#reset(), schedulePoll: this.#services.schedulePoll,
+                    onDrained: () => {
+                        for (const retired of this.#aux().retiredCounters) if (retired.drained) this.#aux().retiredCounters.delete(retired);
+                    },
                     programs: () => this.#coveragePrograms,
                     onCount: (result, counts) => coveragePerf.recordCoverageFrame({ ...result, backend: 'webgl2',
                         outside: counts[0], hole: counts[1], standin: counts[2], current: counts[3],
+                        standInRatio: counts[2] ? result.standInRatio ?? 1 : 1,
                         invalid: result.width * result.height - counts[0] - counts[1] - counts[2] - counts[3] }),
                     onDrop: result => coveragePerf.recordCoverageDrop({ ...result, backend: 'webgl2' }, 'readback') });
                 if (this.#coverage.prepare(width, height)) root = this.#prepareCoverageRoot(width, height);
             }
         } catch { root = null; }
-        this.#coveragePlan = { tag, domain, root, missing: false, width, height };
+        this.#coveragePlan = { tag, domain, root, missing: false, standInRatio: 1, width, height };
         return root !== null;
     }
 
-    commitCoverage(serial: number): void { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.commit(); }
-    cancelCoverage(serial: number): void { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.cancel(); }
-
     #prepareCoverageRoot(width: number, height: number): CoverageRoot {
+        if (!__BME_BENCH__) throw new ArenaError('unsupported');
         if (this.#coverageRoot?.width === width && this.#coverageRoot.height === height) return this.#coverageRoot;
         let texture: TextureHandle | null = null;
         try {
             texture = this.#owned('texture', { width, height, format: 'rgba8', uses: ['sample', 'render', 'copy-src'] },
                 byteSize(width, height, 4), this.#measurementWorking);
             const native = this.#arena.validate(texture, 'texture');
-            const lease = this.#reserve(this.#measurementWorking, this.#targetBytes(native, 1, true));
+            const lease = this.#reserve(this.#measurementWorking, this.#targetBytes(native, 1, false));
             let target: TargetHandle;
-            try { target = this.#allocateColorTarget(texture, 1, true, this.#targetBytes(native, 1, true), lease, [texture]); }
+            try { target = this.#allocateColorTarget(texture, 1, false, this.#targetBytes(native, 1, false), lease, [texture]); }
             finally { this.closeLease(lease); }
             if (!this.#arena.validate(target, 'target').coverage) { this.destroy(target); throw new ArenaError('out-of-budget'); }
             const previous = this.#coverageRoot;
@@ -447,10 +482,22 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #releaseCoverage(abandon: boolean): void {
+        if (!__BME_BENCH__) return;
         for (const ticket of this.#coverageTickets.values()) ticket.cancel();
         this.#coverageTickets.clear(); this.#coveragePlan = null;
-        if (abandon) this.#coverage?.abandon(); else this.#coverage?.dispose();
-        this.#coverage = null; this.#coveragePrograms = null;
+        const counter = this.#coverage;
+        const retired = this.#aux().retiredCounters;
+        if (abandon) {
+            counter?.abandon();
+            for (const previous of retired) previous.abandon();
+            retired.clear();
+        } else if (counter) {
+            retired.add(counter);
+            counter.dispose();
+            if (counter.drained) retired.delete(counter);
+        }
+        this.#coverage = null;
+        if (abandon || this.#disposed) { this.#coveragePrograms = null; this.#aux().programHandles = []; }
         const root = this.#coverageRoot; this.#coverageRoot = null;
         if (root && !abandon) { this.destroy(root.target); this.destroy(root.texture); }
     }
@@ -464,9 +511,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
         const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null,
-            offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false,
-            coverage: this.#coveragePlan };
-        this.#coveragePlan = null;
+            offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
         const frame = createWebgl2Frame(this.#frameBackend(work));
@@ -669,13 +714,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#usable();
             if (combined.aborted) throw new ArenaError('aborted');
             const straight = new Uint8ClampedArray(rect.width * rect.height * 4);
+            let deadline = performance.now() + RENDER_CONSTANTS.frameTargetMaxMs;
             for (let y = 0; y < rect.height; y++) {
+                if (combined.aborted) throw new ArenaError('aborted');
                 for (let x = 0; x < rect.width; x++) {
                     const from = (y * rect.width + x) * 4;
                     const to = ((rect.height - 1 - y) * rect.width + x) * 4;
                     const alpha = raw.bytes[from + 3];
                     for (let c = 0; c < 3; c++) straight[to + c] = alpha ? Math.min(255, Math.round(raw.bytes[from + c] * 255 / alpha)) : 0;
                     straight[to + 3] = alpha;
+                }
+                if (y + 1 < rect.height && performance.now() >= deadline) {
+                    await this.#nextPoll(combined);
+                    this.#usable();
+                    deadline = performance.now() + RENDER_CONSTANTS.frameTargetMaxMs;
                 }
             }
             const bitmap = await createImageBitmap(new ImageData(straight, rect.width, rect.height, { colorSpace: 'srgb' }), {
@@ -715,9 +767,33 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     closeLease(lease: ByteLease): void { this.#arena.closeLease(lease); }
-    memory(): ArenaMemory { return this.#arena.memory(); }
+    memory(): ArenaMemory {
+        if (__BME_BENCH__) {
+            const own = this.#arena.memory();
+            let live = own.live, retiring = own.retiring;
+            const state = this.#aux();
+            const counters = new Set(state.retiredCounters);
+            if (state.counter) counters.add(state.counter);
+            for (const counter of counters) {
+                const extra = counter.memory();
+                live += extra.live; retiring += extra.retiring;
+            }
+            return { live, retiring };
+        }
+        return this.#arena.memory();
+    }
     leaseMemory(lease: ByteLease): ArenaLeaseMemory { return this.#arena.leaseMemory(lease); }
-    cpuStagingMemory(): ArenaMemory { return { live: this.#cpuBytes, retiring: 0 }; }
+    cpuStagingMemory(): ArenaMemory {
+        if (__BME_BENCH__) {
+            const state = this.#aux();
+            const counters = new Set(state.retiredCounters);
+            if (state.counter) counters.add(state.counter);
+            let extra = 0;
+            for (const counter of counters) extra += counter.cpuBytes;
+            return { live: this.#cpuBytes + extra, retiring: 0 };
+        }
+        return { live: this.#cpuBytes, retiring: 0 };
+    }
 
     resizeSurface(width: number, height: number): SurfaceResizeResult {
         const gl = this.#healthy();
@@ -743,7 +819,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     releaseGpu(reason: GpuReleaseReason): void {
         if (reason === 'context-lost') { this.abandon(); return; }
         if (this.#lost || this.#disposed) return;
-        this.#releaseCoverage(false);
+        if (__BME_BENCH__) this.#releaseCoverage(false);
         this.#paused = true;
         this.#work.abort();
         try {
@@ -770,7 +846,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     dispose(reason: ContextDisposeReason): void {
         if (this.#disposed) return;
         this.#disposed = true;
-        this.#releaseCoverage(reason === 'context-lost' || this.#lost || !!this.#gl?.isContextLost());
+        if (__BME_BENCH__) this.#releaseCoverage(reason === 'context-lost' || this.#lost || !!this.#gl?.isContextLost());
         if (reason === 'context-lost' || this.#lost || this.#gl?.isContextLost()) { this.abandon(); return; }
         this.#work.abort();
         this.#cleanup([
@@ -787,7 +863,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     abandon(): void {
         if (this.#lost) return;
         this.#lost = true;
-        this.#releaseCoverage(true);
+        if (__BME_BENCH__) this.#releaseCoverage(true);
         this.#work.abort();
         try {
             this.#cleanup([
@@ -801,7 +877,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
-                () => { this.#coverageTextures = new WeakMap(); }, () => this.#arena.abandon(),
+                ...(__BME_BENCH__ ? [() => { this.#coverageTextures = new WeakMap(); }] : []), () => this.#arena.abandon(),
             ]);
         } finally { this.#gl = null; this.#canvas = null; }
     }
@@ -1001,7 +1077,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const target = (handle: TargetHandle | 'surface'): FrameTarget => {
             if (handle === 'surface') {
                 const gl = this.#usable();
-                const root = work.coverage?.root;
+                if (__BME_BENCH__ && !work.coverage) {
+                    work.coverage = this.#coveragePlan;
+                    this.#coveragePlan = null;
+                }
+                const root = __BME_BENCH__ ? work.coverage?.root : null;
                 if (root) {
                     const native = this.#pin(work.encoding, root.target, 'target');
                     return { handle, framebuffer: native.framebuffer, resolveFramebuffer: native.framebuffer, coverage: native.coverage?.texture ?? null,
@@ -1009,14 +1089,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                         color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
                         usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
                 }
-                return { handle, framebuffer: null, resolveFramebuffer: null, coverage: null, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
+                return { handle, framebuffer: null, resolveFramebuffer: null, ...(__BME_BENCH__ ? { coverage: null } : {}), width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
             }
             const native = this.#pin(work.encoding, handle, 'target');
-            if (work.coverage?.root && !work.coverage.domain.vector && native.format === 'rgba8' && !native.coverage) work.coverage.missing = true;
             return { handle, framebuffer: native.framebuffer, resolveFramebuffer: native.resolveFramebuffer,
-                coverage: native.coverage?.texture ?? null, width: native.width, height: native.height, format: native.format, samples: native.samples,
+                ...(__BME_BENCH__ ? { coverage: native.coverage?.texture ?? null } : {}), width: native.width, height: native.height, format: native.format, samples: native.samples,
                 stencil: native.stencil, capture: native.capture, retained: native,
                 usedRect: native.colorTexture.usedRect ?? { x: 0, y: 0, width: native.width, height: native.height },
                 color: this.#frameTexture(work.encoding, native.color, native.colorTexture) };
@@ -1037,7 +1116,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const program = this.#arena.validate(native.program, 'pipeline');
                 if (program.role !== 'program' || !program.linked) throw new ArenaError('invalid-resource');
                 this.#ensureVao(native);
-                return { descriptor: native.descriptor, draw: (command, context) => this.#draw(native, program, command, context) };
+                return { descriptor: native.descriptor, draw: (command, context) => {
+                    this.#draw(native, program, command, context);
+                    if (__BME_BENCH__ && work.coverage && command.coverageClass) {
+                        // Ordinary ink/MSAA groups need no plane. Only an accepted backdrop
+                        // draw missing its own attachment makes this measurement unavailable.
+                        if (!context.target.coverage) work.coverage.missing = true;
+                        if (command.coverageClass === 2 && command.standInRatio !== undefined &&
+                            Number.isFinite(command.standInRatio) && command.standInRatio > 0) {
+                            work.coverage.standInRatio = Math.min(work.coverage.standInRatio, command.standInRatio);
+                        }
+                    }
+                } };
             },
             clip: handle => {
                 const clip = this.#pin(work.encoding, handle, 'clip');
@@ -1048,9 +1138,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             uniforms: bytes => this.#frameUniforms(work, bytes),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
             quad: command => {
-                if (work.coverage?.root && !work.coverage.domain.vector && command.source.format === 'rgba8' && !command.source.coverage) {
-                    work.coverage.missing = true;
-                }
                 if (!this.#composition) throw new ArenaError('invalid-resource');
                 const program = this.#pin(work.encoding, this.#composition, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
@@ -1064,10 +1151,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             releaseIsolation: lease => this.#isolation.put(work.encoding, lease, false),
             issue: () => {
                 if (work.surface) this.#timer.end();
-                const observation = work.surface ? this.#finishCoverage(work) : null;
+                const observation = __BME_BENCH__ && work.surface ? this.#finishCoverage(work) : null;
                 try {
                     const serial = this.#issue(work.encoding);
-                    if (observation) this.#coverageTickets.set(serial, observation);
+                    if (__BME_BENCH__ && observation) {
+                        observation.retireAfter?.(() => this.#complete(serial));
+                        this.#coverageTickets.set(serial, observation);
+                    }
                     return serial;
                 } catch (error) { observation?.cancel(); throw error; }
             },
@@ -1085,7 +1175,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 }
             },
             failure: error => this.#failure(error), onPass: surface => { work.passes = true; work.surface ||= surface; },
-            afterClear: target => {
+            ...(__BME_BENCH__ ? { afterClear: (target: FrameTarget) => {
                 if (target.handle !== 'surface' || !work.coverage?.root || !target.coverage) return;
                 const gl = this.#usable();
                 gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]);
@@ -1096,11 +1186,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 }
                 gl.disable(gl.SCISSOR_TEST);
                 gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-            },
+            } } : {}),
         };
     }
 
-    #finishCoverage(work: FrameWork): { commit(): void; cancel(): void } | null {
+    #finishCoverage(work: FrameWork): { commit(): void; cancel(): void; retireAfter?(completed: () => boolean): void } | null {
+        if (!__BME_BENCH__) return null;
         const plan = work.coverage;
         if (!plan || !coveragePerf) return null;
         const root = plan.root;
@@ -1109,18 +1200,25 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!root) return { commit: drop, cancel: () => {} };
         const gl = this.#usable();
         const target = this.#arena.validate(root.target, 'target');
-        let ticket: { commit(): void; cancel(): void } | null = null;
+        let ticket: { commit(): void; cancel(): void; retireAfter?(completed: () => boolean): void } | null = null;
         try {
             gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-            if (plan.domain.vector) {
-                gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
-                for (const rect of plan.domain.rects) {
-                    gl.scissor(rect.x, root.height - rect.y - rect.height, rect.width, rect.height);
-                    gl.clearBufferfv(gl.COLOR, 1, new Float32Array([3 / 255, 0, 0, 1]));
+            // Optional scene qualification/reduction must never skip the product colour blit.
+            try {
+                if (plan.domain.vector) {
+                    gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
+                    for (const rect of plan.domain.rects) {
+                        gl.scissor(rect.x, root.height - rect.y - rect.height, rect.width, rect.height);
+                        gl.clearBufferfv(gl.COLOR, 1, new Float32Array([3 / 255, 0, 0, 1]));
+                    }
+                    gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
                 }
-                gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+                if (target.coverage && !plan.missing) {
+                    for (const handle of this.#aux().programHandles) this.#pin(work.encoding, handle, 'pipeline');
+                    ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height,
+                        { ...plan.tag, standInRatio: plan.standInRatio }) ?? null;
+                }
             }
-            try { if (target.coverage && !plan.missing) ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height, plan.tag) ?? null; }
             catch { ticket = null; }
             gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer); gl.readBuffer(gl.COLOR_ATTACHMENT0);
             gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null); gl.drawBuffers([gl.BACK]); gl.disable(gl.SCISSOR_TEST);
@@ -1132,7 +1230,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #frameTexture(encoding: ArenaEncoding, handle: TextureHandle, texture: NativeTexture): FrameTexture {
         const coverage = __BME_BENCH__ ? this.#coverageTextures.get(texture.texture) : undefined;
         const mask = coverage ? this.#pin(encoding, coverage, 'texture').texture : null;
-        return { handle, texture: texture.texture, coverage: mask, width: texture.width, height: texture.height, format: texture.format, uses: texture.uses,
+        return { handle, texture: texture.texture, ...(__BME_BENCH__ ? { coverage: mask } : {}), width: texture.width, height: texture.height, format: texture.format, uses: texture.uses,
             usedRect: texture.usedRect ?? { x: 0, y: 0, width: texture.width, height: texture.height } };
     }
 
@@ -1444,7 +1542,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             }
         }
         try {
-            return this.#allocate('target', { color, samples, stencil, coverage }, bytes, lease,
+            return this.#allocate('target', { color, samples, stencil, ...(__BME_BENCH__ ? { coverage } : {}) }, bytes, lease,
                 coverage ? [...dependencies, coverage] : dependencies);
         } catch (error) {
             if (created && coverage) {
@@ -1681,7 +1779,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#fenceAgeReported = false;
             this.#services.observeFenceAge?.(0);
         }
-        if (!this.#fences.size && !this.#timer.pending && this.#arena.memory().retiring === 0) {
+        if (!this.#fences.size && !this.#timer.pending && this.#arena.memory().retiring === 0 &&
+            (!__BME_BENCH__ || this.#aux().retiredCounters.size === 0)) {
             this.#pollCancel?.();
             this.#pollCancel = null;
             if (this.#disposed) { this.#gl = null; this.#canvas = null; }
@@ -1851,8 +1950,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#targetBytes(texture, desc.samples, desc.stencil);
         const framebuffer = gl.createFramebuffer();
         if (!framebuffer) throw new ArenaError('allocation');
-        const coverage = desc.coverage ? this.#arena.validate(desc.coverage, 'texture') : null;
-        const target: NativeTarget = { ...desc, colorTexture: texture, coverage, capture: false, framebuffer, resolveFramebuffer: framebuffer,
+        const coverage = __BME_BENCH__ && desc.coverage ? this.#arena.validate(desc.coverage, 'texture') : null;
+        const target: NativeTarget = { color: desc.color, samples: desc.samples, stencil: desc.stencil,
+            colorTexture: texture, ...(__BME_BENCH__ ? { coverage } : {}), capture: false, framebuffer, resolveFramebuffer: framebuffer,
             releaseDependency: this.#retainTextureDependency(desc.color), multisample: null, depthStencil: null,
             width: texture.width, height: texture.height, format: texture.format, colorStored: false, stencilStored: false };
         try {

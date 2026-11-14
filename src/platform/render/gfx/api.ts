@@ -167,6 +167,10 @@ export interface DrawCommand {
     count: number;
     instances: number;
     scissor: RectI;
+    /** Benchmark-only executed source scale relative to demand. */
+    standInRatio?: number;
+    /** Benchmark classification provenance, never a replacement for fragment counting. */
+    coverageClass?: 2 | 3;
 }
 
 // rendering-design.md:159–168, 241, §2.4: surface contents are discarded; load is

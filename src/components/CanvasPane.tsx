@@ -12,11 +12,12 @@
 // them, and the "not yet shown" gate that keeps a restored session from
 // building five editors to show one.
 
-import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import { isNativeDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { routeEngines } from '../utils/engineRouting';
+import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
 import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
 import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import type { ActiveFile, ContentChangeOptions, DiskAction, Theme } from '../types';
@@ -93,7 +94,10 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
     const label = isNotebook ? 'Loading notebook…' : 'Loading whiteboard…';
     const route = routes.canvas[isNotebook ? 'notebook' : 'drawing'];
     const nativeSelected = route.engine === 'viewer' || route.engine === 'board';
-    const identity = nativeSelected ? nativeCanvasHost.identity(documentId) : undefined;
+    // App publishes the identity in its layout effect, after this render. Without
+    // a subscription the first native canvas stayed unavailable until unrelated UI changed.
+    const session = useSyncExternalStore(subscribeSessionIdentity, () => getSessionIdentity(documentId), () => undefined);
+    const identity = nativeSelected && session ? nativeCanvasHost.identity(documentId) : undefined;
     const blocked = canvasReadOnlyReason(sniff) && !nativeSelected;
 
     return (

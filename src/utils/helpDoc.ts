@@ -28,6 +28,8 @@ Switching vaults puts away the notes you had open (saving anything unsaved first
 
 Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs and your settings. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after a few more visits, or installing this app from the address bar. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
 
+If another window resets this app’s local settings, a separate browser-local backup restores your settings, open-tab sessions and saved reading positions automatically. A status-line message says **Settings restored after another tab reset them**; a reset discovered while opening the app may reload it once before your workspace appears. This backup does not survive clearing all of the site’s browser data.
+
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
 

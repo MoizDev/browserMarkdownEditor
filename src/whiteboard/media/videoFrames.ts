@@ -240,6 +240,7 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
             }
         },
         clear: () => base.clear(),
+        whenRetired: () => base.whenRetired(),
         dispose: () => base.dispose(),
     };
 }

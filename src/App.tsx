@@ -1497,8 +1497,10 @@ export default function App() {
    * retire lands on top and the note is pointing at a file in `.Garbage`.
    * Ordering them makes B's restore the last word, which is what it is.
    *
-   * Same promise-queue shape as context/recentVaults.ts. reconcileAssets catches
-   * its own errors, so this chain never rejects.
+   * Serialization alone is not ownership: each job captures its vault
+   * activation before IO, and validates it and its reference proof before
+   * moving an asset. A queued job from another activation is skipped. Like
+   * context/recentVaults.ts, the chain cannot be poisoned by a failed pass.
    */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
   const queueReconcile = useCallback((job: ReconcileJob) => {
@@ -2844,13 +2846,12 @@ export default function App() {
 
   // ── Vault switch ────────────────────────────────────────────────────────
   // A tab is only meaningful inside the vault it was opened from: its path
-  // indexes that vault's tree, its handle writes into that vault's folder, and
-  // EditorPane's cached editor states are keyed by path alone. Carrying the set
-  // across a switch leaves the previous vault's notes on screen — and still
-  // autosaving into it — behind the new vault's file tree, and a path the two
-  // vaults happen to share would serve the old vault's buffer for the new
-  // vault's file. So flush what's pending (those handles are still good) and
-  // hand the new vault an empty workspace.
+  // indexes that vault's tree and its handle writes into that vault's folder.
+  // App owns the EditorState cache, keyed by document id AND path; both fields
+  // distinguish a surviving document from another at the same path. Carrying
+  // tabs across a switch would still show and autosave the previous vault's
+  // notes behind the new tree. Flush the old handles and hand the new vault
+  // an empty workspace, even when both vaults have a matching path.
   //
   // Emptying the workspace does NOT lose the outgoing vault's session: the
   // persist effect above has already written it under that vault's id on every

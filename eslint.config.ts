@@ -188,7 +188,7 @@ export default defineConfig([
         {
           files: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
           dark: true,
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/usePdfPlatformPreview.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

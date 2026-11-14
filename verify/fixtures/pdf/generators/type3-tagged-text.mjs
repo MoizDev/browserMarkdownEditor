@@ -2,7 +2,9 @@
 // existing PDF bytes are copied. Proposed licence CC0-1.0 awaits the owner.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pdfBuilder, parseArgs, fixtureWriter, jsonBytes, literal, unicodeString, toUnicode, glyphPath, rectangle } from './rtl-cjk-unicode.mjs';
+import { parseArgs } from '../../lib/cli.mjs';
+import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
+import { pdfBuilder, literal, unicodeString, toUnicode, glyphPath, rectangle } from './rtl-cjk-unicode.mjs';
 
 export async function generateType3(out, seed) {
     const doc = pdfBuilder({ id: 'GEN-11', version: 1, seed });

@@ -24,6 +24,7 @@ export interface Webgl2CoverageResourcesOptions {
     completed: (serial: number) => boolean;
     schedulePoll: (callback: () => void) => () => void;
     reset: () => void;
+    onDrained?: () => void;
 }
 
 /** Private benchmark storage; its leases remain fenced until submitted work retires. */
@@ -33,6 +34,7 @@ export class Webgl2CoverageResources {
     #allocation: Allocation | null = null;
     #cancelPoll: (() => void) | null = null;
     #closed = false;
+    #notified = false;
 
     constructor(private readonly options: Webgl2CoverageResourcesOptions) {
         const backend: ResourceArenaBackend<Descriptors, Objects> = {
@@ -90,6 +92,8 @@ export class Webgl2CoverageResources {
         };
         this.#arena = new ResourceArena({ generation: options.generation, backend, releaseLease: lease => options.memory.release(lease) });
     }
+
+    get drained(): boolean { return this.#closed && !this.#allocation && this.#retired.size === 0; }
 
     prepare(width: number, height: number): boolean {
         if (this.#closed || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 ||
@@ -162,6 +166,7 @@ export class Webgl2CoverageResources {
         this.#cancelPoll?.(); this.#cancelPoll = null;
         this.#arena.abandon();
         this.#retired.clear();
+        this.#notify();
     }
 
     #retire(allocation: Allocation): void {
@@ -174,11 +179,16 @@ export class Webgl2CoverageResources {
     #collect(): void {
         this.#arena.collect();
         for (const lease of this.#retired) if (this.#arena.leaseMemory(lease).returned) this.#retired.delete(lease);
+        this.#notify();
         if (this.#retired.size && !this.#cancelPoll) {
             this.#cancelPoll = this.options.schedulePoll(() => {
                 this.#collect();
                 if (!this.#retired.size) { this.#cancelPoll?.(); this.#cancelPoll = null; }
             });
         }
+    }
+
+    #notify(): void {
+        if (this.drained && !this.#notified) { this.#notified = true; this.options.onDrained?.(); }
     }
 }

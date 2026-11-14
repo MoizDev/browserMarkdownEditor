@@ -465,10 +465,9 @@ a resizable pane one number rather than a rectangle.
 - **The document's readings live in a floating `.status-bar` pill, bottom right**: backlinks (the
   `BacklinksPanel` anchors to it), word and character counts, and the save status — all about the
   FOCUSED pane. It is `pointer-events: none` with `auto` on the button, or it would swallow clicks
-  and text selection at the bottom right of every document. **The counts are computed over a
-  DEBOUNCED copy of the content** (250ms) and skipped entirely for canvas and unreadable documents:
-  `activeTab.content` changes on every keystroke, so a naive `useMemo` is a full-document walk per
-  key. It mounts only when it has something to say — `backlinksAvailable || countable || saveStatus`
+  and text selection at the bottom right of every document. **Counts come from `wordCountField`**, updated by changed lines; the focused path publishes at most
+  once per animation frame and the pill writes its text nodes directly, with no React commit per key.
+  Counts are skipped entirely for canvas and unreadable documents. It mounts only when it has something to say — `backlinksAvailable || countable || saveStatus`
   (a canvas/unreadable tab once left an empty 40px pill: the reserved slot alone) — and `saveStatus`
   alone suffices, because "Moving … to Trash…" and "Put back as …" are raised from the tree and the
   bin with no tab open. It sits over the RIGHTMOST column whatever is focused, so when that column

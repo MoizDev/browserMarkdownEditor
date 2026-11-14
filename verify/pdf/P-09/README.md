@@ -18,10 +18,10 @@ scratch. Fixtures contain authored text/geometry and legacy serialized **data**,
 - **Identity:** pinned Playwright/Chrome; fixture SHA; source/config fingerprint before and after
   production build; V-01a `buildIdentity` emitted inventory and `bindServedBodies(raw-route,
   production)`. Await `check()` at assertions; JS/MJS/CSS/WASM bodies and required app/PDF/role-worker
-  fetches fail closed. Exact one-match mutant patches and source/mutant hashes are recorded. Until
-  V-01a merges, p-lead authorizes an own unmodified export of commit `527faea`; `toolbox.mjs` verifies
-  it against that git blob and reports commit + used-file SHA-256. Unset the scratch override when
-  the in-tree API lands. Gate-script hashes are also recorded per run.
+  fetches fail closed. Exact one-match mutant patches and source/mutant hashes are recorded. Shared
+  tooling is in-tree; `toolbox.mjs` verifies its committed blob and reports its commit + used-file
+  SHA-256. The historical 527faea scratch bridge is no longer imported. Gate-script hashes are also
+  recorded per run.
 - **Mutants:** `no-guard`, `null-plain`, `legacy-wins` are fresh scratch SOURCE copies built with
   production config. Zero/multiple patch matches fail before build. The same negative UI arm must
   mount a canvas, add a stroke and CLOSE a real changed OPFS write. `qualify-mutant.mjs` requires that
@@ -49,13 +49,7 @@ Set CHROME_PATH to HOWTO §5's exact Chrome for Testing executable, never instal
 ```sh
 export S=/Users/adham/Developer/bme-impl/scratch/p-c
 L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-# Until V-01a arrives, own unmodified export (never another lane's scratch):
-mkdir -p "$S/toolbox-527faea"
-git archive 527faea verify/lib | tar -x -C "$S/toolbox-527faea"
-export P09_TOOLBOX_ROOT="$S/toolbox-527faea"
-
-# GEN-25 temporarily uses its single-file bridge until v-b's libs reach impl/pdf.
-# Replace that import/delete the bridge on adoption. Fresh output dirs only.
+# Shared tooling and fixture helpers are now in-tree. Fresh output dirs only.
 node verify/fixtures/pdf/generators/role-authority-and-read-failure.mjs \
   --out "$S/fixtures-a" --seed 1346651697 > "$S/fixtures-a.jsonl"
 node verify/fixtures/pdf/generators/role-authority-and-read-failure.mjs \

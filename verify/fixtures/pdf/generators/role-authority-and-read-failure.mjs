@@ -1,6 +1,8 @@
 // GEN-25: synthetic portfolios and legacy serialized DATA, never editor code.
 import { PDFName, PDFString, PDFHexString } from 'pdf-lib';
-import { parseArgs, fixtureWriter, jsonBytes, createDeterministicPdf, saveDeterministicPdf } from './role-authority-support.mjs';
+import { parseArgs } from '../../lib/cli.mjs';
+import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
+import { createDeterministicPdf, saveDeterministicPdf } from '../../lib/pdf.mjs';
 const { out, seed } = parseArgs(process.argv.slice(2));
 const emit = fixtureWriter(out), version = 2;
 const identity = id => ({ id: `GEN-25/${id}`, version, seed });

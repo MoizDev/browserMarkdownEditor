@@ -8,7 +8,7 @@ import type { NoticeDispatcher } from '../change/notices';
 import type { EncoderContext } from '../format/encode';
 import type { RecordChanges } from '../format/recordChanges';
 import type { SerializerCheckpoint, SerializerSession } from '../format/serializerClient';
-import type { SerializerPrime } from '../format/serializerProtocol';
+import type { SerializerPrime, SerializerRecordOverride } from '../format/serializerProtocol';
 import type { MediaStore } from '../media/store';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -20,10 +20,14 @@ import type { BoardSession } from './BoardSession';
 
 /** Recovery owns its journal transport and retained media/sample payloads; callbacks are synchronous
  * until the returned append or drain, so pagehide captures a fixed revision without waiting. */
+export interface BoardBuildCapture {
+    readonly overrides: readonly SerializerRecordOverride[];
+    readonly context: unknown;
+}
 export interface BoardJournalPort {
     record(applied: Applied, revision: number): void;
-    capture(source: ContentSource): () => void | Promise<void>;
-    delta(): JournalCapture | undefined;
+    capture(source: ContentSource, context: unknown): () => void | Promise<void>;
+    delta(context: unknown): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
     acknowledge(revision: number, baseline?: SerializerPrime): void;
     drain(): Promise<void>;
@@ -52,7 +56,8 @@ export interface BoardSessionFactoryOptions {
     readonly finishGesture: () => void;
     readonly finishComposition: () => void;
     /** Pin media restoration and, for PDF ink, display lists against the same revision synchronously. */
-    readonly pinBuild: (base: SerializerCheckpoint, revision: number) => PinnedBoardBuild;
+    readonly captureBuild?: (revision: number) => BoardBuildCapture;
+    readonly pinBuild: (base: SerializerCheckpoint, revision: number, context: unknown) => PinnedBoardBuild;
     readonly onFailure: (error: unknown) => void;
 }
 

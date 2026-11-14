@@ -542,7 +542,18 @@ export default function NotebookPane({ documentId, filePath, content, onContentC
             editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') armFirstChange(); }),
             editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
         ]);
-        const unlistenDoc = editor.store.listen(() => {
+        const unlistenDoc = editor.store.listen(({ changes }) => {
+            const pageChanged = [...Object.values(changes.added), ...Object.values(changes.removed)]
+                .some(record => record.typeName === 'shape' && record.meta?.notebookPage !== undefined);
+            if (pageChanged) {
+                const count = editor.getCurrentPageShapes().filter(shape => shape.meta?.notebookPage !== undefined).length;
+                if (count > 0 && count !== paperRef.current.pageCount) {
+                    const next = { ...paperRef.current, pageCount: count };
+                    paperRef.current = next;
+                    setPaper(next);
+                    layOutPages(editor, next);
+                }
+            }
             if (hasPendingEdits()) schedule();
         }, { source: 'user', scope: 'document' });
         // The pickers live in session scope alongside camera noise that must NOT
@@ -682,9 +693,14 @@ export default function NotebookPane({ documentId, filePath, content, onContentC
                 danger: true,
             });
             if (!ok) return;
-            // A user deletion, not a remote merge: this SHOULD dirty the file.
-            editor.deleteShapes(doomed.map(s => s.id));
         }
+
+        // The backdrop and ink must share a history step, separate from the
+        // preceding stroke; otherwise Undo loses that stroke (WB-D2).
+        editor.markHistoryStoppingPoint('delete notebook page');
+        editor.run(() => {
+            editor.deleteShapes([...doomed.map(s => s.id), pageShapeId(current.pageCount - 1)]);
+        }, { ignoreShapeLock: true });
 
         const next = { ...current, pageCount: current.pageCount - 1 };
         paperRef.current = next;

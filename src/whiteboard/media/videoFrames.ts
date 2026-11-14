@@ -149,8 +149,9 @@ export interface VideoFrameOverlay {
     wrap(frames: PaintFrameAssembler): PaintFrameAssembler;
     drawn(frame: PaintFrame): void;
 }
-export function videoFrameOverlay(registry: VideoFrameRegistry): VideoFrameOverlay {
-    return { wrap: frames => liveVideoFrames(frames, registry), drawn: frame => registry.markDrawn(frame) };
+/** `afterDraw` runs once per drawn frame, so the view's animation clock sees each frame the view showed. */
+export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () => void = () => {}): VideoFrameOverlay {
+    return { wrap: frames => liveVideoFrames(frames, registry), drawn: frame => { registry.markDrawn(frame); afterDraw(); } };
 }
 
 /**

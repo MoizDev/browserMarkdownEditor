@@ -1,5 +1,6 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { isLocked } from '../change/commands';
+import { canAnimatePicture } from '../media/animatedFrames';
 import { createPictureCommands } from '../media/commands';
 import { fetchCardPreview } from '../media/cards';
 import type { PictureCropPreset } from '../media/crop';
@@ -22,6 +23,8 @@ export interface MediaSelection {
     readonly replaceable: boolean;
     /** A picture whose media is a video: its playback is offered by the view, not by these actions. */
     readonly video: boolean;
+    /** An animated picture this view can decode frame by frame; its play row is offered by the view, as for video. */
+    readonly animated: boolean;
 }
 export interface MediaActions {
     /** Null unless exactly one picture or link card is selected. `writable` is the view's own write permission. */
@@ -54,8 +57,10 @@ export function createMediaActions(options: MediaActionOptions): MediaActions {
                 : runtime.session.isGestureActive ? 'Finish the current gesture first.'
                 : isLocked(runtime.session.doc, node) ? `This ${node.kind === 'picture' ? 'picture' : 'card'} is locked.`
                 : null;
-            const video = node.kind === 'picture' && !!node.media && !!runtime.session.doc.media.get(node.media)?.mime.startsWith('video/');
-            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.restore !== undefined, video });
+            const entry = node.kind === 'picture' && node.media ? runtime.session.doc.media.get(node.media) : undefined;
+            const video = !!entry?.mime.startsWith('video/');
+            const animated = !!entry && entry.animated && !video && canAnimatePicture(entry.mime);
+            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.restore !== undefined, video, animated });
         },
         replace(id, file, name) {
             if (!options.restore) return Promise.reject(new Error('Pictures cannot be replaced on this canvas.'));

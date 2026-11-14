@@ -84,11 +84,20 @@ export async function streamSvg(
           await send(items)
           items.length = 0
           const wrap = createTextDisplayWrapper(item)
+          const parts: PageDisplayItem[] = []
+          let partBytes = 0
           for await (const part of text(item, scale, signal)) {
             signal.throwIfAborted()
-            await send([wrap([part])], true)
+            const wrapped = wrap([part])
+            parts.push(wrapped)
+            partBytes += transferBytes(wrapped)
+            if (parts.length >= 64 || partBytes >= 4 * 1024 * 1024) {
+              await send(parts, true)
+              parts.length = 0; partBytes = 0
+            }
             if (!source.isCurrent()) throw new Error('Paint capture stale')
           }
+          await send(parts, true)
         } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }

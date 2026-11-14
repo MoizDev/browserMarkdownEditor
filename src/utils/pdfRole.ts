@@ -1,6 +1,8 @@
 // This module is deliberately library-free: App's write/rotate funnels can
 // inspect a loaded capability without importing either PDF implementation.
 import type { NotebookSource } from './pdfFormat';
+import type { PdfWriteMarkCheck } from './pdfWriteMark';
+import type { DiskVersion } from './diskVersion';
 
 export const PDF_EDITABLE_JSON_LIMIT = 32 * 1024 * 1024;
 // Retain the current assembler's structural profile; never substitute a small
@@ -15,12 +17,13 @@ interface WritablePdfRole extends RoleIdentity {
 }
 export type PdfRole =
     | (WritablePdfRole & { kind: 'plain'; alreadyAnnotated: false })
-    | (WritablePdfRole & { kind: 'annotated'; alreadyAnnotated: true })
+    | (WritablePdfRole & { kind: 'annotated'; alreadyAnnotated: true; writeMark: PdfWriteMarkCheck })
     | (RoleIdentity & { kind: 'notebookExport'; notebookSource: NotebookSource; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'unreadable'; attachment: string; attachmentId?: string; reason: PdfRoleFailure; detail?: string; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'ambiguous'; candidates: string[]; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'newer'; attachments: string[]; alreadyAnnotated: true });
 export type EditablePdfRole = Extract<PdfRole, { kind: 'plain' | 'annotated' }>;
+export interface PdfAnnotationPreflight { role: EditablePdfRole; version: DiskVersion }
 
 export function isEditablePdfRole(role: PdfRole): role is EditablePdfRole {
     return role.kind === 'plain' || role.kind === 'annotated';
@@ -31,7 +34,15 @@ export function canRotatePdfRole(role: PdfRole): boolean { return role.kind === 
 // own an original at all, and cannot manufacture a save capability by name.
 const writableSources = new WeakSet<Uint8Array>();
 export function authorizePdfRole(role: PdfRole): void {
-    if (isEditablePdfRole(role)) writableSources.add(role.original);
+    if (isEditablePdfRole(role) && (role.kind === 'plain' || role.writeMark.kind !== 'foreign')) writableSources.add(role.original);
+}
+
+/** App calls only after keeping the exact baseline bytes in Trash and checking
+ *  the current document/owner again. This never blesses a different generation. */
+export function authorizeKeptPdfRole(role: PdfRole, generation: string): boolean {
+    if (role.kind !== 'annotated' || role.writeMark.kind !== 'foreign' || !generation || role.generation !== generation) return false;
+    writableSources.add(role.original);
+    return true;
 }
 export function revokePdfSource(original: Uint8Array): void { writableSources.delete(original); }
 export function revokePdfRole(role: PdfRole): void {

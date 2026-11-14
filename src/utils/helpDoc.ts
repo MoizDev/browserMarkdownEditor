@@ -402,11 +402,28 @@ In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, incl
 
 A PDF opens in a reader: scroll it, select its text, search every page with the
 app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a page with the box at the bottom.
+
+If the PDF reader's code cannot load, its column offers **Retry**. This retries
+the reader, not your files. If the browser retains the loading failure, reload
+the app to try again.
+
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
 beside the page box opens a **strip of page thumbnails** down the left; click one
 to go to that page. The button next to it **inverts the pages** so they are easy on the
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
+
+If a page cannot be rendered completely, a notice stays on that page; an error
+whose page is unknown appears above the document. Its thumbnail says
+**Thumbnail unavailable**, rather than pretending to be a blank page.
+**Try again** reopens the PDF; it does not repair or change the original file.
+In Annotate, switch to View to retry without disturbing your ink.
+
+If rendering makes no progress for a while, **This PDF is taking longer than usual**
+lets you keep waiting or choose **Try again** to restart the renderer. Slow scans
+are not cancelled just because the notice appears, and the notice clears when
+work progresses. A renderer restart can affect other open PDFs; each says so
+and can be retried separately. No file is changed by this.
 
 **Turning a sideways scan the right way up.** The two curved arrows beside the
 invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns

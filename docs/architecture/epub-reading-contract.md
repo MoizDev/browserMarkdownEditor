@@ -46,12 +46,14 @@ writes update the
 central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
 camera in memory before a header action. No new PDF proxy is created for a surface switch.
 Native PDF uses the exact pdf.js 6.1.200 original glyph/paint route (pdfNativeEmphasis), adding
-a thin same-color stroke before the original fill on eligible glyphs. Each completed render checks a temporary counterpart for a final pixel difference before
-publishing support, so clipped, off-page, white-on-white or occluded glyph calls cannot falsely
-enable the header. High-zoom bands use a bounded whole-page capability probe; no full-document
-raster pass runs. Temporary paints are cancelled with their target and released with the lease. Current-page Viewer and
-annotation backdrop results publish availability through PdfPane; unknown/loading pages are
-inactive. Per-render plans/method bindings are released with the page lease, not stored per vault.
+a thin same-color stroke before the original fill on eligible glyphs. Capability requires a final
+pixel difference in a canonical white-background whole-page probe, bounded to 2^20 pixels; it is
+not a separate per-zoom proof. Clipped, off-page, white-on-white or occluded calls alone cannot
+enable the header. Off pixels are painted before the independent proof, and a cached verdict avoids
+repeating it on zoom. Probe consumers hold their own page leases and cancel independently of the
+display raster. Current-page Viewer and pristine annotation backdrop results publish availability
+through PdfPane; unknown/loading pages are inactive. Immutable display-list plans are bounded and
+invalidated with page cleanup; context bindings are per-render and no result is stored in the vault.
 The Text agent reporter supplies actual bounded visible/selected canonical text and physical-page
 extraction. Text image capture is explicitly unsupported; it never substitutes an Original PNG.
 
@@ -63,8 +65,12 @@ stay out of vault search, graph and Markdown backlinks. Normal CLI/terminal poli
 
 Vite's `contained-epub-frame` plugin runs `node src/epub/build-frame.mjs` at
 `buildStart` in dev and build, and regenerates/reloads on contained source changes in dev.
-Generation removes previous outputs before bundling, rejects inline script terminators and
-hashes the exact inline script. Generated HTML/integrity are ignored, never checked-in fallbacks.
+Generation removes previous outputs before bundling. The neutral `platform/containedFrameBuild.mjs`
+bundles the fixed runtime, rejects inline script terminators and hashes the exact inline script;
+its source is included in the integrity inventory and the dev watcher. The reader's CSP and
+protocol remain EPUB-specific. `platform/containedFrame.ts` owns the opaque frame lifecycle and
+one-port handoff, while the reader still validates its own session, token and message envelopes.
+Generated HTML/integrity are ignored, never checked-in fallbacks.
 Preview serves the already-built dist; it does not rewrite a production artifact at startup.
 The lazy bridge imports HTML as raw text into srcdoc: no root-relative frame URL, remote runtime
 script or publisher resource URL depends on Vite base. Archive and hash worker URLs use Vite's

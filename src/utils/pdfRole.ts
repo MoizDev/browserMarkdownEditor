@@ -24,6 +24,10 @@ export type PdfRole =
     | (RoleIdentity & { kind: 'unreadable'; attachment: string; attachmentId?: string; reason: PdfRoleFailure; detail?: string; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'ambiguous'; candidates: string[]; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'newer'; attachments: string[]; alreadyAnnotated: true });
+// Worker attachment classification precedes the independent outer/pristine policy pass.
+// Raw roles are data only and cannot pass the main-thread capability gates.
+type WithoutWriteSafety<T> = T extends unknown ? Omit<T, 'writeSafety'> : never;
+export type RawPdfRole = WithoutWriteSafety<PdfRole>;
 export type EditablePdfRole = Extract<PdfRole, { kind: 'plain' | 'annotated' }>;
 export interface PdfAnnotationPreflight { role: EditablePdfRole; version: DiskVersion }
 

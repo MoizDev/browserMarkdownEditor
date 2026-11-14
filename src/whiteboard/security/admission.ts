@@ -19,6 +19,8 @@ export interface JobOptions { readonly signal?: AbortSignal; readonly deadlineMs
 export interface JobAuthority {
     run<T>(work: (context: JobContext) => Promise<T>, options: JobOptions): Promise<T>;
     isCurrent(job: ContentJob): boolean;
+    /** Accept only this authority's actual running context, never a queued or reconstructed job. */
+    assertContext(context: JobContext): void;
     /** A vault switch/reload revokes all outstanding requests, including same-path requests. */
     replace(vaultEpoch: number, generation: number): void;
     dispose(): void;
@@ -34,7 +36,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
     }
     let epoch = vaultEpoch, currentGeneration = generation, request = 0, disposed = false;
     const outstanding = new Map<number, { job: ContentJob; controller: AbortController }>();
-    let tail: Promise<void> = Promise.resolve();
+    let tail: Promise<void> = Promise.resolve(), activeContext: JobContext | null = null;
     function isCurrent(job: ContentJob): boolean {
         if (disposed || !job || typeof job !== 'object') return false;
         try {
@@ -72,9 +74,13 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             const assertCurrent = () => { if (!isCurrent(job)) throw cancelled('Stale or cancelled content job'); };
             const operation = tail.then(async () => {
                 assertCurrent();
-                const result = await work({ job, signal: controller.signal, assertCurrent });
-                assertCurrent();
-                return result;
+                const context: JobContext = Object.freeze({ job, signal: controller.signal, assertCurrent });
+                activeContext = context;
+                try {
+                    const result = await work(context);
+                    assertCurrent();
+                    return result;
+                } finally { activeContext = null; }
             });
             let rejectAbort!: (reason: unknown) => void;
             const abortReply = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -93,6 +99,9 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             return Promise.race([settled, abortReply]);
         },
         isCurrent,
+        assertContext(context) {
+            if (!activeContext || activeContext !== context || !isCurrent(context.job)) throw cancelled('Foreign, queued or ended content job context');
+        },
         replace(nextEpoch, nextGeneration) {
             if (disposed || !validCounter(nextEpoch) || !validCounter(nextGeneration)) throw new RangeError('Invalid replacement identity');
             if (nextEpoch < epoch || (nextEpoch === epoch && nextGeneration <= currentGeneration)) throw new RangeError('Replacement identity must advance');

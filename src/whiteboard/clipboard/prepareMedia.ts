@@ -19,6 +19,7 @@ export interface PreparedClipboardMedia {
     readonly mediaOps: readonly Op[];
     readonly files: ReadonlyMap<MediaId, string | null>;
     readonly blobs: ReadonlyMap<MediaId, Blob>;
+    readonly missing: readonly MediaId[];
     /** Release only after the destination transaction has retained its media. */
     release(): void;
 }
@@ -55,25 +56,10 @@ export function prepareBoardClipboardMediaInJob(options: PrepareClipboardMediaOp
 function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: JobContext): Promise<PreparedClipboardMedia> {
     const { runtime } = options, source = options.acquisition.load.doc;
     options.signal?.throwIfAborted();
-    // Capture source-owned data before the caller can release its acquisition.
-    const entries = new Map<MediaId, MediaEntry>();
-    for (const [id, refs] of source.mediaRefs) if (refs.size) {
-        const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard media has no metadata: ${id}`);
-        entries.set(id, cloneEntry(entry));
-    }
-    for (const [id, count] of source.preservedMediaRefs) if (count > 0) {
-        const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard preserved media has no metadata: ${id}`);
-        entries.set(id, cloneEntry(entry));
-    }
-    const preservedRefs = new Map(source.preservedMediaRefs);
-    let hasUnknownRaw = false;
-    for (const node of source.nodes.values()) for (const item of nodeRawValues(node)) if (item !== null) hasUnknownRaw = true;
-    const inline = new Map<MediaId, Blob>();
-    for (const item of options.acquisition.inline) {
-        if (inline.has(item.id) || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)) throw new TypeError('Invalid clipboard inline media');
-        inline.set(item.id, new Blob([item.blob], { type: item.blob.type }));
-    }
-    const deadlineMs = Math.max(30_000, Math.ceil([...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0) / (100 * 1024 * 1024)) * 30_000);
+    // Rehydrated source maps and Blob values remain immutable after acquisition disposal;
+    // copy their metadata cooperatively inside the owning job, not on the event path.
+    const sourceInline = options.acquisition.inline;
+    const deadlineMs = 180_000;
     let abortOwned: (() => void) | undefined, stampedRevision = -1;
     const work = async (context: JobContext): Promise<PreparedClipboardMedia> => {
         runtime.jobs.assertContext(context);
@@ -85,19 +71,62 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session === session && session.doc === doc && doc.rev === revision
             && session.owner.documentId === owner.documentId && session.owner.session === owner.session;
         const check = () => { runtime.jobs.assertContext(context); context.assertCurrent(); if (!current(identity)) throw new DOMException('Clipboard media staging became stale', 'AbortError'); };
-        const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
-        const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [];
+        let steps = 0, sliceStart = performance.now();
+        const cooperate = async () => {
+            check();
+            if (++steps < 128 && performance.now() - sliceStart < 3) return;
+            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            check(); steps = 0; sliceStart = performance.now();
+        };
+        const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [], missing: MediaId[] = [];
         let held = true;
         const release = () => { if (!held) return; held = false; for (const lease of leases) lease.release(); leases.length = 0; };
         try {
             check();
+            const entries = new Map<MediaId, MediaEntry>(), preservedRefs = new Map<MediaId, number>(), inline = new Map<MediaId, Blob>();
+            let hasUnknownRaw = false, visits = 0;
+            for (const [id, refs] of source.mediaRefs) {
+                if (refs.size) {
+                    const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard media has no metadata: ${id}`);
+                    entries.set(id, cloneEntry(entry));
+                }
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const [id, count] of source.preservedMediaRefs) {
+                preservedRefs.set(id, count);
+                if (count > 0) {
+                    const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard preserved media has no metadata: ${id}`);
+                    entries.set(id, cloneEntry(entry));
+                }
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const node of source.nodes.values()) {
+                for (const item of nodeRawValues(node)) if (item !== null) { hasUnknownRaw = true; break; }
+                if (hasUnknownRaw) break;
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const item of sourceInline) {
+                if (inline.has(item.id) || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)) throw new TypeError('Invalid clipboard inline media');
+                inline.set(item.id, new Blob([item.blob], { type: item.blob.type }));
+                if ((++visits & 255) === 0) await cooperate();
+            }
             for (const [id, entry] of entries) {
                 check();
                 const existing = runtime.session.doc.media.get(id);
                 if (existing && !compatible(existing, entry)) throw new Error(`Conflicting destination media metadata: ${id}`);
                 let candidate = runtime.media.get(id) ?? inline.get(id);
                 if (!candidate) { candidate = await options.readBlob(entry, context.signal) ?? undefined; check(); }
-                if (!(candidate instanceof Blob)) throw new Error(`Clipboard media bytes are missing: ${id}`);
+                if (!(candidate instanceof Blob)) {
+                    if (!existing) {
+                        if (entry.file !== null && (entry.ext && (entry.ext.raw.size || entry.ext.fields.size)
+                            || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw)) {
+                            throw new Error(`Cannot remap missing media with uninterpreted filename dependencies: ${id}`);
+                        }
+                        ops.push({ t: 'media', op: 'add', entry: { ...entry, file: null } });
+                        files.set(id, null);
+                    }
+                    missing.push(id); await cooperate(); continue;
+                }
                 const blob = new Blob([candidate], { type: candidate.type });
                 const info = await inspectMedia(blob, { memory: options.memory, signal: context.signal, identity, isCurrent: current });
                 check();
@@ -123,7 +152,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             abortOwned = release;
             context.signal.addEventListener('abort', release, { once: true });
             check();
-            return { stamp, mediaOps: Object.freeze(ops), files, blobs, release };
+            return { stamp, mediaOps: Object.freeze(ops), files, blobs, missing: Object.freeze(missing), release };
         } catch (error) { release(); throw error; }
     };
     const operation = existingContext ? work(existingContext) : runtime.jobs.run(work, { signal: options.signal, deadlineMs });

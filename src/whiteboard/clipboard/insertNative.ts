@@ -30,6 +30,9 @@ export interface InsertNativeClipboardOptions {
     readonly media: PreparedClipboardMedia;
     readonly placement: BoardClipboardPlacement;
     readonly target: Readonly<ClipboardTarget>;
+    readonly receivingBoardId: string;
+    /** External conversions have no source-board identity. */
+    readonly external: boolean;
     /** Checks this captured target's session, epoch and generation, not the active pane. */
     current(target: Readonly<ClipboardTarget>): boolean;
     readonly signal?: AbortSignal;
@@ -72,6 +75,17 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             if ((++count & 127) === 0) await cooperate();
         }
         const rootIds = new Set(sourceRoots.map(node => node.id)), originalCount = source.nodes.size;
+        const mayReuseSamples = !options.external && acquisition.payload.from.board === options.receivingBoardId;
+        const mayKeepExternal = mayReuseSamples && acquisition.payload.from.sheet === targetSheet;
+        const remapAttachment = (attachment: ConnectorNode['start']['attach']) => {
+            if (!attachment) return null;
+            const mapped = ids.get(attachment.target);
+            if (mapped) return { ...attachment, target: mapped };
+            const targetNode = mayKeepExternal ? doc.nodes.get(attachment.target) : undefined;
+            if (targetNode && targetNode.kind !== 'connector' && targetNode.kind !== 'group' && targetNode.kind !== 'opaque'
+                && sheetOf(doc, targetNode.id) === targetSheet) return attachment;
+            return null;
+        };
         if (ids.size !== originalCount || !originalCount) throw new Error('Clipboard source identities are invalid');
         const siblings = doc.children.get(parent) ?? [], orders = keysBetween(siblings.at(-1)?.order ?? null, null, sourceRoots.length);
         const rootOrders = new Map<NodeId, string>();
@@ -100,27 +114,23 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 order: root ? rootOrders.get(original.id)! : original.order, x, y, rotation, page });
             if (node.kind === 'stroke') {
                 let ref = copiedSamples.get(node.samples);
-                if (ref === undefined) { const lease = samples.importImmutable(acquisition.samples, node.samples); leases.push(lease); ref = lease.ref; copiedSamples.set(node.samples, ref); }
+                if (ref === undefined) {
+                    const cached = mayReuseSamples ? acquisition.cachedSamples?.get(original.id) : undefined;
+                    const lease = cached !== undefined && samples.has(cached) ? samples.retain(cached) : samples.importImmutable(acquisition.samples, node.samples);
+                    leases.push(lease); ref = lease.ref; copiedSamples.set(node.samples, ref);
+                }
                 node = { ...node, samples: ref };
             } else if (node.kind === 'connector') {
-                const remap = (end: ConnectorNode['start']) => {
-                    if (!end.attach) return end;
-                    const target = ids.get(end.attach.target);
-                    if (!target) throw new Error('Clipboard contains an external connector binding');
-                    return { ...end, attach: { ...end.attach, target } };
-                };
-                node = { ...node, start: remap(node.start), end: remap(node.end) };
+                const external = acquisition.externalBindings?.get(original.id);
+                node = { ...node, start: { ...node.start, attach: remapAttachment(external?.start ?? node.start.attach) },
+                    end: { ...node.end, attach: remapAttachment(external?.end ?? node.end.attach) } };
             } else if (node.kind === 'polyline') {
                 // Endpoint attachments are remapped with their polyline, never detached by changing its geometry.
                 const line = node as typeof node & { readonly startAttach?: ConnectorNode['start']['attach']; readonly endAttach?: ConnectorNode['end']['attach'] };
-                const remap = (attachment: ConnectorNode['start']['attach']) => {
-                    if (!attachment) return null;
-                    const target = ids.get(attachment.target);
-                    if (!target) throw new Error('Clipboard contains an external polyline binding');
-                    return { ...attachment, target };
-                };
-                node = { ...line, ...(line.startAttach === undefined ? {} : { startAttach: remap(line.startAttach) }),
-                    ...(line.endAttach === undefined ? {} : { endAttach: remap(line.endAttach) }) };
+                const external = acquisition.externalBindings?.get(original.id);
+                const start = external?.start ?? line.startAttach, end = external?.end ?? line.endAttach;
+                node = { ...line, ...(start === undefined ? {} : { startAttach: remapAttachment(start) }),
+                    ...(end === undefined ? {} : { endAttach: remapAttachment(end) }) };
             }
             additions.push(node);
             if ((++count & 127) === 0) await cooperate();

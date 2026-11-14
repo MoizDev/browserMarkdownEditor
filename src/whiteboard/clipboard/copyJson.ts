@@ -6,6 +6,18 @@ import type { CopySnapshot } from './snapshot';
 
 // Provenance: clipboard §2.4 native-record JSON and C2 job ownership;
 // independent incremental JSON-string serialization, no upstream engine source.
+function utf8Bytes(value: string): number {
+    let bytes = 0;
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code < 0x80) bytes++;
+        else if (code < 0x800) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length
+            && value.charCodeAt(i + 1) >= 0xdc00 && value.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++; }
+        else bytes += 3;
+    }
+    return bytes;
+}
 /** Capture is the real C2 in-job snapshot; ClipboardItem is installed while activation is live. */
 export async function copyBoardJsonFresh(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal?: AbortSignal;
@@ -27,15 +39,21 @@ export async function copyBoardJsonFresh(options: {
             finally { for (const lease of retained) memory.release(lease); }
         };
         const add = (text: string) => {
-            const lease = memory.reserve(256 + text.length * 6);
+            const size = utf8Bytes(text);
+            if (size > SECURITY_LIMITS.clipboardExpandedBytes - bytes) throw new RangeError('Clipboard JSON exceeds the expanded-byte limit');
+            const lease = memory.reserve(256 + size * 2);
             if (!lease) throw new Error('Insufficient memory for clipboard JSON');
             try {
                 const chunk = new Blob([text], { type: 'text/plain' });
-                if (chunk.size > SECURITY_LIMITS.clipboardExpandedBytes - bytes) throw new RangeError('Clipboard JSON exceeds the expanded-byte limit');
-                retained.push(lease); chunks.push(chunk); bytes += chunk.size;
+                retained.push(lease); chunks.push(chunk); bytes += size;
             } catch (error) { memory.release(lease); throw error; }
         };
-        const cooperate = async () => { await new Promise<void>(resolve => setTimeout(resolve, 0)); context.assertCurrent(); check(); };
+        let steps = 0, started = performance.now();
+        const cooperate = async () => {
+            context.assertCurrent(); check();
+            if (++steps < 128 && performance.now() - started < 3) return;
+            await new Promise<void>(resolve => setTimeout(resolve, 0)); context.assertCurrent(); check(); steps = 0; started = performance.now();
+        };
         try {
             context.assertCurrent(); check();
             if (snapshot.payload.records.length > SECURITY_LIMITS.clipboardRecords) throw new RangeError('Clipboard JSON has too many records');

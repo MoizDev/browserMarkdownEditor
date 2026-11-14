@@ -6,6 +6,7 @@ import { checkContentUrl } from '../security/urlPolicy';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { RichFragment } from '../text/richText';
 import { matchingIdentity, validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
+import { boardWorker } from '../workers/client';
 import type { HtmlClipboardMarkers } from './classify';
 
 // Provenance: opaque clipboard profile, bounded transport and shared-memory
@@ -57,6 +58,7 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
     if (!validBoardIdentity(options.identity)) throw new TypeError('Invalid clipboard job identity');
     const identity = Object.freeze({ ...options.identity });
     const request = async (html: string, mode: 'markers' | 'rich' | 'metadata', signal: AbortSignal): Promise<{ value: unknown; release(): void }> => {
+        signal = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
         signal.throwIfAborted();
         if (typeof html !== 'string' || html.length > LIMIT) throw new RangeError('Clipboard HTML is too large');
         if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
@@ -82,6 +84,15 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
         try {
             const blob = new Blob([html], { type: 'text/html' });
             if (blob.size > LIMIT) throw new RangeError('Clipboard HTML is too large');
+            const worker = boardWorker('parse'); let preflight: unknown;
+            try {
+                preflight = await worker.request('clipboardDecode', { htmlPreflight: blob }, identity,
+                    { priority: 0, cpu: 'governed', deadlineMs: 5000, signal }, options.isCurrent);
+            } catch (error) {
+                if (signal.aborted) await worker.recycle('HTML preflight cancelled').catch(() => undefined);
+                throw error;
+            }
+            check(); if (preflight !== true) throw new Error('Invalid HTML preflight response');
             const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
             frame = createContainedFrame({ html: clipboardHtmlFrame, init: { v: 1, token, identity }, signal, hidden: true,
                 onFailure: reason => fail(new Error(`Clipboard HTML frame failed: ${reason}`)),
@@ -156,8 +167,15 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
     };
     return {
         async markers(html, signal) { const result = await request(html, 'markers', signal);
-            try { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
-                return markers(result.value, html.length); } finally { result.release(); } },
+            try {
+                signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
+                const value = markers(result.value, html.length), bytes = 2 * ((value.privatePayload?.length ?? 0) + (value.legacyPayload?.length ?? 0));
+                if (!bytes) { result.release(); return value; }
+                const retained = options.memory.reserve(bytes + 4096);
+                if (!retained) throw new Error('Insufficient memory for clipboard markers');
+                result.release(); let held = true;
+                return { ...value, release() { if (held) { held = false; options.memory.release(retained); } } };
+            } catch (error) { result.release(); throw error; } },
         projectHTML,
         async metadata(html, signal) {
             const result = await request(html, 'metadata', signal);

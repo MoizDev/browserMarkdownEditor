@@ -44,21 +44,28 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     } catch (error) { release(); throw error; }
 }
 /** Capture is the real in-job export port; promises are installed while user activation is live. */
-export async function copyBoardPng(runtime: BoardRuntime, memory: MemoryAllocator, capture: (signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
-    current: () => boolean, pixelsPerWorldUnit = 2): Promise<void> {
+export async function copyBoardPng(runtime: BoardRuntime, memory: MemoryAllocator,
+    capture: (signal: AbortSignal) => Promise<{ readonly png: Blob; readonly pixelsPerWorldUnit: number; release(): void }>,
+    signal: AbortSignal, current: () => boolean): Promise<void> {
     const session = runtime.session, controller = new AbortController(), jobSignal = AbortSignal.any([signal, controller.signal]);
     const check = () => { signal.throwIfAborted(); if (runtime.session !== session || !current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
     check();
     let finished = false, owned: { release(): void } | undefined;
     const captured = runtime.jobs.run(async context => {
-        const blob = await capture(context.signal); context.assertCurrent(); check();
-        const image = new Blob([blob], { type: 'image/png' });
-        const privateImage = await pngWithClipboardDensity(image, pixelsPerWorldUnit, context.signal, memory);
-        try { context.assertCurrent(); check(); return { image, privateImage }; }
-        catch (error) { privateImage.release(); throw error; }
+        const frame = await capture(context.signal);
+        try {
+            context.assertCurrent(); check();
+            if (!(frame.png instanceof Blob)) throw new TypeError('Invalid PNG capture');
+            const image = new Blob([frame.png], { type: 'image/png' });
+            const privateImage = await pngWithClipboardDensity(image, frame.pixelsPerWorldUnit, context.signal, memory);
+            try {
+                context.assertCurrent(); check();
+                return { image, privateImage, release() { try { privateImage.release(); } finally { frame.release(); } } };
+            } catch (error) { privateImage.release(); throw error; }
+        } catch (error) { frame.release(); throw error; }
     }, { signal: jobSignal, deadlineMs: 120_000 }).then(value => {
-        if (finished) { value.privateImage.release(); throw new DOMException('Clipboard operation ended', 'AbortError'); }
-        owned = value.privateImage; return value;
+        if (finished) { value.release(); throw new DOMException('Clipboard operation ended', 'AbortError'); }
+        owned = value; return value;
     });
     const image = captured.then(value => value.image), privateImage = captured.then(value => value.privateImage.blob);
     // The OS promise must be installed during the gesture; unsupported custom formats fall back to standard PNG.

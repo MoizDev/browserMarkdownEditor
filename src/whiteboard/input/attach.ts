@@ -224,6 +224,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     error: services.error,
   })
   let cancelKeyboardGesture = () => false
+  let dismissKeyboardCursor = () => {}
   const cancelForCamera = () => {
     cancelContinuations(); services.cancelPendingGestures()
     const active = router.activeOwner
@@ -253,6 +254,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const down = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
+    if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
     if (event.pointerType === 'pen') services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp)
     else if (event.pointerType === 'touch') {
       touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
@@ -353,6 +355,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
   })
   cancelKeyboardGesture = () => cursor.active && cursor.escape()
+  dismissKeyboardCursor = () => { if (cursor.active) cursor.escape() }
   const flush = () => {
     cancelContinuations()
     services.cancelPendingGestures()

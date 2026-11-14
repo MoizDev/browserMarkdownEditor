@@ -202,8 +202,11 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
             return pointPath([outline], query, bodyOptions);
         },
         region(query) {
-            if (textPath && regionPath([], query, textOptions).hit) return { hit: true, distanceCss: 0, part: selectInterior ? 'label' : 'title' };
-            return regionPath([outline], query, bodyOptions);
+            const body = regionPath([outline], query, bodyOptions);
+            if (!textPath) return body;
+            const textHit = regionPath([], query, textOptions);
+            if (query.kind === 'polygon' && query.containment) return body.hit && textHit.hit ? body : { hit: false, distanceCss: Infinity, part: 'none' };
+            return textHit.hit ? { hit: true, distanceCss: 0, part: selectInterior ? 'label' : 'title' } : body;
         } };
 }
 
@@ -290,9 +293,11 @@ export function prepareFigureGeometry(node: Readonly<FigureNode>, options: Figur
             return result.hit ? { ...result, part: 'body' } : none;
         },
         region(query) {
-            if (labelPath && regionPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };
             const result = regionPath(strokes, query, optionsForBody);
-            return result.hit ? { ...result, part: 'body' } : none;
+            if (!labelPath) return result.hit ? { ...result, part: 'body' } : none;
+            const labelHit = regionPath([], query, labelOptions);
+            if (query.kind === 'polygon' && query.containment) return result.hit && labelHit.hit ? { ...result, part: 'body' } : none;
+            return labelHit.hit ? { hit: true, distanceCss: 0, part: 'label' } : result.hit ? { ...result, part: 'body' } : none;
         },
     };
 }

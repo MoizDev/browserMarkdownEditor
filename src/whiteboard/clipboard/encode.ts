@@ -40,14 +40,12 @@ function render(snapshot: CopySnapshot, encoded: string, cacheOnly: boolean): Cl
     div.append(span);
     const meta = div.ownerDocument.createElement('meta');
     meta.setAttribute('charset', 'utf-8');
-    // Reading serializes the DOM already built above; this does not assign HTML into the page.
-    // eslint-disable-next-line bme/html-sinks
-    let html = meta.outerHTML + div.outerHTML;
+    const serializer = new XMLSerializer();
+    let html = serializer.serializeToString(meta) + serializer.serializeToString(div);
     if (new TextEncoder().encode(html).length > HTML_LIMIT) {
         if (!cacheOnly) return render(snapshot, `u.${base64url(jsonBytes(marker(snapshot)))}`, true);
         while (div.firstChild && div.firstChild !== span) div.firstChild.remove();
-        // eslint-disable-next-line bme/html-sinks -- Read-only serialization, not an HTML sink.
-        html = meta.outerHTML + div.outerHTML;
+        html = serializer.serializeToString(meta) + serializer.serializeToString(div);
     }
     return { html, plain: rendition.plain, encoded, cacheOnly };
 }

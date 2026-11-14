@@ -30,7 +30,7 @@ export function plain(value: RichText): string {
     return value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
 }
 export function fromPlain(value: string): RichText {
-    const lines = value.replace(/\r\n?/g, '\n').replace(/[\ud800-\udfff]/gu, '\ufffd').split('\n');
+    const lines = value.replace(/\r\n?/g, '\n').split('\n');
     if (lines.length > MAX_TEXT_BLOCKS || value.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
 }
@@ -42,8 +42,7 @@ export function marksAt(value: RichText, offset: number): Marks {
         const run = block.runs[i], end = at + run.text.length;
         if (local < end || (local === end && (i === block.runs.length - 1 || end > at))) {
             const { x: _x, link, ...marks } = run.marks;
-            const next = block.runs.slice(i + 1).find(item => item.text.length > 0);
-            return link && (local < end || next?.marks.link === link) ? { ...marks, link } : marks;
+            return link && local < end ? { ...marks, link } : marks;
         }
         at = end;
     }
@@ -60,7 +59,7 @@ export function insertionFragment(value: RichText, from: number, inserted: strin
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {
     check(value, from, to);
     const fragment = sliceRichText(value, from, to);
-    return normalizeRichText({ blocks: fragment.blocks.map(block => ({ ...block, runs: block.runs.map(run => run.text.length ? { ...run, marks: map(run.marks) } : run) })) });
+    return normalizeRichText({ blocks: fragment.blocks.map(block => ({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) })) });
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);
@@ -75,11 +74,7 @@ export function toggleMark(value: RichText, from: number, to: number, mark: Rich
 }
 export function applyLink(value: RichText, from: number, to: number, url: string | null): RichFragment {
     if (url !== null) {
-        if (url.length > 2048) throw new RangeError('Invalid link');
-        for (let i = 0; i < url.length; i++) {
-            const code = url.charCodeAt(i);
-            if (code < 32 || (code >= 127 && code <= 159)) throw new RangeError('Invalid link');
-        }
+        if (url.length > 2048 || /\p{Cc}/u.test(url)) throw new RangeError('Invalid link');
         let parsed: URL;
         try { parsed = new URL(url); } catch { throw new RangeError('Invalid link'); }
         if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new RangeError('Invalid link');

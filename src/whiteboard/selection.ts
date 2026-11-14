@@ -13,15 +13,18 @@ export interface SelectionSnapshot {
 // Selection is session state, not a document operation or a separate undo step.
 export class SelectionState {
     private snapshot: SelectionSnapshot;
+    private selectedIds = new Set<NodeId>();
     private readonly listeners = new Set<() => void>();
     constructor(sheet: SheetId) { this.snapshot = Object.freeze({ sheet, focus: sheet, selected: Object.freeze([]), active: null }); }
     getSnapshot = (): SelectionSnapshot => this.snapshot;
+    has(id: NodeId): boolean { return this.selectedIds.has(id); }
     subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
     private publish(sheet: SheetId, focus: ParentId, selected: readonly NodeId[], active: NodeId | null): void {
-        const ids = Object.freeze([...new Set(selected)]);
+        const unique = new Set(selected), ids = Object.freeze([...unique]);
         if (active !== null && !ids.includes(active)) throw new RangeError('Active selection must be selected');
         const old = this.snapshot;
         if (old.sheet === sheet && old.focus === focus && old.active === active && old.selected.length === ids.length && old.selected.every((id, i) => id === ids[i])) return;
+        this.selectedIds = unique;
         this.snapshot = Object.freeze({ sheet, focus, selected: ids, active });
         for (const listener of this.listeners) listener();
     }

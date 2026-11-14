@@ -18,7 +18,8 @@ import { createPdfiumRenderJob } from './pdfium/render';
 import { pdfiumStructure } from './pdfium/structure';
 import { extractPdfiumText } from './pdfium/text';
 
-interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean }
+interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean; emphasisKey?: string }
+type OpenClone = (source: ByteSource, password: string | undefined) => PdfiumDocument;
 
 function openFailure(runtime: PdfiumRuntime, access: PdfiumFileAccess): PdfEngineError {
     if (access.failed) return new PdfEngineError('FileError', 'PDF source read failed');
@@ -39,7 +40,9 @@ class PdfiumDocument implements BackendDoc {
     private current = -1;
 
     constructor(private readonly runtime: PdfiumRuntime, private readonly document: number,
-        private readonly access: PdfiumFileAccess, private readonly limits: Readonly<EngineLimits>) {
+        private readonly access: PdfiumFileAccess, private readonly limits: Readonly<EngineLimits>,
+        private readonly source: ByteSource, private readonly secret: Uint8Array | undefined,
+        private readonly clone: boolean, private readonly openClone: OpenClone) {
         const count = runtime.call('FPDF_GetPageCount', document);
         if (!Number.isSafeInteger(count) || count < 0 || count > limits.maxPages) throw new PdfEngineError('ResourceLimit', 'PDF page count exceeds its limit');
         this.sizes = Array.from({ length: count }, (_, index) => pdfiumPageSize(runtime, document, index, limits.maxPagePoints));
@@ -84,7 +87,8 @@ class PdfiumDocument implements BackendDoc {
             const geometry = pdfiumPageGeometry(this.runtime, handle, index, this.sizes[index]);
             const result: LoadedPage = { handle, geometry, checked: false };
             this.pages.set(index, result); this.current = index;
-            this.runtime.call('FORM_OnAfterLoadPage', handle, this.forms.handle); attached = true;
+            attached = true;
+            this.runtime.call('FORM_OnAfterLoadPage', handle, this.forms.handle);
             this.checkAccess();
             return result;
         } catch (error) {
@@ -113,9 +117,10 @@ class PdfiumDocument implements BackendDoc {
         const page = this.load(request.page);
         if (!page.checked) { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
         this.checkAccess();
-        let job: RenderJob | undefined;
-        job = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
-            () => { if (job) this.jobs.delete(job); });
+        const holder: { job?: RenderJob } = {};
+        const job = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
+            () => { if (holder.job) this.jobs.delete(holder.job); });
+        holder.job = job;
         this.jobs.add(job);
         return job;
     }
@@ -131,6 +136,57 @@ class PdfiumDocument implements BackendDoc {
             this.checkAccess();
             return result;
         } finally { if (!this.runtime.aborted) this.runtime.call('FPDFText_ClosePage', text); }
+    }
+    openEmphasisClone(): BackendDoc {
+        this.ensure();
+        if (this.clone) throw new PdfEngineError('NotSupported', 'Cannot clone an emphasis document');
+        const password = this.secret ? new TextDecoder().decode(this.secret) : undefined;
+        return this.openClone(this.source, password);
+    }
+    emphasisStroked(request: RenderRequest, objectIndexes: Int32Array, strokeEm: number): RenderJob {
+        if (!this.clone) throw new PdfEngineError('NotSupported', 'Only a disposable PDF clone may be changed');
+        if (!(objectIndexes instanceof Int32Array) || objectIndexes.length > this.limits.maxTextObjects || strokeEm !== 0.035) {
+            throw new PdfEngineError('RangeError', 'Invalid PDF emphasis request');
+        }
+        this.stopJobs();
+        let page = this.load(request.page);
+        const ids = [...objectIndexes];
+        if (new Set(ids).size !== ids.length || ids.some(id => id < 0)) throw new PdfEngineError('RangeError', 'Invalid PDF emphasis object list');
+        const key = `${strokeEm}:${ids.join(',')}`;
+        if (page.emphasisKey !== undefined && page.emphasisKey !== key) {
+            this.releasePage(request.page);
+            page = this.load(request.page);
+        }
+        if (page.emphasisKey === undefined) {
+            const text = this.runtime.call('FPDFText_LoadPage', page.handle) >>> 0;
+            if (!text) throw new PdfEngineError('PageError', 'PDF emphasis text is unavailable');
+            let complete = false;
+            try {
+                const extracted = extractPdfiumText(this.runtime, page.handle, text, page.geometry, this.limits);
+                const { raw, objectHandles } = extracted;
+                if (raw.truncated) throw new PdfEngineError('ResourceLimit', 'PDF emphasis text is incomplete');
+                for (const id of ids) {
+                    const size = raw.objects.sourceFontSize[id], fill = raw.objects.fill[id];
+                    if (id >= objectHandles.length || raw.objects.renderMode[id] !== 0 || raw.objects.opacity[id] !== 1 ||
+                        raw.objects.hasTransparency[id] !== 0 || !Number.isFinite(size) || size <= 0) {
+                        throw new PdfEngineError('NotSupported', 'PDF emphasis object is not safely drawable');
+                    }
+                    const object = objectHandles[id];
+                    if (!this.runtime.call('FPDFPageObj_SetStrokeColor', object, fill >>> 24, (fill >>> 16) & 255, (fill >>> 8) & 255, fill & 255) ||
+                        !this.runtime.call('FPDFPageObj_SetStrokeWidth', object, size * strokeEm) ||
+                        !this.runtime.call('FPDFTextObj_SetTextRenderMode', object, 2)) {
+                        throw new PdfEngineError('PageError', 'PDF emphasis configuration failed');
+                    }
+                }
+                this.checkAccess();
+                page.emphasisKey = key;
+                complete = true;
+            } finally {
+                try { if (!this.runtime.aborted) this.runtime.call('FPDFText_ClosePage', text); }
+                finally { if (!complete) this.releasePage(request.page); }
+            }
+        }
+        return this.render(request);
     }
     links(index: number) {
         this.stopJobs(); const page = this.load(index);
@@ -163,6 +219,7 @@ class PdfiumDocument implements BackendDoc {
         try { this.forms.close(); } catch { /* teardown continues */ }
         if (!this.runtime.aborted) { try { this.runtime.call('FPDF_CloseDocument', this.document); } catch { /* teardown continues */ } }
         try { this.access.dispose(); } catch { /* teardown continues */ }
+        this.secret?.fill(0);
     }
 }
 
@@ -172,7 +229,26 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
     let environment: BackendEnv | undefined;
     const info: BackendInfo = { engine: 'pdfium', version: '6688c576fd851f4159c6fae39396da50939de110',
         artifactSha256: runtime.artifactSha256, buildId: runtime.buildId,
-        features: ['forms', 'structTree', 'outline', 'attachments'] };
+        features: ['forms', 'emphasis', 'structTree', 'outline', 'attachments'] };
+    const openDocument = (source: ByteSource, password: string | undefined, clone: boolean): PdfiumDocument => {
+        if (!environment) throw new PdfEngineError('EngineBroken', 'PDFium backend is not initialized');
+        const access = createPdfiumFileAccess(runtime, source);
+        let document = 0, secret: Uint8Array | undefined;
+        try {
+            document = withPdfiumPassword(runtime, password,
+                pointer => runtime.call('FPDF_LoadCustomDocument', access.pointer, pointer) >>> 0);
+            if (!document) throw openFailure(runtime, access);
+            if (access.failed) throw new PdfEngineError('FileError', 'PDF source read failed');
+            secret = password === undefined ? undefined : new TextEncoder().encode(password);
+            return new PdfiumDocument(runtime, document, access, environment.limits, source, secret, clone,
+                (cloneSource, clonePassword) => openDocument(cloneSource, clonePassword, true));
+        } catch (error) {
+            secret?.fill(0);
+            if (document && !runtime.aborted) { try { runtime.call('FPDF_CloseDocument', document); } catch { /* worker unusable */ } }
+            access.dispose();
+            throw error;
+        }
+    };
     return {
         id: 'pdfium',
         init(env) {
@@ -184,22 +260,7 @@ export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<Pdf
             environment = env;
             return info;
         },
-        open(source: ByteSource, openOptions: { password?: string }) {
-            if (!environment) throw new PdfEngineError('EngineBroken', 'PDFium backend is not initialized');
-            const access = createPdfiumFileAccess(runtime, source);
-            let document = 0;
-            try {
-                document = withPdfiumPassword(runtime, openOptions.password,
-                    password => runtime.call('FPDF_LoadCustomDocument', access.pointer, password) >>> 0);
-                if (!document) throw openFailure(runtime, access);
-                if (access.failed) throw new PdfEngineError('FileError', 'PDF source read failed');
-                return new PdfiumDocument(runtime, document, access, environment.limits);
-            } catch (error) {
-                if (document && !runtime.aborted) { try { runtime.call('FPDF_CloseDocument', document); } catch { /* worker unusable */ } }
-                access.dispose();
-                throw error;
-            }
-        },
+        open(source: ByteSource, openOptions: { password?: string }) { return openDocument(source, openOptions.password, false); },
         heapBytes() { return runtime.HEAPU8.byteLength; },
     };
 }

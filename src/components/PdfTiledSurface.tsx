@@ -3,7 +3,7 @@ import type { PdfReadingBinding } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import type { PdfTiledSource, PdfTiledSourceFactory } from '../pdf/session/hostTypes';
+import type { PdfTiledSource, PdfTiledSourceFactory } from './PdfTiledView';
 import PdfTiledView from './PdfTiledView';
 
 interface Props {

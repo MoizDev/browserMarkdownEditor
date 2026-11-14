@@ -2,7 +2,7 @@ import type { SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
 import type { Applied, TouchedSet, Transaction } from '../change/ops';
 import type { ChangeGeometry } from '../change/coordinates';
-import type { HistorySnapshot, HistoryStepInfo } from '../change/historyTypes';
+import type { HistoryController, HistorySnapshot, HistoryStepInfo } from '../change/historyTypes';
 import type { NoticeDispatcher } from '../change/notices';
 import type { EncoderContext } from '../format/encode';
 import type { RecordChanges } from '../format/recordChanges';
@@ -59,6 +59,7 @@ export interface PendingRecordChanges {
     readonly revision: number;
 }
 export type ComposedBoardSession = BoardSession & SessionAdapter & {
+    readonly history: HistoryController;
     readonly readOnlyReason: string | null;
     flushNow(): void;
     pageHide(): void;

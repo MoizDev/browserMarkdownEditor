@@ -2,7 +2,10 @@ import type { CameraController } from '../../platform/render/camera';
 import { surfaceToWorld } from '../../platform/render/camera';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import { pasteBoardClipboardInJob } from '../../whiteboard/clipboard/paste';
 import { acquireCopiedBoardClipboard, type BoardClipboardAcquisition } from '../../whiteboard/host/clipboardAcquisition';
+import { createBoardClipboardPasteHost } from '../../whiteboard/host/clipboardPasteHost';
+import { BOARD_Z_MAX } from '../../utils/boardZMax';
 import { readNativeClipboardMedia } from '../../whiteboard/host/clipboardCommands';
 import { classifyClipboardJson } from '../../whiteboard/host/clipboardJsonKind';
 import { createClipboardHtmlFrameHost } from '../../whiteboard/clipboard/htmlFrameHost';
@@ -10,9 +13,6 @@ import { insertNativeClipboard } from '../../whiteboard/clipboard/insertNative';
 import { planBoardClipboardPlacement } from '../../whiteboard/clipboard/placement';
 import { prepareBoardClipboardMediaInJob } from '../../whiteboard/clipboard/prepareMedia';
 import { acceptsBoardDrag, captureTransfer } from '../../whiteboard/clipboard/transfer';
-import { pasteBoardClipboardInJob } from '../../whiteboard/clipboard/paste';
-import { createBoardClipboardPasteHost } from '../../whiteboard/host/clipboardPasteHost';
-import { BOARD_Z_MAX } from '../../utils/boardZMax';
 import type { CachedClipboard, ClipboardCachePin } from '../../whiteboard/clipboard/copy';
 import type { CopySnapshot } from '../../whiteboard/clipboard/snapshot';
 import type { ClipboardInput, ClipboardIntent, ClipboardPoint, ClipboardTarget } from '../../whiteboard/clipboard/types';
@@ -43,9 +43,12 @@ export interface NativeClipboardControllerOptions {
     readonly onError: (error: unknown) => void;
 }
 
-/** Paste/drop own one serial session job; unsupported semantic converters remain explicit frontiers. */
+/** Paste/drop own one serial session job; every clipboard source is classified and admitted inside it. */
 export function createNativeClipboardController(options: NativeClipboardControllerOptions) {
     const { runtime, identity, host } = options, session = runtime.session, doc = session.doc;
+    // The render owner token is the one the board runtime was created with (documentClipboard builds the same).
+    const token = Object.freeze({ documentId: identity.documentId, session: identity.session,
+        vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     let disposed = false, pending = 0, retired: (() => void) | undefined;
     const lifetime = new AbortController(), jobs = new Set<AbortController>();
     const releaseRetired = () => { if (retired && pending === 0) { const done = retired; retired = undefined; disposed = true; lifetime.abort(); done(); } };
@@ -118,22 +121,21 @@ export function createNativeClipboardController(options: NativeClipboardControll
             }
             if (!input) throw new Error('Clipboard input is unavailable');
             const capturedInput = await input; check();
-            // The private PNG that accompanies image files is the same content the canonical classifier reads.
-            const read = imageRead ? await imageRead : null; check();
-            const clipboardInput: ClipboardInput = read?.privatePng && capturedInput.files.length
-                ? { ...capturedInput, privatePng: read.privatePng } : capturedInput;
+            // Image files on the clipboard may carry a private PNG that only the image read can see. Supplying
+            // it as the input's privatePng makes classification choose the private-PNG path before files.
+            const privatePng = imageRead ? (await imageRead)?.privatePng ?? null : null; check();
+            const pasteInput: ClipboardInput = privatePng && capturedInput.files.length && !capturedInput.privatePng
+                ? { ...capturedInput, privatePng } : capturedInput;
+            // One host for this job: its classifier, HTML frame, ingestor and media seams all run under this job's identity.
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
-            // One canonical host per job: its admitter, storage, ingestion and notices are the paste path's own.
-            const paste = createBoardClipboardPasteHost({ token: runtime.paintToken, zMax: BOARD_Z_MAX, runtime, memory: options.memory,
-                classifier: { appOrigin: location.origin, markers: html.markers,
-                    jsonKind: (text, innerSignal) => classifyClipboardJson({ bytes: new Blob([text]), identity: workerIdentity,
-                        memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) },
+            const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token, zMax: BOARD_Z_MAX,
+                classifier: { appOrigin: location.origin, markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({
+                    bytes: new Blob([text]), identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) },
                 html, ingestor: options.ingestor, receivingBoardId: identity.documentId, cameraZoom: zoom,
-                embedEnvironment: { appOrigin: location.origin }, embedManifest: host.embeds.manifest,
-                current: targetCurrent, readBlob: (entry, readSignal) => options.readMedia(entry, readSignal),
-                storeMedia: options.storeMedia, isCurrent: workerCurrent, notice: options.notice,
-                noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')) });
-            await pasteBoardClipboardInJob(paste, clipboardInput, target, intent, context, pin ?? undefined);
+                current: targetCurrent, readBlob: options.readMedia, storeMedia: options.storeMedia,
+                notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')),
+                isCurrent: workerCurrent });
+            await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
         }, { signal, deadlineMs: 120_000 });
         return work.finally(() => {
             try { stop(); } finally {

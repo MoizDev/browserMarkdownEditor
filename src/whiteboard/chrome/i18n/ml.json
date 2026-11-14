@@ -390,7 +390,6 @@
     "paper.cancel": "റദ്ദാക്കുക",
     "paper.keepProtected": "ലോക്ക് ചെയ്ത ഉള്ളടക്കം സൂക്ഷിക്കും.",
     "chrome.readOnly": "ഈ ബോർഡ് വായിക്കാൻ മാത്രമുള്ളതാണ്.",
-    "shortcuts.file.print": "പ്രിന്റ് ചെയ്യുക",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

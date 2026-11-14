@@ -390,7 +390,6 @@
     "paper.cancel": "Prekliči",
     "paper.keepProtected": "Zaklenjena vsebina bo ohranjena.",
     "chrome.readOnly": "Ta plošča je samo za branje.",
-    "shortcuts.file.print": "Natisni",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

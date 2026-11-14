@@ -21,7 +21,6 @@ import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } 
 import { createNativeEditingKeyboard } from './nativeEditingKeyboard';
 import type { NativeEditingCapabilities, NativeEditingCapabilityFactory } from './nativeEditingCapabilities';
 import { createNativeLinkOperations } from './nativeLinkOperations';
-import { createNativePrint } from './nativePrint';
 import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
 import { documentClipboard, type NativeClipboardService } from './useNativeClipboard';
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
@@ -171,17 +170,9 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
         requestText: dialogs.requestText, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, setNotice]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
-    // Print pins this board's revision when it is asked; the instance owns only the print in flight.
-    const printer = useMemo(() => createNativePrint({ runtime, memory: clipboard.memory, current,
-        readMedia: async (entry, signal) => {
-            const blob = await clipboard.readMedia(entry, signal);
-            if (!blob) throw new Error('A board media item is unavailable for printing.');
-            return blob;
-        }, boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
-        notice: setNotice, onError: report }), [runtime, clipboard, current, host, identity, setNotice, report]);
-    useEffect(() => () => printer.dispose(), [printer]);
-    const runPrint = useCallback(() => printer.run(), [printer]);
-    const runExportPdf = useCallback(() => printer.exportPdf(), [printer]);
+    // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
+    const runPrint = useCallback(() => clipboard.print(), [clipboard]);
+    const runExportPdf = useCallback(() => clipboard.exportPdf(), [clipboard]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {
@@ -201,7 +192,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const { commands, camera } = owned;
         const extra = createNativeEditingKeyboard({ runtime, lease, commands, camera, preferences: clipboard.preferences,
             openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
-            print: runPrint, current, canWrite, report });
+            current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
             embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });

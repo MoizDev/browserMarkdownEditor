@@ -390,7 +390,6 @@
     "paper.cancel": "Annuller",
     "paper.keepProtected": "Låst indhold bevares.",
     "chrome.readOnly": "Denne tavle er skrivebeskyttet.",
-    "shortcuts.file.print": "Udskriv",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

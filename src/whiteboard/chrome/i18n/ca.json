@@ -390,7 +390,6 @@
     "paper.cancel": "Cancel·la",
     "paper.keepProtected": "El contingut bloquejat es mantindrà.",
     "chrome.readOnly": "Aquest tauler és només de lectura.",
-    "shortcuts.file.print": "Imprimeix",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

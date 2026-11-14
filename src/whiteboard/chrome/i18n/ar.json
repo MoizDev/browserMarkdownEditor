@@ -442,7 +442,6 @@
     "paper.cancel": "إلغاء",
     "paper.keepProtected": "سيتم الاحتفاظ بالمحتوى المقفل.",
     "chrome.readOnly": "هذه اللوحة للقراءة فقط.",
-    "shortcuts.file.print": "طباعة",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

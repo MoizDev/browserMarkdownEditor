@@ -18,18 +18,17 @@ function utf8Bytes(value: string): number {
     }
     return bytes;
 }
-/** Capture is the real C2 in-job snapshot; ClipboardItem is installed while activation is live. */
-export async function copyBoardJsonFresh(options: {
-    readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal?: AbortSignal;
+/** The JSON records of a capture as one blob, built chunk by chunk in a job under the memory governor.
+ * The caller owns the result and releases it. The capture is the real C2 in-job snapshot. */
+export async function buildBoardJson(options: {
+    readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal: AbortSignal;
     current(): boolean;
     capture(signal: AbortSignal): Promise<CopySnapshot>;
-}): Promise<void> {
-    const { runtime, memory } = options, session = runtime.session, controller = new AbortController();
-    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+}): Promise<{ readonly blob: Blob; release(): void }> {
+    const { runtime, memory, signal } = options, session = runtime.session;
     const check = () => { signal.throwIfAborted(); if (runtime.session !== session || !options.current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
     check();
-    let finished = false, owned: { release(): void } | undefined;
-    const task = runtime.jobs.run(async context => {
+    return runtime.jobs.run(async context => {
         const snapshot = await options.capture(context.signal), retained: ByteLease[] = [], chunks: Blob[] = [];
         let released = false, bytes = 0;
         const release = () => {
@@ -79,7 +78,20 @@ export async function copyBoardJsonFresh(options: {
             return { blob, release };
         } catch (error) { release(); throw error; }
     }, { signal, deadlineMs: 120_000 });
-    const data = task.then(result => {
+}
+
+/** Copy as JSON: the same producer as file export, its blob written to the clipboard while the click is live. */
+export async function copyBoardJsonFresh(options: {
+    readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal?: AbortSignal;
+    current(): boolean;
+    capture(signal: AbortSignal): Promise<CopySnapshot>;
+}): Promise<void> {
+    const controller = new AbortController(), session = options.runtime.session;
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    const check = () => { signal.throwIfAborted(); if (options.runtime.session !== session || !options.current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
+    check();
+    let finished = false, owned: { release(): void } | undefined;
+    const data = buildBoardJson({ ...options, signal }).then(result => {
         if (finished) { result.release(); throw new DOMException('Clipboard operation ended', 'AbortError'); }
         owned = result; return result.blob;
     });

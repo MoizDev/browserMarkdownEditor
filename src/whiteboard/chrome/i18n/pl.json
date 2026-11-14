@@ -390,7 +390,6 @@
     "paper.cancel": "Anuluj",
     "paper.keepProtected": "Zablokowana zawartość zostanie zachowana.",
     "chrome.readOnly": "Ta tablica jest tylko do odczytu.",
-    "shortcuts.file.print": "Drukuj",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

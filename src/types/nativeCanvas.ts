@@ -40,6 +40,8 @@ export interface NativeCanvasHost {
     canWriteSource(identity: NativeCanvasIdentity): boolean;
     /** Live App write authority, including the board's own read-only guard. */
     canWrite(identity: NativeCanvasIdentity): boolean;
+    /** The first refusal that keeps this source from writing, named for the user; null when writable. */
+    writeBlockReason(identity: NativeCanvasIdentity): string | null;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
     /** Capture the actual cold buffer before any asynchronous source preparation. */
     pinBoardSource(identity: NativeCanvasIdentity): {

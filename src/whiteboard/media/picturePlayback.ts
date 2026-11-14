@@ -24,7 +24,7 @@ export class PicturePlayback {
         this.values.set(node, Object.freeze({ media, playing }));
         for (const listener of this.listeners) listener();
     }
-    /** A deleted node or replaced media must not inherit a stale playback choice. */
+    /** A deleted node or replaced media must not inherit a stale playback choice (the picture's default applies again). */
     remove(node: NodeId): void {
         if (!this.values.delete(node)) return;
         for (const listener of this.listeners) listener();

@@ -125,6 +125,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (status !== 'complete') { dropStaging(); return; }
                     const frame: PaintFrame = Object.freeze({ token: work.pin.source.token, sceneRevision: work.pin.source.sceneRevision,
                         sourceDoc: work.pin.source.sourceDoc, sensitiveNodes: work.pin.source.sensitiveNodes,
+                        sessionRasters: work.pin.source.sessionRasters, rasterVariant: work.pin.source.rasterVariant, sourceWorld: work.pin.source.sourceWorld,
                         underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
                     const published: Published = { pin: work.pin, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
                     retained.set(frame, published); latest = published; staging = null; invalidate(); return;

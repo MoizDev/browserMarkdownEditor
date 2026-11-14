@@ -32,7 +32,7 @@ export async function printBoard(request: BoardPrintRequest): Promise<void> {
             clearTimeout(timer);
             signal.removeEventListener('abort', cleanup);
             window.removeEventListener('afterprint', cleanup);
-            frame.contentWindow?.removeEventListener('afterprint', cleanup);
+            try { frame.contentWindow?.removeEventListener('afterprint', cleanup); } catch { /* PDF viewer may be isolated by policy. */ }
             frame.remove();
             URL.revokeObjectURL(url);
         };
@@ -50,9 +50,9 @@ export async function printBoard(request: BoardPrintRequest): Promise<void> {
                     target.print();
                 } catch (error) { cleanup(); request.onError(error); }
             }, { once: true });
+            frame.src = url;
             document.body.append(frame);
             timer = setTimeout(cleanup, 60_000);
-            frame.src = url;
             if (signal.aborted) cleanup();
         } catch (error) { cleanup(); throw error; }
         return;

@@ -30,6 +30,9 @@ import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/
 import { hashBytes, sameStat, type DiskVersion } from './utils/diskVersion';
 import { notifySearchChanges, subscribeSearchChanges } from './utils/searchChanges';
 import type { SearchController } from './utils/searchController';
+import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
+import type { RecoveryEntry } from './utils/recoveryJournal';
+import { recoveryAdapter } from './utils/recoveryAdapters';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -5382,6 +5385,50 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   }, []);
 
+  const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> => {
+    if (!rootHandle || currentVaultId !== entry.vaultId || rootHandleRef.current !== rootHandle || sessionRootRef.current !== rootHandle || sessionVaultIdRef.current !== entry.vaultId) return 'unavailable';
+    try {
+      const handle = await resolveFileHandle(entry.path);
+      if (!handle) return 'copy';
+      const snapshot = await readFileSnapshot(handle);
+      try {
+        const version = await snapshot.fingerprint();
+        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        const bytes = typeof entry.copy === 'string' ? new TextEncoder().encode(entry.copy) : entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+        const copyHash = await hashBytes(bytes);
+        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
+        if (copyHash === version.hash) return 'equal';
+        return version.hash === entry.fingerprint ? 'match' : 'copy';
+      } finally { snapshot.dispose(); }
+    } catch (error) { console.warn('Could not inspect recovery entry:', error); return 'unavailable'; }
+  }, [rootHandle, currentVaultId, resolveFileHandle, readFileSnapshot]);
+
+  const recoverEntry = useCallback(async (entry: RecoveryEntry) => {
+    const tab = tabsRef.current.find(t => t.file.path === entry.path);
+    if (!tab || hasUnsaved(tab)) throw new Error('Open the unchanged document and save its current edits first.');
+    if (entry.copyOnly || await inspectRecovery(entry) !== 'match') throw new Error('The file changed; save these changes as a copy instead.');
+    const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
+    if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    const adapter = recoveryAdapter(tab.id);
+    if (adapter?.recover) { await adapter.recover(entry.payload); return; }
+    if (typeof entry.payload !== 'string' || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
+    if (!getView(entry.path)?.replaceFromDisk?.(entry.payload)) {
+      const key = `${tab.id}|${entry.path}`;
+      const cached = editorStates.get(key);
+      if (cached) { const spec = reloadSpec(cached, entry.payload); if (spec) editorStates.set(key, cached.update(spec).state); }
+    }
+    updateTabContent(entry.path, entry.payload);
+  }, [hasUnsaved, inspectRecovery, editorStates, updateTabContent]);
+
+  const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
+    const root = rootHandleRef.current;
+    if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+    if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
+    const copy = await writeConflictCopy(entry.path, data, root);
+    announce(`Recovered changes were saved as “${copy}”.`);
+  }, [writeConflictCopy, announce]);
+
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.
   const dialogHost = dialog && (
@@ -5533,6 +5580,7 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
+        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} />}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
             <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>

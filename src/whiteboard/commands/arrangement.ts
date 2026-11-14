@@ -2,7 +2,7 @@ import { isLocked, selectedRoots } from '../change/commands';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
 import type { NodeSetOp } from '../change/ops';
 import type { ArrangementAction, ArrangementServices } from '../geom/arrangement.types';
-import { arrangementTransaction } from '../geom/arrangement';
+import { arrangementTransactionAsync } from '../geom/arrangementAsync';
 import type { Align, Axis } from '../geom/arrange';
 import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, isSheetParent, sheetOf } from '../model/doc';
@@ -56,7 +56,8 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
                 // Normalization may ask about staged records during builder.push;
                 // the original prepared scope stays pinned but is not the draft.
                 geometry: runtime.render.changeGeometry };
-            const transaction = arrangementTransaction(doc, eligible, action, services);
+            const transaction = await arrangementTransactionAsync(doc, eligible, action, services, { signal,
+                current: () => { try { check(); return true; } catch { return false; } }, cooperate: options.cooperate });
             check();
             if (!transaction.ops.length) return;
             const ops: NodeSetOp[] = transaction.ops.map(op => { if (op.t !== 'set') throw new Error('Arrangement produced a non-set operation'); return op; });

@@ -496,6 +496,8 @@ export interface FileSystemContextValue {
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
   restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
+  /** Regrant only the activation that raised an index permission problem. */
+  requestIndexPermission: (root: FileSystemDirectoryHandle, activation: number) => Promise<boolean>;
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
    *  source. Resolves after close to its collision-free physical basename;

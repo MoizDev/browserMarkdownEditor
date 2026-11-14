@@ -60,6 +60,7 @@ function inspectDocument(text: string, budget: { bytes: number; pixels: number; 
     const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
     const root = parsed.documentElement;
     if (root.localName !== 'svg' || root.namespaceURI !== 'http://www.w3.org/2000/svg' || parsed.getElementsByTagName('parsererror').length) throw new Error('Invalid SVG');
+    if (/\b(?:width|height)\s*:/i.test(root.getAttribute('style') ?? '')) throw new Error('SVG intrinsic dimensions cannot be safely established');
     const chargeData = (value: string): void => {
         const matches = value.matchAll(/data:[^\s"'<>)]*/gi);
         for (const match of matches) {
@@ -97,7 +98,7 @@ function inspectDocument(text: string, budget: { bytes: number; pixels: number; 
                 : mime === 'image/gif' ? gifHeader(bytes) : mime === 'image/webp' ? webpHeader(bytes)
                     : mime === 'image/avif' ? isoHeader(bytes, 'avif') : null;
             if (!header) throw new Error('Unsupported SVG inline resource');
-            budget.pixels += header.width * header.height;
+            budget.pixels += header.decodePixels ?? header.width * header.height;
             if (budget.pixels > 2 ** 26) throw new Error('SVG inline resources exceed the pixel limit');
         }
     };
@@ -111,6 +112,7 @@ function inspectDocument(text: string, budget: { bytes: number; pixels: number; 
         if (node.localName === 'style') {
             const css = node.textContent ?? '';
             if (css.includes('\\')) throw new Error('SVG resource escapes cannot be safely budgeted');
+            if (/\b(?:width|height)\s*:/i.test(css)) throw new Error('SVG intrinsic dimensions cannot be safely established');
             chargeData(css);
         }
         for (const child of Array.from(node.children)) stack.push(child);

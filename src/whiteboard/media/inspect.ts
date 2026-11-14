@@ -11,7 +11,7 @@ import { svgFrameFactory } from './svgFrameHost';
 // port deliberately cannot fall back to a detached parser in the vault origin.
 export interface SvgAdmissionProfile {
     header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number; readonly rgbaBytes: number }>;
-    probe(blob: Blob, signal: AbortSignal): Promise<void>;
+    probe(blob: Blob, width: number, height: number, signal: AbortSignal): Promise<void>;
 }
 interface WorkerInspection {
     readonly id: MediaId;
@@ -19,6 +19,7 @@ interface WorkerInspection {
     readonly width: number;
     readonly height: number;
     readonly animated: boolean;
+    readonly decodePixels: number;
 }
 const worker = createWorkerClient({
     name: 'whiteboard-media-decode', protocol: 1,
@@ -93,7 +94,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             } catch {
                 await worker.recycle('SVG worker probe failed', { lazy: true }).catch(() => undefined);
                 signal.throwIfAborted();
-                await svg.probe(typed, signal);
+                await svg.probe(typed, size.width, size.height, signal);
             }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();
@@ -102,10 +103,11 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     const result = await worker.request<WorkerInspection>('inspect', { blob }, { priority: 1, deadlineMs: 10000, signal });
     signal.throwIfAborted();
     if (!result || typeof result !== 'object' || typeof result.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.id)
-        || !MEDIA_MIMES.includes(result.mime) || !validSize(result.width, result.height) || typeof result.animated !== 'boolean') {
+        || !MEDIA_MIMES.includes(result.mime) || !validSize(result.width, result.height) || typeof result.animated !== 'boolean'
+        || !Number.isSafeInteger(result.decodePixels) || result.decodePixels < result.width * result.height || result.decodePixels > 2 ** 26) {
         throw new Error('Invalid media worker reply');
     }
-    const lease = options.memory.reserve(4 * result.width * result.height);
+    const lease = options.memory.reserve(4 * result.decodePixels);
     if (!lease) throw new Error('Not enough memory to decode this media');
     try {
         const duration = result.mime.startsWith('video/') ? await videoProbe(blob, result, signal) : null;
@@ -119,6 +121,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             }
         }
         signal.throwIfAborted();
-        return { ...result, duration };
+        return { id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration };
     } finally { options.memory.release(lease); }
 }

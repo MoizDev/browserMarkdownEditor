@@ -16,9 +16,9 @@ export interface SessionGestureQueue {
 }
 interface Pending { run(): void; cancel(error: unknown): void }
 
-// C7.2/WB-D17: one session-owned queue, not one per pane/chat. Stop cancels while
-// held; owner/read-only/cancellation are checked AGAIN just before the synchronous
-// task opens its transaction. A microtask keeps edits outside apply's publication.
+// C7.2/WB-D17: one session-owned FIFO shared by input and agent callers. Stop
+// cancels while held; owner/read-only/cancellation are checked AGAIN just before
+// the synchronous task. A microtask keeps edits outside apply's publication.
 export function createSessionGestureQueue(options: SessionGestureQueueOptions): SessionGestureQueue {
     const owner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
     const pending: Pending[] = [];
@@ -90,4 +90,34 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
             pending.length = 0;
         },
     };
+}
+
+export type SessionReadiness = 'loading' | 'ready' | 'read-only' | 'failed';
+export interface SessionMutationState { readonly state: SessionReadiness; readonly readOnlyReason: string | null }
+export class SessionMutationRefused extends Error {
+    constructor(readonly code: 'NOT_READY' | 'READ_ONLY' | 'DISPOSED', message: string) { super(message); this.name = 'SessionMutationRefused'; }
+}
+const uncancelled = new AbortController().signal;
+
+// Preserve the viewer's class-shaped port while sharing ONE implementation.
+// Ownership is mandatory: readiness alone cannot recognize a replaced session.
+export class GestureMutationQueue implements SessionGestureQueue {
+    private readonly queue: SessionGestureQueue;
+    constructor(readState: () => SessionMutationState, ownership: Pick<SessionGestureQueueOptions, 'owner' | 'isCurrent'>) {
+        this.queue = createSessionGestureQueue({ ...ownership,
+            isCurrent: owner => {
+                const current = readState();
+                if (current.state === 'read-only' || current.readOnlyReason) throw new SessionMutationRefused('READ_ONLY', current.readOnlyReason ?? 'Document is read-only');
+                if (current.state !== 'ready') throw new SessionMutationRefused('NOT_READY', `Document is ${current.state}`);
+                return ownership.isCurrent(owner);
+            },
+            isReadOnly: () => false, // Checked with readiness above, in the same admission guard.
+        });
+    }
+    get isGestureActive(): boolean { return this.queue.isGestureActive; }
+    beginGesture(): () => void { return this.queue.beginGesture(); }
+    enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.queue.enqueueAfterGesture(signal, task); }
+    afterGesture<T>(task: () => T, signal: AbortSignal = uncancelled): Promise<T> { return this.enqueueAfterGesture(signal, task); }
+    enqueue<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.enqueueAfterGesture(signal, task); }
+    dispose(): void { this.queue.dispose(); }
 }

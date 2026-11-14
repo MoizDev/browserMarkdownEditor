@@ -18,6 +18,7 @@ third-party code included (normally "none") · date.
 | `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/theme.ts` | w-j | F-THEME-001/002/003/006, R-26, WB-D28 | integration §6; rendering §5 | Theme specification and host scope ruling; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/preferences.ts` | w-j | F-PREF-002/003/005/006/008/012, WB-D30 | integration §§6–7 | Preference specification and public model view flags; session/view changes delegated to host persistence; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/viewFlags.ts` | w-j | F-PREF-002/003/005/012, WB-D30 | integration §§6–7; change-and-history §2 | Model's public session/apply and per-kind dirty policies, PDF browser-record callback; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/language.ts` | w-j | F-LANG-001/002/003/004/005 | integration §6.2 | Own English keys and locale manifest, Intl plural rules, input validation and latest-choice async ordering; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Model, changes, history and text (lane w-c)
@@ -33,16 +34,22 @@ third-party code included (normally "none") · date.
 | `model/defaults.ts` | lane w-c | M-3/7/9, R-W13/28/35 | document-model §§3.1–3.2/7; native-format §§3.2/5; spec/styles F-STYLE-010 | Lead-confirmed UI/view/media defaults; penStyle constant via lead citation; provisional initial pen/yellow selection | none | 2026-11-13 |
 | `model/fileFields.ts` | lane w-c | M-3, H-2, R-W23 | document-model §9.3; native-format §§3.3–3.4; change-and-history §2 | Design/ruling; node and board property-to-native-token mapping for transactional raw invalidation and encoder | none | 2026-11-13 |
 | `model/samples.ts` | lane w-c | M-10, V-10, CH-1 | ink §2.1; document-model §10.2 | Design and interface agreement with w-e; sealed pressure-mode metadata, no chunk read/decode | none | 2026-11-13 |
-| `model/validate.ts` | lane w-c | DM-3, V-1..V-12, M-11, H-3, R-W25/30/32/40 | document-model §§3/5/6/9; change-and-history §2; text §4; security §§4/8.1 | Design/rulings; staged pressure consistency, internal inverse ext/whole-block/missing-media forms, shared text caps and live/preserved drop guards; no tldraw source | none | 2026-11-13 |
+| `model/validate.ts` | lane w-c | DM-3, V-1..V-12, M-11, H-3, RV-22, R-W25/30/32/40 | document-model §§3/5/6/9; change-and-history §2; text §4; security §§4/8.1 | Design/rulings; final pressure checks, inverse forms, shared caps, media guards and O(1) opaque-descendant query for group normal form; no tldraw source | none | 2026-11-13 |
 | `model/textOffsets.ts` | lane w-c | V-11, H-2, R-W18/21 | text §4.1; UTF-16 projection | Design and approved allocation-free UTF-16 scan, block-aligned inverse ranges and splice block counts | none | 2026-11-13 |
 | `model/textLimits.ts` | lane w-c | V-11, H-2 | text §4; document-model §9 | Design/rulings; shared one-million UTF-16 and hundred-thousand block caps | none | 2026-11-13 |
 | `model/rawMedia.ts` | lane w-c | M-3/9, R-W25/30/37 | document-model §9.3; preserved-media rulings | Independent escaped-string/key scan; 64-hex runs plus first/last candidates in longer runs, bounded ring and per-raw dedup; no parse, upstream read or registry | none | 2026-11-13 |
-| `model/doc.ts` | lane w-c | M-1/3/4/6/8/10, C2.2, R-W17/18/19/20/21/23/25/30 | document-model §§1/3/5/6/8/9.3/10; native-format §6 | Design/lead rulings; C2.2 v4.5; app-owned paper type; live refs and reader-supplied preserved-ref counts; preserved fields/version/end; no tldraw source | none | 2026-11-13 |
-| `model/applyOnly.ts` | lane w-c | M-1/4/5/6/8/10, H-1/2/3, R-W18/19/21/23/25/26 | document-model §§5/6/10; change-and-history §2 | Design/rulings; prepared binary sibling/live-index edits, explicit ext restoration, preserved-count/revision writes; fallible planning before commit primitives | none | 2026-11-13 |
-| `change/ops.ts` | lane w-c | H-1/2/3/4/6, M-11, R-W19/21/23/26/40 | change-and-history §§2–3 | Design/rulings; exhaustive op/key policies, scene masks, inverse metadata forms and receipt sample leases; no tldraw source | none | 2026-11-13 |
-| `change/apply.ts` | lane w-c | CH-1(a), H-1/2/3/4/6, V-10, D-10, R-W23/25/26/27/40 | change-and-history §§2–3; document-model §§9.3/10 | Design/rulings; sequential validation, explicit inverse replay, private savepoints, staged/live/receipt sample ownership, guarded fixed-order publication and unsafe-state sealing; no upstream implementation | none | 2026-11-13 |
+| `model/doc.ts` | lane w-c | M-1/3/4/6/8/10, C2.2, RV-22, R-W17/18/19/20/21/23/25/30 | document-model §§1/3/5/6/8/9.3/10; native-format §6 | Design/rulings; live/preserved reference indices; private strict opaque-descendant counts with public boolean query, no file field or exposed map; no tldraw source | none | 2026-11-13 |
+| `model/applyOnly.ts` | lane w-c | M-1/4/5/6/8/10, H-1/2/3, RV-22, R-W18/19/21/23/25/26 | document-model §§5/6/10; change-and-history §2 | Design/rulings; prepared sibling/live-index edits, raw/count/revision writes, strict opaque ancestry counts maintained O(depth) on create/delete/reparent and inverse replay; zero counts deleted | none | 2026-11-13 |
+| `change/ops.ts` | lane w-c | H-1/2/3/4/6, M-11, R-W19/21/23/26/40 | change-and-history §§2–3 | Design/rulings; exhaustive policies, inverse forms, receipt leases and restricted command/normalization push capabilities; no tldraw source | none | 2026-11-13 |
+| `change/apply.ts` | lane w-c | CH-1, H-1/2/3/4/6, V-10, D-10, R-W23/25/26/27/40 | change-and-history §§2–3; document-model §§9.3/10 | Design/rulings; one staged path including real normalization, pre-mutation exact geometry capture, guarded private follow-on sink, inverse replay/savepoints and sample ownership; no upstream implementation | none | 2026-11-13 |
+| `change/errors.ts` | lane w-c | H-1/3 | change-and-history §2.3 | Design; shared typed validation refusal/internal failure identity for apply, commands and agent adapter | none | 2026-11-13 |
+| `change/coordinates.ts` | lane w-c | M-5/6/8, H-2, WB-D18 | document-model §§5–6; geometry §8.5 | Independent Float64 rigid-transform composition; canonical w-l page layout/origin and platform pageAt; injected exact staged tips/unclipped bounds, never AABB attachment guesses | none | 2026-11-13 |
+| `change/commands.ts` | lane w-c | M-4/5, H-2/3, WB-D18, RV-22 | change-and-history §2.4; document-model §§4–6 | Design; outermost locked-subtree promotion, paint-order keys, deepest-first delete, opaque pins, same-world sheet moves and command savepoints | none | 2026-11-13 |
+| `change/normalize.ts` | lane w-c | CH-1, M-4/5/8, RV-22 | change-and-history §2.3; geometry §8.5; document-model §5 | Design; incremental group dissolve/rekey worklists, final-sheet attachment decisions and exact pre-delete world-tip captures owned by staged entries | none | 2026-11-13 |
+| `change/agentBatch.ts` | lane w-c | H-3/5, C8, CH-5 | change-and-history §2.5 | Documented wire semantics only; at most 200 synchronous commands, per-op savepoints, successful original-number aliases, expected refusal skip and whole-batch unexpected/normalization rollback | none | 2026-11-13 |
 | `change/rawChanges.ts` | lane w-c | H-2/3, M-3/9, R-W23/25/37/40 | document-model §9.3; change-and-history §2 | Design/rulings; diff RawJson carrier multiplicities, scan entering/leaving values, omit only owning media self-reference | none | 2026-11-13 |
-| `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/5/6 | change-and-history §§2–4; contracts C7 | Design; core save-funnel §2; no tldraw source | none | 2026-11-13 |
+| `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/2/5/6, D-10 | change-and-history §§2–4; integration §§2/9 | Design; source ownership, read-only safety and session-owned gesture queue public contract; no tldraw source | none | 2026-11-13 |
+| `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
 
 ## Agent adapter (lane w-p)
@@ -112,7 +119,6 @@ third-party code included (normally "none") · date.
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 | `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4 | rendering §§2,10,12; integration §2 | Public LayerHost and model kinds; w-b accessibility source agreement; host-only pages/backdrops, lifecycle-owned layer disposal and React-free open contract | none | 2026-11-13 |
-| `session/gestureQueue.ts` | lane w-e | Session mutation serialisation | input gestures; integration §2 | Direct w-c/w-p/w-f synchronous after-gesture port; own FIFO admission, abort cleanup and readiness checks immediately before transaction task, independent of history | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
 
@@ -148,7 +154,8 @@ third-party code included (normally "none") · date.
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
 | `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-7 | import §§1–3,6 | Documented record families; bounded media admission, inert legacy-record retention, async page bounds and job identity checks | none | 2026-11-13 |
 | `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source/metadata retention, job identity checks, ordered draft and model admission | none | 2026-11-13 |
-| `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse and collision-safe restore contracts | none | 2026-11-13 |
+| `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
+| `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 
 ## Export and whiteboard host (lane w-k)
 
@@ -222,7 +229,7 @@ third-party code included (normally "none") · date.
 | `geom/figures.ts` | lane w-h | F-FIG-001/002/003/004 | geometry §3 | Independent shape recipes and local semantic bounds; FIG creation ratios and seed-centred gestures; kernel-certified arc conversion and analytic cloud with fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
 | `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe, shared cubic length/splitting kernel, and continuous dash/dot phase; no tldraw source | none | 2026-11-13 |
 | `geom/clip.ts` | lane w-h | WB-D20, E-GEO-7 | geometry §§3.1, 8.2 | Cubic monotone intervals and exact-orientation predicates from the shared kernel; boundary membership, node-local hatch clipping and reflected phase; no tldraw source | none | 2026-11-13 |
-| `geom/providers.ts` | lane w-h | F-FIG-001, WB-D20, E-GEO-8 | geometry §§1, 3, 5 | Shared figure contour/variant geometry, text-paint types, path picker and scene local bounds; no tldraw source | none | 2026-11-13 |
+| `geom/providers.ts` | lane w-h | F-FIG-001, WB-D20, E-GEO-8 | geometry §§1, 3, 5 | Shared figure contour/variant geometry, bounded node-local hatch expansion, text-paint types, path picker and scene local bounds; no tldraw source | none | 2026-11-13 |
 
 ## Media and clipboard (lane w-q)
 
@@ -254,7 +261,7 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
 | `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016, WB-D15, E-TXT-2/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, window-relative IME formats, fallback composition and directional selection, app-menu forwarding | none | 2026-11-13 |
-| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design and TX-2/TX-3 public types; injected model, history and view services; visual selection collapse, caret, IME chrome and client-space touch handles, empty-node finish and rich clipboard port | none | 2026-11-13 |
+| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design and TX-2/TX-3 public types; injected model, history and view services; visual selection collapse, caret, IME chrome including fallback underline and touch handles, empty-node finish and rich clipboard port | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015, WB-D26 | text §§4–5 | Design, public change operations and injected history-backed input transformations | none | 2026-11-13 |
 | `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |
 | `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design, Intl.Segmenter through TX-1, visual selection collapse and transformation undo service | none | 2026-11-13 |
@@ -295,7 +302,7 @@ third-party code included (normally "none") · date.
 | `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24, WB-D29 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
 | `host/notebookBackdrop.ts` | lane w-l | F-NB-004/005, C2.1 | notebook §F-NB-004; contracts C2.1 | Procedural paper and own paint-stream contracts; no tldraw source | none | 2026-11-13 |
-| `host/notebookExport.ts` | lane w-l | F-NB-014, F-SHEET-008, R-12, C2.4 | notebook §F-NB-014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
+| `host/notebookExport.ts` | lane w-l | F-NB-011/014, F-SHEET-008, R-12, C2.4 | notebook §§F-NB-011/014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
 | `host/pageDisplay.ts` | lane w-l | F-NB-014, F-SHEET-008, C2.4 | notebook §F-NB-014; contracts C2.4 | Specs, platform display list and paint-frame export; no tldraw source | none | 2026-11-13 |
 | `host/pagedView.ts` | lane w-l | F-NB-003/005/009/013, C1.2/1.4/1.5 | notebook §§F-NB-003/005/009/013 | Specs and platform camera/page-stack contracts; no tldraw source | none | 2026-11-13 |
 | `host/pdfAttachments.ts` | lane w-l | F-PINK-008, C2.4, R-W15 | pdf-ink §F-PINK-008; native-format §3.6 | Specs, PDF writer attachment contract, owned fence and media hash APIs; no tldraw source | none | 2026-11-13 |

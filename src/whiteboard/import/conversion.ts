@@ -11,7 +11,6 @@ export interface ConversionSnapshot {
     readonly readOnly: boolean;
     readonly losses: readonly string[];
     readonly media: readonly ImportedMedia[];
-    readonly board: Blob;
 }
 export interface ConversionIO {
     // All callbacks close over one vault, document handle and baseline, never current app selection.
@@ -19,13 +18,15 @@ export interface ConversionIO {
     readonly listBackups: () => AsyncIterable<ConversionBackup>;
     readonly keepCopyInGarbage: (original: Blob) => Promise<string>;
     readonly saveMedia: (media: ImportedMedia) => Promise<void>;
+    // Native header records this digest so Restore can locate the original after rename or move.
+    readonly encodeBoard: (snapshot: ConversionSnapshot, originalSha256: string) => Promise<Blob>;
     // PDF implementation adds board.json and replaces the old snapshot with this fence in one output.
     readonly buildPdf: (board: Blob, fence: Uint8Array, media: readonly ImportedMedia[]) => Promise<Blob>;
     readonly writeVersioned: (bytes: Blob) => Promise<ConversionWrite>;
     readonly confirmLoss: (losses: readonly string[]) => Promise<boolean>;
     // Host calls freeEntryName over files and folders and copies, never overwrites or removes the backup.
     readonly restoreCopyToFreeName: (backupKey: string) => Promise<string>;
-    readonly saved: (revision: number, backupKey: string) => void;
+    readonly saved: (revision: number, backupKey: string, originalSha256: string) => void;
 }
 export type ConversionResult =
     | { readonly kind: 'unchanged' | 'cancelled' | 'already-converted' }
@@ -49,11 +50,9 @@ async function equalBytes(a: Blob, b: Blob): Promise<boolean> {
     }
     return true;
 }
-async function findBackup(original: Blob, io: ConversionIO): Promise<string | null> {
-    let originalHash: string | undefined;
+async function findBackup(original: Blob, originalHash: string, io: ConversionIO): Promise<string | null> {
     for await (const candidate of io.listBackups()) {
         if (candidate.bytes.size !== original.size) continue;
-        originalHash ??= await digest(original);
         if (await digest(candidate.bytes) === originalHash && await equalBytes(original, candidate.bytes)) return candidate.key;
     }
     return null;
@@ -83,13 +82,15 @@ export function createConversion(kind: 'whiteboard' | 'notebook' | 'pdf-ink', or
                 } else if (convertAnyway) return { kind: 'cancelled' };
                 const status = await io.checkBaseline();
                 if (status !== 'current') return { kind: 'conflict', status };
-                const output = kind === 'pdf-ink' ? await io.buildPdf(snapshot.board, fenceBytes(), snapshot.media) : snapshot.board;
-                const backupKey = await findBackup(original, io) ?? await io.keepCopyInGarbage(original);
+                const originalSha256 = await digest(original);
+                const backupKey = await findBackup(original, originalSha256, io) ?? await io.keepCopyInGarbage(original);
                 if (kind !== 'pdf-ink') for (const item of snapshot.media) await io.saveMedia(item);
+                const board = await io.encodeBoard(snapshot, originalSha256);
+                const output = kind === 'pdf-ink' ? await io.buildPdf(board, fenceBytes(), snapshot.media) : board;
                 const write = await io.writeVersioned(output);
                 if (write !== 'saved') return { kind: 'conflict', status: write };
                 converted = true;
-                io.saved(snapshot.revision, backupKey);
+                io.saved(snapshot.revision, backupKey, originalSha256);
                 return { kind: 'converted', backupKey };
             });
         },

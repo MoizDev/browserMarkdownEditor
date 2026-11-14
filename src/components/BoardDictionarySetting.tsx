@@ -18,8 +18,8 @@ export function BoardDictionarySetting() {
             </div>
         </div>
         {open && <div id={listId} style={{ maxHeight: 240, overflowY: 'auto' }}>
-            {words.map(word => <div key={word} style={{ contentVisibility: 'auto', containIntrinsicSize: '36px', minHeight: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span>{word}</span>
+            {words.map(word => <div key={word} style={{ contentVisibility: 'auto', containIntrinsicSize: '36px', height: 36, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{word}</span>
                 <button type="button" className="settings-apply-btn" aria-label={`Remove ${word}`} onClick={() => removeBoardDictionaryWord(word)}>Remove</button>
             </div>)}
         </div>}

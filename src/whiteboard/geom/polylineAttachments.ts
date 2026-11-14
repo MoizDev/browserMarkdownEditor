@@ -1,0 +1,98 @@
+import type { Affine } from '../../platform/types';
+import { worldPose, worldToLocal } from '../change/coordinates';
+import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import type { BoardRuntime } from '../host/runtime';
+import type { BoardDoc } from '../model/doc';
+import type { NodeId } from '../model/ids';
+import type { Attachment, Node, Point, PolylineNode } from '../model/nodes';
+import { transformPoint } from './affine';
+import { connectorBody } from './connectors';
+import { bodyCrossings, pointAtLength } from './connectorPath';
+import type { AttachmentSurface } from './connectorTypes';
+import type { PathOp } from './path';
+
+/** H4 owns the persisted fields; this reader also accepts documents predating them. */
+type AttachedPolyline = Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
+export interface PolylineAttachmentOptions {
+    readonly runtime: BoardRuntime;
+    readonly doc?: BoardDoc;
+    readonly current: () => boolean;
+    readonly signal?: AbortSignal;
+    readonly cooperate?: () => Promise<void>;
+    readonly toleranceWorld?: number;
+}
+export interface ResolvedPolylineAttachments {
+    readonly points: readonly Point[];
+    readonly fontEpoch: number;
+    release(): void;
+}
+function matrix(doc: BoardDoc, id: NodeId): Affine {
+    const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+    return [c, s, -s, c, pose.x, pose.y];
+}
+function rectangle(w: number, h: number): readonly PathOp[] {
+    return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
+        { op: 'L', p: { x: w, y: h } }, { op: 'L', p: { x: 0, y: h } }, { op: 'Z' }];
+}
+function clips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
+    const result: AttachmentSurface['clips'][number][] = [];
+    let parent = doc.nodes.get(node.parent as NodeId);
+    for (let depth = 0; parent && depth < 64; depth++) {
+        if (parent.kind === 'frame') result.push({ outline: rectangle(parent.w, parent.h), localToWorld: matrix(doc, parent.id) });
+        parent = doc.nodes.get(parent.parent as NodeId);
+    }
+    return result.reverse();
+}
+
+/** Resolve both bindings against one staged document and the renderer's actual attachment surfaces. */
+export async function resolvePolylineAttachments(node: AttachedPolyline, options: PolylineAttachmentOptions): Promise<ResolvedPolylineAttachments> {
+    const { runtime } = options, session = runtime.session, live = session.doc, doc = options.doc ?? live;
+    const revision = doc.rev, liveRevision = live.rev, owner = session.owner, signal = options.signal ?? new AbortController().signal;
+    const tolerance = options.toleranceWorld ?? 0.01;
+    let released = false, epoch: number | undefined;
+    const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === live
+        && live.rev === liveRevision && doc.rev === revision && (epoch === undefined || runtime.render.text.fonts.epoch === epoch);
+    const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Polyline attachment source changed', 'AbortError'); };
+    if (!Number.isFinite(tolerance) || tolerance <= 0 || node.points.length < 2 || doc.nodes.get(node.id) !== node) throw new RangeError('Invalid attached polyline');
+    check();
+    const entries = [node.startAttach ?? null, node.endAttach ?? null] as const;
+    const targets = [...new Set(entries.flatMap(entry => entry ? [entry.target] : []))];
+    const scope = await acquireBoardGeometryScope(runtime, [node.id, ...targets], { doc, signal, current, cooperate: options.cooperate });
+    try {
+        check(); epoch = runtime.render.text.fonts.epoch;
+        const surfaces = new Map<NodeId, AttachmentSurface>();
+        for (const id of targets) {
+            const target = doc.nodes.get(id); if (!target) throw new Error(`Missing polyline attachment target: ${id}`);
+            const geometry = await runtime.render.prepareForPick(target, signal, doc); check();
+            const surface = geometry.vector?.attachments;
+            if (!surface) throw new Error(`Polyline attachment target has no supported surface: ${id}`);
+            surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
+                localToWorld: matrix(doc, id), clips: clips(doc, target), revision });
+        }
+        const localToWorld = matrix(doc, node.id), points = node.points.map(point => ({ ...point }));
+        const world = points.map(point => transformPoint(localToWorld, point));
+        const aim = (attachment: Attachment, surface: AttachmentSurface) => {
+            const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 };
+            return transformPoint(surface.localToWorld, { x: box.x + box.width * anchor.x, y: box.y + box.height * anchor.y });
+        };
+        for (let side = 0; side < 2; side++) {
+            const entry = entries[side]; if (!entry) continue;
+            world[side === 0 ? 0 : world.length - 1] = aim(entry, surfaces.get(entry.target)!);
+        }
+        for (let side = 0; side < 2; side++) {
+            const entry = entries[side]; if (!entry) continue;
+            const index = side === 0 ? 0 : world.length - 1, neighbour = side === 0 ? 1 : world.length - 2;
+            let point = world[index];
+            if (!entry.exact) {
+                const body = connectorBody(point, world[neighbour], 0, tolerance);
+                const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, tolerance, 65_536, options.cooperate, signal);
+                check(); const exit = crossings.find(value => !value.entering);
+                if (exit) point = pointAtLength(body, exit.distance);
+            }
+            points[index] = worldToLocal(doc, node, point);
+        }
+        check();
+        return { points: Object.freeze(points.map(point => Object.freeze(point))), fontEpoch: epoch,
+            release() { if (!released) { released = true; scope.release(); } } };
+    } catch (error) { scope.release(); throw error; }
+}

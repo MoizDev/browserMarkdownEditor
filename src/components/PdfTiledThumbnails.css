@@ -1,0 +1,58 @@
+.pdf-tiled-thumbnails-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.pdf-tiled-thumbnails-toggle.is-on { color: var(--text-accent); }
+.pdf-tiled-thumbnails {
+    position: absolute;
+    z-index: 15;
+    right: 12px;
+    top: 48px;
+    width: 196px;
+    height: min(760px, calc(100% - 60px));
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary);
+    box-shadow: 0 4px 18px #0004;
+}
+.pdf-tiled-thumbnails-header {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 9px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.pdf-tiled-thumbnails-header button { cursor: pointer; }
+.pdf-tiled-thumbnails-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.pdf-tiled-thumbnails-inner { position: relative; }
+.pdf-tiled-thumbnail {
+    position: absolute;
+    left: 4px;
+    width: calc(100% - 8px);
+    height: 180px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.pdf-tiled-thumbnail:hover { background: var(--background-modifier-hover); }
+.pdf-tiled-thumbnail.is-current { border-color: var(--text-accent); color: var(--text-normal); }
+.pdf-tiled-thumbnail-image { height: 154px; width: 164px; display: flex; align-items: center; justify-content: center; }
+.pdf-tiled-thumbnail-image canvas { display: block; max-width: 160px; max-height: 154px; background: white; box-shadow: 0 1px 4px #0004; }
+.pdf-tiled-thumbnail-failure { max-width: 140px; text-align: center; font-size: 11px; }
+.pdf-tiled-thumbnail-label { font-size: 11px; line-height: 16px; }

@@ -133,6 +133,10 @@ export class MediaIngestor {
         if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
         ops.push({ t: 'set', id, key: 'media', value: info.id });
         ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
+        if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
+            && !(this.session.doc.preservedMediaRefs.get(initial.media) ?? 0)) {
+            ops.push({ t: 'media', op: 'drop', id: initial.media });
+        }
         this.host.rememberMedia(info.id, source.blob);
         current();
         const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });

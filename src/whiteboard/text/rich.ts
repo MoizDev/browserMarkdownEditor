@@ -13,6 +13,8 @@ export type { PlainTextOptions } from './plainText';
 export { repairLegacyCharacters, repairLegacyCharactersCooperative } from './repair';
 export type { RepairedText } from './repair';
 export { GraphemeNavigator } from './graphemes';
+export { RichSelectionOperations } from './selectionOps';
+export type { LogicalMotion } from './selectionOps';
 export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,

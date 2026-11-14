@@ -29,6 +29,7 @@ export interface TextClipboardAdapterOptions {
 /** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
 export function createTextClipboardAdapter(options: TextClipboardAdapterOptions) {
     let disposed = false, serial = 0, pending: AbortController | null = null;
+    const lifetime = new AbortController();
     const owners = new WeakMap<CopySnapshot, BoardJobIdentity>();
     const cancel = () => { serial++; pending?.abort(); pending = null; };
     const current = (snapshot: CopySnapshot): boolean => {
@@ -37,6 +38,7 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             && actual.selection.anchor === expected.anchor && actual.selection.focus === expected.focus;
     };
     return {
+        signal: lifetime.signal,
         /** Prime h2's real clipboard cache; Core then calls its copyEvent/copyMenu. */
         prepareCopy(): CopySnapshot | null {
             if (disposed) return null;
@@ -83,7 +85,7 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 const owner = { node: before.node.id, revision: before.revision, selection: { ...before.selection } };
                 const identity = { ...options.identity() }, generation = serial;
                 controller = new AbortController(); pending = controller;
-                const combined = AbortSignal.any([signal, controller.signal]);
+                const combined = AbortSignal.any([signal, controller.signal, lifetime.signal]);
                 const plain = intent === 'paste-plain' || intent === 'paste-plain-inverted';
                 const content = await classifyTextPaste(input, plain, { classifier: options.classifier, html: options.html,
                     privateText: (encoded, text, requestSignal) => readPrivateClipboardText(encoded, text, requestSignal,
@@ -96,9 +98,10 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 if (content.kind === 'text') return options.editor.pasteText(content.fragment);
                 // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
                 if (pending === controller) pending = null;
+                const boardSignal = AbortSignal.any([signal, controller.signal]);
                 options.editor.manager.close();
-                await options.pasteBoard(input, intent, combined, cache);
-                combined.throwIfAborted();
+                await options.pasteBoard(input, intent, boardSignal, cache);
+                boardSignal.throwIfAborted();
                 return true;
             } finally {
                 if (pending === controller) pending = null;
@@ -106,22 +109,29 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             }
         },
         cancel,
-        dispose() { if (!disposed) { disposed = true; cancel(); } },
+        dispose() { if (!disposed) { disposed = true; lifetime.abort(); cancel(); } },
     };
 }
 
 /** Pin before an asynchronous OS read; ownership transfers only once paste actually starts. */
 export function pasteWithCapturedClipboard(
-    adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste'>,
+    adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste' | 'signal'>,
     acquire: (signal: AbortSignal) => Promise<ClipboardInput>, intent: TextPasteIntent, signal: AbortSignal,
 ): Promise<boolean> {
-    const captured = adapter.capturePaste();
+    const captured = adapter.capturePaste(), active = AbortSignal.any([signal, adapter.signal]);
     return (async () => {
         let transferred = false;
         try {
-            signal.throwIfAborted();
-            const input = await acquire(signal);
-            signal.throwIfAborted();
+            active.throwIfAborted();
+            const work = acquire(active);
+            const input = await new Promise<ClipboardInput>((resolve, reject) => {
+                const abort = () => { active.removeEventListener('abort', abort); reject(active.reason ?? new DOMException('Paste cancelled', 'AbortError')); };
+                active.addEventListener('abort', abort, { once: true });
+                work.then(value => { active.removeEventListener('abort', abort); resolve(value); },
+                    error => { active.removeEventListener('abort', abort); reject(error); });
+                if (active.aborted) abort();
+            });
+            active.throwIfAborted();
             transferred = true;
             return await adapter.paste(input, intent, signal, captured);
         } finally { if (!transferred) captured?.release(); }

@@ -514,6 +514,13 @@ export default function App() {
     } catch { /* Keep Retry available. */ }
   }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
+  const rebuildIndex = useCallback(() => {
+    const activation = getVaultActivation();
+    void indexGraphRef.whenReady().then(owner => {
+      if (owner.activation === activation && activation === getVaultActivation()) return owner.client.rebuild();
+    }).catch(() => {});
+  }, [indexGraphRef, getVaultActivation]);
+
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
   // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
@@ -5565,6 +5572,7 @@ export default function App() {
           onForgetRecentVault={forgetRecentVault}
           onPinRecentVault={pinRecentVault}
           onChangeVault={pickDirectorySafely}
+          onRebuildIndex={rebuildIndex}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}
           agentOpen={agentPanelOpen}

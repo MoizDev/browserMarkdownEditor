@@ -2,6 +2,7 @@ import type { ByteLease, TargetLease } from './api';
 import type { TargetRequest } from './webgl2Frame';
 import type { IsolationReservation } from './webgl2Isolation.types';
 import { ArenaError } from '../resourceArena';
+import { RENDER_CONSTANTS as POLICY } from '../constants';
 
 interface Slot {
     readonly lease: TargetLease;
@@ -12,7 +13,7 @@ interface Slot {
 }
 interface FrameSlots {
     readonly slots: Slot[];
-    readonly external: Map<TargetLease, Slot>;
+    readonly borrowed: Map<TargetLease, { slot: Slot; external: boolean }>;
 }
 
 /** An undeclared target is a runnable deferral, not a native allocation during draw. */
@@ -21,8 +22,8 @@ export class IsolationShortfall extends ArenaError {
 }
 
 /** The target pool owns physical storage; a frame owns its private aliases and a prepaid
- * zero-byte metadata lease for fresh public aliases. Internal aliases can be recycled after a
- * matching pop within the same recorded stream; every alias is revoked at frame end. Underlying
+ * zero-byte metadata lease for aliases with each borrow's used rectangle. Aliases are revoked at
+ * matching pop or frame end; encoded commands retain their pinned resources. Underlying
  * storage remains charged and cannot be reused before its submitted fence (C4.3).
  */
 export class Webgl2IsolationPool {
@@ -40,10 +41,24 @@ export class Webgl2IsolationPool {
         this.#prepared = [];
         const added: Slot[] = [];
         try {
+            let bytes = 0, count = 0;
             for (const request of plan) {
-                if (![request.width, request.height, request.count].every(value => Number.isSafeInteger(value) && value >= 0)) {
+                if (![request.width, request.height, request.count].every(value => Number.isSafeInteger(value) && value >= 0) ||
+                    !['rgba8', 'r8'].includes(request.format) || ![1, 4].includes(request.samples) || typeof request.stencil !== 'boolean') {
                     throw new ArenaError('invalid-input');
                 }
+                if (!request.width || !request.height || !request.count) continue;
+                const pixelBytes = (request.format === 'r8' ? 1 : 4) * (request.samples === 4 ? 5 : 1) +
+                    (request.stencil ? request.samples * 8 : 0);
+                count += request.count;
+                bytes += request.width * request.height * pixelBytes * request.count;
+                // No grant can exceed this governor ceiling; reject impossible inventories before
+                // issuing any per-target reservations, which still decide the actual available budget.
+                if (!Number.isSafeInteger(count) || !Number.isSafeInteger(bytes) || bytes > POLICY.memoryCeilings.high.gpuBytes) {
+                    throw new ArenaError('out-of-budget');
+                }
+            }
+            for (const request of plan) {
                 if (!request.width || !request.height) continue;
                 for (let index = 0; index < request.count; index++) {
                     const lease = this.acquire({ width: request.width, height: request.height, format: request.format,
@@ -65,7 +80,7 @@ export class Webgl2IsolationPool {
 
     begin(frame: object): void {
         if (this.#frames.has(frame)) throw new ArenaError('invalid-input');
-        this.#frames.set(frame, { slots: this.#prepared, external: new Map() });
+        this.#frames.set(frame, { slots: this.#prepared, borrowed: new Map() });
         this.#prepared = [];
     }
 
@@ -83,10 +98,9 @@ export class Webgl2IsolationPool {
             if (slot.inUse) { simultaneous++; continue; }
             if (slot.width < request.width || slot.height < request.height) continue;
             slot.inUse = true;
-            if (!external) return slot.lease;
             try {
                 const handle = this.alias(slot.lease, request, slot.metadata);
-                state.external.set(handle, slot);
+                state.borrowed.set(handle, { slot, external });
                 return handle;
             } catch (error) { slot.inUse = false; throw error; }
         }
@@ -96,17 +110,17 @@ export class Webgl2IsolationPool {
     put(frame: object, lease: TargetLease, external: boolean): void {
         const state = this.#frames.get(frame);
         if (!state) throw new ArenaError('aborted');
-        const slot = external ? state.external.get(lease) : state.slots.find(item => item.lease === lease);
-        if (!slot || !slot.inUse) throw new ArenaError('invalid-resource');
-        if (external) { state.external.delete(lease); this.revoke(lease); }
-        slot.inUse = false;
+        const borrowed = state.borrowed.get(lease);
+        if (!borrowed || borrowed.external !== external || !borrowed.slot.inUse) throw new ArenaError('invalid-resource');
+        state.borrowed.delete(lease); this.revoke(lease);
+        borrowed.slot.inUse = false;
     }
 
     finish(frame: object): void {
         const state = this.#frames.get(frame);
         if (!state) return;
         this.#frames.delete(frame);
-        for (const lease of state.external.keys()) this.revoke(lease);
+        for (const lease of state.borrowed.keys()) this.revoke(lease);
         this.#release(state.slots);
     }
 
@@ -114,7 +128,7 @@ export class Webgl2IsolationPool {
         this.#release(this.#prepared);
         this.#prepared = [];
         for (const state of this.#frames.values()) {
-            for (const lease of state.external.keys()) this.revoke(lease);
+            for (const lease of state.borrowed.keys()) this.revoke(lease);
             this.#release(state.slots);
         }
         this.#frames.clear();

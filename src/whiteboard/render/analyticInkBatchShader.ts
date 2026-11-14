@@ -1,12 +1,7 @@
 import type { ShaderModule } from '../../platform/render/gfx/api';
-import { ANALYTIC_INK_SHADER } from './analyticInk';
+import { analyticInkShader } from './analyticInk';
 
-const originalBlock = `layout(std140) uniform GfxUniforms0 {
-    vec4 viewport; vec4 endpoints; vec4 metrics; vec4 colour;
-};`;
-const fragment = ANALYTIC_INK_SHADER.glsl.fragment.replace(originalBlock,
-    'flat in vec4 endpoints; flat in vec4 metrics; flat in vec4 colour;');
-if (fragment === ANALYTIC_INK_SHADER.glsl.fragment) throw new Error('Analytic ink shader block changed');
+const fragment = analyticInkShader('flat in vec4 endpoints; flat in vec4 metrics; flat in vec4 colour;').glsl.fragment;
 
 /** The fragment is the canonical capsule pixel-area integral, not a second AA algorithm. */
 export const ANALYTIC_INK_BATCH_SHADER: ShaderModule = {

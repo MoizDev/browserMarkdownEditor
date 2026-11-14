@@ -9,7 +9,7 @@ const block = `layout(std140) uniform GfxUniforms0 {
 };`;
 /** Exact circle/polygon boundary integrals, not a distance-AA width floor. The capsule is
  * partitioned into its rectangle and two disjoint half-discs BEFORE resolving pixel area. */
-export const ANALYTIC_INK_SHADER: ShaderModule = {
+export function analyticInkShader(fragmentInputs = block): ShaderModule { return {
     id: 'board-analytic-capsule', revision: 1,
     layout: { uniforms: [{ binding: 0, byteSize: 64 }], textures: [], attributes: [] },
     glsl: {
@@ -27,7 +27,7 @@ void main() {
 }`,
         fragment: `#version 300 es
 precision highp float;
-${block}
+${fragmentInputs}
 in vec2 pixel;
 layout(location=0) out vec4 gfxColour;
 float cross2(vec2 a, vec2 b) { return a.x*b.y-a.y*b.x; }
@@ -103,7 +103,8 @@ void main() {
     gfxColour=colour*clamp(area,0.0,1.0);
 }`,
     },
-};
+}; }
+export const ANALYTIC_INK_SHADER = analyticInkShader();
 
 export interface AnalyticInkPaint {
     readonly item: PaintInkItem;
@@ -133,6 +134,7 @@ export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticI
         ((f - view.camera.y) + b * x + d * y) * scale,
     ];
     const p = point(x0, y0), q = point(x1, y1), r = radius * stretch * scale;
+    if (!(r > 0)) return null;
     const length = Math.hypot(q[0] - p[0], q[1] - p[1]);
     const width = Math.round(view.viewport.width * view.viewport.dpr), height = Math.round(view.viewport.height * view.viewport.dpr);
     const alpha = item.material.color[3];

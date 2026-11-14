@@ -14,6 +14,7 @@ export class TileCredits {
     reserve(args: PageTileArgs): (() => void) | null {
         const { x, y, w, h } = args.rect;
         if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || !Number.isSafeInteger(w) || !Number.isSafeInteger(h) || w < 1 || h < 1 ||
+            w + 2 > 2048 || h + 2 > 2048 ||
             !Number.isFinite(args.scale) || args.scale <= 0) throw new RangeError('Invalid PDF tile extent');
         const size = (w + 2) * (h + 2) * 4;
         if (!Number.isSafeInteger(size) || size > MAX_BYTES) throw new RangeError('PDF tile exceeds reply credit');

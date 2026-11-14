@@ -17,7 +17,7 @@ type Doc = { key: PdfDocKey; source: 'outer' | 'original'; blob: Blob; password?
 type Slot = { id: number; client: WorkerClient; generation: number; opens: Map<string, Promise<DocInfo>>;
     pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number };
 type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unknown>; priority: Priority; signal: AbortSignal;
-    asked: number; deadline?: number; controller: AbortController; resolve: (value: unknown) => void; reject: (error: unknown) => void;
+    asked: number; timeoutMs?: number; deadline?: number; controller: AbortController; resolve: (value: unknown) => void; reject: (error: unknown) => void;
     abort: () => void; timer?: ReturnType<typeof setTimeout>; posted?: Promise<unknown>; slot?: Slot; attempts: number; settled: boolean };
 const abortError = () => new DOMException('PDF request cancelled', 'AbortError');
 const deadlineError = () => new DOMException('PDF request deadline expired', 'TimeoutError');
@@ -106,7 +106,7 @@ class Pool implements PdfPool {
         let pending = slot.opens.get(doc.key);
         if (!pending) {
             pending = slot.client.request<DocInfo>('doc.open', { docKey: doc.key, source: doc.blob, size: doc.blob.size, ...(doc.password ? { password: doc.password } : {}) },
-                { priority, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true });
+                { priority, signal: doc.controller.signal, cpu: 'governed', key: doc.key, deadlineMs: 60_000, terminateOnDeadline: true });
             slot.generation = slot.client.generation;
             slot.opens.set(doc.key, pending);
             const promise = pending;
@@ -150,14 +150,16 @@ class Pool implements PdfPool {
         if (signal.aborted) return Promise.reject(abortError());
         let resolve!: (value: T) => void, reject!: (error: unknown) => void;
         const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
-        const asked = Date.now(), deadline = options.deadlineMs === undefined ? undefined : asked + options.deadlineMs;
-        const job: Job = { doc, lease, op, args, priority: options.priority, signal, asked, deadline, controller, resolve: value => resolve(value as T), reject,
+        if (options.deadlineMs !== undefined && (!Number.isFinite(options.deadlineMs) || options.deadlineMs < 0)) {
+            return Promise.reject(new RangeError('Invalid PDF request deadline'));
+        }
+        const asked = Date.now();
+        const job: Job = { doc, lease, op, args, priority: options.priority, signal, asked, timeoutMs: options.deadlineMs, controller, resolve: value => resolve(value as T), reject,
             abort: () => this.cancel(job, abortError()), attempts: 0, settled: false };
         this.jobs.set(promise, job); this.queue.push(job); doc.pending.add(promise);
         const cleanup = () => { doc.pending.delete(promise); };
         void promise.then(cleanup, cleanup);
         signal.addEventListener('abort', job.abort, { once: true });
-        if (deadline !== undefined) job.timer = setTimeout(() => this.cancel(job, deadlineError()), Math.max(0, deadline - Date.now()));
         this.pump();
         return promise;
     }
@@ -221,6 +223,11 @@ class Pool implements PdfPool {
     }
     private totalHeap(): number { return this.slots.reduce((sum, slot) => sum + slot.heapBytes, 0); }
     private dispatch(slot: Slot, job: Job, release: (() => void) | null): void {
+        // A deadline starts at dispatch, not while a reader waits behind other work (security §5).
+        if (job.deadline === undefined) {
+            job.deadline = Date.now() + Math.min(job.timeoutMs ?? 60_000, 60_000);
+            job.timer = setTimeout(() => this.cancel(job, deadlineError()), Math.max(0, job.deadline - Date.now()));
+        }
         slot.inFlight++; job.slot = slot;
         const task = (async () => {
             const info = await this.openOn(slot, job.doc, job.priority, job.signal);
@@ -302,7 +309,7 @@ class Pool implements PdfPool {
                 slot.retiring = true; const at = this.slots.indexOf(slot); if (at >= 0) this.slots.splice(at, 1); slot.client.dispose();
             }
         }
-        if (!this.slots.length && !this.docs.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
+        if (!this.slots.length && this.timer) { clearInterval(this.timer); this.timer = undefined; }
     }
     async writer(options: { signal?: AbortSignal } = {}): Promise<PdfWriterSession> {
         if (this.disposed || options.signal?.aborted) throw abortError();

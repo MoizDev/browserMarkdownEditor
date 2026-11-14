@@ -10,6 +10,8 @@ export interface SheetMenuProps {
     readonly sheets: readonly SheetMenuEntry[];
     readonly current: string;
     readonly readOnly: boolean;
+    readonly dir: 'ltr' | 'rtl';
+    readonly t: (key: string, values?: Readonly<Record<string, string | number>>) => string;
     readonly close: () => void;
     readonly select: (id: string) => void;
     readonly create: () => void;
@@ -20,7 +22,7 @@ export interface SheetMenuProps {
 }
 
 /** Logical sheets are independent of the paper-page navigator on paged hosts. */
-export function SheetMenu({ anchor, sheets, current, readOnly, close, select, create, rename, duplicate, remove, move }: SheetMenuProps) {
+export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, select, create, rename, duplicate, remove, move }: SheetMenuProps) {
     const panel = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
     const [editing, setEditing] = useState<string | null>(null);
@@ -31,7 +33,7 @@ export function SheetMenu({ anchor, sheets, current, readOnly, close, select, cr
     const rect = anchor.getBoundingClientRect();
     useEffect(() => {
         panel.current?.querySelector<HTMLButtonElement>('button')?.focus();
-        const escape = dismissOnEscape(() => closeRef.current());
+        const escape = dismissOnEscape(() => { closeRef.current(); if (anchor.isConnected) anchor.focus(); });
         const outside = (event: PointerEvent) => {
             if (event.target instanceof Element && event.target.closest('.context-menu-panel')) return;
             if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.contains(event.target)) closeRef.current();
@@ -45,32 +47,32 @@ export function SheetMenu({ anchor, sheets, current, readOnly, close, select, cr
         cancelled.current = false;
         setEditing(null);
     };
-    return <div ref={panel} className="board-sheet-menu" role="dialog" aria-label="Pages"
+    return <div ref={panel} className="board-sheet-menu" role="dialog" dir={dir} aria-label={t('sheet.menu')}
         style={{ left: Math.max(8, Math.min(rect.left, window.innerWidth - 288)), top: Math.min(rect.bottom + 6, window.innerHeight - 80) }}
         onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
-        <div className="board-sheet-menu-label">Go to page</div>
+        <div className="board-sheet-menu-label">{t('sheet.goToPage')}</div>
         {sheets.map((sheet, index) => <div className="board-sheet-row" key={sheet.id}>
-            {editing === sheet.id ? <input ref={input} aria-label="Page name" value={name} maxLength={200}
+            {editing === sheet.id ? <input ref={input} aria-label={t('sheet.rename')} value={name} maxLength={200}
                 onChange={event => setName(event.currentTarget.value)} onBlur={() => finishRename(sheet)}
                 onKeyDown={event => {
                     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelled.current = true; event.currentTarget.blur(); }
                     else if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
                 }} /> : <button type="button" className="board-sheet-select" aria-current={sheet.id === current ? 'page' : undefined}
                 onClick={() => { select(sheet.id); close(); }}>{sheet.name}</button>}
-            <button type="button" aria-label={`Menu for ${sheet.name}`} data-tooltip="Menu" disabled={readOnly}
+            <button type="button" aria-label={`${t('sheet.menu')}: ${sheet.name}`} data-tooltip={t('sheet.menu')} disabled={readOnly}
                 onClick={event => {
                     const button = event.currentTarget, box = button.getBoundingClientRect();
                     const entries: ContextMenuEntry[] = [
-                        { kind: 'command', id: 'rename', label: 'Rename', run: () => { cancelled.current = false; setName(sheet.name); setEditing(sheet.id); } },
-                        ...(sheets.length < 40 ? [{ kind: 'command' as const, id: 'duplicate', label: 'Duplicate', run: () => duplicate(sheet.id) }] : []),
-                        ...(index > 0 ? [{ kind: 'command' as const, id: 'up', label: 'Move up', run: () => move(sheet.id, index - 1) }] : []),
-                        ...(index < sheets.length - 1 ? [{ kind: 'command' as const, id: 'down', label: 'Move down', run: () => move(sheet.id, index + 1) }] : []),
-                        ...(sheets.length > 1 ? [{ kind: 'command' as const, id: 'delete', label: 'Delete', danger: true, run: () => remove(sheet.id) }] : []),
+                        { kind: 'command', id: 'rename', label: t('sheet.rename'), run: () => { cancelled.current = false; setName(sheet.name); setEditing(sheet.id); } },
+                        ...(sheets.length < 40 ? [{ kind: 'command' as const, id: 'duplicate', label: t('sheet.duplicate'), run: () => duplicate(sheet.id) }] : []),
+                        ...(index > 0 ? [{ kind: 'command' as const, id: 'up', label: t('sheet.moveUp'), run: () => move(sheet.id, index - 1) }] : []),
+                        ...(index < sheets.length - 1 ? [{ kind: 'command' as const, id: 'down', label: t('sheet.moveDown'), run: () => move(sheet.id, index + 1) }] : []),
+                        ...(sheets.length > 1 ? [{ kind: 'command' as const, id: 'delete', label: t('sheet.delete'), danger: true, run: () => remove(sheet.id) }] : []),
                     ];
-                    openContextMenu({ x: box.left, y: box.bottom, entries, label: 'Page menu', opener: button, anchor: button });
+                    openContextMenu({ x: box.left, y: box.bottom, entries, label: t('sheet.menu'), opener: button, anchor: button });
                 }}>⋯</button>
         </div>)}
-        {sheets.length < 40 ? <button type="button" disabled={readOnly} onClick={() => { create(); close(); }}>Create new page</button>
-            : <div className="board-sheet-menu-label">Maximum pages reached</div>}
+        {sheets.length < 40 ? <button type="button" disabled={readOnly} onClick={() => { create(); close(); }}>{t('sheet.create')}</button>
+            : <div className="board-sheet-menu-label">{t('sheet.limit', { count: 40 })}</div>}
     </div>;
 }

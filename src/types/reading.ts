@@ -1,6 +1,9 @@
 import type { DiskStat, DiskVersion } from '../utils/diskVersion';
 export type LoadedDocumentKind = 'markdown'|'text'|'code'|'tex'|'drawing'|'notebook'|'pdf'|'epub'|'unsupported';
-export interface DocumentRepresentation { generation:number; loadedKind:LoadedDocumentKind; status:'loading'|'ready'|'unavailable'; bufferKind:'text'|'annotationSnapshot'|'unavailable'; contentWritable:boolean }
+export interface DocumentRepresentation { generation:number; loadedKind:LoadedDocumentKind; status:'loading'|'ready'|'unavailable'; bufferKind:'text'|'annotationSnapshot'|'unavailable'; contentWritable:boolean; nativeCanvasKind?:'drawing'|'notebook'|'pdfInk'; nativeCanvasSession?:number; emergencyReadOnly?:boolean; legacyOriginalSha256?:string }
+export interface NativeCanvasAcquisition { owner:import('../utils/documentBuffers').SourceOwner; vaultActivation:number; bytesGeneration:number; kind:'drawing'|'notebook'|'pdfInk'; legacyOriginalSha256:string|null }
+/** Null rejects a stale owner; the returned flag is the session's write authority. */
+export type NativeCanvasReady = (acquisition:NativeCanvasAcquisition)=>{emergencyReadOnly:boolean}|null;
 export interface ReaderToken { vaultId:string; vaultEpoch:number; documentId:string; byteGeneration:number }
 export interface ReaderIdentity extends ReaderToken { path:string; diskRev:number; rawVersion?:DiskVersion }
 export interface ReadOnlyFileSnapshot { snapshotId:string; blob:Blob; stat:DiskStat; fingerprint(signal?:AbortSignal):Promise<DiskVersion>; dispose():void }

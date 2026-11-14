@@ -27,7 +27,7 @@ function maxScale(m: Affine): number {
 // Distance by support-plane lower bounds and an inscribed simplex upper bound. Mathematical
 // reference: Gilbert/Johnson/Keerthi, IEEE J. Robotics and Automation 4(2), 193–203 (1988), §III.
 // Our 2D simplex reduction and analytic swept-disc support are derived here, no library code.
-class ConvexDistance {
+export class ConvexDistance {
     lower = 0;
     upper = Infinity;
     inside = false;

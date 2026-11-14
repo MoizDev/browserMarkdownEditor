@@ -30,13 +30,15 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
     if (prefix && block.kind === 'p') {
         const token = prefix[1];
         const kind: Block['kind'] = token[0] === '#' ? `h${token.length}` as Block['kind'] : /\d/.test(token[0]) ? 'ol' : 'ul';
+        const number = kind === 'ol' ? Number.parseInt(token, 10) : undefined;
+        if (number !== undefined && !Number.isSafeInteger(number)) return null;
         const content = sliceRichText(text, caret, start + value.length).blocks[0];
-        const replacement: Block = { ...content, kind, level: 0, ...(kind === 'ol' ? { start: Number.parseInt(token, 10) } : {}) };
+        const replacement: Block = { ...content, kind, level: 0, ...(number === undefined ? {} : { start: number }) };
         return { transaction: transaction(id, key, start, start + value.length, { blocks: [replacement] }, true), caret: start };
     }
     const patterns: readonly [RegExp, ToggleMark, number][] = [
         [/\*\*([^*\n]+)\*\*$/, 'b', 2], [/__([^_\n]+)__$/, 'b', 2],
-        [/\*([^*\n]+)\*$/, 'i', 1], [/_([^_\n]+)_$/, 'i', 1],
+        [/(?<!\*)\*([^*\n]+)\*$/, 'i', 1], [/(?<!_)_([^_\n]+)_$/, 'i', 1],
         [/`([^`\n]+)`$/, 'code', 1], [/~~([^~\n]+)~~$/, 's', 2], [/==([^=\n]+)==$/, 'hl', 2],
     ];
     for (const [pattern, mark, delimiter] of patterns) {

@@ -121,6 +121,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return createLayerHost({
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: () => surfaceHost.current,
+            preparationCompositor: drawCompositor,
             invalidate: reason => lifecycle?.invalidate(reason),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
         });

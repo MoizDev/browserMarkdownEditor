@@ -72,6 +72,11 @@ export class Webgl2IsolationPool {
     borrow(frame: object, request: TargetRequest, external: boolean): TargetLease {
         const state = this.#frames.get(frame);
         if (!state) throw new ArenaError('aborted');
+        if (![request.width, request.height].every(value => Number.isSafeInteger(value) && value > 0) ||
+            ![1, 4].includes(request.samples) || !['rgba8', 'r8'].includes(request.format ?? 'rgba8') ||
+            typeof request.stencil !== 'boolean' || !['mask', 'group', 'scene-cache', 'capture'].includes(request.purpose)) {
+            throw new ArenaError('invalid-input');
+        }
         let simultaneous = 0;
         for (const slot of state.slots) {
             if (!this.#sameClass(slot, request)) continue;

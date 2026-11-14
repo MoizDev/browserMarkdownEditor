@@ -283,7 +283,7 @@ third-party code included (normally "none") · date.
 | `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design, TX-2/TX-3 and HistoryController public types; token-checked empty deletion, selection-exact typing/cut/paste snapshots, visual selection and IME chrome | none | 2026-11-13 |
 | `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations and history-marked input transformations, explicit burst completion | none | 2026-11-13 |
 | `text/edit/typingHistory.ts` | w-i | F-TEXT-005/011/016, H-5 | text §§5.4/5.7; change-and-history §4.3 | Design and w-n HistoryController; time and adjacency burst boundaries, IME, rule savepoints and owned-step tokens | none | 2026-11-13 |
-| `text/edit/format.ts` | w-i | WB-D26, E-TXT-14 | text §§4.1, 5.9 | Design and URL platform API | none | 2026-11-13 |
+| `text/edit/format.ts` | w-i | WB-D26, E-TXT-14, SEC-5 | text §§4.1, 5.9 | Design, model URL constraints and URL platform API | none | 2026-11-13 |
 | `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design, Intl.Segmenter through TX-1, visual selection collapse and transformation undo service | none | 2026-11-13 |
 | `text/edit/pointer.ts` | w-i | F-TEXT-006 | text §5.6 | Design, pointer and timer APIs | none | 2026-11-13 |
 | `text/edit/selection.ts` | w-i | F-TEXT-006/018 | text §5.6 | Design and Intl.Segmenter | none | 2026-11-13 |

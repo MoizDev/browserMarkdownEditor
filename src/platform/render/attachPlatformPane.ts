@@ -6,6 +6,7 @@ import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions }
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
 import { CameraController } from './camera';
 import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
+import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GpuPaneCandidate } from './gpuPaneCandidate';
@@ -537,6 +538,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         captureBlob(worldRect, maxSidePx, captureOptions) {
             if (disposed || !options.session.captureBlob) return Promise.reject(new Error('Pane capture is unavailable'));
             return options.session.captureBlob(worldRect, maxSidePx, captureOptions);
+        },
+        captureExportBlob(worldRect, maxSidePx, captureOptions) {
+            if (disposed) return Promise.reject(new CaptureError('disposed'));
+            if (!options.session.captureExportBlob) return Promise.reject(new CaptureError('incomplete'));
+            return options.session.captureExportBlob(worldRect, maxSidePx, captureOptions);
         },
         dispose() {
             if (disposed) return;

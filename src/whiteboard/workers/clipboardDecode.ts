@@ -9,9 +9,9 @@ import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: private clipboard envelope, SEC-W1/W4, native limits and C5
 // transport contracts; independent bounded worker decoder, no third-party source.
-export const CLIPBOARD_JSON_LIMIT = 64 * 1024 * 1024;
-export const CLIPBOARD_INLINE_LIMIT = 32 * 1024 * 1024;
-export const CLIPBOARD_ENCODED_LIMIT = 2 + 4 * Math.ceil(CLIPBOARD_JSON_LIMIT / 3);
+export const CLIPBOARD_JSON_LIMIT = SECURITY_LIMITS.clipboardExpandedBytes;
+export const CLIPBOARD_INLINE_LIMIT = SECURITY_LIMITS.inlineMediaBytes;
+export const CLIPBOARD_ENCODED_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
 export interface DecodedBoardClipboard {
     readonly payload: BoardPayload;
     readonly cacheOnly: boolean;
@@ -44,6 +44,25 @@ async function decodeOuter(blob: Blob, context: WorkerContext): Promise<{ mode: 
     }
     add('', true);
     return { mode, bytes: new Blob(parts) };
+}
+async function measureJson(blob: Blob, compressed: boolean, context: WorkerContext): Promise<number> {
+    let stream: ReadableStream<Uint8Array> = blob.stream();
+    if (compressed) {
+        if (typeof DecompressionStream === 'undefined') throw new Error('Clipboard decompression is unavailable');
+        stream = stream.pipeThrough(new DecompressionStream('deflate-raw') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+    }
+    const reader = stream.getReader(); let total = 0;
+    const abort = () => { void reader.cancel(context.signal.reason).catch(() => {}); };
+    context.signal.addEventListener('abort', abort, { once: true });
+    try {
+        for (;;) {
+            context.signal.throwIfAborted(); const part = await reader.read(); context.signal.throwIfAborted();
+            if (part.done) break;
+            if (part.value.byteLength > CLIPBOARD_JSON_LIMIT - total) throw new RangeError('Clipboard JSON exceeds its limit');
+            total += part.value.byteLength; await context.slice();
+        }
+        return total;
+    } finally { context.signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 async function readJson(blob: Blob, compressed: boolean, context: WorkerContext): Promise<string> {
     let stream: ReadableStream<Uint8Array> = blob.stream();
@@ -99,10 +118,13 @@ async function inlineBlob(encoded: string, context: WorkerContext): Promise<Blob
     }
     return new Blob(parts);
 }
-export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard> {
-    const blob = (payload as { encoded?: unknown } | null)?.encoded;
-    if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)) throw new TypeError('Clipboard decoder requires copied Blob');
-    const decoded = await decodeOuter(blob, context), source = await readJson(decoded.bytes, decoded.mode === 'd.', context);
+export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard | number> {
+    const request = payload as { encoded?: unknown; measure?: unknown } | null, blob = request?.encoded;
+    if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)
+        || request?.measure !== undefined && request.measure !== true) throw new TypeError('Clipboard decoder requires copied Blob');
+    const decoded = await decodeOuter(blob, context);
+    if (request?.measure === true) return measureJson(decoded.bytes, decoded.mode === 'd.', context);
+    const source = await readJson(decoded.bytes, decoded.mode === 'd.', context);
     const root = await fields(await parseJsonIncremental(source, context.slice), ['v', 'nonce', 'from', 'bounds', 'records', 'media', 'cacheOnly'], context);
     if (number(root.get('v')) !== 1) throw new TypeError('Unsupported clipboard version');
     const nonce = await text(root.get('nonce'), 16, context);

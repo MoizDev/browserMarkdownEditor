@@ -8,8 +8,8 @@ import type { DecodedBoardClipboard } from '../workers/clipboardDecode';
 
 // Provenance: private clipboard limits, C4 accounting and C5 worker contracts;
 // independent acquisition boundary, no third-party source.
-const JSON_LIMIT = 64 * 1024 * 1024, INLINE_LIMIT = 32 * 1024 * 1024;
-const ENCODED_LIMIT = 2 + 4 * Math.ceil(JSON_LIMIT / 3);
+const JSON_LIMIT = SECURITY_LIMITS.clipboardExpandedBytes, INLINE_LIMIT = SECURITY_LIMITS.inlineMediaBytes;
+const ENCODED_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
 export interface BoardClipboardDecodeLease extends DecodedBoardClipboard { release(): void }
 async function validReply(value: unknown, check: () => void): Promise<boolean> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -78,8 +78,22 @@ export async function decodeBoardClipboard(options: {
     const identity = Object.freeze({ ...options.identity });
     const check = () => { options.signal?.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard job became stale', 'AbortError'); };
     check();
-    // The decoded strings, compressed input, blob copies and bounded parser coexist until publication.
-    const lease = options.memory.reserve(encoded.size + 3 * JSON_LIMIT + 2 * INLINE_LIMIT);
+    // Measure deflate as a streaming worker pass before reserving its actual expanded size.
+    const mode = await encoded.slice(0, 2).text(); check();
+    if (mode !== 'u.' && mode !== 'd.') throw new TypeError('Unknown clipboard envelope');
+    let expanded = Math.min(JSON_LIMIT, Math.ceil(Math.max(0, encoded.size - 2) * 3 / 4));
+    if (mode === 'd.') {
+        const measuring = options.memory.reserve(encoded.size * 3 + 4 * 1024 * 1024);
+        if (!measuring) throw new Error('Insufficient memory to measure clipboard decoding');
+        try {
+            const size = await boardWorker('parse').request<unknown>('clipboardDecode', { encoded, measure: true }, identity,
+                { priority: 0, cpu: 'governed', deadlineMs: importDeadline(encoded.size), signal: options.signal }, options.isCurrent);
+            check();
+            if (!Number.isSafeInteger(size) || (size as number) < 0 || (size as number) > JSON_LIMIT) throw new TypeError('Invalid clipboard expansion measurement');
+            expanded = size as number;
+        } finally { options.memory.release(measuring); }
+    }
+    const lease = options.memory.reserve(encoded.size + 5 * expanded + 1024 * 1024);
     if (!lease) throw new Error('Insufficient memory for clipboard decoding');
     let value: unknown, owned = true;
     const release = () => { if (owned) { owned = false; options.memory.release(lease); } };

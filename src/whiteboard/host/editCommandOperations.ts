@@ -20,9 +20,9 @@ export function createEditCommandOperations(options: {
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createBoardSelectionCommands({ runtime, current: options.current });
-    const unavailable = (): State | undefined => {
+    const unavailable = (allowReadOnly = false): State | undefined => {
         if (!options.current()) return disabled('Board session has ended');
-        if (session.isReadOnly) return disabled(session.readOnlyReason ?? 'Board is read-only');
+        if (!allowReadOnly && session.isReadOnly) return disabled(session.readOnlyReason ?? 'Board is read-only');
         if (session.isGestureActive) return disabled('Finish the current gesture first');
         return undefined;
     };
@@ -101,7 +101,7 @@ export function createEditCommandOperations(options: {
     return {
         undo: operation(() => unavailable() ?? (session.history.canUndo ? enabled : disabled('Nothing to undo')), () => session.history.undo()),
         redo: operation(() => unavailable() ?? (session.history.canRedo ? enabled : disabled('Nothing to redo')), () => session.history.redo()),
-        selectAll: operation(() => unavailable() ?? (eligibility().all.length ? enabled : disabled('Nothing to select')),
+        selectAll: operation(() => unavailable(true) ?? (eligibility().all.length ? enabled : disabled('Nothing to select')),
             () => { const snapshot = runtime.selection.getSnapshot(); runtime.selection.replace(selectAllAtFocus(doc, snapshot.sheet, snapshot.focus)); }),
         delete: operation(deleteState, deleteSelection),
         group: operation(() => selectionState(2, 'structural'), () => commands.group(selected()).then(() => {})),

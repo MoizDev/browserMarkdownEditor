@@ -445,7 +445,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)
     sharedPenMode.listeners.delete(onPenMode)
-    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror(); stopWet()
+    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror()
+    try { stopWet() } finally { handover.dispose() }
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
     if (gestureOwner.get(session) === owner) gestureOwner.delete(session)
   }

@@ -2,6 +2,7 @@ import type { PathCommand } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import { outlineFontUrl } from './outlineFonts';
 import { awaitOutlineResource } from './outlineAbort';
+import { outlineGlyphBatches } from './outlineGlyphs';
 import type { Face, PaintFragment } from './paint';
 
 type HarfBuzzFont = import('harfbuzzjs').Font;
@@ -86,41 +87,36 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
         buffer.addText(fragment.text); buffer.guessSegmentProperties();
         buffer.setDirection(fragment.rtl ? hb.Direction.RTL : hb.Direction.LTR);
         hb.shape(entry.font, buffer);
-        const infos = buffer.getGlyphInfos(), positions = buffer.getGlyphPositions(), upem = entry.font.face.upem;
-        if (!Number.isFinite(upem) || upem <= 0 || infos.length !== positions.length || infos.length > fragment.text.length * 8 + 1024) return null;
+        const count = buffer.getLength(), upem = entry.font.face.upem;
+        if (!Number.isFinite(upem) || upem <= 0 || !Number.isSafeInteger(count) || count < 0
+            || count > fragment.text.length * 8 + 1024) return null;
         let advance = 0, hasGlyphCommands = false;
-        for (let i = 0; i < infos.length; i++) {
-            const info = infos[i], position = positions[i];
-            if (!Number.isSafeInteger(info.codepoint) || info.codepoint <= 0 || !Number.isFinite(position.xAdvance)
-                || !Number.isFinite(position.yAdvance) || !Number.isFinite(position.xOffset) || !Number.isFinite(position.yOffset)) return null;
-            advance += position.xAdvance;
-            if ((i & 1023) === 1023) { current(context); await context.slice(); }
-        }
-        if (!Number.isFinite(advance) || Math.abs(advance * 64 / upem - fragment.width * 64 / face.size) > 0.05) return null;
         const validated = new Set<number>();
-        for (let i = 0; i < infos.length; i++) {
-            current(context);
-            const id = infos[i].codepoint;
-            if (!validated.has(id)) {
-                const path = glyphPath(entry, id);
-                if (!validGlyphPath(path)) return null;
-                if (path.length) hasGlyphCommands = true;
-                validated.add(id);
+        for await (const batch of outlineGlyphBatches(hb, buffer, context)) {
+            for (const glyph of batch) {
+                current(context);
+                advance += glyph.xAdvance;
+                if (!validated.has(glyph.id)) {
+                    const path = glyphPath(entry, glyph.id);
+                    if (!validGlyphPath(path)) return null;
+                    if (path.length) hasGlyphCommands = true;
+                    validated.add(glyph.id);
+                }
             }
-            if ((i & 127) === 127) await context.slice();
         }
         validated.clear();
+        if (!Number.isFinite(advance) || Math.abs(advance * 64 / upem - fragment.width * 64 / face.size) > 0.05) return null;
         if (!hasGlyphCommands && /\S/u.test(fragment.text)) return null;
         current(context);
         const factor = face.size / upem;
         return {
             async *commands(): AsyncGenerator<readonly PathCommand[]> {
                 let commands: PathCommand[] = [], x = fragment.x, y = baseline;
-                for (let i = 0; i < infos.length; i++) {
+                for await (const batch of outlineGlyphBatches(hb, buffer, context)) for (const glyph of batch) {
                     current(context);
-                    const position = positions[i], originX = x + position.xOffset * factor, originY = y - position.yOffset * factor;
+                    const originX = x + glyph.xOffset * factor, originY = y - glyph.yOffset * factor;
                     let px = 0, py = 0, startX = 0, startY = 0;
-                    for (const part of glyphPath(entry, infos[i].codepoint)) {
+                    for (const part of glyphPath(entry, glyph.id)) {
                         const v = part.values, type = part.type;
                         const tx = (value: number) => originX + value * factor, ty = (value: number) => originY - value * factor;
                         if (type === 'M') { px = tx(v[0]); py = ty(v[1]); startX = px; startY = py; commands.push(['M', px, py]); }
@@ -139,8 +135,7 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
                             await context.slice();
                         }
                     }
-                    x += position.xAdvance * factor; y -= position.yAdvance * factor;
-                    if ((i & 127) === 127) await context.slice();
+                    x += glyph.xAdvance * factor; y -= glyph.yAdvance * factor;
                 }
                 current(context);
                 if (commands.length) yield commands;

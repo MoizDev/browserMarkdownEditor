@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
+import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore, react } from 'tldraw';
 import type { Editor, TLAssetStore, TLShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import {
@@ -252,10 +252,16 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (existing) editor.updateAssets([record]);
             else editor.createAssets([record]);
 
-            const wanted = boxes.map((_, i) => pageShapeId(i));
-            const present = new Set(editor.getCurrentPageShapes()
-                .filter(s => s.meta?.notebookPage !== undefined)
-                .map(s => s.id));
+            const existingPages = editor.getCurrentPageShapes().filter(s => s.meta?.notebookPage !== undefined);
+            const present = new Set(existingPages.map(s => s.id));
+            // Shape IDs are document-wide, while each tldraw sheet needs its
+            // own physical paper. Keep legacy IDs where they already exist.
+            const wanted = boxes.map((_, i) => {
+                const existing = existingPages.find(s => s.meta.notebookPage === i);
+                if (existing) return existing.id;
+                const legacy = pageShapeId(i);
+                return editor.getShape(legacy) ? createShapeId() : legacy;
+            });
 
             // Pages beyond the new count go; the rest are updated in place, so a
             // re-ruling never re-creates a page and lands it OVER the writing on
@@ -359,6 +365,14 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         layOutPages(editor, paperRef.current);
         const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.notebookPage !== undefined);
         backdropGuardRef.current = backdropGuard;
+        let paperSheet = editor.getCurrentPageId();
+        const stopSheetWatch = react('notebook paper sheet', () => {
+            const sheet = editor.getCurrentPageId();
+            if (sheet === paperSheet) return;
+            paperSheet = sheet;
+            backdropGuard.allow(() => layOutPages(editor, paperRef.current));
+            thumbsRef.current?.invalidate(boxesRef.current.map((_, i) => i));
+        });
 
         // A new notebook opens ready to write on, not ready to select.
         if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
@@ -619,6 +633,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             disposeInvert();
+            stopSheetWatch();
             backdropGuard.dispose();
             backdropGuardRef.current = null;
             unlistenDoc();
@@ -744,7 +759,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // preceding stroke; otherwise Undo loses that stroke (WB-D2).
         editor.markHistoryStoppingPoint('delete notebook page');
         backdropGuardRef.current?.allow(() => editor.run(() => {
-            editor.deleteShapes([...doomed.map(s => s.id), pageShapeId(current.pageCount - 1)]);
+            const lastBackdrop = editor.getCurrentPageShapes().find(s => s.meta?.notebookPage === current.pageCount - 1);
+            editor.deleteShapes([...doomed.map(s => s.id), ...(lastBackdrop ? [lastBackdrop.id] : [])]);
         }, { ignoreShapeLock: true }));
 
         const next = { ...current, pageCount: current.pageCount - 1 };

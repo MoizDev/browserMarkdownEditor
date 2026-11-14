@@ -1106,7 +1106,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 const target = st.want;
                 const current = () => docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
                 let work: HTMLCanvasElement | undefined;
-                let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
+                let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
                 let ownedTask: RenderTask | undefined;
                 let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
                 st.rendering = target;
@@ -1138,7 +1138,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     const verdict = session.emphasisVerdicts.getVerdict(key);
                     const useOn = target.emphasis && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
                     const plan = useOn ? getPdfEmphasisPlan(page) : undefined;
-                    if (plan) emphasis = await bindPdfNativeEmphasis(page, ctx, true, plan);
+                    if (plan) emphasis = bindPdfNativeEmphasis(page, ctx, plan);
                     if (!current()) continue;
                     const task = page.render({ operationsFilter: emphasis?.operationsFilter,
                         canvas: work, canvasContext: ctx, viewport: vp, transform });

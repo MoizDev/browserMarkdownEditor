@@ -1,6 +1,7 @@
 import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
 
 export interface TextMenuActions {
+    readonly hasSelection: boolean;
     command(name: 'cut' | 'copy' | 'paste' | 'paste-plain' | 'select-all' | 'bold' | 'italic' | 'code' | 'link' | 'highlight'): void;
     suggest?(word: string): void;
     addToDictionary?(): void;
@@ -24,7 +25,8 @@ export function openTextEditMenu(x: number, y: number, opener: HTMLElement, acti
     ] as const;
     for (const [id, label] of rows) {
         if (id === 'bold') entries.push({ kind: 'separator', id: 'format-separator' });
-        entries.push({ kind: 'command', id, label, run: () => actions.command(id) });
+        const disabled = (id === 'cut' || id === 'copy' || id === 'link') && !actions.hasSelection;
+        entries.push({ kind: 'command', id, label, disabled, ...(disabled ? { reason: 'Select text first' } : {}), run: () => actions.command(id) });
     }
     openContextMenu({ x, y, opener, label: 'Text editing', entries });
 }

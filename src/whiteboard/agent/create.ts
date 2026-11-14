@@ -41,7 +41,7 @@ export function createPage(context: CreateContext, requested: number | undefined
     return { page, notes, clamp(point) {
         const x = Math.max(0, Math.min(rect.width, point.x));
         const y = Math.max(0, Math.min(rect.height, point.y));
-        if (x !== point.x || y !== point.y) notes.push('position clamped to page');
+        if ((x !== point.x || y !== point.y) && !notes.length) notes.push('position clamped to page');
         return { x, y };
     } };
 }

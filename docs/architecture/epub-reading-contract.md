@@ -46,12 +46,14 @@ writes update the
 central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
 camera in memory before a header action. No new PDF proxy is created for a surface switch.
 Native PDF uses the exact pdf.js 6.1.200 original glyph/paint route (pdfNativeEmphasis), adding
-a thin same-color stroke before the original fill on eligible glyphs. Each completed render checks a temporary counterpart for a final pixel difference before
-publishing support, so clipped, off-page, white-on-white or occluded glyph calls cannot falsely
-enable the header. High-zoom bands use a bounded whole-page capability probe; no full-document
-raster pass runs. Temporary paints are cancelled with their target and released with the lease. Current-page Viewer and
-annotation backdrop results publish availability through PdfPane; unknown/loading pages are
-inactive. Per-render plans/method bindings are released with the page lease, not stored per vault.
+a thin same-color stroke before the original fill on eligible glyphs. Capability requires a final
+pixel difference in a canonical white-background whole-page probe, bounded to 2^20 pixels; it is
+not a separate per-zoom proof. Clipped, off-page, white-on-white or occluded calls alone cannot
+enable the header. Off pixels are painted before the independent proof, and a cached verdict avoids
+repeating it on zoom. Probe consumers hold their own page leases and cancel independently of the
+display raster. Current-page Viewer and pristine annotation backdrop results publish availability
+through PdfPane; unknown/loading pages are inactive. Immutable display-list plans are bounded and
+invalidated with page cleanup; context bindings are per-render and no result is stored in the vault.
 The Text agent reporter supplies actual bounded visible/selected canonical text and physical-page
 extraction. Text image capture is explicitly unsupported; it never substitutes an Original PNG.
 

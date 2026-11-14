@@ -12,6 +12,8 @@ import './PdfReadingText.css';
 export interface PdfReadingTextProps {
     filePath?: string;
     expectedPageDigest?: string;
+    sameSchema?: boolean;
+    restorationNotice?: string;
     controller: PdfTextReader; isFocused: boolean; isVisible: boolean; anchor?: PdfTextAnchor;
     onShowOriginalPage(index0: number): void;
     onShowOriginal?(): void;
@@ -65,7 +67,7 @@ function Text({ page, emphasis }: { page: PdfTextPage; emphasis: boolean }) {
     return <div className="pdf-reading-copy" data-pdf-text-page={page.physicalPageIndex} dir="auto">{nodes}</div>;
 }
 
-function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, isVisible, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
+function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, restorationNotice = '', controller, isFocused, isVisible, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
     const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [localTypography, setLocalTypography] = useState<PdfTextTypography>();
     const effectiveTypography = localTypography ?? typography;
@@ -85,6 +87,9 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
     const findingRef = useRef(finding); findingRef.current = finding;
     const lastFindQuery = useRef('');
     const navigationEpoch = useRef(0);
+    const navigation = useRef<{ cancel: AbortController; cause: LocationCause } | undefined>(undefined);
+    const restoredAnchor = useRef<PdfTextAnchor | undefined>(undefined);
+    const restoration = useRef({ sameSchema, notice: restorationNotice }); restoration.current = { sameSchema, notice: restorationNotice };
     const expectedDigest = useRef(expectedPageDigest); expectedDigest.current = expectedPageDigest;
     const reportLocation = (value: PdfTextAnchor, cause: LocationCause) => onLocation(value, cause, models.current.get(value.physicalPageIndex)?.page?.digest);
     const callbacks = useRef({ onLocation: reportLocation, onShowOriginalPage, onTextQuality }); callbacks.current = { onLocation: reportLocation, onShowOriginalPage, onTextQuality };
@@ -150,21 +155,36 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
         return () => cancel.abort();
     }, [controller, current, count, retry, isVisible]);
     const navigate = useCallback(async (value: PdfTextAnchor, cause: LocationCause) => {
-        const epoch = ++navigationEpoch.current;
+        navigation.current?.cancel.abort();
+        const active = { cancel: new AbortController(), cause }; navigation.current = active;
+        const epoch = ++navigationEpoch.current, same = cause !== 'restore' || restoration.current.sameSchema;
         try {
-            const resolved = await controller.navigate(value);
-            if (cause === 'restore' && expectedDigest.current) {
-                const model = await controller.getPage(resolved.physicalPageIndex);
-                if (model.digest !== expectedDigest.current && navigationEpoch.current === epoch) setMessage('Extracted text changed; restored by quote or approximately within this physical page.');
+            const { anchor: resolved, exact } = await controller.resolveAnchor(value, { sameSchema: same, signal: active.cancel.signal });
+            let digestChanged = false;
+            if (cause === 'restore' && same && expectedDigest.current) {
+                const model = await controller.getPage(resolved.physicalPageIndex, active.cancel.signal);
+                digestChanged = model.digest !== expectedDigest.current;
             }
-            if (navigationEpoch.current !== epoch) return;
+            if (navigationEpoch.current !== epoch || active.cancel.signal.aborted) return;
+            if (cause === 'restore') setMessage(restoration.current.notice || (exact ? '' : !same
+                ? "Restored approximately: this PDF's text is now read by a different engine."
+                : digestChanged ? 'Extracted text changed; restored approximately within this physical page.'
+                : 'Restored approximately within this physical page.'));
+            else setMessage('');
             pending.current = { anchor: resolved, cause };
             setCurrent(resolved.physicalPageIndex);
             setRetry(n => n + 1);
-        } catch (error) { if (navigationEpoch.current === epoch) setMessage(String(error)); }
+        } catch (error) { if (navigationEpoch.current === epoch && !active.cancel.signal.aborted) setMessage(String(error)); }
+        finally { if (navigation.current === active) navigation.current = undefined; }
     }, [controller]);
-    useEffect(() => { const epoch = navigationEpoch; return () => { ++epoch.current; }; }, [controller]);
-    const restoredAnchor = useRef<PdfTextAnchor | undefined>(undefined);
+    useEffect(() => {
+        if (!isVisible) return;
+        return () => {
+            ++navigationEpoch.current;
+            if (navigation.current?.cause === 'restore') restoredAnchor.current = undefined;
+            navigation.current?.cancel.abort();
+        };
+    }, [controller, isVisible]);
     useEffect(() => {
         if (anchor && isVisible && restoredAnchor.current !== anchor) { restoredAnchor.current = anchor; void navigate(anchor, 'restore'); }
     }, [anchor, navigate, isVisible]);
@@ -285,6 +305,10 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
             findAbort.current?.abort(); setFinding(false);
         } else if (resumeFind.current) { resumeFind.current = false; void find(true); }
     }, [isVisible, find]);
+    function userScrollIntent() {
+        ++navigationEpoch.current; navigation.current?.cancel.abort(); pending.current = null;
+        settleCancel.current(); pin.current = null; userScroll.current = true; programmaticUntil.current = 0;
+    }
     function pageJump(index: number) {
         if (!Number.isFinite(index)) return;
         void navigate({ physicalPageIndex: Math.min(count - 1, Math.max(0, index)), offsetUTF16: 0, affinity: 'after', quote: '', before: '', after: '' }, 'user-navigation');
@@ -340,8 +364,8 @@ function PdfReadingText({ filePath, expectedPageDigest, controller, isFocused, i
         </div>}
         {message && <p role="status" className="pdf-reading-warning">{message}</p>}
         <div className="pdf-reading-scroll" ref={scroll} role="region" aria-label="Text · extracted from PDF" tabIndex={0}
-            onWheel={() => { settleCancel.current(); pin.current = null; userScroll.current = true; programmaticUntil.current = 0; }} onPointerDown={() => { settleCancel.current(); pin.current = null; userScroll.current = true; programmaticUntil.current = 0; }}
-            onKeyDown={event => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) { settleCancel.current(); userScroll.current = true; programmaticUntil.current = 0; } }}
+            onWheel={userScrollIntent} onPointerDown={userScrollIntent}
+            onKeyDown={event => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) userScrollIntent(); }}
             onScroll={() => {
                 if (pending.current || pin.current || performance.now() < programmaticUntil.current) return;
                 const value = capture(); if (!value) return;

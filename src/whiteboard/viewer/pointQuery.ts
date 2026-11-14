@@ -154,17 +154,19 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 const matrix = cameraTransform(camera), surface = worldToSurface(point, camera);
                 cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode,
                     request: { kind: 'point', x: point.x, y: point.y, maxDistance: 8 / camera.z } });
-                const refs: SpatialRef[] = [];
-                for (;;) {
-                    check();
-                    const status = cursor.resume({ maxVisits: 128, deadline: performance.now() + 3 }, ref => refs.push(ref));
-                    if (status === 'complete') break;
-                    if (status !== 'pending') throw cancelled();
-                    await tick();
-                }
-                let winner: Candidate | null = null;
+                const selectionResult: { winner: Candidate | null } = { winner: null };
+                // Only the strongest two distinct ids can challenge the final winner:
+                // at most one of them can be the winner's own promoted group.
                 const uncertain: Candidate[] = [];
-                for (const ref of refs) {
+                const stronger = (a: Candidate, b: Candidate) => targetMode ? a.rank > b.rank : better(a, b);
+                const rememberUncertain = (candidate: Candidate) => {
+                    const existing = uncertain.findIndex(value => value.id === candidate.id);
+                    if (existing >= 0) { if (stronger(candidate, uncertain[existing])) uncertain[existing] = candidate; }
+                    else uncertain.push(candidate);
+                    uncertain.sort((a, b) => stronger(a, b) ? -1 : stronger(b, a) ? 1 : a.id.localeCompare(b.id));
+                    if (uncertain.length > 2) uncertain.pop();
+                };
+                const visit = async (ref: SpatialRef): Promise<void> => {
                     check();
                     const resolved = scene.resolveSpatial(ref);
                     if (!resolved) throw cancelled();
@@ -172,10 +174,10 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!node) throw cancelled();
                     // The renderer does not yet resolve stroke/polyline attachment surfaces.
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
-                        || node.kind === 'stroke' || node.kind === 'polyline')) continue;
+                        || node.kind === 'stroke' || node.kind === 'polyline')) return;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
-                    if (!selected || node.kind === 'group') continue;
-                    let clipped = false, clipUncertain = false;
+                    if (!selected || node.kind === 'group') return;
+                    let clipped = false, clipUncertain = false, outsideFrame = false;
                     const frameClips: PointClipContour[] = [];
                     for (const parent of boardFrameAncestors(doc, node)) {
                         const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -183,14 +185,14 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
                         if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) {
                             if (targetMode) { clipped = true; break; }
-                            clipUncertain = true;
+                            outsideFrame = true; clipUncertain = true;
                         }
                         const local = worldToLocal(doc, parent, point);
                         // A halo witness near the clip edge can belong entirely to hidden geometry.
                         const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
                         if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                     }
-                    if (clipped) continue;
+                    if (clipped) return;
                     const prepared = await options.geometry.prepareForPick(node, combined);
                     check();
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
@@ -279,25 +281,39 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     check();
                     if (result.hit) {
                         // A zero-distance vector witness is the pointer itself and survives every containing clip.
-                        ambiguous ||= !targetMode && clipUncertain && (node.kind === 'stroke' || result.distanceCss !== 0);
+                        ambiguous ||= !targetMode && clipUncertain && (outsideFrame || node.kind === 'stroke' || result.distanceCss !== 0);
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
-                        if (ambiguous) uncertain.push(candidate);
-                        else if (!winner || (targetMode ? candidate.rank > winner.rank : better(candidate, winner))) winner = candidate;
+                        if (ambiguous) rememberUncertain(candidate);
+                        else if (!selectionResult.winner || (targetMode ? candidate.rank > selectionResult.winner.rank : better(candidate, selectionResult.winner))) selectionResult.winner = candidate;
                     }
                     await tick();
+                };
+                const refs: SpatialRef[] = []; let complete = false, index = 0;
+                while (!complete || index < refs.length) {
+                    check();
+                    if (index === refs.length && !complete) {
+                        refs.length = 0; index = 0;
+                        const status = cursor.resume({ maxVisits: 128, deadline: performance.now() + 3 }, ref => refs.push(ref));
+                        if (status !== 'pending' && status !== 'complete') throw cancelled();
+                        complete = status === 'complete';
+                    }
+                    const ref = index < refs.length ? refs[index++] : undefined;
+                    if (ref) await visit(ref);
+                    else if (!complete) await tick();
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
                 for (let i = 0; i < uncertain.length; i++) {
                     if ((i & 127) === 0) await tick();
                     const candidate = uncertain[i];
+                    const winner = selectionResult.winner;
                     if (!winner || (candidate.id !== winner.id && !(targetMode ? winner.rank > candidate.rank : better(winner, candidate)))) {
                         throw new Error('Point hit is geometrically uncertain');
                     }
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
-                return winner;
+                return selectionResult.winner;
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }

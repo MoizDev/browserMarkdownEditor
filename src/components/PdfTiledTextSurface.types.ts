@@ -1,4 +1,4 @@
-import type { PdfTiledSource } from '../pdf/session/hostTypes';
+import type { PdfTiledSource } from './PdfTiledView';
 import type { PdfReadingBinding } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfTextAnchor, PdfTextReader } from '../utils/pdfReadingText';

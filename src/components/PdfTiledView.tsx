@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+export type { PdfTiledSource, PdfTiledSourceFactory } from '../pdf/session/hostTypes';
 import PdfTiledPageField from './PdfTiledPageField';
 import PdfTiledRotateControls from './PdfTiledRotateControls';
 import PdfCapabilitiesNotice from './PdfCapabilitiesNotice';

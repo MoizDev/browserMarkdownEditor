@@ -11,8 +11,12 @@ export function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
     const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
     if (![p.x, p.y, a.x, a.y, b.x, b.y, dx, dy, length].every(Number.isFinite)) throw new RangeError('Non-finite segment geometry');
     if (!length) return Math.hypot(p.x - a.x, p.y - a.y);
-    const t = Math.max(0, Math.min(length, (p.x - a.x) * (dx / length) + (p.y - a.y) * (dy / length)));
-    return Math.hypot(p.x - (a.x + t * dx / length), p.y - (a.y + t * dy / length));
+    const px = p.x - a.x, py = p.y - a.y;
+    if (!Number.isFinite(px) || !Number.isFinite(py)) throw new RangeError('Segment displacement overflows');
+    const t = Math.max(0, Math.min(length, px * (dx / length) + py * (dy / length)));
+    const result = Math.hypot(px - t * (dx / length), py - t * (dy / length));
+    if (!Number.isFinite(result)) throw new RangeError('Segment distance overflows');
+    return result;
 }
 export class CubicFlattenJob {
     private readonly job: InkCubicFlattenJob;

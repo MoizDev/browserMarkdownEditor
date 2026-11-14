@@ -21,8 +21,12 @@ export async function htmlPreflight(blob: Blob, context: WorkerContext): Promise
     }
     const text = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
     context.signal.throwIfAborted();
-    const stack: string[] = []; let elements = 0, i = 0, work = 0;
-    const tick = async () => { context.signal.throwIfAborted(); await context.slice(); context.signal.throwIfAborted(); work = 0; };
+    const stack: string[] = []; let elements = 0, i = 0, work = 0, started = performance.now();
+    const tick = async () => {
+        context.signal.throwIfAborted(); work = 0;
+        if (performance.now() - started < 3) return;
+        await context.slice(); context.signal.throwIfAborted(); started = performance.now();
+    };
     const close = (names: readonly string[], barriers: readonly string[] = []) => {
         for (let index = stack.length - 1; index >= 0; index--) {
             if (names.includes(stack[index])) { stack.length = index; return; }

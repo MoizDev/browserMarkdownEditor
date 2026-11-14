@@ -1,11 +1,13 @@
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
 import type { ArenaMemory } from './resourceArena';
+import type { RenderToken } from './types';
 
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
     'redundant-level' | 'prefetch' | 'scene-cache' | 'critical';
-export type MemoryKind = 'working' | 'program' | 'context' | 'surface' | 'mirror' | 'capture';
+export type MemoryKind = 'working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture';
+export type MemorySessionOwner = Readonly<Pick<RenderToken, 'vaultEpoch' | 'documentId' | 'session'>>;
 export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinned';
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
 
@@ -29,6 +31,7 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly kind: MemoryKind;
     readonly class: MemoryClass;
     readonly paneId?: string;
+    readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
     /** Synchronous eviction request. Only returned leases free capacity, not this call's return. */
     readonly evict: (bytes: number) => void;
@@ -91,6 +94,7 @@ export interface MemoryReadout {
     readonly gpu: PoolMemoryReadout;
     readonly cpu: PoolMemoryReadout;
     readonly hiddenMirrorBytes: number;
+    readonly borrowedRetiringBytes: number;
     readonly hiddenMirrorLimitBytes: number;
     readonly workerHeapBytes: number;
     readonly sourceBytes: number;
@@ -108,7 +112,7 @@ interface CacheRecord {
 }
 
 interface LeaseRecord {
-    readonly cache: CacheRecord;
+    cache: CacheRecord;
     readonly bytes: number;
     returned: boolean;
 }
@@ -120,7 +124,7 @@ interface Share {
 }
 
 export class MemoryAdmissionError extends Error {
-    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'unaccounted') {
+    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'foreign-owner' | 'unaccounted') {
         super(code);
         this.name = 'MemoryAdmissionError';
     }
@@ -178,6 +182,7 @@ export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
     private readonly caches = new Map<string, CacheRecord>();
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
+    private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
     private readonly target: { gpu: number; cpu: number } = { gpu: POLICY.gpuGrantMinBytes, cpu: POLICY.cpuGrantMinBytes };
     private readonly ceilings: Readonly<{ gpuBytes: number; cpuRasterBytes: number }>;
@@ -203,14 +208,20 @@ export class MemoryGovernor {
 
     register(registration: MemoryCacheRegistration): MemoryCacheHandle {
         activityValid(registration);
+        if (registration.owner) {
+            count(registration.owner.vaultEpoch);
+            count(registration.owner.session);
+            if (!registration.owner.documentId) throw new MemoryAdmissionError('invalid-input');
+        }
         if (!registration.id || this.caches.has(registration.id) ||
-            (registration.kind === 'mirror' && registration.pool !== 'cpu') ||
+            (['mirror', 'mirror-retiring'].includes(registration.kind) && registration.pool !== 'cpu') ||
             (['program', 'context', 'surface'].includes(registration.kind) && registration.pool !== 'gpu') ||
-            (registration.pool === 'gpu' && !registration.paneId)) {
+            (registration.pool === 'gpu' && registration.kind !== 'context' && !registration.paneId)) {
             throw new MemoryAdmissionError('invalid-input');
         }
         const cache: CacheRecord = {
-            registration: { ...registration }, activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false,
+            registration: { ...registration, owner: registration.owner ? Object.freeze({ ...registration.owner }) : undefined },
+            activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false,
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
@@ -229,6 +240,7 @@ export class MemoryGovernor {
             },
         };
         this.caches.set(registration.id, cache);
+        this.cacheHandles.set(cache.handle, cache);
         return cache.handle;
     }
 
@@ -263,6 +275,39 @@ export class MemoryGovernor {
 
     /** Arena close&&zero callback, never arena.release(handle) (§6.1:603; R-B2 lease seam). */
     releaseLease(lease: ByteLease): void { this.release(lease); }
+
+    /** Ownership handoff, NOT an allocation/copy. The old cache loses release authority (§6.4:649).
+     * Closing borrowed mirrors moves their charge to CPU retirement until the last borrow drains.
+     */
+    transferLease(lease: ByteLease, target: MemoryCacheHandle): boolean {
+        const record = this.leases.get(lease);
+        const destination = this.cacheHandles.get(target);
+        if (!record || !destination) throw new MemoryAdmissionError('invalid-lease');
+        if (record.returned || destination.closed || this.caches.get(destination.registration.id) !== destination) return false;
+        const source = record.cache;
+        if (source.registration.pool !== 'cpu' || destination.registration.pool !== 'cpu') throw new MemoryAdmissionError('invalid-input');
+        const from = source.registration.owner;
+        const to = destination.registration.owner;
+        if (!from || !to || from.vaultEpoch !== to.vaultEpoch || from.documentId !== to.documentId || from.session !== to.session) {
+            throw new MemoryAdmissionError('foreign-owner');
+        }
+        if (source === destination) return true;
+        if (destination.registration.kind === 'mirror') {
+            if (this.trimming || this.charged.cpu > this.target.cpu) return false;
+            const incoming = destination.activity.hiddenAt !== null ? record.bytes : 0;
+            const outgoing = source.registration.kind === 'mirror' && source.activity.hiddenAt !== null ? record.bytes : 0;
+            this.trimHiddenMirrors(Math.max(0, incoming - outgoing));
+            if (record.returned || destination.closed || record.cache !== source ||
+                this.hiddenMirrorBytes() + incoming - outgoing > this.hiddenMirrorLimit()) return false;
+        }
+        source.bytes -= record.bytes;
+        source.leaseCount--;
+        destination.bytes += record.bytes;
+        destination.leaseCount++;
+        record.cache = destination;
+        if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
+        return true;
+    }
 
     reportExternalHeaps(workerHeapBytes: number, sourceBytes: number): void {
         count(workerHeapBytes);
@@ -326,7 +371,8 @@ export class MemoryGovernor {
         const cpu = this.poolReadout('cpu');
         return {
             deviceClass: this.deviceClass, state: this.state, lastTrouble: this.lastTrouble, gpu, cpu,
-            hiddenMirrorBytes: this.hiddenMirrorBytes(), hiddenMirrorLimitBytes: this.hiddenMirrorLimit(),
+            hiddenMirrorBytes: this.hiddenMirrorBytes(), borrowedRetiringBytes: this.kindBytes('mirror-retiring'),
+            hiddenMirrorLimitBytes: this.hiddenMirrorLimit(),
             workerHeapBytes: this.workerHeapBytes, sourceBytes: this.sourceBytes,
         };
     }
@@ -373,7 +419,7 @@ export class MemoryGovernor {
 
     private reserve(cache: CacheRecord, bytes: number): ByteLease | null {
         count(bytes);
-        if (cache.closed || this.trimming || !this.caches.has(cache.registration.id)) return null;
+        if (cache.closed || this.trimming || cache.registration.kind === 'mirror-retiring' || !this.caches.has(cache.registration.id)) return null;
         const { kind, pool } = cache.registration;
         if (kind === 'context' && bytes !== POLICY.keptContextReserveBytes) throw new MemoryAdmissionError('invalid-input');
         if (kind === 'surface' && bytes % POLICY.surfaceReserveBytesPerPixel !== 0) throw new MemoryAdmissionError('invalid-input');
@@ -401,14 +447,15 @@ export class MemoryGovernor {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
         if (this.charged[pool] > this.target[pool] || this.charged[pool] + bytes > this.target[pool]) return false;
-        const pane = this.panes.find(item => item.paneId === paneId);
-        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
-        if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
-            (pane.cpuPinned && kind !== 'surface'))) return false;
+        // The broker's one app-wide allocator owns all reservations, including lost ones (§3.3:360).
         if (kind === 'context') {
             const held = this.kindBytes('context');
             return held + bytes <= (POLICY.maxAppContexts - POLICY.reservedTerminalContexts) * POLICY.keptContextReserveBytes;
         }
+        const pane = this.panes.find(item => item.paneId === paneId);
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
+            (pane.cpuPinned && kind !== 'surface'))) return false;
         if (kind === 'mirror' && cache.activity.hiddenAt !== null &&
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
@@ -472,12 +519,14 @@ export class MemoryGovernor {
         if (this.trimming) return;
         const order: readonly MemoryClass[] = ['hidden-mirror', 'obsolete-arrival', 'offscreen-high',
             'redundant-level', 'prefetch', 'scene-cache', 'critical'];
+        const evictionClass = (cache: CacheRecord): MemoryClass => cache.registration.kind === 'mirror' && cache.activity.hiddenAt !== null ?
+            'hidden-mirror' : cache.registration.class;
         const candidates = [...this.caches.values()].filter(cache => cache.registration.pool === pool &&
-            cache.registration.class !== 'critical' && cache.bytes > 0 &&
-            (cache.registration.class !== 'hidden-mirror' || cache.activity.hiddenAt !== null) &&
-            (cache.registration.kind !== 'context' || cache.activity.hiddenAt !== null))
-            .sort((a, b) => order.indexOf(a.registration.class) - order.indexOf(b.registration.class) ||
-                (a.registration.class === 'hidden-mirror' ? (a.activity.hiddenAt ?? Infinity) - (b.activity.hiddenAt ?? Infinity) : 0) ||
+            evictionClass(cache) !== 'critical' && cache.bytes > 0 &&
+            (evictionClass(cache) !== 'hidden-mirror' || cache.activity.hiddenAt !== null) &&
+            (cache.registration.kind !== 'context' || cache.registration.paneId === undefined || cache.activity.hiddenAt !== null))
+            .sort((a, b) => order.indexOf(evictionClass(a)) - order.indexOf(evictionClass(b)) ||
+                (evictionClass(a) === 'hidden-mirror' ? (a.activity.hiddenAt ?? Infinity) - (b.activity.hiddenAt ?? Infinity) : 0) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 b.bytes - a.bytes || stableId(a.registration.id, b.registration.id));
         this.trimming = true;

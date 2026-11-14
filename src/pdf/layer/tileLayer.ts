@@ -64,6 +64,7 @@ function project(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState): Re
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
+    declare readonly benchmarkRaster?: boolean;
     private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
@@ -89,6 +90,7 @@ export class PdfTileLayer implements Layer {
         private readonly isCurrent: () => boolean,
         private readonly onError: (error: unknown, request: PdfTileRequest) => void,
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
+        if (__BME_BENCH__) this.benchmarkRaster = true;
         this.texturePool = new PdfTexturePool(host.allocator.gpu);
     }
 

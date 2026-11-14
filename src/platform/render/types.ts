@@ -42,6 +42,8 @@ export type GpuReleaseReason = 'hidden' | 'context-lost' | 'pressure';
  * Every layer supplies both rendering paths; it never owns a requestAnimationFrame loop.
  */
 export interface Layer {
+    /** Benchmark denominator classification; absent for vector-only layers. */
+    readonly benchmarkRaster?: boolean;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679). */
     prepare(view: ViewState, budget: FrameBudget): void;
     drawGpu(pass: GpuPass, view: ViewState): void;

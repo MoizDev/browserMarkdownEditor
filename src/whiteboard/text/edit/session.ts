@@ -3,7 +3,7 @@ import { sliceRichText, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
-import type { ToggleMark } from './format';
+import { linkUrl, type ToggleMark } from './format';
 import { EditHost, type EditSelection, type TextChange } from './host';
 import { handleEditKey } from './keys';
 import { TextPointerSelection, type TextPointer } from './pointer';
@@ -31,11 +31,13 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     changed(selection: EditSelection): void;
     reportError(error: unknown): void;
     autoScroll(x: number, y: number): void;
+    stopAutoScroll(): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
+    openLink(url: string): void;
     isStandaloneText(): boolean;
-    // Joins deletion to the last text step, or cancels an empty creation.
-    removeEmptyText(): void;
+    /** The creation step token for a text node created by this edit session. */
+    readonly creationToken?: number;
     finish(): void;
 }
 
@@ -65,7 +67,7 @@ export class TextEditSession {
         this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
         this.controller = new TextEditController(id, key, {
             apply: transaction => services.apply(transaction), readText: () => services.readText(),
-            setSelection: next => services.setSelection(next), marksAt: offset => services.marksAt(offset),
+            setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
             fragment: (from, text, marks) => services.fragment(from, text, marks),
             format: (mark, from, to) => services.format(mark, from, to),
             link: (url, from, to) => services.link(url, from, to),
@@ -81,8 +83,23 @@ export class TextEditSession {
             word: offset => selectWord(services.plainText(), offset),
             block: offset => selectBlock(services.plainText(), offset),
             autoScroll: (x, y) => services.autoScroll(x, y),
+            stopAutoScroll: () => services.stopAutoScroll(),
             touchHandles: show => services.touchHandles(show),
             menu: (x, y) => services.menu(x, y),
+            followLink: (x, y) => {
+                const layout = services.layout();
+                const local = point(layout.clientToLocal, x, y);
+                for (const line of layout.caret.lines) for (const cluster of line.clusters) {
+                    const box = cluster.bounds;
+                    if (local.x < box.x || local.x > box.x + box.width || local.y < box.y || local.y > box.y + box.height) continue;
+                    const value = sliceRichText(services.readText(), cluster.src[0], cluster.src[1]).blocks[0]?.runs[0]?.marks.link;
+                    const url = value ? linkUrl(value) : null;
+                    if (!url) return false;
+                    services.openLink(url);
+                    return true;
+                }
+                return false;
+            },
         });
         this.host = new EditHost(container, label, {
             snapshot: () => ({ text: services.readText(), selection: this.selection }),
@@ -262,8 +279,10 @@ export class TextEditSession {
     deleteSelection(): void {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         if (from === to) return;
-        this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary');
-        this.host.sync();
+        this.typingHistory.close();
+        this.services.history.open('Cut text');
+        try { this.replace({ from, to, text: '', selection: { anchor: from, focus: from } }, 'boundary'); this.host.sync(); }
+        finally { this.services.history.close(); }
     }
 
     replaceSelection(fragment: RichFragment): void {
@@ -271,9 +290,12 @@ export class TextEditSession {
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
         this.typingHistory.close();
-        try { this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] }); }
-        catch (error) { this.services.reportError(error); return; }
-        this.select(next);
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+            this.select(next);
+        } catch (error) { this.services.reportError(error); }
+        finally { this.services.history.close(); }
     }
 
     applyLink(url: string, selection: EditSelection): boolean {
@@ -294,7 +316,22 @@ export class TextEditSession {
         this.closed = true;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
+            const history = this.services.history;
+            const tokens = this.typingHistory.stepTokens;
+            try {
+                const last = tokens[tokens.length - 1];
+                if (last === undefined || !history.reopenLast(last)) history.open('Delete empty text');
+                let deleted = false;
+                try { this.services.apply({ origin: 'tool', label: 'Delete empty text', ops: [{ t: 'delete', id: this.id }] }); deleted = true; }
+                finally {
+                    const deletion = history.close();
+                    if (deleted && this.services.creationToken !== undefined && deletion !== null) {
+                        history.forgetCreatedNode(this.id, this.services.creationToken, [...tokens, deletion]);
+                    }
+                }
+            } catch (error) { this.services.reportError(error); }
+        }
         this.services.finish();
     }
 }

@@ -53,7 +53,8 @@ export function runAgentBatch<Input, Result>(session: BatchSession, inputs: read
         }
         const applied = builder.commit(); // Normalization refusal takes back the WHOLE batch.
         return { ok: true, applied, accepted, errors };
-    } catch (error) {
+    } catch (caught) {
+        let error: unknown = caught;
         try { builder?.abort(); }
         catch (abortError) { error = abortError; }
         accepted.clear();

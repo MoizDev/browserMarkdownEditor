@@ -377,6 +377,7 @@
     "paper.deleteContents": "इस पृष्ठ में {items} शामिल है।",
     "paper.deleteConfirm": "पृष्ठ हटाएँ",
     "paper.cancel": "रद्द करें",
-    "paper.keepProtected": "लॉक की गई सामग्री रखी जाएगी."
+    "paper.keepProtected": "लॉक की गई सामग्री रखी जाएगी.",
+    "chrome.readOnly": "यह बोर्ड केवल पढ़ने के लिए है."
   }
 }

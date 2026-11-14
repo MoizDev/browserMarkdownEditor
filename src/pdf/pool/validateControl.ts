@@ -4,6 +4,7 @@ import { RENDER_ENGINE_LIMITS, WRITER_ENGINE_LIMITS } from '../engine/types';
 import type { BackendInfo } from '../engine/types';
 import type { EngineInitArgs, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import { boolean, finite, integer, invalidPdfReply, record, text } from './validationCommon';
+export { validatePdfInkInspection, validatePdfInkMedia } from './validateInkInspection';
 
 const PDFIUM_VERSION = '6688c576fd851f4159c6fae39396da50939de110';
 const FEATURES: readonly BackendInfo['features'][number][] = ['forms', 'emphasis', 'structTree', 'outline', 'attachments', 'write'];

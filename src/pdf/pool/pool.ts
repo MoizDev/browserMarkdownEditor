@@ -17,7 +17,7 @@ import { beginPdfPageWork, failPdfPage, clearPdfPageFailure, releasePdfPageStatu
 import { canSteal, homeWorker, maximumWorkers, poolBudget, recycleCeiling } from './routing';
 import { renderPdfPageBitmap } from './bitmap';
 import { createPdfReplyValidators } from './validation';
-import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe } from './validateControl';
+import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe, validatePdfInkInspection, validatePdfInkMedia } from './validateControl';
 import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { PDF_FONT_CATALOGUE } from '../fonts/catalogue';
 import type { PdfFontId } from '../fonts/catalogue';
@@ -190,6 +190,13 @@ class Pool implements PdfPool {
     private pumping = false;
     private repump = false;
 
+    get geometryEngine(): Readonly<WriterOperations['writer.stageAnnotated']['result']['geometryEngine']> {
+        const slot = this.slots.find(candidate => candidate.client.state === 'ready' && candidate.client.generation === candidate.generation &&
+            [...candidate.opens.keys()].some(key => this.docs.get(key)?.info));
+        const engine = slot && workerOwners.get(slot.client)?.engine;
+        if (!engine || engine.role !== 'render' || !engine.buildId || !engine.artifactSha256) throw new PdfEngineError('EngineBroken', 'PDF geometry engine is not ready');
+        return Object.freeze({ id: 'pdfium', build: `${engine.buildId}/${engine.artifactSha256}`, generation: 1 });
+    }
     constructor(private readonly options: PdfPoolOptions) {
         this.maxWorkers = maximumWorkers(options.hardwareConcurrency ?? (typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency));
         this.budget = poolBudget(options.deviceMemory ?? (typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { deviceMemory?: number }).deviceMemory));
@@ -581,6 +588,8 @@ class Pool implements PdfPool {
                 return validators.links(value, geometry, job.doc.info!.pageCount);
             }
             case 'doc.outline': return validators.outline(value, job.doc.info!.pageCount);
+            case 'doc.inspectInk': return validatePdfInkInspection(value);
+            case 'doc.inkMedia': return validatePdfInkMedia(value);
             case 'doc.attachment': return validators.attachmentBytes(value, job.args.maxBytes as number);
             case 'page.release': return record(value, []);
             case 'page.complexity': {

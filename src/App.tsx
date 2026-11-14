@@ -3,7 +3,7 @@ import { createDocumentBuffers, type ContentSource } from './utils/documentBuffe
 import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
-import type { AttachCanvasSession } from './utils/canvasSessionBridge';
+import type { AttachCanvasSession, CanvasSessionBridge } from './utils/canvasSessionBridge';
 import { awaitSessionDisposals, installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
@@ -1206,6 +1206,10 @@ export default function App() {
           vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
       },
       isCurrent: identity => !!current(identity),
+      session(id) {
+        const adapter = documentSessions.get(id)?.adapter;
+        return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;
+      },
       async acquireBytes(identity, signal) {
         await awaitSessionDisposals(identity.documentId);
         signal.throwIfAborted();

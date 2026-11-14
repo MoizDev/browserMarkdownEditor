@@ -195,6 +195,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     prepareGpu: preparation => candidate.prepare(preparation),
                     onSurfaceZeroed: canvas => candidate.zeroed(canvas),
                     onGpuReady: grant => candidate.ready(grant),
+                    onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         gpu = null;
                         cpuPresented = false;
@@ -281,7 +282,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
-                                if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision) return null;
+                                const liveCamera = options.readCamera();
+                                const geometry = observer.current;
+                                if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision ||
+                                    (!frame.view.moving && (liveCamera.x !== frame.view.camera.x || liveCamera.y !== frame.view.camera.y || liveCamera.z !== frame.view.camera.z)) ||
+                                    geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;

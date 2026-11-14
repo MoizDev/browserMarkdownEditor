@@ -1,4 +1,4 @@
-import { getTerminalContextActive, subscribeTerminalContext } from '../../utils/terminalContext';
+import { getTerminalContextActive, subscribeTerminalContext } from '../terminalContext';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import { MemoryGovernor } from './memoryGovernor';
 import type { PaneMemoryDemand, MemoryTrouble } from './memoryGovernor';

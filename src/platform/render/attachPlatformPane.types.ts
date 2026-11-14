@@ -47,6 +47,8 @@ export interface PlatformPaneOptions<T extends object> {
     onPresentation(presentation: PlatformPresentation | null): void;
     onError(error: unknown): void;
     onNotice(message: 'memory-pressure' | 'gpu-unavailable' | 'cpu-pinned'): void;
+    /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
+    onQualityChange?(report: { readonly qualityScale: number }): void;
     mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;
     mirrorCoverage?(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
 }

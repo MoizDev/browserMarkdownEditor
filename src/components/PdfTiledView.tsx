@@ -149,6 +149,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     }, [pdf, session]);
 
     const goPage = useCallback((index: number) => {
+        if (!initialized.current) return;
         const target = stack.rects[Math.max(0, Math.min(stack.rects.length - 1, index))];
         if (!target) return;
         recordPdfNavigation(filePath, 'user-navigation');
@@ -329,7 +330,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
         const observer = new ResizeObserver(resize); observer.observe(host); resize();
         const wheel = (event: WheelEvent) => {
-            if (!active.current.isVisible) return;
+            if (!active.current.isVisible || !initialized.current) return;
             event.preventDefault();
             const old = camera.current;
             if (event.ctrlKey || event.metaKey) {
@@ -347,7 +348,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
             }
         };
         const keydown = (event: KeyboardEvent) => {
-            if (!active.current.isVisible || !active.current.isFocused || event.defaultPrevented || event.isComposing) return;
+            if (!active.current.isVisible || !active.current.isFocused || !initialized.current || event.defaultPrevented || event.isComposing) return;
             if ((event.metaKey || event.ctrlKey) && ['f', 'g'].includes(event.key.toLowerCase())) {
                 event.preventDefault();
                 if (event.key.toLowerCase() === 'f') find.find.current?.openFind();
@@ -376,7 +377,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
         const pointers = new Map<number, { x: number; y: number }>();
         const pointerDown = (event: PointerEvent) => {
-            if (event.pointerType !== 'touch') return;
+            if (event.pointerType !== 'touch' || !initialized.current || !active.current.isVisible) return;
             pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
             host.setPointerCapture(event.pointerId);
         };
@@ -471,6 +472,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         };
     }, []);
     const zoomBy = (factor: number) => {
+        if (!initialized.current) return;
         recordPdfNavigation(filePath, 'user-navigation');
         const old = camera.current, z = constraint.clampZoom(old.z * factor, viewport.current);
         const x = viewport.current.width / 2, y = viewport.current.height / 2;

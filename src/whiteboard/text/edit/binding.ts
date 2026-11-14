@@ -11,6 +11,7 @@ import type { TextEditBinding, TextEditBindingOptions } from './bindingTypes';
 export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding {
     const { session, node: id, key, view, layoutEngine } = options;
     let closed = false, overlay: TextChange | null = null, overlayRevision = 0;
+    let overlayCache: { readonly source: RichText; readonly change: TextChange; readonly text: RichText } | null = null;
     let releaseComposition: (() => void) | undefined;
     let lastPaint = '', lastOwnRevision = session.doc.rev, prepared = '';
     const editorRef: { current?: TextEditSession } = {};
@@ -29,9 +30,12 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
     const adapter = richEditAdapter(id, key === 'label' ? 'label' : 'text', readText, rich);
     function overlayText(): RichText {
         const source = readText();
-        if (!overlay) return source;
+        if (!overlay) { overlayCache = null; return source; }
+        if (overlayCache?.source === source && overlayCache.change === overlay) return overlayCache.text;
         const insert = rich.insertionFragment(source, overlay.from, overlay.text, null);
-        return rich.splice(source, overlay.from, overlay.to, insert).text;
+        const text = rich.splice(source, overlay.from, overlay.to, insert).text;
+        overlayCache = { source, change: overlay, text };
+        return text;
     }
     function layout(): EditLayout {
         const text = overlayText(), request = options.request(node(), text, overlayRevision);

@@ -2465,16 +2465,13 @@ export default function App() {
 
   /** Everything that has to happen for ONE document to stop being open, short
    *  of the two state updates (which differ per caller). */
-  const releaseTab = useCallback((path: string, flush: boolean) => {
-    // flushTab captures the tab synchronously, clears the timer, and no-ops for
-    // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
-    // `closing`: a last write its file can no longer take keeps the text beside it.
-    if (flush) void flushTab(path, false, true); else clearSaveTimer(path);
-    // The document's disk state goes with it — after the flush above, which
-    // captured its baseline synchronously.
+  const releaseTab = useCallback((path: string) => {
+    // Callers drain and save before releasing, or explicitly discard the tab.
+    clearSaveTimer(path);
+    // The document's disk state goes with it.
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
-      if (!flush) { pendingRevisionsRef.current.delete(doc.id); syncExitGuard(); }
+      pendingRevisionsRef.current.delete(doc.id); syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
@@ -2484,8 +2481,7 @@ export default function App() {
       diskStateRef.current.delete(doc.id);
     }
     latestContentRef.current.delete(path);
-    // Safe to drop now: flushTab reads the render data synchronously, before its
-    // first await, so a flush already in flight has what it needs.
+    // A successful closing flush has already captured the render data.
     clearPdfRenderData(path);
     // A notebook's exporter closes over its editor; dropping it is what stops a
     // closed notebook pinning that editor for the rest of the session.
@@ -2495,7 +2491,7 @@ export default function App() {
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
     if (!flush) unsavedBoardContentRef.current.delete(path);
-  }, [clearSaveTimer, flushTab, syncExitGuard]);
+  }, [clearSaveTimer, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -2530,7 +2526,7 @@ export default function App() {
       const revision = tab && pendingRevisionsRef.current.get(tab.id);
       if (result === 'failed' || (result === 'skipped' && revision && revision.revision > revision.saved)) throw new Error('Could not preserve the overwritten document.');
     }
-    releaseTab(path, false);                        // in-app: no flush, the bytes are gone
+    releaseTab(path);
     // Its tab goes too. renamePath would drop it as it re-points the moved
     // document, but only when the moved one is open — and closing it here is
     // also what fronts a NEIGHBOUR of the tab that vanished rather than
@@ -2541,8 +2537,8 @@ export default function App() {
 
   /** Close one document. Its tab goes; the column goes with it only if that was
    *  the column's last tab (see utils/tabPanes.ts closePath). */
-  const removeTab = useCallback((path: string, flush: boolean) => {
-    releaseTab(path, flush);
+  const removeTab = useCallback((path: string) => {
+    releaseTab(path);
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab]);
@@ -2595,7 +2591,7 @@ export default function App() {
         }
         // Reopening while the save was in flight reuses this very document.
         if (reopenedClosingRef.current.has(tab.id)) return;
-        releaseTab(path, false);
+        releaseTab(path);
         setTabs(prev => prev.filter(t => t.id !== tab.id));
       } catch (error) {
         console.error('Could not close document:', error);
@@ -2693,7 +2689,7 @@ export default function App() {
       // the tab and removes the old entry, and must not close a note that
       // merely moved.
       if (isNotFound(err) && current.file.handle === tab.file.handle) {
-        removeTab(current.file.path, false);
+        removeTab(current.file.path);
         void tell({
           title: 'That note is gone',
           confirmLabel: 'OK',
@@ -2717,8 +2713,7 @@ export default function App() {
    * Close a whole column — every document in it. What the pane header's
    * ⋯ menu means by *Close this pane*; a tab's own × closes just that one.
    *
-   * Every tab is FLUSHED on the way out (`releaseTab(path, true)`), so closing
-   * a five-tab column cannot lose the four the reader was not looking at.
+   * Every tab is drained and saved before release, including hidden tabs.
    * Read through `layoutRef` rather than `layout` so this keeps its identity
    * for the app's life: it is baked into a pane's chrome, which outlives the
    * render that raised the menu.
@@ -2905,15 +2900,14 @@ export default function App() {
     // Every registered pane belongs to the vault being left.
     flushReaderViewState(); flushPdfTextViewState();
     clearViews();
-    // So does every open document's disk baseline and standoff (the flushes
-    // above captured theirs synchronously).
+    // So does every open document's disk baseline and standoff; the pre-commit
+    // hook has finished their writes.
     clearBaselines();
     pdfSeedsRef.current.clear();
     pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
     latestContentRef.current.clear();
-    // Those flushes captured what they needed synchronously (see flushTab); the
-    // paths themselves index the vault being left.
+    // These paths index the vault being left.
     assetRefsRef.current.clear();
     boardBaselinesRef.current.clear();
     unsavedBoardContentRef.current.clear();
@@ -3710,7 +3704,7 @@ export default function App() {
       // Closed WITHOUT flushing — that already happened above, and their handles
       // are gone now.
       for (const tab of tabsRef.current) {
-        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
+        if (doomed(tab.file.path)) removeTab(tab.file.path);
       }
       return true;
     });
@@ -3887,7 +3881,7 @@ export default function App() {
             // file's text). releaseOverwritten's hazard exactly. Closed WITHOUT
             // flushing — that already happened above, before the copy.
             if (replaced.status === 'ok') {
-              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
+              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path);
               // A document a restore pass is still bringing back from there has
               // been displaced just the same (issue #9); tabsRef cannot reach it.
               const pending = pendingFor(rootHandleRef.current);
@@ -4614,7 +4608,7 @@ export default function App() {
     const graphAtCall = indexGraphRef.current;
     const searchWriteRevision = ++searchWriteRevisionRef.current;
     if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
-      if (action === 'close') removeTab(path, false);
+      if (action === 'close') removeTab(path);
       else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
       return;
     }
@@ -4640,7 +4634,7 @@ export default function App() {
           confirmLabel: 'Close',
           danger: true,
         })) return;
-        removeTab(path, false);
+        removeTab(path);
         return;
       }
 

@@ -8,6 +8,7 @@ import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
 import { fenceBytes, isCompatibilityFenceBytes } from '../../whiteboard/format/fence';
 import { attachmentMarker } from './attachments';
 import { validateBoardWriteIdentity } from './boardIdentity';
+import { readPdfNotebookPointer } from './notebookInspection';
 import type { PdfInkInspection, PdfInkInspectionFailure, PdfInkMediaDescriptor } from './inkInspection.types';
 
 const LIMIT = 0x7fffffff, BOARD_LIMIT = 32 * 1024 * 1024, MAX_INSPECTIONS = 16;
@@ -107,6 +108,12 @@ export class PdfInkInspector {
             catch (error) { return { kind: 'read-only', reason: error instanceof Error && /encrypt/i.test(error.message) ? 'encrypted' : 'unreadable' }; }
             await step();
             const entries = inventory(document), owned = [...entries].filter(([name, entry]) => isAuthority(name, entry));
+            if (entries.has(NOTEBOOK_SOURCE_ATTACHMENT)) {
+                if (owned.length !== 1 || owned[0][0] !== NOTEBOOK_SOURCE_ATTACHMENT) return refuse('ambiguous');
+                const notebookSource = readPdfNotebookPointer(document);
+                await step();
+                return { kind: 'read-only', reason: 'notebook-source', outerFingerprint, notebookSource };
+            }
             let pristine = outer, pristineFingerprint = outerFingerprint, board: Blob | null = null, writeId: string | undefined;
             const media = new Map<string, AttachmentEntry>(), descriptors: PdfInkMediaDescriptor[] = [];
             if (owned.length) {

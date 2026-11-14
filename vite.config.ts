@@ -26,7 +26,11 @@ export default defineConfig({
     // drops it. A plugin hook, not a function config, because scratch configs spread this object.
     name: 'benchmark-build-constant',
     config(_config, { command, mode }) {
-      return { define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) } }
+      return {
+        define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) },
+        // Vite's client define may follow the initial TS transform, too late for its dead-code elimination.
+        ...(command === 'serve' ? { esbuild: { define: { __BME_BENCH__: 'false' }, treeShaking: true, minifySyntax: true } } : {}),
+      }
     },
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version: buildId }) })

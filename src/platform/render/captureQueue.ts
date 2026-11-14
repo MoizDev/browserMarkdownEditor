@@ -4,9 +4,9 @@ interface CaptureJob {
     readonly paneId: string;
     readonly thumbnailKey: string | undefined;
     readonly signal: AbortSignal;
-    readonly work: () => Promise<ImageBitmap>;
+    readonly work: () => Promise<ImageBitmap | Blob>;
     readonly cancel: () => void;
-    readonly resolve: (bitmap: ImageBitmap) => void;
+    readonly resolve: (result: ImageBitmap | Blob) => void;
     readonly reject: (error: unknown) => void;
     settled: boolean;
     running: boolean;
@@ -20,11 +20,11 @@ export class CaptureQueue {
     private readonly queued: CaptureJob[] = [];
     private readonly activePanes = new Set<string>();
 
-    run(paneId: string, signal: AbortSignal, work: () => Promise<ImageBitmap>, thumbnailKey?: string): Promise<ImageBitmap> {
+    run<T extends ImageBitmap | Blob>(paneId: string, signal: AbortSignal, work: () => Promise<T>, thumbnailKey?: string): Promise<T> {
         if (signal.aborted) return Promise.reject(captureAbort(signal));
         return new Promise((resolve, reject) => {
             const job: CaptureJob = {
-                paneId, thumbnailKey, signal, work, resolve, reject, settled: false, running: false,
+                paneId, thumbnailKey, signal, work, resolve: result => resolve(result as T), reject, settled: false, running: false,
                 cancel: () => {
                     if (job.settled) return;
                     job.settled = true;
@@ -67,13 +67,13 @@ export class CaptureQueue {
 
     private async execute(job: CaptureJob): Promise<void> {
         try {
-            const bitmap = await job.work();
+            const result = await job.work();
             if (job.settled || job.signal.aborted) {
-                bitmap.close();
+                if (!(result instanceof Blob)) result.close();
                 if (!job.settled) { job.settled = true; job.reject(captureAbort(job.signal)); }
             } else {
                 job.settled = true;
-                job.resolve(bitmap);
+                job.resolve(result);
             }
         } catch (error) {
             if (!job.settled) { job.settled = true; job.reject(error); }

@@ -40,7 +40,7 @@ export const WRITER_ENGINE_LIMITS: Readonly<EngineLimits> = Object.freeze({
     ...RENDER_ENGINE_LIMITS, maxHeapBytes: 3.5 * 1024 * 1024 * 1024,
 });
 
-export interface FontSpec { family: string; weight: number; italic: boolean; charset?: number }
+export interface FontSpec { family: string; weight: number; italic: boolean; charset?: number; readonly language?: string }
 export interface FontProvider {
     /** Cached bytes only. A miss reports font.needed; no backend may fetch or block on a promise. */
     request(spec: FontSpec): Uint8Array | undefined;

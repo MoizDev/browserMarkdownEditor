@@ -208,7 +208,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 !['normal', 'multiply'].includes(effect.blend))) throw new TypeError('Invalid isolation');
             ids.add(binding.id); objects.add(binding.layer); chrome ||= binding.group === 'chrome';
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
-                isolation: effect ? Object.freeze({ ...effect }) : undefined, coverage: binding.coverage.bind(binding) });
+                isolation: effect ? Object.freeze({ ...effect }) : undefined, coverage: binding.coverage.bind(binding),
+                // Preview geometry is independent of PageStack; dropping it mislabels PDF as vector.
+                ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
         this.changed();
     }
@@ -505,7 +507,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                                 const s = quad.sourceRect, d = quad.destRect;
                                 this.nativeUploadUsed = true;
                                 job.buffer.native.drawImage(quad.image, s.x, s.y, s.width, s.height, d.x, d.y, d.width, d.height);
-                                if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(job.buffer.native, d, 'standin', 1);
+                                if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(job.buffer.native, d, 'standin', 1,
+                                    Math.min(1, s.width / d.width, s.height / d.height));
                                 succeeded = true; drawn.push(entry);
                             } finally { frame.recordImplicit(entry.entry.id, performance.now() - start, succeeded); }
                         }
@@ -518,7 +521,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                         job.stage = 'copy';
                     }
                     if (job.stage !== 'copy' || !this.metrics) return noMirror;
-                    this.activeKey = `mirror:${key}`; this.beginSources(this.activeKey); this.missing = false;
+                    const current = this.lastFrame;
+                    const scene = this.scene;
+                    if (!current || current.frameId !== frame.budget.frameId || !scene) return noMirror;
+                    this.activeKey = `mirror:${key}`;
+                    // Both attempts own this scene's pending images. Alternating regular/mirror
+                    // source keys pruned each other's upload admissions before a first frame existed.
+                    this.beginSources(this.key(scene, current)); this.missing = false;
                     // A partially or fully assembled inversion job also owns back's pixels.
                     this.cancelJob();
                     opaque(back.native, this.appearance);
@@ -527,9 +536,6 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     const full = { x: 0, y: 0, width: back.canvas.width, height: back.canvas.height };
                     this.image(back, job.buffer.canvas, full, full);
                     if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.copy(back.native, job.buffer.native, full, full);
-                    const current = this.lastFrame;
-                    const scene = this.scene;
-                    if (!current || current.frameId !== frame.budget.frameId || !scene) return noMirror;
                     const chrome = scene.layers.filter(layer => layer.group === 'chrome');
                     if (chrome.some(layer => !layer.coverage(current, this.backend).complete)) return noMirror;
                     this.paintBindings(chrome, back, scene, current);
@@ -550,7 +556,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     releaseGpu(_reason: GpuReleaseReason): void {
         if (this.disposed) return;
         this.dropWork();
-        if (__BME_BENCH__) { benchmarkCanvas?.managers.get(this)?.dispose(); benchmarkCanvas?.managers.delete(this); benchmarkCanvas?.coverageKinds.delete(this); }
+        if (__BME_BENCH__) { benchmarkCanvas?.managers.get(this)?.dispose(); benchmarkCanvas?.managers.delete(this); benchmarkCanvas?.coverageKinds.delete(this); benchmarkCanvas?.scaleRatios.delete(this); }
         this.surface.width = 0; this.surface.height = 0;
         this.backing?.releaseZeroed(); this.displayReserved = 0;
         this.metrics = null; this.scene = null; this.report = null; this.presentedKey = '';
@@ -558,9 +564,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     dispose(): void {
         if (this.disposed) return;
+        const manager = __BME_BENCH__ ? benchmarkCanvas?.managers.get(this) : undefined;
         this.detach(); this.releaseGpu('hidden');
-        this.backing?.close(); this.working?.close(); this.cpu?.close();
+        this.backing?.close(); this.working?.close();
         this.disposed = true;
+        if (!__BME_BENCH__ || ((!manager || manager.drained) && !benchmarkCanvas?.retiringManagers.get(this)?.size)) this.cpu?.close();
     }
 
     private check(): void { if (this.disposed) throw new Error('Canvas compositor is disposed'); }
@@ -582,11 +590,23 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             snapshot.serial, frame.layers.map(item => item.sceneRevision)]);
     }
     private init(): boolean {
-        if (__BME_BENCH__ && benchmarkCanvas && !benchmarkCanvas.managers.has(this)) benchmarkCanvas.managers.set(this, new benchmarkCanvas.BenchmarkCanvas2D({
-            paneId: this.options.paneId,
-            working: { reserve: bytes => this.reserveGpu(bytes), release: lease => this.releaseGpuLease(lease) },
-            cpu: { reserve: bytes => this.reserveCpu(bytes), release: lease => this.releaseCpuLease(lease) },
-        }));
+        if (__BME_BENCH__ && benchmarkCanvas && !benchmarkCanvas.managers.has(this)) {
+            const pending = benchmarkCanvas.retiringManagers.get(this) ?? new Set<import('./benchmarkCanvas2D').BenchmarkCanvas2D>();
+            benchmarkCanvas.retiringManagers.set(this, pending);
+            const manager = new benchmarkCanvas.BenchmarkCanvas2D({
+                paneId: this.options.paneId,
+                working: { reserve: bytes => this.reserveGpu(bytes), release: lease => this.releaseGpuLease(lease) },
+                cpu: { reserve: bytes => this.reserveCpu(bytes), release: lease => this.releaseCpuLease(lease) },
+                onDrained: () => {
+                    pending.delete(manager);
+                    if (!pending.size) {
+                        benchmarkCanvas.retiringManagers.delete(this);
+                        if (this.disposed) this.cpu?.close();
+                    }
+                },
+            });
+            pending.add(manager); benchmarkCanvas.managers.set(this, manager);
+        }
         if (this.working && this.cpu && this.backing) return true;
         const owner = this.options.currentToken();
         if (!owner) return false;
@@ -835,7 +855,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (!('drawImage' in ctx) || !(image instanceof ImageBitmap)) throw new TypeError('A CPU quad needs a 2D context and ImageBitmap');
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1) throw new TypeError('Invalid image quad');
         const previousCoverage = __BME_BENCH__ ? benchmarkCanvas?.coverageKinds.get(this) : undefined;
-        if (__BME_BENCH__) benchmarkCanvas?.coverageKinds.set(this, options.coverage ?? 'none');
+        const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;
+        if (__BME_BENCH__) {
+            benchmarkCanvas?.coverageKinds.set(this, options.coverage ?? 'none');
+            const ratio = (options as TexturedQuadOptions & { standInRatio?: number }).standInRatio;
+            benchmarkCanvas?.scaleRatios.set(this, options.coverage === 'standin'
+                ? ratio ?? Math.min(1, sourceRect.width / destRect.width, sourceRect.height / destRect.height) : 1);
+        }
         ctx.save();
         try {
             ctx.resetTransform(); ctx.globalAlpha *= options.opacity; ctx.imageSmoothingEnabled = options.sampling === 'linear';
@@ -843,6 +869,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { ctx.restore(); if (__BME_BENCH__) {
             if (previousCoverage) benchmarkCanvas?.coverageKinds.set(this, previousCoverage);
             else benchmarkCanvas?.coverageKinds.delete(this);
+            if (previousRatio !== undefined) benchmarkCanvas?.scaleRatios.set(this, previousRatio);
+            else benchmarkCanvas?.scaleRatios.delete(this);
         } }
     }
     private intersectsBuffer(buffer: Buffer2D, rect: Rect): boolean {
@@ -912,7 +940,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const start = performance.now();
         try {
             buffer.native.drawImage(source, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
-            if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(buffer.native, dst, benchmarkCanvas.coverageKinds.get(this) ?? 'none', buffer.native.globalAlpha);
+            if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(buffer.native, dst, benchmarkCanvas.coverageKinds.get(this) ?? 'none', buffer.native.globalAlpha, benchmarkCanvas.scaleRatios.get(this) ?? 1);
             use.resident = true; use.admission = null;
         } finally { this.options.recordUpload(bytes, performance.now() - start); }
     }

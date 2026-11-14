@@ -8,7 +8,8 @@ import { PdfTileCache } from './tileCache';
 import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
-import { pdfVariantRevision } from '../fonts/profiles';
+import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
+import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
@@ -69,6 +70,7 @@ function project(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState): Re
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
+    declare readonly benchmarkRaster?: boolean;
     private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
@@ -94,6 +96,7 @@ export class PdfTileLayer implements Layer {
         private readonly isCurrent: () => boolean,
         private readonly onError: (error: unknown, request: PdfTileRequest) => void,
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
+        if (__BME_BENCH__) this.benchmarkRaster = true;
         this.texturePool = new PdfTexturePool(host.allocator.gpu);
     }
 
@@ -250,19 +253,23 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
                 destination, { opacity: 1, sampling: 'nearest' });
         }
+        const { stack, rasterScale } = this.demand(view);
         for (const item of this.currentBridge(view)) {
             const texture = this.bridgeTextures.get(item.entry.id);
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear', coverage: 'standin' });
+            this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
+                ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        const { stack, rasterScale } = this.demand(view);
         for (const entry of this.drawable(view)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
-                { opacity: 1, sampling: 'linear', coverage: entry.request.scale.scale === rasterScale ? 'current' : 'standin' });
+                { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
+                    coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+                    standInRatio: entry.request.scale.scale / rasterScale,
+                } : {}) });
         }
     }
 
@@ -273,18 +280,22 @@ export class PdfTileLayer implements Layer {
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
             ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
         }
+        const { stack, rasterScale } = this.demand(view);
         for (const item of this.currentBridge(view)) {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear', coverage: 'standin' });
+            this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
+                ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        const { stack, rasterScale } = this.demand(view);
         for (const entry of this.drawable(view)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
-                { opacity: 1, sampling: 'linear', coverage: entry.request.scale.scale === rasterScale ? 'current' : 'standin' });
+                { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
+                    coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+                    standInRatio: entry.request.scale.scale / rasterScale,
+                } : {}) });
             consumePdfTileArrival(entry.bitmap);
         }
     }
@@ -417,9 +428,11 @@ export class PdfTileLayer implements Layer {
         const current = this.mirror.view(this.latestView);
         if (!current || mirrorViewKey(current) !== job.key) return false;
         const input = this.demand(this.latestView), token = renderTokenKey(input.token);
+        const docKey = pdfDocKey({ ...input.token, source: input.source });
         if (renderTokenKey(current.token) !== token || current.sourceRole !== input.source ||
             current.geometryDigest !== input.geometryDigest || current.colourVersion !== 0 ||
-            !current.contentRevision.startsWith(`${pdfVariantRevision(input.variant, input.fontEpoch ?? 0)}:proof:`)) return false;
+            getPdfFontEpoch(docKey) !== (input.fontEpoch ?? 0) ||
+            !current.contentRevision.startsWith(pdfMirrorProfilePrefix(input.variant, docKey))) return false;
         return job.entries.every(({ request }) => request.key.documentToken === token && request.key.sourceRole === input.source &&
             request.key.colourVersion === current.colourVersion && request.key.contentRevision === pdfVariantRevision(
                 input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));

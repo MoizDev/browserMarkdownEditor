@@ -122,6 +122,17 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
                 verification: { pageCount, attachmentCount } };
             break;
         }
+        case 'writer.prepareUnsignedCopy': {
+            const o = record(value, ['bytes', 'originalSha', 'attachmentName']);
+            if (o.attachmentName !== 'Signed source.pdf') invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), originalSha: fingerprint(o.originalSha), attachmentName: o.attachmentName };
+            break;
+        }
+        case 'writer.verifyUnsignedCopy': {
+            const o = record(value, ['bytes', 'originalSha', 'outputSha']);
+            result = { bytes: outputBytes(o.bytes), originalSha: fingerprint(o.originalSha), outputSha: fingerprint(o.outputSha) };
+            break;
+        }
         case 'writer.verifyNotebookOutput': {
             const input = args as WriterOperations['writer.verifyNotebookOutput']['args'];
             const o = record(value, ['bytes', 'sha256', 'path', 'geometries']);
@@ -137,6 +148,15 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             const pages = geometries(o.geometries);
             if (!pages.length || input.pageIndices?.some(index => !Number.isSafeInteger(index) || index < 0 || index >= pages.length)) invalidPdfReply();
             result = { bytes: outputBytes(o.bytes), sourceFingerprint, geometries: pages };
+            break;
+        }
+        case 'writer.verifyRotation': {
+            const input = args as WriterOperations['writer.verifyRotation']['args'];
+            const o = record(value, ['bytes', 'sourceFingerprint', 'outputSha', 'geometries']);
+            const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.outerFingerprint);
+            const pages = geometries(o.geometries);
+            if (!pages.length || pages.length !== input.expected.length) invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), sourceFingerprint, outputSha: fingerprint(o.outputSha), geometries: pages };
             break;
         }
         case 'writer.release': record(value, []); result = {}; break;

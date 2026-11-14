@@ -16,6 +16,7 @@ import type { NodeId, ParentId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { boardPageStack, pageOrigin, reanchorPage } from '../model/pages';
 import { prepareBoardVectorGeometryNow } from '../render/vectorGeometry';
+import { colourCss } from '../render/colour';
 import type { createBoardRenderServices } from '../render/services';
 import { textCreation } from '../text/edit/createText';
 import { createTextEditGrowth } from '../text/edit/growth';
@@ -389,15 +390,40 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
             path.setAttribute('stroke-width', String(1 / frame.view.camera.z)); group.append(path);
         }
-        for (const item of chrome.selection) rect(group, item, 'rgba(80,145,255,0.32)');
-        if (chrome.caret) rect(group, chrome.caret, '#4d91ff');
-        for (const item of chrome.composition) rect(group, { x: item.rect.x, y: item.rect.y + item.rect.height - 1 / frame.view.camera.z,
-            width: item.rect.width, height: 1 / frame.view.camera.z }, '#4d91ff');
+        const selection = manager.current.editor.getSelection();
+        let caretColour = 'var(--text-normal)';
+        outer: for (const line of paint.lines) for (const fragment of line.fragments) {
+            if (selection.focus >= fragment.src[0] && selection.focus <= fragment.src[1]) {
+                caretColour = colourCss(engine.getSnapshot().palette.stroke[fragment.ink.swatch]);
+                break outer;
+            }
+        }
+        for (const item of chrome.selection) rect(group, item, 'color-mix(in srgb, var(--interactive-accent) 30%, transparent)');
+        if (chrome.caret) rect(group, chrome.caret, caretColour);
+        for (const item of chrome.composition) {
+            if (item.style === 'none') continue;
+            const unit = 1 / frame.view.camera.z, y = item.rect.y + item.rect.height - unit;
+            const stroke = item.thickness === 'thick' ? 2 * unit : unit;
+            if (item.style === 'solid') rect(group, { x: item.rect.x, y, width: item.rect.width, height: stroke }, caretColour);
+            else {
+                const path = document.createElementNS(svgNS, 'path');
+                let d = `M ${item.rect.x} ${y}`;
+                if (item.style === 'wavy') {
+                    for (let x = item.rect.x + 2 * unit, n = 0; x < item.rect.x + item.rect.width; x += 2 * unit, n++)
+                        d += ` L ${x} ${y + (n % 2 ? -unit : unit)}`;
+                } else d += ` L ${item.rect.x + item.rect.width} ${y}`;
+                path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', caretColour);
+                path.setAttribute('stroke-width', String(stroke));
+                if (item.style === 'dotted') path.setAttribute('stroke-dasharray', `${unit} ${unit}`);
+                else if (item.style === 'dashed') path.setAttribute('stroke-dasharray', `${3 * unit} ${2 * unit}`);
+                group.append(path);
+            }
+        }
         if (handles) for (const position of [chrome.handles.anchor, chrome.handles.focus]) {
             const bounds = overlay.getBoundingClientRect(), x = (position.x - bounds.left) * frame.view.viewport.width / bounds.width;
             const y = (position.y - bounds.top) * frame.view.viewport.height / bounds.height;
             const circle = document.createElementNS(svgNS, 'circle'); circle.setAttribute('cx', String(x)); circle.setAttribute('cy', String(y));
-            circle.setAttribute('r', '5'); circle.setAttribute('fill', '#4d91ff'); svg.append(circle);
+            circle.setAttribute('r', '5'); circle.setAttribute('fill', 'var(--interactive-accent)'); svg.append(circle);
         }
     };
     const captureText = (): TextSelectionSnapshot | undefined => {

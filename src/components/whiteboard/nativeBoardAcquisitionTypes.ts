@@ -19,6 +19,7 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly kind: 'drawing' | 'notebook' | 'pdfInk';
     readonly attachCanvasSession: AttachCanvasSession;
     readonly onNativeCanvasReady: NativeCanvasReady;
+    readonly emergencyReadOnlyReason: string;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
     onError(error: unknown): void;
 }

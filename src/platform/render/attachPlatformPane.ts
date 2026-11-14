@@ -154,10 +154,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const size = observer.current;
             const memory = layerSet.layers.map(layer => layer.memory());
             const requestedPixels = size ? size.physical.width * size.physical.height : 0;
+            const tilePixels = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2;
+            const bandPixels = Math.min(requestedPixels, tilePixels);
+            const isolated = layerSet.compositorLayers.filter(binding => binding.isolation).length;
+            const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
             return { paneId: options.paneId, visible, focused, requestedPixels,
-                // CPU's detached complete-frame buffer and a staged GPU backing can coexist.
-                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + 2 * requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
-                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0),
+                // These are needs inside the existing G/C, not larger caps: detached CPU completion,
+                // staged GPU, mirror/effect targets, native bitmap residency and one bounded colour band.
+                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
+                    (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
+                // A purely procedural inverted page still needs a readback core; zero layer CPU bytes
+                // cannot mean zero CPU credit. Oversized bitmap crops are rebuildable view caches too.
+                cpuNeedBytes: memory.reduce((sum, value) => sum + value.cpuBytes, 0) + (requestedPixels + bandPixels) * 4,
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,

@@ -46,13 +46,32 @@ export async function inkOutline(coverage: PaintInkCoverage, scale: number, sign
   return commands
 }
 
+export type TextDisplayClip = NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>
+export interface TextDisplayFrame { readonly transform: Affine; readonly clips: readonly TextDisplayClip[] }
+export function capturePaintClips(item: PaintItem): readonly TextDisplayClip[] {
+  if (item.clips.length > 62) throw new RangeError('Export clip nesting exceeds 64 levels')
+  return item.clips.map(clip => ({ d: transformPath(clip.d, clip.localToWorld), fillRule: clip.fillRule }))
+}
+export function captureTextDisplay(item: PaintTextItem): TextDisplayFrame {
+  return { transform: item.localToWorld, clips: capturePaintClips(item) }
+}
+export function wrapCapturedTextDisplay(frame: TextDisplayFrame, items: readonly PageDisplayItem[]): PageDisplayItem {
+  let leaf: PageDisplayItem = { kind: 'group', transform: frame.transform, items: [...items] }
+  for (let i = frame.clips.length - 1; i >= 0; i--) leaf = { kind: 'group', clip: frame.clips[i], items: [leaf] }
+  return leaf
+}
+export function createTextDisplayWrapper(item: PaintTextItem): (items: readonly PageDisplayItem[]) => PageDisplayItem {
+  const frame = captureTextDisplay(item)
+  return items => wrapCapturedTextDisplay(frame, items)
+}
+
 export async function paintItemDisplay(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText): Promise<PageDisplayItem> {
   let leaf: PageDisplayItem
   if (item.kind === 'text') {
     if (!text) throw new Error('Text outline export is unavailable')
     const items = await text(item, scale, signal)
     signal?.throwIfAborted()
-    leaf = { kind: 'group', transform: item.localToWorld, items: [...items] }
+    return createTextDisplayWrapper(item)(items)
   } else if (item.kind === 'image') {
     const data = await image(item, signal)
     signal?.throwIfAborted()

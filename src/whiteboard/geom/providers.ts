@@ -15,6 +15,7 @@ import type { PathOp, Vec2 } from './path';
 import { polylinePath } from './polylines';
 import type { PolylineGeometryOptions } from './polylineTypes';
 import { pointPath, regionPath } from './pick';
+import { registerVectorNarrow } from './vectorNarrow';
 import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
 import type { KindGeometry, NarrowResult } from './types';
@@ -401,7 +402,14 @@ export function prepareFigureGeometry(node: Readonly<FigureNode>, options: Figur
         marginCss: 0, errorCss: hitErrorCss, maxSegments: maxPieces };
     const none: NarrowResult = { hit: false, distanceCss: Infinity, part: 'none' };
     return {
-        key: options.key, boxLocal, inkBoundsLocal: ink ?? { x: 0, y: 0, width: 0, height: 0 }, selectBoundsLocal: select,
+        get key() {
+            registerVectorNarrow(this, { parts: [
+                ...(labelPath ? [{ part: 'label' as const, paths: [], options: labelOptions }] : []),
+                { part: 'body', paths: strokes, options: optionsForBody },
+            ] });
+            return options.key;
+        },
+        boxLocal, inkBoundsLocal: ink ?? { x: 0, y: 0, width: 0, height: 0 }, selectBoundsLocal: select,
         paths, text: label ? [label] : [], attachments: { outline: interior, logicalBox: boxLocal },
         point(query) {
             if (labelPath && pointPath([], query, labelOptions).hit) return { hit: true, distanceCss: 0, part: 'label' };

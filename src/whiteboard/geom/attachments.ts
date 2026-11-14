@@ -34,7 +34,13 @@ export function incidentEnds(doc: Readonly<BoardDoc>, target: NodeId): readonly 
     const ends: IncidentEnd[] = [];
     for (const id of doc.attachedTo.get(target) ?? []) {
         const node = doc.nodes.get(id);
-        if (!node || node.kind !== 'connector') throw new Error('Invalid connector attachment index');
+        if (!node) throw new Error('Invalid connector attachment index');
+        if (node.kind === 'polyline') {
+            const line = node as Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
+            if (line.startAttach?.target !== target && line.endAttach?.target !== target) throw new Error('Stale polyline attachment index');
+            continue;
+        }
+        if (node.kind !== 'connector') throw new Error('Invalid connector attachment index');
         if (node.start.attach?.target === target) ends.push({ connector: id, terminal: 'start' });
         if (node.end.attach?.target === target) ends.push({ connector: id, terminal: 'end' });
         if (node.start.attach?.target !== target && node.end.attach?.target !== target) throw new Error('Stale connector attachment index');

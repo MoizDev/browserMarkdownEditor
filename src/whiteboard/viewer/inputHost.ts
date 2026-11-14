@@ -13,6 +13,13 @@ import { createBoardWetLayer } from './wetLayer';
 
 // Provenance: input routing, presented mapping, viewer interaction and shared
 // scheduler contracts; independent view-owned wiring, no third-party source.
+/** The host's own mapping and scheduling ports, handed to the services factory once per attachment. */
+export interface BoardInputHostPorts {
+    readonly mappings: MappingHistory;
+    sampleToSurface(sample: RealSample): Point;
+    clientToSurface(x: number, y: number): Point;
+    schedule(callback: () => void): () => void;
+}
 export interface BoardInputHostOptions {
     readonly session: BoardSession;
     readonly runtime: BoardRuntime;
@@ -27,7 +34,9 @@ export interface BoardInputHostOptions {
     readonly mode: BoardInputMode;
     readonly a11y: BoardInputView['a11y'];
     readonly paged: boolean;
-    services(surface: HTMLElement, overlay: HTMLElement, wet: BoardWetLayer): BoardInputServices;
+    services(surface: HTMLElement, overlay: HTMLElement, wet: BoardWetLayer, ports: BoardInputHostPorts): BoardInputServices;
+    /** Called after an attachment's listeners are removed, so per-attachment services can release. */
+    released?(): void;
     invalidate(): void;
     onError(error: unknown): void;
     readonly overlays?: {
@@ -74,7 +83,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => {
         const stop = attached; attached = null; pointerClient = null;
-        if (stop) { safe(stop); notifyAttachment(); }
+        if (stop) { safe(stop); notifyAttachment(); safe(() => options.released?.()); }
         contacts.clear(); flush = null;
     };
     const clientToSurface = (x: number, y: number): Point => {
@@ -93,7 +102,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const connect = () => {
         if (!binding || attached || !enabled || !current()) return;
         const { surface, overlay } = binding;
-        const services = options.services(surface, overlay, wet);
+        const services = options.services(surface, overlay, wet, { mappings, sampleToSurface, clientToSurface, schedule });
         const view: BoardInputView = {
             surface, camera: options.camera, wet, token: inputToken, mappings, a11y: options.a11y, paged: options.paged,
             visible: () => enabled && current(), current: value => value.vaultEpoch === inputToken.vaultEpoch && value.tabId === inputToken.tabId
@@ -143,8 +152,13 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         let removed = false;
         return () => { if (removed) return; removed = true; if (binding?.surface === surface && binding.overlay === overlay) { stopAttachment(); binding = null; } };
     };
+    const schedule = (callback: () => void): (() => void) => {
+        if (disposed) return () => {};
+        scheduled.add(callback); options.invalidate();
+        return () => { scheduled.delete(callback); };
+    };
     return {
-        attachInput, mappings, sampleToSurface, clientToSurface,
+        attachInput, mappings, sampleToSurface, clientToSurface, schedule,
         isAttached: () => attached !== null && !disposed,
         pointerSurface(): Point | null {
             if (!current() || !enabled || !attached || !binding || !pointerClient) return null;
@@ -161,11 +175,6 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             return () => { attachmentListeners.delete(listener); };
         },
         layers: wet.layers,
-        schedule(callback: () => void) {
-            if (disposed) return () => {};
-            scheduled.add(callback); options.invalidate();
-            return () => { scheduled.delete(callback); };
-        },
         consumeInput(_timestamp: number) {
             if (!current() || !enabled) { stopAttachment(); scheduled.clear(); return; }
             safe(connect); safe(() => wet.consumeInput());

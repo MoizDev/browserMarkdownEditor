@@ -5,6 +5,7 @@ import type { NodeId, SheetId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
 import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintNodeOrder } from '../render/paintOrder';
 import type { SpatialCursor, SpatialRef } from '../pick';
 import { BoundsQuality, type BoundsProvider, type LocalGeometryBounds } from './bounds';
 import { SceneBootstrapJob, type BootstrappedScene } from './bootstrap';
@@ -18,7 +19,7 @@ import { createSceneRecordStore, type SceneRecordStore } from './recordStore';
 import { ScenePackedRebuild } from './rebuild';
 import { SceneMetadataStore } from './snapshotDoc';
 import type { NearestVisitor, QueryBuffer, SpatialQuery } from './query';
-import type { SceneBounds, ScenePaintRequest, SceneQueryOptions, SceneSnapshot, SceneSpatial } from './types';
+import type { SceneBounds, ScenePaintBinding, ScenePaintRequest, SceneQueryOptions, SceneSnapshot, SceneSpatial } from './types';
 
 export interface SessionSceneOptions {
     readonly doc: BoardDoc;
@@ -28,7 +29,7 @@ export interface SessionSceneOptions {
     retainNode(node: Readonly<Node>): { release(): void };
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
-    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal): Promise<PaintNodeSource>;
+    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder): Promise<PaintNodeSource>;
     /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;
@@ -58,9 +59,12 @@ export class SessionScene implements SceneSpatial {
     private readonly live: LiveSceneView;
     private readonly rebuild: ScenePackedRebuild;
     private readonly controller = new AbortController();
+    private paintBinding: ScenePaintBinding;
     private readonly stopInvalidation: (() => void) | undefined;
     private constructor(private readonly options: SessionSceneOptions, private state: BootstrappedScene,
         private readonly records: SceneRecordStore, private readonly metadata: SceneMetadataStore) {
+        this.paintBinding = Object.freeze({ token: Object.freeze({ ...options.token }),
+            preparePaint: options.preparePaint, retainRenderer: options.retainRenderer });
         this.live = new LiveSceneView(options.doc, state);
         this.boundsVersions = new BoundsVersions(options.doc.rev);
         const provider: BoundsProvider = {
@@ -223,12 +227,30 @@ export class SessionScene implements SceneSpatial {
         if (!this.ready) throw new Error('Scene publication is pending');
         return this.live.spatialCursor(options);
     }
+    setPaintBinding(binding: ScenePaintBinding): void {
+        if (this.disposed) throw new Error('Scene is disposed');
+        const previous = this.paintBinding.token, token = binding?.token;
+        if (!token || typeof binding.preparePaint !== 'function'
+            || (binding.retainRenderer !== undefined && typeof binding.retainRenderer !== 'function')
+            || !Number.isSafeInteger(token.vaultEpoch) || !Number.isSafeInteger(token.session)
+            || !Number.isSafeInteger(token.bytesGeneration) || token.bytesGeneration < previous.bytesGeneration
+            || token.vaultEpoch !== previous.vaultEpoch || token.documentId !== previous.documentId || token.session !== previous.session) {
+            throw new TypeError('Paint source does not match the scene owner');
+        }
+        this.paintBinding = Object.freeze({ token: Object.freeze({ ...token }), preparePaint: binding.preparePaint,
+            retainRenderer: binding.retainRenderer });
+    }
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
-        return createSceneSnapshot({ token: this.options.token, revision: this.options.doc.rev, records: this.records.pin(),
-            metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}),
-            renderer: this.options.retainRenderer?.(), prepare: this.options.preparePaint,
-            cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
+        const binding = this.paintBinding, records = this.records.pin();
+        let renderer: { release(): void } | undefined;
+        try {
+            renderer = binding.retainRenderer?.();
+            return createSceneSnapshot({ token: binding.token, revision: this.options.doc.rev, records,
+                metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}),
+                renderer, prepare: binding.preparePaint,
+                cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
+        } catch (error) { try { records.release(); } finally { renderer?.release(); } throw error; }
     }
     dispose(): void {
         if (this.disposed) return;

@@ -1,5 +1,7 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from './selectedRootsAsync';
 import { worldPose } from '../change/coordinates';
+import { inverse } from './affine';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
@@ -20,6 +22,8 @@ export interface BoardLeafResizePlanOptions {
     readonly ids: readonly NodeId[];
     readonly down: Vec2;
     readonly handle: ResizeHandle;
+    /** Programmatic whole-selection scaling can include a single sticky. */
+    readonly scope?: 'single' | 'multi';
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -47,7 +51,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         if (!current()) throw new DOMException('Resize plan became stale', 'AbortError');
     };
     check();
-    const nodes = selectedRoots(doc, options.ids);
+    const nodes = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate: options.cooperate }); check();
     if (!nodes.length) throw new Error('Nothing selected for resize');
     for (const node of nodes) {
         if (node.kind === 'opaque' || isLocked(doc, node)
@@ -56,14 +60,14 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     let count = 0;
     for (const root of nodes) {
-        const result: NodeId[] = [], pending = [root]; leaves.set(root.id, result);
+        const result: NodeId[] = [], pending: Node[] = [root]; leaves.set(root.id, result);
         while (pending.length) {
             check(); const node = pending.pop()!;
-            if (node.kind === 'opaque') throw new Error(`Unsupported group resize descendant: ${node.id}`);
+            if (++count % 256 === 0) { await cooperate(); check(); }
             if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
+            // Opaque nodes are locked, so the check above already skips them; opaque descendants were rejected by hasOpaqueDescendant at the roots.
             else { result.push(node.id); all.add(node.id); }
-            if (++count % 256 === 0) { await cooperate(); check(); }
         }
         if (!result.length) throw new Error(`Group has no resizable content: ${root.id}`);
         all.add(root.id);
@@ -71,17 +75,37 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     const scope = await acquireBoardGeometryScope(runtime, all, { signal, current, cooperate: options.cooperate });
     try { check(); fontEpoch = runtime.render.text.fonts.epoch; } catch (error) { scope.release(); throw error; }
     const snapshots = new Map<NodeId, ResizeTargetSnapshot>();
-    try { for (const node of nodes) {
-        const box = scope.localBounds(node.id), pose = worldPose(doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-        const point = (x: number, y: number) => ({ x: pose.x + c * x - s * y, y: pose.y + s * x + c * y });
+    const rotations = new Map<NodeId, number[]>();
+    try { for (const node of nodes) rotations.set(node.id, leaves.get(node.id)!.map(id => worldPose(doc, id).rotation)); }
+    catch (error) { scope.release(); throw error; }
+    const common = commonResizeRotation([...rotations.values()].flat()), mixed = common === null, frameAngle = common ?? 0;
+    const c = Math.cos(frameAngle), s = Math.sin(frameAngle), target = inverse([c, s, -s, c, 0, 0], 1e12);
+    if (!target) { scope.release(); throw new Error('Resize selection frame is not invertible'); }
+    const textNeedsUniform = (node: Readonly<Node>): boolean => {
+        if (node.kind !== 'text') return false;
+        if (mixed || (options.handle.x && options.handle.y)) return true;
+        const turns = Math.round((worldPose(doc, node.id).rotation - frameAngle) / (Math.PI / 2));
+        const turn = (turns % 4 + 4) % 4, hx = options.handle.x, hy = options.handle.y;
+        return (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) !== 0;
+    };
+    const leafCentres = new Map<NodeId, Vec2>();
+    try {
+        for (const ids of leaves.values()) for (const id of ids) {
+            const box = await scope.boundsInSpace(id, target); check();
+            const x = (box[0] + box[2]) / 2, y = (box[1] + box[3]) / 2;
+            leafCentres.set(id, { x: c * x - s * y, y: s * x + c * y });
+        }
+        for (const node of nodes) {
+        const box = await scope.boundsInSpace(node.id, target), pose = worldPose(doc, node.id);
+        check();
+        const point = (x: number, y: number) => ({ x: c * x - s * y, y: s * x + c * y });
         const descendants = leaves.get(node.id)!.map(id => doc.nodes.get(id)!);
         snapshots.set(node.id, { node, centreWorld: point((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
             cornersWorld: [point(box[0], box[1]), point(box[2], box[1]), point(box[2], box[3]), point(box[0], box[3])],
-            relevantRotations: descendants.map(child => worldPose(doc, child.id).rotation),
-            forceAspect: descendants.some(child => child.kind === 'clip' || child.kind === 'sticky'
-                || (child.kind === 'text' && !!options.handle.x && !!options.handle.y)), worldRotation: pose.rotation });
+            // Default, calibration cut by owner: a text side that cannot change width scales uniformly.
+            relevantRotations: rotations.get(node.id)!, forceAspect: descendants.some(child => child.kind === 'clip' || child.kind === 'sticky'
+                || textNeedsUniform(child)), worldRotation: pose.rotation });
     } } catch (error) { scope.release(); throw error; }
-    const mixed = commonResizeRotation([...snapshots.values()].flatMap(value => value.relevantRotations)) === null;
     type Lease = { release(): void };
     let latest: { value: BoardLeafResizePreview; leases: Lease[]; generation: number; signal: AbortSignal } | undefined;
     let pending: { doc: BoardDoc; leases: Lease[]; generation: number } | undefined;
@@ -117,20 +141,22 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                                 handleX: (turn === 0 ? hx : turn === 1 ? hy : turn === 2 ? -hx : -hy) as -1 | 0 | 1,
                                 handleY: (turn === 0 ? hy : turn === 1 ? -hx : turn === 2 ? -hy : hx) as -1 | 0 | 1,
                                 handle: hx && hy ? 'corner' : 'side', scope: 'multi' };
-                            const b = scope.localBounds(id), c0 = Math.cos(oldPose.rotation), s0 = Math.sin(oldPose.rotation);
-                            const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
-                            const worldX = oldPose.x + c0 * x - s0 * y, worldY = oldPose.y + s0 * x + c0 * y;
+                            const centre = leafCentres.get(id); if (!centre) throw new Error('Resize source centre disappeared');
+                            const worldX = centre.x, worldY = centre.y;
                             const c = Math.cos(frame.box.rotation), s = Math.sin(frame.box.rotation);
                             const dx = worldX - frame.anchor.x, dy = worldY - frame.anchor.y, u = c * dx + s * dy, v = -s * dx + c * dy;
                             centreWorld = { x: frame.anchor.x + c * u * frame.scaleX - s * v * frame.scaleY,
                                 y: frame.anchor.y + s * u * frame.scaleX + c * v * frame.scaleY };
+                        }
+                        if (node.kind === 'text' && factors.handle === 'side' && (mixed || (!factors.handleX && factors.handleY))) {
+                            factors = { ...factors, handle: 'corner' };
                         }
                         const fx = factors.x < 0 || (factors.x === 0 && factors.zeroSignX < 0);
                         const fy = factors.y < 0 || (factors.y === 0 && factors.zeroSignY < 0);
                         // Default, calibration cut by owner: a single crossed axis reflects orientation without shear.
                         const rotationWorld = fx !== fy ? 2 * frame.box.rotation - oldPose.rotation : oldPose.rotation;
                         const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors,
-                            centreWorld, rotationWorld, signal: request, current: active, cooperate: options.cooperate });
+                            centreWorld, rotationWorld, alignmentRotation: frame.box.rotation, signal: request, current: active, cooperate: options.cooperate });
                         leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
                     }
                 }
@@ -147,7 +173,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                 return ops;
             } finally { if (!transferred) release(leases); }
         },
-    }); } catch (error) { scope.release(); throw error; }
+    }, options.scope); } catch (error) { scope.release(); throw error; }
     const close = () => {
         if (closed) return; closed = true; generation++; plan.cancel();
         try { clear(); } finally { if (pending) { release(pending.leases); pending = undefined; } scope.release(); }
@@ -161,6 +187,12 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
             catch (error) {
                 if (pending?.generation === turn) { const failed = pending; pending = undefined; release(failed.leases); }
                 throw error;
+            }
+            try { check(request); if (turn !== generation) throw new DOMException('Resize preview superseded', 'AbortError'); }
+            catch (error) { if (pending?.generation === turn) { const failed = pending; pending = undefined; release(failed.leases); } throw error; }
+            if (!value.ops.length && (!pending || pending.generation !== turn)) {
+                if (pending) { release(pending.leases); pending = undefined; }
+                pending = { doc, leases: [], generation: turn };
             }
             const prepared = pending;
             if (!prepared || prepared.generation !== turn || turn !== generation) {

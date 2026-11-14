@@ -89,6 +89,8 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                     || after.revision !== owner.revision || after.selection.anchor !== owner.selection.anchor || after.selection.focus !== owner.selection.focus) return false;
                 if (content.kind === 'empty') return false;
                 if (content.kind === 'text') return options.editor.pasteText(content.fragment);
+                // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
+                if (pending === controller) pending = null;
                 options.editor.manager.close();
                 await options.pasteBoard(input, intent, combined);
                 combined.throwIfAborted();

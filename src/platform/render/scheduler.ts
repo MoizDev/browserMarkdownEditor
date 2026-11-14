@@ -466,8 +466,15 @@ export class FrameScheduler {
                     entry.reasons.clear();
                     // Discard stale document/view work BEFORE a callback can resize a surface.
                     if (!this.token(entry)) { entry.renderable = false; this.cancelMotion(entry); return; }
+                    // Capture the CURRENT gesture anchor before a target commit can replace
+                    // backing/clip state; camera and DOM remain on the old frame if it fails.
+                    const reportedAnchor = entry.pane.resizeAnchor?.();
+                    const anchor = reportedAnchor ? { world: { ...reportedAnchor.world }, surface: { ...reportedAnchor.surface } } : undefined;
+                    const previousGeometry = entry.pane.metrics.current?.tags.geometryGeneration;
                     const result = entry.pane.commitMetrics(frameId);
-                    if (result?.kind === 'ready') entry.pane.camera.setViewport(result.metrics.viewport, entry.pane.resizeAnchor?.());
+                    if (result?.kind === 'ready') {
+                        entry.pane.camera.setViewport(result.metrics.viewport, anchor, result.tags.geometryGeneration !== previousGeometry);
+                    }
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;
                     entry.renderable = !!token && result?.kind !== 'failed' && metrics?.kind === 'ready' && metrics.tags.deviceGeneration === token.deviceGeneration;

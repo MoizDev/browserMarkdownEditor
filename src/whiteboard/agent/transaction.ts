@@ -5,6 +5,7 @@ import type { NodeId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
 import { validateAgentOp } from './validate';
+import type { ShapeSummary } from './shapes';
 
 export { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
 
@@ -12,6 +13,7 @@ export interface AgentApplyResult {
     readonly created: string[];
     readonly updated: string[];
     readonly deleted: string[];
+    readonly updatedShapes?: readonly ShapeSummary[];
     readonly errors: string[];
 }
 export interface AgentOpResult {
@@ -30,6 +32,7 @@ export interface AgentApplyHost {
     readonly session: BoardSession;
     isCurrent(): boolean;
     readOnlyReason(): string | null;
+    summarize?(id: NodeId): ShapeSummary | undefined;
     stage(op: CanvasOp, context: AgentOpContext): AgentOpResult;
 }
 

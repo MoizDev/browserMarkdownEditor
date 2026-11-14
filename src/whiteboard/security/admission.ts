@@ -23,6 +23,9 @@ export interface JobAuthority {
     assertContext(context: JobContext): void;
     /** A vault switch/reload revokes all outstanding requests, including same-path requests. */
     replace(vaultEpoch: number, generation: number): void;
+    /** Await actual settlement/finally of all work queued before this call, not its abort reply.
+     * Dispose/revoke first when retiring an owner. Worker retirement remains the broker's contract. */
+    drain(): Promise<void>;
     dispose(): void;
 }
 function validCounter(value: number): boolean { return Number.isSafeInteger(value) && value >= 0; }
@@ -108,6 +111,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             abortAll('Session identity replaced');
             epoch = nextEpoch; currentGeneration = nextGeneration;
         },
+        drain() { return tail; },
         dispose() { if (!disposed) { disposed = true; abortAll('Session closed'); } },
     };
 }

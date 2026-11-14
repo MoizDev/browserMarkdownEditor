@@ -291,6 +291,7 @@ third-party code included (normally "none") · date.
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
+| `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

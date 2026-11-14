@@ -130,6 +130,8 @@ export interface ConnectorNode extends NodeBase {
 export interface PolylineNode extends NodeBase {
     readonly kind: 'polyline';
     readonly points: readonly Point[];
+    readonly startAttach?: Attachment | null;
+    readonly endAttach?: Attachment | null;
     readonly spline: 'line' | 'cubic';
     readonly color: Swatch;
     readonly dash: Dash;
@@ -207,6 +209,14 @@ export type Node = StrokeNode | FigureNode | TextNode | StickyNode | ConnectorNo
 export type NodeKind = Node['kind'];
 export type NodeRecord = Node;
 export type NodeTable = ReadonlyMap<NodeId, Readonly<Node>>;
+
+/** One dependency rule for two-terminal and multi-point bound paths. */
+export function attachedTargets(node: Readonly<Node>): readonly NodeId[] {
+    const start = node.kind === 'connector' ? node.start.attach : node.kind === 'polyline' ? node.startAttach : null;
+    const end = node.kind === 'connector' ? node.end.attach : node.kind === 'polyline' ? node.endAttach : null;
+    if (!start) return end ? [end.target] : [];
+    return !end || end.target === start.target ? [start.target] : [start.target, end.target];
+}
 
 type NodeOf<K extends NodeKind> = Extract<Node, { readonly kind: K }>;
 type CommonDefaults<K extends NodeKind> = K extends 'opaque'
@@ -295,7 +305,8 @@ export function createPolyline(p: NodeInput<'polyline'>): PolylineNode {
         x: p.x, y: p.y, rotation: p.rotation ?? COMMON_NODE_DEFAULTS.rotation,
         locked: p.locked ?? COMMON_NODE_DEFAULTS.locked,
         opacity: p.opacity ?? COMMON_NODE_DEFAULTS.opacity, ext: p.ext,
-        points: p.points, spline: p.spline, color: p.color, dash: p.dash,
+        points: p.points, startAttach: p.startAttach ?? null, endAttach: p.endAttach ?? null,
+        spline: p.spline, color: p.color, dash: p.dash,
         size: p.size, width: p.width,
     };
 }

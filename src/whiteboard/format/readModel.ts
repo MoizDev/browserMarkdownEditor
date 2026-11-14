@@ -269,22 +269,22 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
     if (repaired) note(context, 'repair', 'Normalized rich text while retaining its unknown content');
     return { value, unknown, repaired };
 }
+async function attachment(span: JsonSpan, context: ModelReadContext): Promise<{ value: unknown; unknown: boolean }> {
+    if (span.kind === 'null') return { value: null, unknown: false };
+    const a = await fieldMap(span, context.options.cooperate), anchor = await fieldMap(required(a, 'anchor'), context.options.cooperate);
+    let unknown = hasExtras(a, ['target', 'anchor', 'exact', 'precise', 'snap']) || hasExtras(anchor, ['x', 'y']);
+    const value = {
+        target: identifier(required(a, 'target')) as NodeId,
+        anchor: { x: number(required(anchor, 'x')), y: number(required(anchor, 'y')) },
+        exact: boolean(required(a, 'exact')), precise: boolean(required(a, 'precise')),
+        snap: await enumeration(required(a, 'snap'), SNAPS, SNAPS[0], context, () => { unknown = true; }),
+    };
+    return { value, unknown };
+}
 async function endpoint(span: JsonSpan, context: ModelReadContext): Promise<{ value: unknown; unknown: boolean; }> {
-    const fields = await fieldMap(span, context.options.cooperate);
-    let unknown = hasExtras(fields, ['x', 'y', 'attach']);
-    const attached = required(fields, 'attach');
-    let attach: unknown = null;
-    if (attached.kind !== 'null') {
-        const a = await fieldMap(attached, context.options.cooperate), anchor = await fieldMap(required(a, 'anchor'), context.options.cooperate);
-        unknown ||= hasExtras(a, ['target', 'anchor', 'exact', 'precise', 'snap']) || hasExtras(anchor, ['x', 'y']);
-        attach = {
-            target: identifier(required(a, 'target')) as NodeId,
-            anchor: { x: number(required(anchor, 'x')), y: number(required(anchor, 'y')) },
-            exact: boolean(required(a, 'exact')), precise: boolean(required(a, 'precise')),
-            snap: await enumeration(required(a, 'snap'), SNAPS, SNAPS[0], context, () => { unknown = true; }),
-        };
-    }
-    return { value: { x: number(required(fields, 'x')), y: number(required(fields, 'y')), attach }, unknown };
+    const fields = await fieldMap(span, context.options.cooperate), attach = await attachment(required(fields, 'attach'), context);
+    return { value: { x: number(required(fields, 'x')), y: number(required(fields, 'y')), attach: attach.value },
+        unknown: hasExtras(fields, ['x', 'y', 'attach']) || attach.unknown };
 }
 function bounds(fields: ReadonlyMap<string, JsonSpan>, context: ModelReadContext): Bounds | undefined {
     const span = fields.get('b');
@@ -363,6 +363,8 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
             }
         } else if (key === 'start' || key === 'end') {
             const result = await endpoint(span, context); value[key] = result.value; if (result.unknown) await keep();
+        } else if (key === 'startAttach' || key === 'endAttach') {
+            const result = await attachment(span, context); value[key] = result.value; if (result.unknown) await keep();
         } else if (key === 'widthModel') {
             const model = await fieldMap(span, context.options.cooperate), id = required(model, 'id').string(128);
             if (id === 'uniform') {

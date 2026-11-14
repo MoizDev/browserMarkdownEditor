@@ -15,7 +15,7 @@ export const NODE_FILE_FIELDS = {
     labelScale: ['labelScale'], flipX: ['flipX'], flipY: ['flipY'], url: ['url'], text: ['text'],
     autoSize: ['autoSize'], scale: ['scale'], fit: ['fit'], route: ['route'], start: ['start'],
     end: ['end'], bend: ['bend'], elbowMid: ['elbowMid'], headStart: ['headStart'],
-    headEnd: ['headEnd'], labelAt: ['labelAt'], points: ['points'], spline: ['spline'],
+    headEnd: ['headEnd'], labelAt: ['labelAt'], points: ['points'], startAttach: ['startAttach'], endAttach: ['endAttach'], spline: ['spline'],
     name: ['name'], media: ['media'], crop: ['crop'], alt: ['alt'], inverted: ['inverted'],
     playing: ['playing'], time: ['time'], autoplay: ['autoplay'], preview: ['preview'],
 } as const satisfies Record<NodePropKey, readonly [string, ...string[]]>;

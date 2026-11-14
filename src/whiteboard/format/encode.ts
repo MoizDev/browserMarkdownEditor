@@ -4,7 +4,7 @@ import { NODE_FILE_FIELDS, PAPER_FILE_FIELDS, PEN_FILE_FIELDS } from '../model/f
 import type { ExtBag } from '../model/json';
 import type { NodeId, SheetId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
-import type { Node, StrokeNode } from '../model/nodes';
+import type { Attachment, Node, StrokeNode } from '../model/nodes';
 import type { UiBlock } from '../model/styles';
 import type { RichText } from '../text/richText';
 import { COMPATIBILITY_FENCE, fenceDocument } from './fence';
@@ -79,12 +79,14 @@ function richText(value: RichText): unknown {
     });
     return objectValue([['b', blocks]]);
 }
-function connectorEnd(value: Extract<Node, { kind: 'connector'; }>['start']): unknown {
-    const attachment = value.attach === null ? null : objectValue([
-        ['target', value.attach.target], ['anchor', objectValue([['x', value.attach.anchor.x], ['y', value.attach.anchor.y]])],
-        ['exact', value.attach.exact], ['precise', value.attach.precise], ['snap', value.attach.snap],
+function attachment(value: Attachment | null | undefined): unknown {
+    return value == null ? null : objectValue([
+        ['target', value.target], ['anchor', objectValue([['x', value.anchor.x], ['y', value.anchor.y]])],
+        ['exact', value.exact], ['precise', value.precise], ['snap', value.snap],
     ]);
-    return objectValue([['x', value.x], ['y', value.y], ['attach', attachment]]);
+}
+function connectorEnd(value: Extract<Node, { kind: 'connector'; }>['start']): unknown {
+    return objectValue([['x', value.x], ['y', value.y], ['attach', attachment(value.attach)]]);
 }
 function nodeProperty(node: Node, key: string, context: EncoderContext): unknown {
     if (key === 'pts' && node.kind === 'stroke') {
@@ -127,6 +129,7 @@ function nodeProperty(node: Node, key: string, context: EncoderContext): unknown
         return model.id === 'uniform' ? objectValue([['id', model.id]])
             : objectValue([['id', model.id], ['rMin', model.rMin], ['rMax', model.rMax]]);
     }
+    if (node.kind === 'polyline' && (key === 'startAttach' || key === 'endAttach')) return attachment(node[key]);
     if (node.kind === 'polyline' && key === 'points') return node.points.map(point => objectValue([['x', point.x], ['y', point.y]]));
     if (node.kind === 'picture' && key === 'crop' && node.crop !== null) {
         return objectValue(['x0', 'y0', 'x1', 'y1', 'circle'].map(name => [name, node.crop![name as keyof typeof node.crop]]));

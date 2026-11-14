@@ -3,7 +3,7 @@ import { childrenOf, isSheetParent, sheetOf, type BoardDoc, type Sheet } from '.
 import type { NodeId, ParentId, SheetId } from './ids';
 import type { ExtBag } from './json';
 import type { MediaEntry, MediaId } from './media';
-import { createNode, type ConnectorNode, type Node, type NodeRecord } from './nodes';
+import { attachedTargets, createNode, type Node, type NodeRecord } from './nodes';
 import type { OrderKey } from './orderKey';
 
 // Only change/apply.ts imports this module. R-W26: all explicit allocation,
@@ -77,12 +77,6 @@ class MembershipPlan {
         }
     }
 }
-function targets(node: ConnectorNode): readonly NodeId[] {
-    const start = node.start.attach?.target;
-    const end = node.end.attach?.target;
-    return start === undefined ? end === undefined ? [] : [end]
-        : end === undefined || end === start ? [start] : [start, end];
-}
 export function nodeMediaForApply(node: Node): readonly MediaId[] {
     if (node.kind === 'picture' || node.kind === 'clip') return node.media === null ? [] : [node.media];
     if (node.kind !== 'linkcard' || !node.preview) return [];
@@ -142,7 +136,7 @@ function createNodePlan(doc: MutableDoc, record: NodeRecord): PreparedMutation {
     const sheet = sheetOf(doc, node.parent);
     if (sheet !== undefined) members.change(doc.bySheet, sheet, node.id, true);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) members.change(doc.byPage, node.page, node.id, true);
-    if (node.kind === 'connector') transition(members, doc.attachedTo, node.id, [], targets(node));
+    transition(members, doc.attachedTo, node.id, [], attachedTargets(node));
     transition(members, doc.mediaRefs, node.id, [], nodeMediaForApply(node));
     const opaque = opaqueMovePlan(doc, node, null, node.parent);
     return { write() {
@@ -161,7 +155,7 @@ function deleteNodePlan(doc: MutableDoc, id: NodeId): PreparedMutation {
     const sheet = sheetOf(doc, id);
     if (sheet !== undefined) members.change(doc.bySheet, sheet, id, false);
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) members.change(doc.byPage, node.page, id, false);
-    if (node.kind === 'connector') transition(members, doc.attachedTo, id, targets(node), []);
+    transition(members, doc.attachedTo, id, attachedTargets(node), []);
     transition(members, doc.mediaRefs, id, nodeMediaForApply(node), []);
     const opaque = opaqueMovePlan(doc, node, node.parent, null);
     return { write() {
@@ -209,10 +203,11 @@ function setNodePlan(doc: MutableDoc, op: Extract<Op, { readonly t: 'set' }>, ex
         members = new MembershipPlan();
         members.change(doc.byPage, node.page, node.id, false);
         members.change(doc.byPage, op.value, node.id, true);
-    } else if (changed && (op.key === 'start' || op.key === 'end') && node.kind === 'connector') {
+    } else if (changed && ((node.kind === 'connector' && (op.key === 'start' || op.key === 'end'))
+        || (node.kind === 'polyline' && (op.key === 'startAttach' || op.key === 'endAttach')))) {
         members = new MembershipPlan();
-        const after = { ...node, [op.key]: op.value };
-        transition(members, doc.attachedTo, node.id, targets(node), targets(after));
+        const after = { ...node, [op.key]: op.value } as Node;
+        transition(members, doc.attachedTo, node.id, attachedTargets(node), attachedTargets(after));
     } else if (changed && (op.key === 'media' || op.key === 'preview')) {
         members = new MembershipPlan();
         const after = { ...node, [op.key]: op.value } as Node;

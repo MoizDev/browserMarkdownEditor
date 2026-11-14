@@ -42,7 +42,12 @@ export class PointerRouter<Context> {
       },
       move: (id, samples, modifiers) => { if (options.current()) { if (samples.length) options.sampleChanged?.(samples[samples.length - 1]); options.router.update(options.token, id, samples, modifiers) } },
       up: (id, samples, modifiers) => {
-        if (this.pointerId !== id || !options.current()) return
+        if (this.pointerId !== id) return
+        if (!options.current()) {
+          this.pointerId = null
+          try { options.router.interrupt(options.token, 'os-cancel') } finally { options.releaseClaim(); options.ended('os-cancel') }
+          return
+        }
         if (samples.length) options.sampleChanged?.(samples[samples.length - 1])
         options.router.update(options.token, id, samples, modifiers)
         this.pointerId = null

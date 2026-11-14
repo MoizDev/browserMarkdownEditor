@@ -22,7 +22,8 @@ export async function readPrivateClipboardText(encoded: string, plain: string | 
     const decoded = await decodeBoardClipboard({ encoded: new Blob([encoded]), identity, memory: options.memory,
         isCurrent: options.isCurrent, signal });
     try {
-        const cached = plain === null ? null : options.cache?.match(encoded, plain) ?? null;
+        const matched = plain === null ? null : options.cache?.match(encoded, plain) ?? null;
+        const cached = matched && matched.encoded === encoded && matched.plain === plain ? matched : null;
         const acquired = await acquireBoardClipboard({ decoded, identity, isCurrent: options.isCurrent, signal,
             ...(cached && plain !== null ? { cache: { match: cached, encoded, plain } } : {}) });
         try {

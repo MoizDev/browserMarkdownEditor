@@ -9,6 +9,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache, primeLinks } from './utils/graph';
 import { setRecordScope } from './utils/storage';
+import { perfRoot, reportVault } from './utils/perfHooks';
 import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
@@ -1571,6 +1572,9 @@ export default function App() {
             // OLD vault's tree. One writable replaces the file whole, atomically
             // on close.
             const handle = await dir.getFileHandle(ENTRY_STYLE_FILE, { create: true });
+            if (__BME_BENCH__) {
+              try { reportVault({ op: 'write', path: joinVaultPath(folder, ENTRY_STYLE_FILE), caller: 'appearance' }); } catch { /* Measurement must not interrupt a write. */ }
+            }
             await writeFile(handle, text);
           }
         } catch (err) {
@@ -1652,7 +1656,13 @@ export default function App() {
         exportedAt: Date.now(),
       });
       // createFile refreshes the tree, so the PDF shows up in the sidebar.
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export:create' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const handle = await createFile(file.parentHandle, targetName);
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       await writeFileBytes(handle, bytes);
       exportedNotebooksRef.current.add(targetName);
       void tell({
@@ -1808,6 +1818,9 @@ export default function App() {
     root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array,
   ) => {
     try {
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path, caller: 'closing-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const copy = await writeConflictCopyRef.current(path, data, root);
       // A dialog, not the status line: the tab is gone, and the edits are now in
       // a file the reader did not ask for — they must hear where.
@@ -1854,6 +1867,13 @@ export default function App() {
     // does: setTabs is async, so a caller that just produced new content would
     // otherwise race with React and write the previous buffer.
     const snapshot = contentOverride ?? tab.content;
+    if (__BME_BENCH__) {
+      try {
+        const root = perfRoot();
+        const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as { reads: number };
+        funnel.reads++;
+      } catch { /* Measurement must not interrupt a save. */ }
+    }
     const { id, file } = tab;
     const handle = tab.file.handle as FileSystemFileHandle;
     const isPdf = isPdfFile(file.name);
@@ -1906,6 +1926,9 @@ export default function App() {
         const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
           // Nothing reached the disk, so the asset diff's baseline is still
@@ -1991,9 +2014,26 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
+  const agentContentReportRef = useRef(false);
   const updateTabContent = useCallback((path: string, content: string, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
-    if (!target || !canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')) return;
+    const accepted = !!target && canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user');
+    if (__BME_BENCH__) {
+      try {
+        const kind = target?.representation.loadedKind ?? 'unknown';
+        const caller = options?.fromDisk ? 'disk' : agentContentReportRef.current ? 'agent'
+          : `pane:${['markdown', 'text', 'code', 'tex'].includes(kind) ? 'note' : kind}`;
+        const root = perfRoot();
+        const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as {
+          reports: Record<string, number>; rejected: Record<string, number>; ownerlessReports: Record<string, number>;
+        };
+        funnel.reports[caller] = (funnel.reports[caller] ?? 0) + 1;
+        // Today's string reporters have no session owner, including refusals.
+        funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
+        if (!accepted) funnel.rejected[caller] = (funnel.rejected[caller] ?? 0) + 1;
+      } catch { /* Measurement must not interrupt a content report. */ }
+    }
+    if (!accepted) return;
     latestContentRef.current.set(path, content);
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
@@ -2004,6 +2044,14 @@ export default function App() {
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
   }, [scheduleSave]);
+
+  const updateAgentTabContent = useCallback((path: string, content: string) => {
+    if (__BME_BENCH__) {
+      const previous = agentContentReportRef.current;
+      agentContentReportRef.current = true;
+      try { updateTabContent(path, content); } finally { agentContentReportRef.current = previous; }
+    }
+  }, [updateTabContent]);
 
   /**
    * Buffer an edit and write it NOW, skipping the save debounce.
@@ -2075,6 +2123,9 @@ export default function App() {
         const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'rotate' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await writeFileVersionedRef.current(handle, rotated, expected);
         if (result.status !== 'written') {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
@@ -3057,6 +3108,9 @@ export default function App() {
         });
         return;
       }
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const newFileHandle = await createFile(parentHandle!, name);
       // Auto-open the newly created file straight into edit mode. Build the path
       // to match buildFileTree's convention (vault-root-relative, no vault-name
@@ -3717,6 +3771,9 @@ export default function App() {
             if (!pdf) throw Error('Pending PDF edits cannot be preserved yet. Keep this tab open and retry.');
             data = await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdf.original, text, pdf.overlays);
           } else if (!canReadTabText(live)) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
+          if (__BME_BENCH__) {
+            try { reportVault({ op: 'write', path: from, caller: 'cross-kind' }); } catch { /* Measurement must not interrupt a write. */ }
+          }
           const kept = await writeConflictCopy(from, data, rootHandle);
           announce(`Your edits were kept as “${kept.slice(kept.lastIndexOf('/') + 1)}” before changing document kind.`);
           if (rootHandleRef.current !== rootHandle) return [];
@@ -4194,6 +4251,9 @@ export default function App() {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
           return;
         }
+        if (__BME_BENCH__) {
+          try { reportVault({ op: 'write', path, caller: 'recreate' }); } catch { /* Measurement must not interrupt a write. */ }
+        }
         const result = await recreateFile(path, data);
         if (result.status === 'exists') {
           // Something new took the name meanwhile: that is a conflict to choose
@@ -4229,6 +4289,11 @@ export default function App() {
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
+        if (__BME_BENCH__) {
+          try {
+            if (keep !== null && keep !== read.text) reportVault({ op: 'write', path, caller: 'disk-reload-conflict' });
+          } catch { /* Measurement must not interrupt a write. */ }
+        }
         const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
         const now = tabsRef.current.find(t => t.id === id);
         if (!now) return;
@@ -4242,6 +4307,9 @@ export default function App() {
       // AGAIN in between raises the conflict again rather than being overwritten.
       await getView(path)?.flushPending?.();
       const disk = await readBytesVersioned(handle);
+      if (__BME_BENCH__) {
+        try { reportVault({ op: 'write', path, caller: 'disk-keep-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
+      }
       const copy = await writeConflictCopy(path, disk.bytes);
       setBaseline(id, disk.version);
       setDiskState(id, null);
@@ -4340,7 +4408,7 @@ export default function App() {
       writeFile,
       createFile,
       createFolder,
-      updateTabContent,
+      updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
         recordFileWritten(file.path);

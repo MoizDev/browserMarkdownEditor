@@ -54,7 +54,7 @@ export function prefetchPanes(kinds: CanvasKinds): void {
         // first click — dynamically, or pdf.js would land in the main bundle.
         if (kinds.pdf) {
             warm('pdf', () => import('./PdfPane'));
-            warm('pdf-worker', () => import('../utils/pdfWorker').then(m => { m.pdfWorker(); }));
+            warm('pdf-worker', () => import('../utils/pdfClassicOpen').then(m => { m.prefetchClassicPdf(); }));
         }
         // A notebook IS a tldraw canvas, so either kind warms the big one.
         if (kinds.drawing) warm('drawing', () => import('./DrawingPane'));

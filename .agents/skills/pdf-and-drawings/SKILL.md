@@ -16,11 +16,11 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 (pristine) and `tldraw-snapshot.json` (editable strokes). It opens in any viewer *and* reopens here
 as live tldraw shapes.
 
-- **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
-  attachments in ONE pdf.js open: an embedded `original.pdf` means it is already one of ours, and its
-  ABSENCE means the file's own bytes are the pristine original. That is the whole of the conversion —
-  the first save is what adds the attachments. Files made by the old spawn-a-sibling behaviour keep
-  working unchanged, because they were always identified by content.
+- **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` uses the build worker's
+  read-only attachment inventory, not the classic renderer. Only a validated `plain`/`annotated`
+  role authorizes its exact pristine source object for saving. Missing, unreadable, ambiguous or
+  unsupported attachments stay tagged read-only; they never become plain PDFs on failure. The
+  outer pages remain readable. The first save adds the attachments; old sibling files still work.
 - **The role read is lazy** (`needsSource`, set on first switch to edit and sticky): every PDF can be
   annotated now, so gating it on the filename is gone, and reading every PDF on open just to find out
   would be an N-MB allocation and a disk read for documents only ever read.
@@ -57,7 +57,9 @@ as live tldraw shapes.
   *applies* `/Rotate` (canvas is landscape) but pdf-lib *ignores* it (`getSize()` returns the
   portrait MediaBox). The raster half anchors + rotates the image per angle; the vector half
   concatenates the same mapping as a CTM and draws inside it.
-- `withPdf` always slices the buffer (pdf.js detaches it) and always destroys the worker.
+- `withPdf` is gone: role inventory uses the build worker, while `openPdfPages` keeps a guarded
+  classic task alive until its caller closes it. Only the classic adapter copies renderer bytes
+  (pdf.js detaches its input); a display/Retry never mutates the original.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.
 
@@ -113,15 +115,36 @@ as live tldraw shapes.
 
 ## One pdf.js worker for the whole app — `utils/pdfWorker.ts`
 
-pdf.js spawns a worker **per `getDocument`** unless it is handed one, and a loading task only tears
-down a worker it created itself (`task._worker` is set only when the caller passed none) — so passing
-a shared one is safe, and is the whole fix. Opening a single PDF used to start two workers: `PdfPane`
-probes the file's role via `readPdfRole` before it knows which view to show, then `PdfViewer` opens
-the same bytes again; each boot loads and compiles ~1MB of worker script before a byte is read.
-**Pass `worker: pdfWorker()` to every `getDocument`.** That module is also the one place that sets
-`GlobalWorkerOptions.workerSrc` — importing it is how the PDF modules get the assignment. Verified by
-counting `new Worker(...)`: one for the session, zero more per PDF opened. `prefetchPanes` starts it
-at idle (dynamically, or pdf.js lands in the main bundle), so the boot is off the first click.
+**Only `openClassicPdf` calls pdf.js `getDocument`.** It copies renderer input and obtains the
+shared native module worker through a transferable ready/test handshake and pinned bootstrap.
+No fake/main-thread worker is permitted. `loadClassicPdf` and `closeClassicPdf` own guarded
+acquisition and bounded dead-port teardown of the REAL loading task; never replace task/proxy
+methods. `pdfWorker()` is compatibility for an already-ready port, not a startup entry point.
+`prefetchPanes` calls `prefetchClassicPdf` dynamically only under `kinds.pdf`, retaining lazy
+font/decoder warming. Idle failure stays silent until a document is demanded; no retry loop.
+
+Every asynchronous render/stream consumer uses `session.health.guard` (or
+`classicPdfHealth(doc).guard`) so a dead native port cannot retain a document/page/reader permit.
+Cancel streams without awaiting dead-port RPCs during cleanup, then release reader locks/leases.
+Publish render failures with `recordClassicRenderFailure(health, error, zeroBasedPage)`;
+cancellation is not a render failure. Assert page completeness before returning a raster capture,
+including after asynchronous encoding/composition. Available partial pages can still DISPLAY,
+with persistent app notices and **Thumbnail unavailable**; they are not clean tool captures.
+
+Worker message shapes, runtime assets, bootstrap and native-emphasis internals stay pinned to
+pdf.js 6.1.200 together. Fetch/XHR/WASM observation preserves exact results/throws. A JS fallback
+that fully renders is complete: a dependency failure taints the worker for the next explicit
+open/Retry, but must not falsely mark its successful page incomplete. No PDF text/URLs enter
+health diagnostics. Native worker errors are fatal; silent closure only becomes a soft demanded-
+work no-progress notice (about ten seconds), never a timeout kill or image-size refusal.
+Progress/completion clears that notice. Healthy Retry reopens only its document; explicit Retry
+of an unresponsive/tainted/failed worker creates one replacement. Other affected PDFs retry
+separately. Chrome worker crashes can take the renderer down too; do not promise crash isolation.
+
+Annotation health belongs to the editable pristine source, while refused Annotate uses the outer
+viewer's session health. A renderer Retry cannot clear a tagged role refusal. Never remount an
+annotation canvas or replace its snapshot to retry: preserve unflushed ink and direct the reader
+to View until source replacement and its `onRenderHealth` handoff can land atomically.
 
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 

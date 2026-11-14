@@ -66,6 +66,14 @@ workspace cycles through all of it.
 
 - **Autosave is per-tab**, via a `Map<path, timer>` (`saveTimersRef`, 1s debounce). Switching or
   closing one tab must never cancel another tab's pending write.
+- **Deferred source snapshots have explicit ownership** (`utils/documentBuffers.ts`). The buffer
+  retains its accepted `DeferredSource` when it offers `retain`; `snapshotOf` / `snapshotForDocument`
+  are borrowed, synchronous reads only. Async save, copy, agent and queued work use
+  `retainSnapshotOf` / `retainSnapshotForDocument` and release in `finally`. A board producer's
+  captured job is immutable; superseding it releases its pins only after the last lease. Actual
+  session disposal may cancel unbuilt jobs: C14 preservation copies must materialize before disposal,
+  while a captured journal recipe is self-contained after it. Board `afterWritten` gets the exact
+  acknowledged checkpoint's frozen context, not the newest one; PDF rebind uses that context.
 - **Browser exit protection tracks synchronous document revisions and pending canvas serializers.**
   `beforeunload` is armed as soon as work appears, until its actual write is acknowledged or the
   user discards it. Hidden/pagehide checkpoints drain serializers first, then use the versioned

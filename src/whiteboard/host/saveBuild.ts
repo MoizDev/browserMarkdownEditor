@@ -11,12 +11,12 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
     let disposed = false;
     const pending = new Set<() => void>();
     return {
-        pinBuild(base, revision): PinnedBoardBuild {
+        pinBuild(base, revision, context): PinnedBoardBuild {
             if (disposed) throw new Error('Board build owner is disposed');
             if (base.revision !== revision) throw new Error('Board build revision mismatch');
             const media: PinnedMediaRestore = ports.pinMedia(revision);
             let pdf: PinnedPdfAssembly | undefined;
-            try { pdf = ports.pinPdf?.(revision); }
+            try { pdf = ports.pinPdf?.(revision, context); }
             catch (error) { media.release(); throw error; }
             const lifetime = new AbortController();
             let released = false, result: Uint8Array | Blob | undefined, inFlight: Promise<Uint8Array | Blob> | undefined;
@@ -31,6 +31,7 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
             pending.add(cancel);
             return {
                 revision,
+                release,
                 async build(signal) {
                     signal.throwIfAborted();
                     if (result) return result;

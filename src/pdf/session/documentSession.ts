@@ -115,6 +115,8 @@ export class PdfTiledDocumentSession {
         } catch (error) { release(); throw error; }
     }
 
+    get lifetimeSignal(): AbortSignal { return this.controller.signal; }
+
     isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
 
     getSlot<T>(key: symbol): T | undefined { return this.slots.get(key)?.value as T | undefined; }

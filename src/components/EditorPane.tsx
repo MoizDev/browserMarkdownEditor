@@ -1127,6 +1127,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             nativeCanvasHost={nativeCanvasHost}
                             representation={tab.representation}
                             isVisible={visible}
+                            isFocused={tab.file.path === focusedPath}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}
                             slotWidth={slot?.width ?? 100}

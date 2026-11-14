@@ -7,30 +7,31 @@ export interface BoardSessionPort extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly isReadOnly: boolean;
     readonly readOnlyReason?: string | null;
-    dispose?(): void;
+    dispose?(): void | Promise<void>;
 }
 export interface HostedBoardAdapter<S extends BoardSessionPort> extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly board: S;
-    dispose(): void;
+    dispose(): void | Promise<void>;
 }
 
 /** Called inside sessions.ensure/replace, with that store's freshly allocated owner. The
  * liveness callback is App-owned and resolves identity, not a path captured by a pane. */
 export function createBoardSessionAdapter<S extends BoardSessionPort>(
-    owner: SourceOwner, board: S, isLiveOwner: (owner: SourceOwner) => boolean, disposeBoard?: () => void,
+    owner: SourceOwner, board: S, isLiveOwner: (owner: SourceOwner) => boolean, disposeBoard?: () => void | Promise<void>,
 ): HostedBoardAdapter<S> {
     if (board.owner.documentId !== owner.documentId || board.owner.session !== owner.session) throw new Error('Board session owner mismatch');
-    let disposed = false;
+    let disposed = false, cleanup: Promise<void> | undefined;
     const live = () => !disposed && isLiveOwner(owner);
     const sourceForOwner = (source: ContentSource) => typeof source !== 'string'
         && source.owner.documentId === owner.documentId && source.owner.session === owner.session;
     return {
         owner, board,
         dispose() {
-            if (disposed) return;
+            if (cleanup) return cleanup;
             disposed = true;
-            if (disposeBoard) disposeBoard(); else board.dispose?.();
+            cleanup = Promise.resolve().then(() => disposeBoard ? disposeBoard() : board.dispose?.());
+            return cleanup;
         },
         hasPendingEdits: () => live() && board.hasPendingEdits(),
         checkpoint() {

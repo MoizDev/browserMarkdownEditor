@@ -91,13 +91,14 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
     const adapter = createBoardAgentAdapter(host);
     return {
         shapes(query, options) {
+            const captured = { ...query };
             return authority.run(async context => {
                 authority.assertContext(context);
                 if (!host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
                 const revision = host.session.doc.rev;
                 const sheet = host.session.doc.sheets.get(host.sheet());
                 if (!sheet) throw new RangeError('Sheet does not exist');
-                const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, query, revision, false, () => {
+                const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, captured, revision, false, () => {
                     authority.assertContext(context);
                     if (!host.isCurrent() || host.session.doc.rev !== revision || host.sheet() !== sheet.id)
                         throw new DOMException('Board changed during shape projection', 'AbortError');
@@ -149,7 +150,7 @@ export async function readClosedAgentProjection(options: {
     assertBaseline(signal: AbortSignal): Promise<void>;
     project(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
 }): Promise<ShapePage> {
-    const { authority } = options;
+    const { authority } = options, query = { ...options.query };
     if (!Number.isSafeInteger(options.diskRevision) || options.diskRevision < 0) throw new RangeError('Invalid disk generation');
     return authority.run(async context => {
         const guard = () => {
@@ -169,7 +170,7 @@ export async function readClosedAgentProjection(options: {
             try {
                 guard();
                 const result = await listPinnedShapes(acquired.load.doc, acquired.load.doc.sheetOrder, projection.geometry,
-                    options.query, options.diskRevision, true, guard);
+                    query, options.diskRevision, true, guard);
                 guard();
                 await options.assertBaseline(context.signal);
                 guard();

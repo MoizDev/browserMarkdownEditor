@@ -435,7 +435,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             void layout.tick(pin).then(frame => {
                 pending = false;
                 if (!alive) return;
-                if (!frame) { schedule(); return; }
+                if (!frame) { if (!layout.failed) schedule(); return; }
                 // A newer pointer move must win over an older in-flight frame.
                 const current = draggingRef.current;
                 if (current) {

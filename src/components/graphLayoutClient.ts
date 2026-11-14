@@ -4,7 +4,7 @@ import { GraphLayout } from '../utils/graphLayout';
 import type { GraphLink } from '../types';
 
 export interface GraphFrame {
-    gen: number; frame: number; buffer: Float64Array; alpha: number; steps: number;
+    gen: number; frame: number; buffer: Float64Array<ArrayBuffer>; alpha: number; steps: number;
     moved: boolean; working: boolean; stepMs: number;
 }
 let nextClient = 0;
@@ -42,7 +42,12 @@ export class GraphLayoutClient extends GraphLayout {
         void this.client.request('topology', { gen, ids: this.ids, links: this.links }, { priority: 1 }).catch(() => {});
     }
 
-    wake(alpha: number): void { this.alpha = Math.max(this.alpha, alpha); this.reheat = Math.max(this.reheat, alpha); }
+    get failed(): boolean { return this.client.state === 'failed'; }
+
+    wake(alpha: number): void {
+        if (this.failed) this.client.reset();
+        this.alpha = Math.max(this.alpha, alpha); this.reheat = Math.max(this.reheat, alpha);
+    }
 
     async tick(pin: { id: string; x: number; y: number } | null): Promise<GraphFrame | null> {
         if (this.disposed || this.ticking) return null;

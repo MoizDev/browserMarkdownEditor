@@ -273,6 +273,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     const manager = createTextEditingManager({ session, createText: create, select: id => runtime.selection.replace([id]), error: report,
         binding(id, key, initialSelection, creationToken) {
             active = id; editingEpoch++; misspellings = []; queueMicrotask(checkSpelling); let latest: TextPaint | null = null;
+            const layoutEngine = render.text.layout;
             const view: TextEditViewServices = {
                 setSelection(selection) { options.ui.selectionChanged(id, selection); },
                 changed(selection) { options.ui.selectionChanged(id, selection); checkSpelling(); requestFrame(); },
@@ -283,11 +284,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink,
-                finish() { stopScroll(); render.text.layout.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                finish() { stopScroll(); layoutEngine.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,
-                mac: options.mac, session, layoutEngine: render.text.layout, view,
+                mac: options.mac, session, layoutEngine, view,
                 request: (node, text, serial) => request(node, text, serial),
                 transforms() {
                     const node = doc.nodes.get(id); if (!node || !latest) throw new Error('Text layout is unavailable');

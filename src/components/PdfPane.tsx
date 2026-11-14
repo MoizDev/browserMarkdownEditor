@@ -124,16 +124,18 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
-    const printEpoch = useRef(0), printPending = useRef<number | null>(null);
+    const printEpoch = useRef(0), printPending = useRef<number | null>(null), printExpiry = useRef<number | null>(null);
     const printReady = useRef<{ url: string; valid: () => boolean } | null>(null);
     const cancelPrint = useCallback(() => {
         ++printEpoch.current; printPending.current = null;
+        if (printExpiry.current !== null) window.clearTimeout(printExpiry.current);
+        printExpiry.current = null;
         if (printReady.current) URL.revokeObjectURL(printReady.current.url);
         printReady.current = null;
         setPrint('closed'); setPrintError('');
     }, []);
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
-    useEffect(() => () => { ++printEpoch.current; if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
+    useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
         if (printPending.current !== null) return;
         const epoch = ++printEpoch.current;
@@ -144,7 +146,13 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             if (printEpoch.current !== epoch) return;
             if (!result.valid()) throw new Error('The document changed while preparing to print.');
             const url = URL.createObjectURL(new Blob([result.bytes.slice().buffer], { type: 'application/pdf' }));
-            printReady.current = { url, valid: result.valid }; setPrint('ready');
+            printReady.current = { url, valid: result.valid };
+            printExpiry.current = window.setTimeout(() => {
+                if (printReady.current?.url !== url) return;
+                URL.revokeObjectURL(url); printReady.current = null; printExpiry.current = null;
+                setPrintError('The prepared PDF expired. Prepare it again to print.'); setPrint('confirm');
+            }, 60_000);
+            setPrint('ready');
         } catch (error) {
             if (printEpoch.current !== epoch) return;
             setPrintError(error instanceof Error ? error.message : 'Could not prepare this PDF.'); setPrint('confirm');

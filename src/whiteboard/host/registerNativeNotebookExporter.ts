@@ -7,6 +7,9 @@ import { exportNotebookPdf } from './notebookExport';
 import { pinNativeNotebookExport } from './notebookExportCapture';
 import { getBoardRuntime } from './runtime';
 
+export type NativeNotebookDisplayWriter = (input: Parameters<DisplayPdfWriter>[0],
+    options: { readonly signal?: AbortSignal; readonly revision: number }) => Promise<Uint8Array>;
+
 const slot = Symbol('native notebook exporter');
 
 /** The session owns the exporter; pane hiding, graph view and remount never remove it. */
@@ -14,7 +17,7 @@ export function registerNativeNotebookExporter(options: {
     board: ComposedBoardSession;
     host: NativeCanvasHost;
     identity: NativeCanvasIdentity;
-    writer: DisplayPdfWriter;
+    writer: NativeNotebookDisplayWriter;
     onError(error: unknown): void;
 }): void {
     const { board, host, identity } = options;
@@ -50,7 +53,8 @@ export function registerNativeNotebookExporter(options: {
                 sourcePath, isCurrent: () => !released && isCurrent(),
                 async run(signal) {
                     if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
-                    const bytes = await exportNotebookPdf(pin.snapshot, sourcePath, options.writer, signal);
+                    const bytes = await exportNotebookPdf(pin.snapshot, sourcePath,
+                        (input, writerOptions) => options.writer(input, { ...writerOptions, revision: pin.revision }), signal);
                     if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
                     return { paper: { ...pin.snapshot.paper }, bytes };
                 },

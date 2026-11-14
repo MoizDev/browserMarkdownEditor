@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "qualification": "development",
   "shippingAllowed": false,
-  "buildId": "dev-b44ffc46a7118fe7f8eb42c0dde08000e3f32d5922c44df048ac2a2a314f46d2",
-  "sha256": "b44ffc46a7118fe7f8eb42c0dde08000e3f32d5922c44df048ac2a2a314f46d2",
+  "buildId": "dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
+  "sha256": "fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
   "hashMeaning": "SHA-256 of canonical true input bytes, NOT archive or WASM bytes",
-  "artifactSha256": "8a563788889f507eea5c20ee7634dac294b12f6f3cd878fac8da46a304a9611b",
-  "assetDirectory": "dev-b44ffc46a7118fe7f8eb42c0dde08000e3f32d5922c44df048ac2a2a314f46d2",
-  "servedBase": "/__bme_pdfium_dev/dev-b44ffc46a7118fe7f8eb42c0dde08000e3f32d5922c44df048ac2a2a314f46d2/",
+  "artifactSha256": "73f62292af0788136a8ef95cb1bd0e534b1d87d602593c65617f43e5741e260c",
+  "assetDirectory": "dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9",
+  "servedBase": "/__bme_pdfium_dev/dev-fd3b40d3b2ca9635dac3bf7ef1ad9005e2118f25e4029e9c656fb47156ce5fe9/",
   "factory": {
     "format": "es-module",
     "export": "default",
@@ -19,17 +19,17 @@
   "files": {
     "glue": {
       "path": "pdfium.mjs",
-      "sha256": "769896ac3231f376ad15d6f6cb1cdb116099cf6627556131405fe149aae578e5",
-      "bytes": 36152,
-      "gzipBytes": 8634,
-      "brotliBytes": 7598
+      "sha256": "688ca5f500026f9c11640384b348b58b5917376998e57a1019be12a372e001bf",
+      "bytes": 36448,
+      "gzipBytes": 8679,
+      "brotliBytes": 7638
     },
     "wasm": {
       "path": "pdfium.wasm",
-      "sha256": "8a563788889f507eea5c20ee7634dac294b12f6f3cd878fac8da46a304a9611b",
-      "bytes": 5350301,
-      "gzipBytes": 2456264,
-      "brotliBytes": 1924980
+      "sha256": "73f62292af0788136a8ef95cb1bd0e534b1d87d602593c65617f43e5741e260c",
+      "bytes": 5351153,
+      "gzipBytes": 2456315,
+      "brotliBytes": 1924624
     }
   },
   "initialMemoryBytes": 33554432,
@@ -39,7 +39,7 @@
     "version": 1,
     "writer": 3758096384
   },
-  "nativeExports": 136,
+  "nativeExports": 138,
   "allocatorExports": [
     "malloc",
     "free"
@@ -210,9 +210,10 @@
       "kind": "function"
     }
   ],
-  "canonicalExportMapSha256": "1cc1183252caf636f0a79e87a582ed48330fd02dd340941f0b36b23030e34d41",
+  "canonicalExportMapSha256": "9329444bd4245287ece48a32e79322c2da132c320f227450e03116239fed369c",
   "opCoverage": {
     "doc.attachment": [
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
@@ -240,6 +241,7 @@
       "FPDF_RenderPage_Close"
     ],
     "doc.open": [
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -262,6 +264,7 @@
       "FPDFAction_GetFilePath",
       "FPDFAction_GetType",
       "FPDFAction_GetURIPath",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFBookmark_GetAction",
@@ -295,6 +298,7 @@
     ],
     "font.provide": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -320,6 +324,7 @@
     "page.complexity": [
       "FORM_OnAfterLoadPage",
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -364,6 +369,7 @@
     "page.emphasisProbe": [
       "FORM_OnAfterLoadPage",
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFBitmap_CreateEx",
@@ -465,6 +471,7 @@
       "FPDFAction_GetFilePath",
       "FPDFAction_GetType",
       "FPDFAction_GetURIPath",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -514,6 +521,7 @@
     "page.text": [
       "FORM_OnAfterLoadPage",
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -590,6 +598,7 @@
     "page.tile": [
       "FORM_OnAfterLoadPage",
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFBitmap_CreateEx",
@@ -683,9 +692,11 @@
     "worker.stats": [],
     "write.annotated": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
+      "FPDFAttachment_SetDescription",
       "FPDFAttachment_SetFile",
       "FPDFAttachment_SetStringValue",
       "FPDFCatalog_IsTagged",
@@ -727,6 +738,7 @@
       "FPDF_SaveAsCopy"
     ],
     "write.inspectAttachments": [
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
@@ -747,8 +759,10 @@
     ],
     "write.notebook": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
+      "FPDFAttachment_SetDescription",
       "FPDFAttachment_SetFile",
       "FPDFAttachment_SetStringValue",
       "FPDFCatalog_IsTagged",
@@ -785,6 +799,7 @@
     "write.pageDigest": [
       "FORM_OnAfterLoadPage",
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -828,6 +843,7 @@
     ],
     "write.rotate": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -863,8 +879,10 @@
     ],
     "writer.buildNotebook": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
+      "FPDFAttachment_SetDescription",
       "FPDFAttachment_SetFile",
       "FPDFAttachment_SetStringValue",
       "FPDFCatalog_IsTagged",
@@ -901,9 +919,11 @@
     "writer.emitInk": [],
     "writer.finishAnnotated": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
+      "FPDFAttachment_SetDescription",
       "FPDFAttachment_SetFile",
       "FPDFAttachment_SetStringValue",
       "FPDFCatalog_IsTagged",
@@ -930,6 +950,7 @@
     ],
     "writer.inspect": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
@@ -963,6 +984,7 @@
       "FPDF_RenderPage_Close"
     ],
     "writer.prepareSource": [
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetFile",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
@@ -991,6 +1013,7 @@
     ],
     "writer.rotate": [
       "FORM_OnBeforeClosePage",
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -1025,6 +1048,7 @@
       "FPDF_SaveAsCopy"
     ],
     "writer.stageAnnotated": [
+      "FPDFAttachment_GetDescription",
       "FPDFAttachment_GetName",
       "FPDFAttachment_GetStringValue",
       "FPDFCatalog_IsTagged",
@@ -1063,7 +1087,7 @@
   "inputs": {
     "allocator": "dlmalloc",
     "architecture": "linux-arm64-native",
-    "canonicalExportMapSha256": "1cc1183252caf636f0a79e87a582ed48330fd02dd340941f0b36b23030e34d41",
+    "canonicalExportMapSha256": "9329444bd4245287ece48a32e79322c2da132c320f227450e03116239fed369c",
     "containerImageConfig": "sha256:a43e70a74c6a9d4d44294ed41ae79dc96678eaa7f9e86e617906f783c8127d93",
     "deps": {
       "pdfium": {
@@ -1274,9 +1298,11 @@
           "_FPDFAction_GetFilePath",
           "_FPDFAction_GetType",
           "_FPDFAction_GetURIPath",
+          "_FPDFAttachment_GetDescription",
           "_FPDFAttachment_GetFile",
           "_FPDFAttachment_GetName",
           "_FPDFAttachment_GetStringValue",
+          "_FPDFAttachment_SetDescription",
           "_FPDFAttachment_SetFile",
           "_FPDFAttachment_SetStringValue",
           "_FPDFBitmap_CreateEx",
@@ -1486,8 +1512,8 @@
     },
     "schemaVersion": 1,
     "templates": {
-      "abi.c": "b0fbd527ab683590fbbd5928d535fe2d7111ec64d9b4bee43876785e1d31f5e0",
-      "generate-inputs.mjs": "03c34bf4d937df20abf5e69931c3a8e8f3a45b852b325f20499b6c965d98c312",
+      "abi.c": "8bf35ca3f9a7bbbb88263ae4c26e0a4845ce96a05789d2d89d4c65528b7290eb",
+      "generate-inputs.mjs": "233b080831b325462d76e1b07c57c344020c61a7af0a3949954bc84bf2d65626",
       "link.sh": "ce084de20e861bd85b5a4c3d5c257b0d656bce3dd769253dfc2053f3c8808dbf",
       "role-pre.template.js": "40eb9925fd42365e1406c737fbaa668919f10cb726f22604dec88ba0a136ee77"
     },
@@ -1997,7 +2023,7 @@
   },
   "abi": {
     "path": "abi.json",
-    "sha256": "56567429658cc0d411777576dbb560ae34aa33918fcd3f705e6222f1fb3fc359",
-    "bytes": 14735
+    "sha256": "478f2f7bf7b9461d2c8d6f382e95cddbe78fe9fc8a7438932ea54ccf70243d5f",
+    "bytes": 15452
   }
 }

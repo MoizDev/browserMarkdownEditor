@@ -3,6 +3,7 @@ import type { PdfDisplayGeometry } from './pdfOverlay';
 import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
 import { createClassicPdfHealth } from './pdfClassicHealth';
 import { PdfEmphasisVerdicts } from './pdfEmphasisVerdicts';
+import { assertPdfCopyAllowed, classicPdfCapabilities, type PdfCapabilities } from './pdfCapabilities';
 import { createPdfEmphasisIdentity } from './pdfEmphasisIdentity';
 import type { PdfEmphasisIdentity } from './pdfEmphasisIdentity';
 import { forgetPdfEmphasisPlan } from './pdfEmphasisPlanCache';
@@ -17,6 +18,7 @@ export interface PdfDocumentSession {
     readonly emphasisVerdicts: PdfEmphasisVerdicts;
     readonly emphasisIdentity: PdfEmphasisIdentity;
     acquire(): Promise<{ document: PDFDocumentProxy; release(): void }>;
+    capabilities(): Promise<PdfCapabilities>;
     acquirePage(index0: number, consumer: 'render' | 'text' | 'thumbnail' | 'agent', signal?: AbortSignal): Promise<PdfPageLease>;
     acquireRender(index0: number, signal?: AbortSignal): Promise<PdfPageLease>;
     geometry(): Promise<PdfDisplayGeometry[]>;
@@ -51,6 +53,11 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
     let visible = true, currentPage = 0;
     const renderQueues = new Map<number, Promise<void>>();
     let geometryPromise: Promise<PdfDisplayGeometry[]> | undefined;
+    let capabilitiesPromise: Promise<PdfCapabilities> | undefined;
+    const capabilities = () => {
+        if (!capabilitiesPromise) capabilitiesPromise = documentReady().then(doc => health.guard(classicPdfCapabilities(doc)));
+        return capabilitiesPromise;
+    };
     const handoffs = new Map<number, () => void>();
     function makeEntry(index: number, doc: PDFDocumentProxy): Entry {
         const entry: Entry = {
@@ -92,6 +99,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
         health,
         emphasisVerdicts,
         emphasisIdentity,
+        capabilities,
         async acquire() {
             const release = hold();
             try {
@@ -100,12 +108,13 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
                 return { document: doc, release };
             } catch (error) { release(); throw error; }
         },
-        async acquirePage(index0, _consumer, signal) {
+        async acquirePage(index0, consumer, signal) {
             if (signal?.aborted) throw aborted();
             const releaseDocument = hold();
             let entry: Entry | undefined;
             try {
                 const doc = await documentReady();
+                if (consumer === 'text' || consumer === 'agent') assertPdfCopyAllowed(await health.guard(capabilities(), signal));
                 if (closing || signal?.aborted) throw aborted();
                 if (!Number.isInteger(index0) || index0 < 0 || index0 >= doc.numPages) throw new RangeError('PDF page is outside this document');
                 entry = pages.get(index0);

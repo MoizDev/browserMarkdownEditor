@@ -2,11 +2,15 @@
 export function linkUrl(input: string): string | null {
     const trimmed = input.trim();
     if (!trimmed || trimmed.length > 2048) return null;
+    for (const char of trimmed) {
+        const code = char.codePointAt(0)!;
+        if (code < 32 || (code >= 127 && code <= 159)) return null;
+    }
     const value = /^[a-z][a-z\d+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
     if (value.length > 2048) return null;
     try {
         const url = new URL(value);
-        return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:' ? value : null;
+        return !url.username && !url.password && (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:') ? value : null;
     } catch { return null; }
 }
 

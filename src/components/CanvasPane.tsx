@@ -33,6 +33,8 @@ export interface CanvasPaneProps {
     /** OpenTab.id, forwarded by EditorPane independently of the mutable file path. */
     documentId: string;
     representation: DocumentRepresentation;
+    /** Called by a native host on session acquisition, before it enables edits. */
+    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
     /** Is this document some column's showing tab right now? */
     isVisible: boolean;
     /** The column it stands over: the index addresses the editor's CSS

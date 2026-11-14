@@ -59,7 +59,8 @@ export function fetchCardPreview(options: {
             check(); session.history.open('Fetch preview');
             try {
                 const applied = session.apply({ origin: 'host', label: 'Fetch preview', ops: [{ t: 'set', id: options.id, key: 'preview',
-                    value: { title: metadata.title, description: metadata.description, image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
+                    value: { title: metadata.title ?? node.preview?.title ?? null, description: metadata.description ?? node.preview?.description ?? null,
+                        image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
                 applied.release();
             } finally { session.history.close(); }
         });

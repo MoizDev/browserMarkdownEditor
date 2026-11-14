@@ -1,4 +1,5 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
+import { sliceRichText, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -50,7 +51,7 @@ export class TextEditSession {
     private compositionSelection: EditSelection | null = null;
     private closed = false;
 
-    constructor(container: HTMLElement, label: string, id: NodeId, key: 'text' | 'label', selection: EditSelection,
+    constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
         this.selection = selection;
         this.controller = new TextEditController(id, key, services);
@@ -105,6 +106,7 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
+        if (next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.lastActivity = performance.now();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
@@ -189,6 +191,21 @@ export class TextEditSession {
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
         const composition = this.formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
         return { selection, caret, composition };
+    }
+
+    getSelection(): EditSelection { return this.selection; }
+
+    copySelection(): RichFragment {
+        return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    replaceSelection(fragment: RichFragment): void {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
+        const next = { anchor: from + length, focus: from + length };
+        this.services.typing('boundary', this.selection, next);
+        this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+        this.select(next);
     }
 
     applyLink(url: string, selection: EditSelection): boolean {

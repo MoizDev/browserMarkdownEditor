@@ -61,6 +61,7 @@ export function createBoardMediaBridge(
             ? await pdf.read(entry.id, access.signal).then(blob => blob ? { name: null, blob } : null)
             : await io.readBoardAsset(access);
         assertCurrent(access.signal);
+        if (found && found.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
         if (found && await fingerprintSnapshot(found.blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
         assertCurrent(access.signal);
         return found;
@@ -70,6 +71,7 @@ export function createBoardMediaBridge(
         resolveMedia,
         async storeMedia(entry: BoardMediaDescriptor, blob: Blob, signal: AbortSignal): Promise<string | null> {
             const access = request(entry, signal);
+            if (blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
             if (!pdf) return io.putBoardAsset({ ...access, blob, extension: EXTENSIONS[entry.mime] });
             if (await fingerprintSnapshot(blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
             assertCurrent(access.signal);

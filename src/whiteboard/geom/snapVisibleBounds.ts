@@ -46,12 +46,13 @@ export async function prepareVisibleSnapBounds(doc: BoardDoc, id: NodeId, bounds
             if (result.status === 'pending') { await cooperate(); continue; }
             if (result.status === 'empty') return null;
             if (result.status !== 'bounded') throw new Error(result.status === 'uncertain' ? result.reason : 'Visible snap intersection is degenerate');
-            let minX = result.vertices[0], minY = minX, maxX = minX, maxY = minX;
+            let minX = result.vertices[0], minY = minX, maxX = minX, maxY = minX, visited = 0;
             for (const point of result.vertices) {
                 if (compareExactCoordinate(point, minX, 'x') < 0) minX = point;
                 if (compareExactCoordinate(point, maxX, 'x') > 0) maxX = point;
                 if (compareExactCoordinate(point, minY, 'y') < 0) minY = point;
                 if (compareExactCoordinate(point, maxY, 'y') > 0) maxY = point;
+                if (++visited % 128 === 0) { await cooperate(); check(); }
             }
             const left = exactPointIntervals(minX).x, right = exactPointIntervals(maxX).x, top = exactPointIntervals(minY).y, bottom = exactPointIntervals(maxY).y;
             if ([left, right, top, bottom].some(value => !Number.isFinite(value.lo) || value.lo !== value.hi))

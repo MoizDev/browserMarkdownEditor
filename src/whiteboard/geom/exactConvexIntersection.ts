@@ -40,8 +40,11 @@ export function createExactConvexIntersectionJob(operands: readonly ExactConvexO
                 yield;
             }
             if (!winding) return { status: 'degenerate' };
-            if (winding < 0) { points.reverse(); edges.length = 0;
-                for (let i = 0; i < points.length; i++) { edges.push(exactLineBetween(points[i], points[(i + 1) % points.length])); yield; } }
+            if (winding < 0) {
+                for (let lo = 0, hi = points.length - 1; lo < hi; lo++, hi--) { [points[lo], points[hi]] = [points[hi], points[lo]]; yield; }
+                edges.length = 0;
+                for (let i = 0; i < points.length; i++) { edges.push(exactLineBetween(points[i], points[(i + 1) % points.length])); yield; }
+            }
             if (!initialized) {
                 initialized = true;
                 for (let i = 0; i < points.length; i++) { vertices.push({ point: points[i], incoming: edges[(i + edges.length - 1) % edges.length] }); yield; }

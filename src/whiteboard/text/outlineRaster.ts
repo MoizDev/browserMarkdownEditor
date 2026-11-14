@@ -1,0 +1,62 @@
+import type { PageDisplayItem, Rgba } from '../../platform/types';
+import type { WorkerContext } from '../../platform/workers';
+import type { BoardFonts } from './fonts';
+import type { Face, PaintFragment } from './paint';
+
+const TILE_SIDE = 1024;
+function colorCss(color: Rgba): string {
+    return `rgba(${color[0] * 255},${color[1] * 255},${color[2] * 255},${color[3]})`;
+}
+function configure(context: OffscreenCanvasRenderingContext2D, fragment: PaintFragment, face: Face): void {
+    context.font = face.css;
+    context.direction = fragment.rtl ? 'rtl' : 'ltr';
+    context.textAlign = 'left'; context.textBaseline = 'alphabetic';
+    context.fontKerning = 'normal'; context.textRendering = 'geometricPrecision';
+    context.letterSpacing = '0px'; context.wordSpacing = '0px'; context.fontVariantCaps = 'normal';
+}
+function nonempty(data: Uint8ClampedArray): boolean {
+    for (let index = 3; index < data.length; index += 4) if (data[index]) return true;
+    return false;
+}
+
+/** Each fallback bitmap stays small even when one source fragment spans a very wide page. */
+export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, color: Rgba, pageScale: number,
+    blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
+    if (face.loaded && !await fonts.load(face.key)) throw new Error('Export canvas font could not be loaded');
+    context.signal.throwIfAborted();
+    const probe = new OffscreenCanvas(1, 1), measuring = probe.getContext('2d');
+    if (!measuring) throw new Error('Export canvas is unavailable');
+    configure(measuring, fragment, face);
+    const metrics = measuring.measureText(fragment.text), factor = face.size / 64;
+    const left = fragment.x - Math.max(0, metrics.actualBoundingBoxLeft * factor) - factor * 2;
+    const top = baseline - metrics.actualBoundingBoxAscent * factor - factor * 2;
+    const width = Math.max(factor, (metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight) * factor + factor * 4);
+    const height = Math.max(factor, (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) * factor + factor * 4);
+    const density = 4 * pageScale, pixelWidth = Math.max(1, Math.ceil(width * density)), pixelHeight = Math.max(1, Math.ceil(height * density));
+    if (![left, top, width, height, density].every(Number.isFinite) || !(factor > 0 && density > 0)
+        || !Number.isSafeInteger(pixelWidth) || !Number.isSafeInteger(pixelHeight)) throw new RangeError('Text raster geometry is out of range');
+    for (let py = 0; py < pixelHeight; py += TILE_SIDE) for (let px = 0; px < pixelWidth; px += TILE_SIDE) {
+        context.signal.throwIfAborted();
+        const tileWidth = Math.min(TILE_SIDE, pixelWidth - px), tileHeight = Math.min(TILE_SIDE, pixelHeight - py);
+        const canvas = new OffscreenCanvas(tileWidth, tileHeight), draw = canvas.getContext('2d');
+        if (!draw) throw new Error('Export canvas is unavailable');
+        let item: PageDisplayItem | undefined;
+        try {
+            draw.scale(density, density);
+            draw.translate(fragment.x - left - px / density, baseline - top - py / density);
+            draw.scale(factor, factor);
+            configure(draw, fragment, face);
+            draw.fillStyle = colorCss(color);
+            draw.fillText(fragment.text, 0, 0);
+            context.signal.throwIfAborted();
+            if (nonempty(draw.getImageData(0, 0, tileWidth, tileHeight).data)) {
+                const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
+                context.signal.throwIfAborted();
+                item = { kind: 'raster', rect: { x: left + px / density, y: top + py / density,
+                    width: tileWidth / density, height: tileHeight / density }, png: bytes, blend };
+            }
+        } finally { canvas.width = 0; canvas.height = 0; }
+        if (item) yield item;
+        await context.slice();
+    }
+}

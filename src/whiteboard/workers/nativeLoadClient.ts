@@ -3,6 +3,7 @@ import type { BoardKind } from '../model/doc';
 import type { BoardLoadAdmission } from '../model/loadAdmission';
 import type { RehydratedLoad } from '../model/loadTypes';
 import type { JobAuthority } from '../security/admission';
+import { SECURITY_LIMITS } from '../security/limits';
 import type { NativeLoadReply } from './nativeLoad';
 import { validateNativeRequest } from './nativeRequest';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from './protocol';
@@ -19,6 +20,9 @@ function validReply(value: unknown): value is NativeLoadReply {
         || typeof v.readOnly !== 'boolean' || typeof v.complete !== 'boolean' || typeof v.reformatted !== 'boolean'
         || !count(v.issueCount) || !count(v.recordsSeen) || !count(v.recordsRecovered) || !count(v.bytesRead)
         || !Array.isArray(v.issues) || !Array.isArray(v.sources) || !Array.isArray(v.unmapped) || !Array.isArray(v.coldBounds)) return false;
+    if (v.issues.length > SECURITY_LIMITS.records || v.sources.length > SECURITY_LIMITS.records
+        || v.unmapped.length > SECURITY_LIMITS.records || v.coldBounds.length > SECURITY_LIMITS.records
+        || (v.recordsRecovered as number) > (v.recordsSeen as number)) return false;
     if (v.repaired === null) return v.readOnly;
     if (!v.repaired || typeof v.repaired !== 'object' || Array.isArray(v.repaired)) return false;
     const repair = v.repaired as Record<string, unknown>;

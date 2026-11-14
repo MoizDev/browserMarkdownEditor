@@ -57,9 +57,10 @@ export function createSelectionNavigation(options: SelectionNavigationOptions) {
             const scope = await acquireBoardGeometryScope(runtime, [state.active, ...candidates], { signal, current, cooperate });
             try {
                 check(); const source = scope.logicalBounds(state.active), sx = source.x + source.width / 2, sy = source.y + source.height / 2;
-                let best: { id: NodeId; distance: number; side: number; rank: number } | undefined;
+                let best: { id: NodeId; distance: number; side: number; rank: number } | undefined, visited = 0;
                 for (const id of candidates) {
-                    check(); const b = scope.logicalBounds(id), dx = b.x + b.width / 2 - sx, dy = b.y + b.height / 2 - sy;
+                    check(); if (++visited % 128 === 0) { await cooperate(); check(); }
+                    const b = scope.logicalBounds(id), dx = b.x + b.width / 2 - sx, dy = b.y + b.height / 2 - sy;
                     const forward = direction === 'right' ? dx : direction === 'left' ? -dx : direction === 'down' ? dy : -dy;
                     if (!(forward > 0)) continue;
                     const side = Math.abs(axis === 'x' ? dx : dy), distance = Math.hypot(dx, dy), rank = scope.rank(id);

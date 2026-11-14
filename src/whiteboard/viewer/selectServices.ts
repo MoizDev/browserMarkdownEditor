@@ -4,18 +4,22 @@ import type { RenderToken } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
-import { TranslationPlan } from '../geom/translation';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
+import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
+import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
-import { TransformGesture } from '../tools/transform';
-import { translationDriver } from '../tools/transformDrivers';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
+import { createBoardAttachmentResolver } from './attachments';
+import { createShapeHandles } from './shapeHandles';
+import { createStickyHandles } from './stickyHandles';
+import { createSelectionHandles } from './selectionHandles';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -23,13 +27,15 @@ export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
-    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit'>;
+    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
     readonly preview: { showOps(ops: readonly Op[]): void; clear(): void };
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
+    readonly editSticky: (id: NodeId) => void | Promise<void>;
+    readonly alwaysSnap?: () => boolean;
     onError(error: unknown): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
@@ -38,7 +44,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const token = Object.freeze({ ...options.token });
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
-    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, scheduled: (() => void) | null = null;
+    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let guides: readonly BoardSnapGuide[] = [];
     let warmedRevision = -1, warmed = new Set<NodeId>();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && !session.isReadOnly;
@@ -58,6 +65,15 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return had;
     };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
+    const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
+    const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
+        show: ops => options.preview.showOps(ops), clear: () => options.preview.clear(),
+        resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
+    const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, edit: options.editSticky, error: report });
+    const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, error: report });
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -129,13 +145,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         beginTransform(sample, hit, modifiers) {
             check(); const ids = runtime.selection.getSnapshot().selected, revision = doc.rev;
             if (warmedRevision !== revision || !warmed.has(hit) || ids.some(id => !warmed.has(id))) throw new Error('Selection geometry is not preflighted');
-            const plan = new TranslationPlan(doc, ids, render.changeGeometry);
-            return new TransformGesture(sample, modifiers, translationDriver(plan, sample), {
-                hold: () => session.beginGesture(), registerPending,
-                isCurrent: () => mutable() && doc.rev === revision,
-                showPreview: ops => options.preview.showOps(ops), clearPreview: () => options.preview.clear(),
-                apply(transaction) { check(); if (doc.rev !== revision) throw new DOMException('Transform became stale', 'AbortError'); const applied = session.apply(transaction); applied.release(); },
-                error: report,
+            return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
+                zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
+                hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
+                show: ops => options.preview.showOps(ops), guides(value) { guides = value; requestFrame(); },
+                clear() { guides = []; options.preview.clear(); requestFrame(); }, error: report,
             });
         },
         onError: report,
@@ -154,6 +168,21 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
+        if (guides.length) {
+            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+                options.overlay.append(guideSvg); }
+            guideSvg.replaceChildren();
+            for (const guide of guides) {
+                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+                const a = worldToSurface(from, frame.view.camera), b = worldToSurface(to, frame.view.camera);
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
+                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+            }
+        } else { guideSvg?.remove(); guideSvg = null; }
         if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -174,7 +203,40 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
         }
     };
-    return { select, eraser, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
+    const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
+        if (!mutable()) return null;
+        const surface = toSurface(sample), coarse = sample.source === 'touch';
+        const shapeHit = shapeHandles.hit(surface, coarse);
+        if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
+        const direction = stickyHandles.hit(surface, coarse);
+        if (!direction) {
+            const hit = selectionHandles.hit(surface, coarse); if (!hit) return null;
+            const ids = [...runtime.selection.getSnapshot().selected], host = {
+                hold: () => session.beginGesture(), registerPending, current: mutable,
+                show: (ops: readonly Op[]) => options.preview.showOps(ops), clear: () => options.preview.clear(), error: report,
+            };
+            if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
+                { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);
+            return leafResizeHandleGesture(sample, modifiers, { runtime, ids, handle: hit.handle, current: mutable }, host);
+        }
+        const release = session.beginGesture(), pointerIds = new Set([sample.pointerId]), down = surface;
+        let ended = false, cancelled = false, cleaned = false, unregister: (() => void) | undefined;
+        const cleanup = () => { if (cleaned) return; cleaned = true; unregister?.(); unregister = undefined; release(); };
+        const cancel = () => { if (cancelled) return; cancelled = true; ended = true; stickyHandles.hide(); cleanup(); };
+        try { unregister = registerPending(cancel); } catch (error) { release(); throw error; }
+        return { kind: 'node-edit', pointerIds,
+            update(samples) { for (const next of samples) if (pointerIds.has(next.pointerId)) {
+                const point = toSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
+            } },
+            finish(reason) {
+                if (ended || cancelled) return; ended = true;
+                if (reason !== 'up' || !mutable()) { cancel(); return; }
+                void stickyHandles.activate(direction, false).finally(cleanup);
+            },
+            cancel,
+        };
+    };
+    return { select, eraser, beginHandle, writeOverlays, cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

@@ -25,6 +25,8 @@ export interface BoardGeometryScope {
     readonly geometry: BoardRuntime['render']['changeGeometry'];
     localBounds(id: NodeId): Box;
     logicalBounds(id: NodeId): Readonly<Rect>;
+    /** Actual logical geometry in the caller's rigid target space. */
+    boundsInSpace(id: NodeId, targetFromWorld: Affine): Promise<Box>;
     worldPose(id: NodeId): WorldPose;
     rank(id: NodeId): number;
     release(): void;
@@ -238,6 +240,11 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
                 return [box[0], box[1], box[2], box[3]]; },
             logicalBounds(id) { guard(id); const box = world.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
                 return { x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] }; },
+            async boundsInSpace(id, targetFromWorld) {
+                guard(id); if (!local.has(id) || targetFromWorld.length !== 6 || !targetFromWorld.every(Number.isFinite)) throw new Error('Invalid geometry target space');
+                const target: Affine = [...targetFromWorld];
+                const box = await aggregate(id, target); guard(id); return box;
+            },
             worldPose(id) { guard(id); if (!local.has(id)) throw new Error(`Node is outside geometry scope: ${id}`); return { ...pose(id) }; },
             rank(id) { guard(id); const value = ranks.get(id); if (value === undefined) throw new Error(`Node is outside geometry scope: ${id}`); return value; },
             release() { if (!released) { released = true; lease.release(); } },

@@ -2,7 +2,7 @@ import type { RecoveryEntry } from './recoveryJournal';
 
 export interface RecoveryOffer {
     /** The only entry eligible for in-place recovery at this path. */
-    newest: RecoveryEntry;
+    newest?: RecoveryEntry;
     /** Other windows' edits are never discarded or applied to the live file. */
     copies: RecoveryEntry[];
 }
@@ -14,7 +14,7 @@ export function groupRecovery(entries: readonly RecoveryEntry[]): Map<string, Re
     for (const entry of sorted) {
         const group = groups.get(entry.path);
         if (group) group.copies.push(entry);
-        else groups.set(entry.path, { newest: entry, copies: [] });
+        else groups.set(entry.path, entry.copyOnly ? { copies: [entry] } : { newest: entry, copies: [] });
     }
     return groups;
 }

@@ -3,7 +3,7 @@ import { assembleGraph } from '../../utils/vaultIndex/graph';
 import { noteFactsSliced } from '../../utils/vaultIndex/facts';
 import type { IndexFile, IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
 import type { WorkerContext } from '../../platform/workers/serve';
-import type { IndexReader } from './reader';
+import type { IndexReader, IndexStat } from './reader';
 import { IndexStore } from './store';
 
 /** One session's mutable index. IO is injected so handle cloning and path
@@ -68,6 +68,18 @@ export class IndexEngine {
     private releaseIO(): void {
         this.ioActive--;
         this.ioWaiters.splice(0).forEach(wake => wake());
+    }
+    /** Search and graph share the same eight IO slots and foreground pause. */
+    async searchStat(file: IndexFile, context: WorkerContext): Promise<IndexStat> {
+        if (!await this.acquireIO(context)) throw new DOMException('Index request cancelled', 'AbortError');
+        let stat: IndexStat;
+        try { stat = await this.reader.stat(file); }
+        finally { this.releaseIO(); }
+        return { mtime: stat.mtime, size: stat.size, bytes: async () => {
+            if (!await this.acquireIO(context)) throw new DOMException('Index request cancelled', 'AbortError');
+            try { return await stat.bytes(); }
+            finally { this.releaseIO(); }
+        } };
     }
     private async read(file: IndexFile, context: WorkerContext): Promise<{ file: IndexFile; rev: number; mtime: number; size: number; bytes: ArrayBuffer } | undefined> {
         let held = await this.acquireIO(context);

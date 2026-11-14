@@ -13,6 +13,7 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
+import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
 import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
@@ -581,13 +582,6 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
 
     // ── The status bar's word and character counts ─────────────────────────
     //
-    // Counted over a DEBOUNCED copy of the text, never over `focusedTab.content`
-    // directly: that string is new on every keystroke, so a plain useMemo would
-    // walk the whole document — split included — on every character, on the same
-    // frames the decoration pass already owns (see the live-preview skill for
-    // what that pass costs on a long note). Nobody reads a word count tick per
-    // character; a quarter of a second after typing stops is soon enough.
-    //
     // A canvas has no words and an unreadable tab holds no text, so neither is
     // counted at all — and neither is the count shown for them.
     // Code is not counted: "412 words" of Python measures nothing anybody wants
@@ -603,24 +597,22 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
         && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
-    const liveText = countable ? focusedTab?.content ?? '' : '';
-    const [counted, setCounted] = useState<{ path: string | null; text: string }>(
-        { path: countPath, text: liveText });
-    // A SWITCH is not typing: showing the previous note's numbers for a quarter
-    // of a second beside the new note's name reads as a bug, so a change of
-    // document lands at once. Adjusted during render, React's pattern for state
-    // that follows a prop — the same one `showBacklinks` above uses.
-    if (counted.path !== countPath) setCounted({ path: countPath, text: liveText });
-    useEffect(() => {
-        const timer = setTimeout(() => setCounted(prev => (
-            prev.path === countPath && prev.text === liveText ? prev : { path: countPath, text: liveText }
-        )), 250);
-        return () => clearTimeout(timer);
-    }, [countPath, liveText]);
-    const counts = useMemo(() => {
-        const trimmed = counted.text.trim();
-        return { words: trimmed ? trimmed.split(/\s+/).length : 0, chars: counted.text.length };
-    }, [counted.text]);
+    const countTextRef = useRef('');
+    countTextRef.current = countable ? focusedTab?.content ?? '' : '';
+    const wordCountRef = useRef<HTMLSpanElement>(null);
+    const charCountRef = useRef<HTMLSpanElement>(null);
+    useLayoutEffect(() => {
+        const write = ({ words, chars }: WordCounts) => {
+            if (wordCountRef.current) wordCountRef.current.textContent = `${words} ${words === 1 ? 'word' : 'words'}`;
+            if (charCountRef.current) charCountRef.current.textContent = `${chars} ${chars === 1 ? 'character' : 'characters'}`;
+        };
+        focusWordCounts(countPath);
+        const unsubscribe = subscribeWordCounts(write);
+        const text = countTextRef.current;
+        const trimmed = text.trim();
+        write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
+        return () => { unsubscribe(); focusWordCounts(null); };
+    }, [countPath]);
 
     // ── Embedded images ────────────────────────────────────────────────────
     // Deleting one is the editor's only action that needs the app: it has to be
@@ -1216,8 +1208,8 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                     )}
                     {countable && (
                         <>
-                            <span className="status-bar-item">{counts.words} {counts.words === 1 ? 'word' : 'words'}</span>
-                            <span className="status-bar-item">{counts.chars} {counts.chars === 1 ? 'character' : 'characters'}</span>
+                            <span className="status-bar-item" ref={wordCountRef} />
+                            <span className="status-bar-item" ref={charCountRef} />
                         </>
                     )}
                     {/* Always mounted, never conditional: it is written after

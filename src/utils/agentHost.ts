@@ -31,9 +31,8 @@ import {
     isEpubFile, isCanvasFile, isDrawingFile, isNativeDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
 } from './fileTypes';
 import { isTextFile } from './vaultSearch';
-import { nameTaken } from './entryNames';
 import {
-    CHAT_INDEX_FILE, CHAT_TREE_DIR, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, ensureVaultId,
+    CHAT_INDEX_FILE, CHAT_TREE_DIR, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex,
     parseChatIndex, serializeChatIndex,
 } from './vaultAgentStore';
 import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
@@ -44,6 +43,8 @@ const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
 /** What the hosts need from App, re-read on every call. */
 export interface AgentHostDeps {
     vaultId: string | null;
+    handleIO: import('../types').VaultHandleIO;
+    ensureVaultId: import('../types').FileSystemContextValue['ensureVaultId'];
     root: FileSystemDirectoryHandle | null;
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
@@ -58,6 +59,7 @@ export interface AgentHostDeps {
     writeFile(handle: FileSystemFileHandle, content: string): Promise<void>;
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
+    nameTaken: import('../types').FileSystemContextValue['nameTaken'];
     /** The save funnel (App.updateTabContent). */
     updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
@@ -82,27 +84,6 @@ export interface AgentHostDeps {
 
 function splitPath(path: string): string[] {
     return path ? path.split('/') : [];
-}
-
-async function dirAt(root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle | null> {
-    let dir = root;
-    try {
-        for (const seg of splitPath(path)) dir = await dir.getDirectoryHandle(seg);
-        return dir;
-    } catch {
-        return null;
-    }
-}
-
-async function fileAt(root: FileSystemDirectoryHandle, path: string) {
-    const parent = await dirAt(root, parentVaultPath(path));
-    if (!parent) return null;
-    const name = path.slice(path.lastIndexOf('/') + 1);
-    try {
-        return { handle: await parent.getFileHandle(name), parentHandle: parent, name };
-    } catch {
-        return null;
-    }
 }
 
 function findNode(tree: FileTreeNode[], path: string): FileTreeNode | null {
@@ -205,12 +186,28 @@ function queue() {
 }
 
 export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
+    const nameTaken: AgentHostDeps['nameTaken'] = (dir, name) => getDeps().nameTaken(dir, name);
+    const dirAt = async (root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle | null> => {
+        let dir = root;
+        try {
+            for (const seg of splitPath(path)) dir = await getDeps().handleIO.dirIn(dir, seg);
+            return dir;
+        } catch { return null; }
+    };
+    const fileAt = async (root: FileSystemDirectoryHandle, path: string) => {
+        const parent = await dirAt(root, parentVaultPath(path));
+        if (!parent) return null;
+        const name = path.slice(path.lastIndexOf('/') + 1);
+        try { return { handle: await getDeps().handleIO.fileIn(parent, name), parentHandle: parent, name }; }
+        catch { return null; }
+    };
     const serializeIndex = queue();
     /** One write queue per chat transcript (see writeChatTree). */
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
         vaultToken: () => getDeps().root,
+        readSnapshot: handle => getDeps().handleIO.file(handle),
 
         getFileTree: () => getDeps().fileTree,
 
@@ -221,7 +218,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!dir) return null;
             const out: VaultDirEntry[] = [];
             try {
-                for await (const [name, handle] of dir.entries()) {
+                for await (const [name, handle] of getDeps().handleIO.entries(dir)) {
                     if (name === '.DS_Store' || name.endsWith('.crswap')) continue;
                     out.push({ name, kind: handle.kind });
                 }
@@ -377,7 +374,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             // By identity, not by spelling: moveFile copies a folder into the
             // target and then removes the source — with the target inside the
             // source, that removal takes the copy with it, bypassing .Garbage.
-            if (node.kind === 'directory' && await node.handle.resolve(toParent) !== null) {
+            if (node.kind === 'directory' && await getDeps().handleIO.relativeTo(node.handle, toParent) !== null) {
                 return { ok: false, reason: 'invalid', message: 'A folder cannot be moved into itself.' };
             }
             // renameFile/moveFile deliberately OVERWRITE (a user dragging onto a
@@ -447,8 +444,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
 
     const readVaultAgentFile = async (root: FileSystemDirectoryHandle, name: string): Promise<string | null> => {
         try {
-            const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
-            return await (await (await dir.getFileHandle(name)).getFile()).text();
+            const io = getDeps().handleIO;
+            const dir = await io.dirIn(root, VAULT_AGENT_DIR);
+            return await (await io.file(await io.fileIn(dir, name))).text();
         } catch {
             return null;
         }
@@ -457,8 +455,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     /** One writable, replaced whole — never createFile (it truncates, then walks
      *  the whole vault to refresh a tree this hidden folder is not in). */
     const writeVaultAgentFile = async (root: FileSystemDirectoryHandle, name: string, text: string) => {
-        const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create: true });
-        await getDeps().writeFile(await dir.getFileHandle(name, { create: true }), text);
+        const { handleIO: io, writeFile } = getDeps();
+        const dir = await io.dirIn(root, VAULT_AGENT_DIR, true);
+        await writeFile(await io.fileIn(dir, name, true), text);
     };
 
     /** `.VaultAgent/chats/<chatId>.json`. The id is ours (a UUID) and never a
@@ -466,14 +465,16 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
      *  anyway, because this writes inside the user's vault. */
     const chatTreeFile = async (root: FileSystemDirectoryHandle, chatId: string, create: boolean) => {
         if (!/^[0-9a-f-]{36}$/i.test(chatId)) return null;
-        const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create });
-        const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR, { create });
-        return chats.getFileHandle(`${chatId}.json`, { create });
+        const io = getDeps().handleIO;
+        const dir = await io.dirIn(root, VAULT_AGENT_DIR, create);
+        const chats = await io.dirIn(dir, CHAT_TREE_DIR, create);
+        return io.fileIn(chats, `${chatId}.json`, create);
     };
 
     const readMirrorFile = async (dir: FileSystemDirectoryHandle, name: string): Promise<string | null> => {
         try {
-            const file = await (await dir.getFileHandle(name)).getFile();
+            const io = getDeps().handleIO;
+            const file = await io.file(await io.fileIn(dir, name));
             if (file.size > MAX_MIRROR_FILE_BYTES) return null;
             const text = await file.text();
             // Text only: a NUL is as good a binary sniff as any here.
@@ -510,10 +511,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         ensureVaultUuid() {
             const root = getDeps().root;
             if (!root) return Promise.resolve(null);
-            // The SAME minting the terminal uses (utils/vaultAgentStore.ts),
-            // which is also where the serialization lives: two callers minting
+            // The SAME context minting the terminal uses, whose serialization
+            // is shared: two callers minting
             // for one vault would split it in two, and StrictMode runs both.
-            return ensureVaultId(root, getDeps().writeFile);
+            return getDeps().ensureVaultId(root, getDeps().writeFile);
         },
 
         async readChatIndex(): Promise<ChatIndex> {
@@ -544,7 +545,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!root) return emptyTree();
             try {
                 const handle = await chatTreeFile(root, chatId, false);
-                return handle ? parseTree(await (await handle.getFile()).text()) : emptyTree();
+                return handle ? parseTree(await (await getDeps().handleIO.file(handle)).text()) : emptyTree();
             } catch {
                 // No folder, no file, or unreadable: an empty tree, and the CLI's
                 // own history takes over (chatStore.loadHistory).
@@ -574,9 +575,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const root = getDeps().root;
             if (!root || !/^[0-9a-f-]{36}$/i.test(chatId)) return;
             try {
-                const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
-                const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR);
-                await chats.removeEntry(`${chatId}.json`);
+                const io = getDeps().handleIO;
+                const dir = await io.dirIn(root, VAULT_AGENT_DIR);
+                const chats = await io.dirIn(dir, CHAT_TREE_DIR);
+                await io.remove(chats, `${chatId}.json`);
             } catch { /* already gone */ }
         },
 
@@ -594,7 +596,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const walk = async (dir: FileSystemDirectoryHandle, path: string, depth: number) => {
                 if (depth > 8) return;
                 try {
-                    for await (const [name, handle] of dir.entries()) {
+                    for await (const [name, handle] of getDeps().handleIO.entries(dir)) {
                         if (name === '.DS_Store' || name.endsWith('.crswap')) continue;
                         const child = `${path}/${name}`;
                         if (handle.kind === 'directory') await walk(handle, child, depth + 1);

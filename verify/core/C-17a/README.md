@@ -37,8 +37,9 @@ a startup that actually restores values reloads once so module-scope stores rere
 A tab-local sessionStorage flag preserves that notice across the recovery reload.
 The earlier reports above predate this static-import correction; the current runner
 also waits for the real App-rendered notice. ESLint enforcement is a later package.
-Legacy raw writers are reconciled once per load after first paint and on hide /
-pagehide. A raw write followed by another window's clear *before* that checkpoint
-can still be lost until C-17b migrates the writer. Mirrored helper writes queue
-immediately with a batch delay of at most one second. Unknown/library keys are
-excluded; values and removals are mirrored only for the exact registered keys.
+C-17b routes all application writes and removals through the mirrored helpers,
+including the legacy migration removals. Each queues immediately, with a batch delay
+of at most one second, so a fresh write participates in recovery without waiting for
+the lifecycle checkpoint. The first-paint snapshot still picks up pre-mirror settings;
+hide / pagehide reconciliation remains. Unknown/library keys are excluded; values
+and removals are mirrored only for the exact registered keys.

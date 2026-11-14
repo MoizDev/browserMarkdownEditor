@@ -70,6 +70,8 @@ export type GpuRequestResult = { readonly kind: 'gpu'; readonly grant: GpuGrant;
 export interface SurfaceCallbacks {
     /** Same-task stop of frames/input/view jobs and synchronous edit checkpoint; never await a save. */
     beforeHide(): void;
+    /** The broker has actually zeroed this native canvas; its backing lease may now be returned. */
+    onSurfaceZeroed?(canvas: HTMLCanvasElement): void;
     /**
      * Resolve only after the generation's asynchronous colour/alpha capability check passes.
      * This factory owns partial-init cleanup on rejection/abort. A late successful owner is disposed

@@ -212,6 +212,7 @@ export class MirrorSet<T extends object> {
         };
         if (!Number.isFinite(now)) throw new RangeError('Invalid mirror borrow time');
         this.lastUsedAt = now;
+        this.retained.updateActivity({ hiddenAt: this.hiddenAt, lastVisibleAt: this.lastVisibleAt, lastUsedAt: now });
         let values: BorrowedMirror<T>[] | null = [];
         const records: EntryRecord[] = [];
         if (this.isCurrent(view.token) && view.view.viewport.width > 0 && view.view.viewport.height > 0) {

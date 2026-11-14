@@ -158,6 +158,25 @@
     "shortcuts.camera.fit": "Zoom to fit",
     "shortcuts.camera.selection": "Zoom to selection",
     "shortcuts.sheet.previous": "Previous sheet",
-    "shortcuts.sheet.next": "Next sheet"
+    "shortcuts.sheet.next": "Next sheet",
+    "preferences.alwaysSnap": "Always snap",
+    "preferences.toolLock": "Tool lock",
+    "preferences.showGrid": "Show grid",
+    "preferences.selectOnWrap": "Select when wrapped",
+    "preferences.focusMode": "Focus mode",
+    "preferences.edgeScrolling": "Edge scrolling",
+    "preferences.dynamicSize": "Dynamic size",
+    "preferences.pasteAtCursor": "Paste at cursor",
+    "preferences.inputDevice": "Input device",
+    "preferences.autoTrackpad": "Detect trackpad automatically",
+    "preferences.trackpad": "Trackpad",
+    "preferences.mouse": "Mouse",
+    "preferences.invertMouseZoom": "Invert mouse zoom",
+    "preferences.accessibility": "Accessibility",
+    "preferences.reduceMotion": "Reduce motion",
+    "preferences.keyboardShortcutsEnabled": "Enable keyboard shortcuts",
+    "preferences.enhancedAccessibility": "Enhanced accessibility",
+    "preferences.debugMode": "Debug mode",
+    "preferences.mouseRequired": "Available when mouse input is selected"
   }
 }

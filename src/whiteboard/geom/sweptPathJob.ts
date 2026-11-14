@@ -1,5 +1,6 @@
 import { exactAffinePoint } from './exactAffine';
-import { exactPointIntervals } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
+import { exactSegmentsIntersect } from './exactSegments';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
 import { isUniformDistanceMatrix, splitCertifiedCurve, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
@@ -58,6 +59,7 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     const allPaths = [...paths, ...(options.interiorPaths ?? [])];
     let pathIndex = 0, commandIndex = 0, sweepIndex = 0;
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined, segmentRadius = strokeRadius;
+    let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: readonly [ExactPoint, ExactPoint] | undefined;
     const stack: Pair[] = [];
     const finish = (result: SweptPathResult): SweptPathResult => { finished = Object.freeze(result); return finished; };
     return {
@@ -99,33 +101,35 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (sweepIndex < count) {
                         const first = query.points[sweepIndex], last = query.points[Math.min(sweepIndex + 1, query.points.length - 1)];
                         const a = point(first), b = point(last), depth = first.x === last.x && first.y === last.y ? maxDepth : 0;
+                        if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                         stack.push({ path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius }); continue;
                     }
-                    segment = undefined; sweepIndex = 0; continue;
+                    segment = undefined; segmentExact = undefined; sweepIndex = 0; continue;
                 }
                 if (pathIndex >= allPaths.length) return finish(fillUncertain || curveUncertain
                     ? { status: 'uncertain', reason: 'Sweep touches an uncertified path boundary' } : { status: 'miss' });
                 const path = allPaths[pathIndex];
                 if (commandIndex >= path.length) {
                     if (pathIndex >= paths.length && start && previous && previous !== start) {
-                        segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; previous = start; continue;
+                        segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
                     }
-                    pathIndex++; commandIndex = 0; start = previous = undefined; continue;
+                    pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue;
                 }
                 if (++commands > options.maxSegments) return finish({ status: 'uncertain', reason: 'Swept path command limit exhausted' });
                 const op = path[commandIndex++];
                 if (op.op === 'M') {
                     if (pathIndex >= paths.length && start && previous && previous !== start) {
-                        commandIndex--; segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; previous = start; continue;
+                        commandIndex--; segmentRadius = fillRadius; segment = { points: [previous, start], depth: 0 }; segmentExact = [previousExact!, startExact!]; previous = start; previousExact = startExact; continue;
                     }
-                    start = previous = mapped(op.p); continue;
+                    startExact = previousExact = exactAffinePoint(matrix, op.p); start = previous = exactPointIntervals(startExact); continue;
                 }
                 if (!start || !previous) throw new RangeError('Swept path must begin with M');
-                const end = op.op === 'Z' ? start : mapped(op.p);
+                const endExact = op.op === 'Z' ? startExact! : exactAffinePoint(matrix, op.p), end = exactPointIntervals(endExact);
                 segmentRadius = pathIndex < paths.length ? strokeRadius : fillRadius;
                 segment = { points: op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end], depth: 0 };
-                previous = end;
+                segmentExact = op.op === 'C' ? undefined : [previousExact!, endExact];
+                previous = end; previousExact = endExact;
             }
             return PENDING;
         },

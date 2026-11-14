@@ -12,8 +12,8 @@ import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
 import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
 import { exactAffinePoint } from '../geom/exactAffine';
-import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
-import { dyadicMultiply, dyadicSubtract } from '../geom/numeric';
+import { exactPoint, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
+import { exactPointOnSegment } from '../geom/exactSegments';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
@@ -53,23 +53,13 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
 function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): boolean {
     const mapped = (p: Vec2): ExactPoint => exactAffinePoint(query.localToSurface, p);
     const point = exactPoint(query.point);
-    const compare = (a: ExactPoint, b: ExactPoint, axis: 'x' | 'y') => {
-        const value = dyadicSubtract(dyadicMultiply(a[axis], b.w), dyadicMultiply(b[axis], a.w)).n;
-        return value < 0n ? -1 : value > 0n ? 1 : 0;
-    };
-    const onSegment = (a: ExactPoint, b: ExactPoint): boolean => {
-        if (sameExactPoint(a, b)) return sameExactPoint(a, point);
-        return exactSide(exactLineBetween(a, b), point) === 0
-            && compare(point, a, 'x') * compare(point, b, 'x') <= 0
-            && compare(point, a, 'y') * compare(point, b, 'y') <= 0;
-    };
     let start: Vec2 | undefined, previous: Vec2 | undefined;
     for (const op of path) {
         if (op.op === 'M') { start = previous = op.p; continue; }
         if (!previous || !start) throw new RangeError('Attachment outline must begin with M');
         const next = op.op === 'Z' ? start : op.p;
         if (op.op !== 'C') {
-            if (onSegment(mapped(previous), mapped(next))) return true;
+            if (exactPointOnSegment(point, mapped(previous), mapped(next))) return true;
         } else if (sameExactPoint(mapped(previous), point) || sameExactPoint(mapped(next), point)) return true;
         previous = next;
     }

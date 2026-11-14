@@ -1,21 +1,13 @@
 import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
-import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoint } from './homogeneous';
-import { dyadicSubtract, type Dyadic } from './numeric';
+import { exactPoint, type ExactPoint } from './homogeneous';
+import { exactPointOnSegment } from './exactSegments';
 import { createCubicRootCertificate, type ExactCurvePoint } from './cubicRootCertificate';
 import type { PathOp, Vec2 } from './path';
 
 export type CubicBoundaryResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 export interface CubicBoundaryLimits { readonly maxCommands?: number; readonly maxNodes?: number; readonly maxWork?: number }
 const PENDING: CubicBoundaryResult = Object.freeze({ status: 'pending' });
-function compare(a: Dyadic, b: Dyadic): -1 | 0 | 1 {
-    const value = dyadicSubtract(a, b).n; return value < 0n ? -1 : value > 0n ? 1 : 0;
-}
-function lineContains(a: ExactPoint, b: ExactPoint, q: ExactPoint): boolean {
-    if (sameExactPoint(a, b)) return sameExactPoint(a, q);
-    return exactSide(exactLineBetween(a, b), q) === 0
-        && compare(q.x, a.x) * compare(q.x, b.x) <= 0 && compare(q.y, a.y) * compare(q.y, b.y) <= 0;
-}
 
 /** Exact line predicates and rational-polynomial cubic root certificates.
  * Every operation is resumable; arithmetic and work limits remain explicit. */
@@ -56,7 +48,7 @@ export function createCubicBoundaryJob(paths: readonly (readonly PathOp[])[], qu
                         if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Cubic boundary node limit exhausted' });
                         const point = (value: ExactPoint): ExactCurvePoint => ({ x: value.x, y: value.y });
                         active = createCubicRootCertificate([point(previous), point(mapped(op.c1)), point(mapped(op.c2)), point(end)], point(q));
-                    } else if (lineContains(previous, end, q)) return finish({ status: 'hit' });
+                    } else if (exactPointOnSegment(q, previous, end)) return finish({ status: 'hit' });
                     previous = end;
                 }
                 return PENDING;

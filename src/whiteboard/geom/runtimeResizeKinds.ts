@@ -27,6 +27,8 @@ export interface BoardLeafResizeResult {
     readonly placementOps: readonly NodeSetOp[];
     readonly doc: BoardDoc;
     readonly fontEpoch: number;
+    /** Missing or dimensionless media cannot certify an intrinsic aspect ratio. */
+    readonly clipAspect?: 'intrinsic' | 'placeholder';
     release(): void;
 }
 
@@ -69,7 +71,7 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
     const base = await scope(doc);
     try {
     check(); fontEpoch = runtime.render.text.fonts.epoch;
-    let kindOps: NodeSetOp[];
+    let kindOps: NodeSetOp[], clipAspect: BoardLeafResizeResult['clipAspect'];
     if (node.kind === 'figure') {
         const { width, height } = figureResizeDimensions(node, factors);
         const initial = asSets(resizeFigureKind(node, factors, { h: height, growY: 0 }));
@@ -93,15 +95,23 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
             throw new Error('Figure layout changed during resize');
     } else if (node.kind === 'frame' || node.kind === 'linkcard' || node.kind === 'embed' || node.kind === 'clip') {
         const extent = (value: number) => Math.min(1_000_000, Math.max(1, value));
-        let x = Math.abs(factors.x), y = Math.abs(factors.y);
+        const x = Math.abs(factors.x), y = Math.abs(factors.y);
         if (node.kind === 'clip') {
-            // Default, calibration cut by owner: clip resize is intrinsically aspect-locked.
+            // Default, calibration cut by owner: clip resize uses its intrinsic aspect.
             if (x !== y) throw new Error('Clip resize requires a whole-selection uniform scale');
-            x = y = Math.min(Math.min(1_000_000 / node.w, 1_000_000 / node.h), Math.max(x, 1 / node.w, 1 / node.h));
+            const media = node.media ? doc.media.get(node.media) : undefined;
+            const known = !!media && Number.isFinite(media.w) && Number.isFinite(media.h) && media.w > 0 && media.h > 0;
+            clipAspect = known ? 'intrinsic' : 'placeholder';
+            const ratio = known ? media!.w / media!.h : node.w / node.h;
+            const minWidth = Math.max(1, ratio), maxWidth = Math.min(1_000_000, ratio * 1_000_000);
+            if (!Number.isFinite(ratio) || ratio <= 0 || minWidth > maxWidth) throw new RangeError('Clip aspect cannot satisfy model dimensions');
+            const w = Math.max(minWidth, Math.min(maxWidth, node.w * x)), h = extent(w / ratio);
+            kindOps = [{ t: 'set', id: node.id, key: 'w', value: w }, { t: 'set', id: node.id, key: 'h', value: h }];
+        } else {
+            // Default, calibration cut by owner: card/embed reflow inside independently resized bounds.
+            kindOps = [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * x) },
+                { t: 'set', id: node.id, key: 'h', value: extent(node.h * y) }];
         }
-        // Default, calibration cut by owner: card/embed reflow inside independently resized bounds.
-        kindOps = [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * x) },
-            { t: 'set', id: node.id, key: 'h', value: extent(node.h * y) }];
     } else {
         if (node.kind === 'sticky' && factors.scope === 'single') throw new Error('A single sticky has no resize handles');
         kindOps = asSets(resizeIntrinsicKind(node, factors));
@@ -144,6 +154,7 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         const held = finalScope;
         const result: BoardLeafResizeResult = { kindOps: Object.freeze(kindOps.map(op => Object.freeze(op))),
             placementOps: Object.freeze(placementOps.map(op => Object.freeze(op))), doc: finalDoc, fontEpoch,
+            ...(clipAspect ? { clipAspect } : {}),
             release() { if (!released) { released = true; try { held.release(); } finally { base.release(); } } } };
         success = true; return Object.freeze(result);
     } finally {

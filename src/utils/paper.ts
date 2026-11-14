@@ -90,7 +90,7 @@ const MARGIN_INSET = 72;
 const RULE_INSET = 48;
 
 export function paperPageSize(paper: NotebookPaper): { width: number; height: number } {
-    const { width, height } = PAPER_SIZES[paper.size] ?? PAPER_SIZES.letter;
+    const { width, height } = Object.hasOwn(PAPER_SIZES, paper.size) ? PAPER_SIZES[paper.size] : PAPER_SIZES.letter;
     return paper.orientation === 'landscape'
         ? { width: height, height: width }
         : { width, height };
@@ -99,7 +99,9 @@ export function paperPageSize(paper: NotebookPaper): { width: number; height: nu
 /** Clamp a paper record read off disk: a `.notebook` file is user-editable text
  *  and a bad `spacing` would otherwise loop forever building rules. */
 export function normalizePaper(raw: Partial<NotebookPaper> | undefined): NotebookPaper {
-    const size: PaperSize = raw?.size && raw.size in PAPER_SIZES ? raw.size : DEFAULT_PAPER.size;
+    const size: PaperSize = typeof raw?.size === 'string' && Object.hasOwn(PAPER_SIZES, raw.size)
+        ? raw.size
+        : DEFAULT_PAPER.size;
     const ruling: PaperRuling = raw?.ruling && ['lined', 'grid', 'dotted', 'blank'].includes(raw.ruling)
         ? raw.ruling
         : DEFAULT_PAPER.ruling;

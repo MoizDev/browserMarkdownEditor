@@ -41,6 +41,9 @@ export class SurfaceBacking implements MemoryAllocator {
         } catch (error) { this.display.close(); throw error; }
     }
 
+    /** Reservations can exceed a shrunken canvas until an indivisible lease can be returned. */
+    get reservedBytes(): number { return [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0); }
+
     reserve(bytes: number): ByteLease | null {
         if (this.closed) return null;
         if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes % POLICY.surfaceReserveBytesPerPixel !== 0) throw new RangeError('Invalid surface reservation');

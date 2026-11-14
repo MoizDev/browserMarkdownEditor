@@ -1,21 +1,26 @@
-import type { Rect, ViewState } from '../../platform/types';
+import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
+import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../platform/render/pathCoverage';
+import { pathFillTriangles } from './pathFillTriangles';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintFrame, PaintItem } from './paintStream';
+import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never }
-    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never }; 
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; coverage?: never }
+    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; coverage?: never }
+    | { item: PaintItem; x: number; y: number; coverage: PreparedPathCoverage; cached?: never; analytic?: never; multiply?: never; worldRect?: never };
+/** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
+const PATH_FLATTEN_DEVICE_PX = 0.1;
 interface AnalyticGroup {
     band: PaintBand; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
 }
@@ -69,6 +74,41 @@ function contentKey(item: PaintItem): string {
     return JSON.stringify([common, item.material.blend, item.material.color]);
 }
 
+/** Lower-left corner of the path's control points: local coordinates are rebased here in double
+ * precision before any single-precision upload (a conservative bound: control points included). */
+function pathOrigin(commands: readonly PathCommand[]): { x: number; y: number } {
+    let x = Infinity, y = Infinity;
+    for (const command of commands) {
+        if (command[0] === 'Z') continue;
+        for (let i = 1; i + 1 < command.length; i += 2) {
+            x = Math.min(x, command[i] as number); y = Math.min(y, command[i + 1] as number);
+        }
+    }
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : { x: 0, y: 0 };
+}
+
+/** Stencil-winding admission for one fill-only path. Local → device is the frame's camera and
+ * device scale applied to the item's world transform, with the origin rebase folded in exactly once.
+ * Flattening tolerance is divided by the Frobenius norm of the linear part, which is at least the
+ * spectral norm, so the device error bound holds for every direction. */
+function pathCoverageAdmission(item: PaintPathItem, view: ViewState, kit: ReturnType<typeof createPathCoverageKit>,
+    budget: FrameBudget): PathCoverageAdmission {
+    const fill = item.material.fill;
+    if (!fill) return { status: 'unsupported' };
+    const [a, b, c, d, e, f] = item.localToWorld;
+    const scale = view.camera.z * view.viewport.dpr;
+    const norm = Math.hypot(a, b, c, d);
+    if (!(norm > 0) || !Number.isFinite(scale) || scale <= 0) return { status: 'unsupported' };
+    const origin = pathOrigin(item.d);
+    const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (scale * norm), origin: [origin.x, origin.y] });
+    if (!shapes) return { status: 'unsupported' };
+    const affine: Affine = [scale * a, scale * b, scale * c, scale * d,
+        scale * (a * origin.x + c * origin.y + e - view.camera.x), scale * (b * origin.x + d * origin.y + f - view.camera.y)];
+    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    return kit.admit({ positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, rule: item.fillRule, bounds: shapes.bounds },
+        affine, viewport, fill, budget);
+}
+
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
@@ -76,6 +116,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let movingScale = 0, tileBytes = 0;
     const cache = new Map<string, CachedTile>();
     const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
+    const pathCoverage = createPathCoverageKit(host, report);
     const drop = (plan: Plan | null) => {
         if (!plan) return;
         plan.parts?.return(undefined); plan.parts = null; plan.part = null;
@@ -86,6 +127,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         for (const band of ['underlay', 'content'] as const) {
             for (const tile of plan.tiles[band]) {
                 if (tile.analytic) continue;
+                if (tile.coverage) { pathCoverage.retire(tile.coverage); continue; }
                 const entry = tile.cached;
                 if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
             }
@@ -216,6 +258,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                             p.cpuUsed += 512; p.part = null; return;
                         }
                     }
+                    if (item.kind === 'path' && !multiply && !item.clips.length && item.material.fill &&
+                        !(item.material.stroke && item.material.stroke.width > 0)) {
+                        if (!ensurePlanCapacity(p)) return;
+                        const admission = pathCoverageAdmission(item, view, pathCoverage, budget);
+                        if (admission.status === 'ready') { p.tiles[p.band].push({ item: original, x: 0, y: 0, coverage: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'empty') { p.part = null; continue; }
+                        if (admission.status === 'denied') { denied = true; return; }
+                        // 'unsupported': the exact canonical raster route below draws this item.
+                    }
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
                         if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
@@ -295,6 +346,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const tile = ready.tiles[band][index];
                 if (omitNodes?.has(tile.item.nodeId)) continue;
                 if (tile.analytic) throw new Error('Unbatched analytic ink command');
+                if (tile.coverage) { pathCoverage.draw(pass, tile.coverage); continue; }
                 if (tile.worldRect) {
                     const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
                     const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
@@ -324,7 +376,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 if (isolated) pass.endGroup(isolated);
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
@@ -332,7 +384,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const batches = analytic.memory();
-            return { gpuBytes: tileBytes + batches.gpuBytes,
+            return { gpuBytes: tileBytes + batches.gpuBytes + pathCoverage.memory().gpuBytes,
                 cpuBytes: scratch + batches.cpuBytes + ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536 };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
@@ -341,6 +393,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
                 + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
     };
 }

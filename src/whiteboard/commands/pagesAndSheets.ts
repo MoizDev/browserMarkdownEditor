@@ -1,5 +1,7 @@
 import type { ApplyController } from '../change/apply';
-import type { Applied, Op } from '../change/ops';
+import type { Applied, BoardOp, Op } from '../change/ops';
+import { PAGE_GAP } from '../../platform/render/pageStack';
+import { MAX_PAGES, paperPageSize, type NotebookPaper } from '../../utils/paper';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
 import type { ConnectorEnd, ConnectorNode, Node, Point } from '../model/nodes';
@@ -91,8 +93,24 @@ function notebook(doc: BoardDoc) {
 
 export function addPage(doc: BoardDoc, apply: ApplyController): Applied {
     const paper = notebook(doc);
-    if (paper.pageCount >= 500) throw new StructureRefused('Maximum pages reached');
+    if (paper.pageCount >= MAX_PAGES) throw new StructureRefused('Maximum pages reached');
     return commit(apply, 'Add page', [{ t: 'board', key: 'host.paper', value: { ...paper, pageCount: paper.pageCount + 1 } }]);
+}
+
+export function changePaper(doc: BoardDoc, apply: ApplyController, paper: Readonly<NotebookPaper>): Applied {
+    notebook(doc);
+    return commit(apply, 'Change paper', [{ t: 'board', key: 'host.paper', value: paper }]);
+}
+
+/** Append this operation to the originating content transaction, not a later save. */
+export function notebookGrowthOp(doc: BoardDoc, deepestWorldY: number): BoardOp | undefined {
+    const paper = notebook(doc);
+    if (!Number.isFinite(deepestWorldY)) throw new StructureRefused('Invalid content bounds');
+    const { height } = paperPageSize(paper);
+    const threshold = (paper.pageCount - 1) * (height + PAGE_GAP) + 0.8 * height;
+    if (deepestWorldY < threshold || paper.pageCount >= MAX_PAGES) return undefined;
+    const extra = Math.max(1, Math.ceil((deepestWorldY - threshold) / (height + PAGE_GAP)));
+    return { t: 'board', key: 'host.paper', value: { ...paper, pageCount: Math.min(MAX_PAGES, paper.pageCount + extra) } };
 }
 
 export function lastPageContents(doc: BoardDoc): readonly Node[] {

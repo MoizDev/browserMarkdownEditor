@@ -15,10 +15,9 @@ import { CopyCodeWidget } from './copyCodeWidget';
 import { HorizontalRuleWidget } from './hrWidget';
 import { ImageWidget, imageEmbedActions, imageEmbedKeymap } from './imageWidget';
 import type { ImageContext, ImageEmbedActions } from './imageWidget';
-import { embedPattern } from '../utils/assets';
 import { TableWidget } from './tableWidget';
 import { tableReadingSelection } from './tableReadingSelection';
-import { blankRowText, cellAt, delimiterCellText, findTables, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
+import { blankRowText, cellAt, delimiterCellText, parseTableLayout, rowColumnCount, tableLayoutAt } from './tableModel';
 import { focusTableCell, tableDomAt } from './tableEdit';
 import { MermaidWidget } from './mermaidWidget';
 import { HIDE } from './hiddenMarker';
@@ -866,28 +865,21 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // as one, and the markdown behind it is not something the reader edits (see
     // imageWidget.ts). The single exception is a caret already strictly inside
     // — only reachable while typing the embed, which has to stay visible.
-    const imageRegex = embedPattern();
-    const doc = analysis.doc;
-    let match: RegExpExecArray | null;
     const selection = state.selection.main;
     const editable = editorMode !== 'read';
     let imageSelected = false;
     const images: { from: number; to: number }[] = [];
     const tables: { from: number; to: number }[] = [];
     let tableSelected = false;
-    while ((match = imageRegex.exec(doc)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const filename = match[1].trim();
-        const width = match[2] ? parseInt(match[2].trim(), 10) : null;
+    for (const match of analysis.objects.embeds) {
+        const { from, to, filename, width } = match;
 
-        if (intersectsMath(from, to)) continue;
+        if (!match.accepted) continue;
         // An embed written INSIDE code is being quoted, not embedded — a note
         // (the Help guide among them) documenting `![[picture.png]]` means the
         // text. It matters more here than for the other constructs: an image is
         // never revealed by the cursor and its range is atomic, so a quoted
         // embed rendered as a picture could not be read or edited back at all.
-        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && caretInsideRange(state, from, to)) continue;
 
         const selected = imageCtx.editable && selection.from === from && selection.to === to;
@@ -955,7 +947,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // the atom below and the editable widget in step: an atomic, never-revealed
     // range with no contenteditable cell in it would be a block of the user's
     // own text with no way to put a caret in it at all.
-    for (const span of findTables(doc)) {
+    for (const span of analysis.objects.tables) {
         // A table written inside code is being QUOTED, not tabulated — and it
         // matters more here than for any other construct, exactly as it does
         // for images: an object that is never revealed and whose range is
@@ -966,7 +958,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // lines — so an intersection test would reject any table with one
         // `code` span in one cell. A fence contains the whole table; an inline
         // span inside a cell never can.
-        if (containsRange(codeRanges, span.from, span.to)) continue;
+        if (!span.accepted) continue;
         // No math guard, deliberately: overlapsMath is an intersection too, so
         // it would reject any table containing $x$, and a containment version
         // could only fire for a table wholly inside a math region, which cannot

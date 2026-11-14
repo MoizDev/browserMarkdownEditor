@@ -148,8 +148,8 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
             )}
 
             <div className="search-results">
-                {!unavailable && (progress?.phase === 'sweeping' ? <p className="search-hint" role="status">Indexing — {progress.done} of {progress.total}</p>
-                    : query && !ready && searchProgress && <p className="search-hint" role="status">Indexing — {searchProgress.done} of {searchProgress.total}</p>)}
+                {!unavailable && (progress?.phase === 'sweeping' ? <p className="search-hint" role="status" data-tooltip="Checking vault files for the index">Indexing — {progress.done} of {progress.total}</p>
+                    : query && !ready && searchProgress && <p className="search-hint" role="status" data-tooltip="Loading searchable text from the vault">Indexing — {searchProgress.done} of {searchProgress.total}</p>)}
                 {!query && (
                     <p className="search-hint">Search file names and contents across the vault.</p>
                 )}

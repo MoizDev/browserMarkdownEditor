@@ -3,7 +3,8 @@ import { SECURITY_LIMITS } from '../security/limits';
 import { textBoundaries } from './boundaries';
 import { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
 import { ensureProjectionSteps, projectionLength } from './projection';
-import { mapTextSelectionTo, normalizeTextSelection, type TextAffinity, type TextSpliceMap } from './rangeMap';
+import { mapTextSelectionTo, mapTextSelectionToCooperative, normalizeTextSelection, normalizeTextSelectionCooperative,
+    type TextAffinity, type TextSpliceMap } from './rangeMap';
 import { sliceRichText, sliceRichTextCooperative, spliceRichText, spliceRichTextCooperative, type Block, type RichFragment, type RichText } from './richText';
 import type { RichSelection } from './rich';
 import type { PlainTextOptions } from './plainText';
@@ -211,7 +212,7 @@ export async function applyRichTransactionCooperative(initial: RichText, operati
     const fenced: PlainTextOptions = { ...options, cooperate: async () => { check(); await options.cooperate(); check(); } };
     check();
     await finishTextStepsCooperative(ensureProjectionSteps(initial), fenced);
-    let text = initial, current = normalizeTextSelection(initial, selection, affinity), started = performance.now();
+    let text = initial, current = await normalizeTextSelectionCooperative(initial, selection, fenced, affinity), started = performance.now();
     const inverseSelection = current, inverses: RichSpliceOperation[] = [], maps: (TextSpliceMap | null)[] = [];
     for (const operation of operations) {
         check();
@@ -223,7 +224,8 @@ export async function applyRichTransactionCooperative(initial: RichText, operati
         const map: TextSpliceMap | null = local ? { from: operation.from + local.from, to: operation.from + local.oldTo,
             insertedLength: local.newTo - local.from } : null;
         const result = await spliceRichTextCooperative(text, operation.from, operation.to, operation.insert, fenced, operation.wholeBlocks === true);
-        current = map ? mapTextSelectionTo(current, map, result.text, affinity) : normalizeTextSelection(result.text, current, affinity);
+        current = map ? await mapTextSelectionToCooperative(current, map, result.text, fenced, affinity)
+            : await normalizeTextSelectionCooperative(result.text, current, fenced, affinity);
         maps.push(map); inverses.push(result.inverse); text = result.text;
         if (performance.now() - started >= budget) { await fenced.cooperate(); started = performance.now(); }
     }

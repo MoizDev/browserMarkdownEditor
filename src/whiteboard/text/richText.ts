@@ -135,7 +135,7 @@ function* sliceRunSteps(text: RichText, blockIndex: number, from: number, to: nu
     let visited = 0;
     for (let i = firstRunAt(indexed, from); i < block.runs.length; i++) {
         if ((++visited & 255) === 0) yield;
-        const run = block.runs[i], position = indexed.starts[i], end = indexed.starts[i + 1];
+        const run = block.runs[i], position = indexed.starts[i];
         if (position > to || (position === to && run.text.length > 0)) break;
         const origin = preserveOrigin && opaqueRun(run) ? runOccurrenceOrigin(text, blockIndex, i) : undefined;
         if (run.text.length === 0) {

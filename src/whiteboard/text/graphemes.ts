@@ -2,13 +2,22 @@
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 type Segments = ReturnType<Intl.Segmenter['segment']>;
 
+/** ASCII except LF and CR: a code-unit scan, so no control characters appear in a regular expression. */
+function isSimpleAscii(text: string): boolean {
+    for (let index = 0; index < text.length; index++) {
+        const unit = text.charCodeAt(index);
+        if (unit > 0x7f || unit === 0x0a || unit === 0x0d) return false;
+    }
+    return true;
+}
+
 /** Indexed point queries do not require a per-grapheme JavaScript array. */
 export class GraphemeNavigator implements Iterable<number> {
     private readonly simple: boolean;
     private segments?: Segments;
     constructor(readonly text: string) {
         // All these ASCII code units are separate clusters; CR/LF need UAX #29 handling.
-        this.simple = /^[\x00-\x09\x0b-\x0c\x0e-\x7f]*$/.test(text);
+        this.simple = isSimpleAscii(text);
     }
     private valid(offset: number): boolean {
         return Number.isSafeInteger(offset) && offset >= 0 && offset <= this.text.length;

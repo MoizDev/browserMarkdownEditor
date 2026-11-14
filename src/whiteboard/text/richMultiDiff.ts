@@ -49,19 +49,21 @@ export function* deriveRichTextChangesSteps(before: RichText, after: RichText): 
     }
     let i = 0, j = 0, startOld = -1, startNew = -1, delta = 0, valid = true;
     const maps: TextSpliceMap[] = [];
-    const flush = () => {
+    // Boundary proofs walk long blocks, so they yield like every other traversal here.
+    // An expression, not a hoisted declaration: it keeps the narrowing of the const diff state.
+    const flush = function* (): Generator<void, void> {
         if (startOld < 0) return;
         const oldFrom = change.from + old.offsets[startOld], oldTo = change.from + old.offsets[i];
         const newFrom = change.from + next.offsets[startNew], newTo = change.from + next.offsets[j];
-        if (!textBoundaries.isBoundary(before, oldFrom) || !textBoundaries.isBoundary(before, oldTo)
-            || !textBoundaries.isBoundary(after, newFrom) || !textBoundaries.isBoundary(after, newTo)) valid = false;
+        if (!(yield* textBoundaries.isBoundarySteps(before, oldFrom)) || !(yield* textBoundaries.isBoundarySteps(before, oldTo))
+            || !(yield* textBoundaries.isBoundarySteps(after, newFrom)) || !(yield* textBoundaries.isBoundarySteps(after, newTo))) valid = false;
         const insertedLength = newTo - newFrom;
         maps.push({ from: oldFrom + delta, to: oldTo + delta, insertedLength });
         delta += insertedLength - (oldTo - oldFrom);
         startOld = startNew = -1;
     };
     while (i < n || j < m) {
-        if (i < n && j < m && old.values[i] === next.values[j]) { flush(); i++; j++; }
+        if (i < n && j < m && old.values[i] === next.values[j]) { yield* flush(); i++; j++; }
         else {
             if (startOld < 0) { startOld = i; startNew = j; }
             if (i < n && (j === m || lcs[(i + 1) * columns + j] >= lcs[i * columns + j + 1])) i++;
@@ -70,7 +72,7 @@ export function* deriveRichTextChangesSteps(before: RichText, after: RichText): 
         if (maps.length > MAX_HUNKS) return [change.map];
         if ((++work & 255) === 0) yield;
     }
-    flush();
+    yield* flush();
     return valid && maps.length <= MAX_HUNKS ? maps : [change.map];
 }
 

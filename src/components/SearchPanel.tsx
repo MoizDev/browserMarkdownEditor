@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useSyncExternalStore } from 'react';
 import { FileText, X } from './icons';
 import { collectFiles } from '../utils/tree';
 import type { FileSearchResult, VaultSearchResults } from '../utils/vaultSearch';
 import type { SearchController, SearchRow } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
+import { getIndexProgress, subscribeIndexProgress } from '../utils/indexProgress';
 
 interface SearchPanelProps {
     fileTree: FileTreeNode[];
@@ -40,10 +41,12 @@ function rowKeyHandler(activate: () => void) {
  * grouped per file; clicking a row opens the file (and jumps to the match).
  */
 export default function SearchPanel({ fileTree, search, onOpenResult, onClose }: SearchPanelProps) {
+    const progress = useSyncExternalStore(subscribeIndexProgress, getIndexProgress);
     const [query, setQuery] = useState('');
     const deferredQuery = useDeferredValue(query);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
+    const [searchProgress, setSearchProgress] = useState<{ done: number; total: number } | null>(null);
     const [epoch, setEpoch] = useState(0);
     const [results, setResults] = useState<VaultSearchResults>({ files: [], matchCount: 0, clipped: false });
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -63,6 +66,7 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
         const abort = new AbortController();
         setResults({ files: [], matchCount: 0, clipped: false });
         setFailed(false);
+        setSearchProgress(null);
         setReady(!deferredQuery);
         if (!deferredQuery) return () => abort.abort();
         const byPath = new Map(files.map(file => [file.path, file]));
@@ -70,6 +74,7 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
         void search.search(deferredQuery, batch => {
             if (abort.signal.aborted) return;
             if (batch.reset) rows.length = 0;
+            if (batch.scanned !== undefined && batch.total !== undefined) setSearchProgress({ done: batch.scanned, total: batch.total });
             rows.push(...batch.batch);
             const found = rows.flatMap(row => {
                 const file = byPath.get(row.path);
@@ -142,6 +147,8 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
             )}
 
             <div className="search-results">
+                {progress?.phase === 'sweeping' ? <p className="search-hint" role="status">Indexing — {progress.done} of {progress.total}</p>
+                    : query && !ready && searchProgress && <p className="search-hint" role="status">Indexing — {searchProgress.done} of {searchProgress.total}</p>}
                 {!query && (
                     <p className="search-hint">Search file names and contents across the vault.</p>
                 )}

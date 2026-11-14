@@ -319,6 +319,7 @@ export class TextEditSession {
 
     externalChange(): void {
         this.typingHistory.close();
+        this.controller.setStoredMarks(null);
         const before = this.lastText, after = this.services.plainText();
         if (before !== after) {
             let from = 0, oldEnd = before.length, newEnd = after.length;

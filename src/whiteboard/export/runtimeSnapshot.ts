@@ -16,7 +16,8 @@ import { paintItem2d } from '../render/reference/paint2d';
 import { prepareRaster, type PreparedRaster } from './prepareRaster';
 
 export interface BoardCaptureSnapshotOptions {
-    readonly runtime: BoardRuntime;
+    /** Narrowed (foreign edit by whiteboard-a3 for the closed-source seam): reads only the scene, document owner and media. */
+    readonly runtime: Pick<BoardRuntime, 'scene' | 'media'> & { readonly session: Pick<BoardRuntime['session'], 'doc' | 'owner'> };
     readonly sheetId: SheetId;
     readonly request: CaptureRequest;
     readonly memory: MemoryAllocator;

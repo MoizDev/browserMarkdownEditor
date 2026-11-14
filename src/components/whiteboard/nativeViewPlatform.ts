@@ -3,6 +3,7 @@ import type { CameraController } from '../../platform/render/camera';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { BoardSession } from '../../whiteboard/session/BoardSession';
 import type { ViewerEngine } from '../../whiteboard/viewer/types';
+import type { RenderToken } from '../../platform/render/types';
 
 type Services = Omit<PlatformPaneOptions<object>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
 type NativeViewPorts = Pick<Services, 'consumeInput' | 'isInteracting' | 'setInputEnabled' | 'cancelViewWork'
@@ -17,6 +18,8 @@ export function createNativeViewPlatform(options: {
     camera: CameraController;
     paneId: string;
     viewLease: number;
+    documentToken?: RenderToken;
+    currentSource?(): boolean;
     readSheetId(): string;
     captureRegion?: NonNullable<Services['session']['captureRegion']>;
     captureBlob?: NonNullable<Services['session']['captureBlob']>;
@@ -26,7 +29,7 @@ export function createNativeViewPlatform(options: {
     if (viewer.session !== board || board.owner.documentId !== identity.documentId || board.owner.session !== identity.session) {
         throw new Error('Native view session does not match its owner');
     }
-    const token = Object.freeze({ documentId: identity.documentId, session: identity.session,
+    const token = Object.freeze(options.documentToken ? { ...options.documentToken } : { documentId: identity.documentId, session: identity.session,
         vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     return {
         paneId, viewLease, camera, backendPreference: viewer.getSnapshot().backendPreference,
@@ -36,7 +39,7 @@ export function createNativeViewPlatform(options: {
         layout: viewer.getSnapshot().layout,
         readLayout: () => viewer.getSnapshot().layout,
         readAppearance: () => viewer.getSnapshot().appearance,
-        currentToken: () => host.isCurrent(identity) ? token : null,
+        currentToken: () => host.isCurrent(identity) && (options.currentSource?.() ?? true) ? token : null,
         readCamera: () => camera.camera,
         revision: () => JSON.stringify([viewer.getSnapshot().sceneRevision, options.readSheetId()]),
         consumeInput: timestamp => ports.consumeInput(timestamp),

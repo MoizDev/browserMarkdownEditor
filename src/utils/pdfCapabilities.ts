@@ -65,8 +65,11 @@ export async function classicPdfCapabilities(doc: PDFDocumentProxy): Promise<Pdf
     const flag = (name: string): boolean | 'unknown' => typeof info?.[name] === 'boolean' ? info[name] as boolean : 'unknown';
     const copy = permissions.status !== 'fulfilled' ? 'unknown'
         : permissions.value === null ? encrypted === false ? true : 'unknown' : permissions.value.includes(COPY_FLAG);
+    // Same null rule as copy: an unencrypted file carries no restriction flags.
+    const print = permissions.status !== 'fulfilled' ? 'unknown'
+        : permissions.value === null ? encrypted === false ? true : 'unknown' : permissions.value.includes(PRINT_FLAG);
     const forms = flag('IsAcroFormPresent'), xfa = flag('IsXFAPresent');
-    return { encrypted, copy, forms, xfa, javascript: 'unknown', render: true,
+    return { encrypted, copy, print, forms, xfa, javascript: 'unknown', render: true,
         capture: copy === false || xfa === true ? false : copy === true && xfa === false ? true : 'unknown',
         write: encrypted === true || xfa === true ? false : 'unknown', actions: 'unknown', repairStatus: 'unknown', signed: 'unknown' };
 }

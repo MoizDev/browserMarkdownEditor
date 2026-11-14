@@ -4,6 +4,7 @@ import type { JournalCapture } from '../utils/recoveryFunnel';
 import type { ClipboardCache } from '../utils/clipboardCache';
 import type { TrashItem } from './index';
 import type { EmbedContainmentApproval, EmbedContainmentFactory, EmbedFrameManifest } from '../platform/embedContainment.types';
+import type { NativeEditingCapabilityFactory } from '../components/whiteboard/nativeEditingCapabilities';
 
 export interface NativeCanvasIdentity {
     readonly documentId: string;
@@ -29,6 +30,7 @@ export interface NativeEmbedHost {
 export interface NativeCanvasHost {
     readonly clipboard: ClipboardCache;
     readonly embeds: NativeEmbedHost;
+    readonly createEditingCapabilities: NativeEditingCapabilityFactory;
     identity(documentId: string): NativeCanvasIdentity | undefined;
     /** The current outer-file generation, even when a native session retains its source generation. */
     outerIdentity(documentId: string): NativeCanvasIdentity | undefined;
@@ -38,6 +40,8 @@ export interface NativeCanvasHost {
     canWriteSource(identity: NativeCanvasIdentity): boolean;
     /** Live App write authority, including the board's own read-only guard. */
     canWrite(identity: NativeCanvasIdentity): boolean;
+    /** The first refusal that keeps this source from writing, named for the user; null when writable. */
+    writeBlockReason(identity: NativeCanvasIdentity): string | null;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
     /** Capture the actual cold buffer before any asynchronous source preparation. */
     pinBoardSource(identity: NativeCanvasIdentity): {

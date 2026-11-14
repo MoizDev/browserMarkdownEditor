@@ -11,6 +11,8 @@ export interface SelectionCommandDriverOptions {
     readonly runtime: BoardRuntime;
     readonly zoom: () => number;
     current(): boolean;
+    /** The view's editable gate; document commands are refused while it is false. */
+    canMutateView(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
     keptLocked?(ids: readonly NodeId[]): void;
@@ -23,7 +25,7 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const live = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
-    const writable = () => live() && !session.isReadOnly && !session.isGestureActive;
+    const writable = () => live() && options.canMutateView() && !session.isReadOnly && !session.isGestureActive;
     const selection = createBoardSelectionCommands({ runtime, current: writable, zoom: options.zoom, cooperate });
     const arrangement = createBoardArrangementCommands({ runtime, current: writable, cooperate });
     const controllers = new Set<AbortController>();
@@ -90,9 +92,12 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         'align.top': 'top', 'align.middle': 'middle', 'align.bottom': 'bottom' };
     const orders: Readonly<Record<string, SelectionOrder>> = { 'arrange.back': 'back', 'arrange.backward': 'backward',
         'arrange.forward': 'forward', 'arrange.front': 'front' };
+    const owned = (id: string): boolean => id === 'delete' || id === 'group' || id === 'ungroup' || id === 'lock' || id === 'frame.toggle'
+        || id === 'distribute.horizontal' || id === 'distribute.vertical' || Object.hasOwn(alignments, id) || Object.hasOwn(orders, id);
     const run = (id: string): boolean => {
         if (id === 'select.all') return selectAll();
-        if (!writable()) return false;
+        // A view that refuses edits consumes these document commands so the host's global route cannot promote them.
+        if (!writable()) return owned(id) && live() && (!options.canMutateView() || session.isReadOnly);
         const count = runtime.selection.getSnapshot().selected.length;
         if (!count) return false;
         if (id === 'delete') return schedule(remove);

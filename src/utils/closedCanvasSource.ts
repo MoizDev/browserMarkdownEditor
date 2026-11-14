@@ -23,7 +23,8 @@ export async function acquireClosedCanvasSource(options: {
     readonly activation: number;
     readonly path: string;
     readonly handle: FileSystemFileHandle;
-    readonly kind: 'drawing' | 'notebook';
+    /** 'pdf-ink' leases the outer PDF bytes; the consumer admits the board inside them. */
+    readonly kind: 'drawing' | 'notebook' | 'pdf-ink';
     readonly signal: AbortSignal;
     readonly documentId: string;
     readonly sessions: DocumentSessionStore;

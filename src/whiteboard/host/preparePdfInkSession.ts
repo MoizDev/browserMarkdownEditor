@@ -24,6 +24,8 @@ export interface PreparePdfInkSessionOptions {
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
+    /** Cold agent acquisition cannot initiate annotation of an unannotated PDF. */
+    readonly requireExistingNative?: boolean;
     readonly prepareOwned: typeof prepareOwnedPdfInk;
     readonly createHost: typeof createPdfInkHost;
     readonly validateLoadedHost: typeof validateLoadedPdfInkHost;
@@ -67,6 +69,10 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     let accepted;
     try { signal.throwIfAborted(); if (!current()) throw stale(); accepted = acquisition.take(); }
     catch (error) { await acquisition.dispose(); throw error; }
+    if (options.requireExistingNative && accepted.kind !== 'native') {
+        await accepted.release();
+        throw new Error('Open Annotate before editing an unannotated PDF.');
+    }
     return prepareAcceptedPdfInkSession(options, accepted);
 }
 
@@ -92,7 +98,21 @@ export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSession
         signal.throwIfAborted();
         if (!current()) throw stale();
         controller = createPdfInkRebind({ host, documentId, admittedIdentity: identity, initialSource: accepted,
-            sources: prepared.sources, rebind: options.rebind, onError: options.onError, onReadOnly: options.onReadOnly });
+            sources: prepared.sources, rebind: options.rebind,
+            adoptPaint(witness, isCurrent) {
+                const runtime = prepared.runtime();
+                const live = () => {
+                    const outer = host.outerIdentity(documentId), token = witness.token;
+                    return !!runtime && current() && isCurrent() && prepared.runtime() === runtime && !!outer
+                        && outer.kind === 'pdfInk' && host.isCurrent(outer) && outer.documentId === token.documentId
+                        && outer.session === token.session && outer.vaultActivation === token.vaultEpoch
+                        && outer.bytesGeneration === token.bytesGeneration;
+                };
+                if (!runtime || !live()) throw stale();
+                runtime.adoptPaintSource(witness, { documentId, session: identity.session,
+                    pristineFingerprint: accepted.source.pristineFingerprint }, live);
+            },
+            onError: options.onError, onReadOnly: options.onReadOnly });
     } catch (error) { await prepared.dispose(); throw error; }
     const rebind = controller;
     let transferred = false, stagingDisposed = false;

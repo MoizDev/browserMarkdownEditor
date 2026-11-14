@@ -92,7 +92,8 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const frames = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintFrame): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
@@ -119,7 +120,8 @@ export const attachView: AttachView = options => {
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
-        onDrawn(revision, _frame, context) {
+        onDrawn(revision, frame, context) {
+            options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
                 sceneRevision: revision, omittedNodeIds: context.omittedNodeIds });
         },
@@ -265,6 +267,7 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        wakeAt(deadlineMs) { if (!disposed) layers.wakeAt(deadlineMs); },
         getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {
@@ -281,6 +284,7 @@ export const attachView: AttachView = options => {
             if (disposed || !options.session.doc.nodes.has(id as NodeId)) return;
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
+        cancelReveal,
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
@@ -289,7 +293,6 @@ export const attachView: AttachView = options => {
             port?.setVisible(view.visible);
             publish(); layers.invalidate('board-embed-port');
         },
-        cancelReveal,
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

@@ -2,6 +2,9 @@ import type { PageGeometry } from '../../platform/types';
 import type { WriterSource } from '../../pdf/writing/protocol';
 import type { RecoveryMediaAsset } from '../../utils/recoveryCopy';
 import { streamPageDisplayList } from '../export/streamPage';
+import { writeIncrementalPdfPage } from '../export/incrementalPdf';
+import type { IncrementalPdfPage } from '../export/incrementalPdf';
+import type { SheetId } from '../model/ids';
 import { createExportImageResolver } from '../export/exportImage';
 import { boardRecoveryMedia, materializeBoardRecoveryRecipe, type BoardRecoveryRecipe } from '../format/recoveryRecipe';
 import { hashMedia } from '../media/sha256';
@@ -124,24 +127,32 @@ export async function materializePdfRecoveryRecipe(payload: unknown, signal: Abo
             onError: error => console.error('PDF recovery image:', error), signal });
         const ownedImages = images;
         let released = false;
+        const prepareSheet = async (sheet: SheetId, page: number, pageSignal: AbortSignal) => {
+            pageSignal.throwIfAborted();
+            const box = stack.rects[page];
+            if (!box) throw new RangeError('PDF recovery page is unavailable');
+            const source = await ownedServices.preparePaint(doc, { sheetId: sheet, page, world: box, theme: 'light' }, pageSignal);
+            const image = createExportImageResolver(token, ownedImages, async (key, readSignal) => {
+                readSignal.throwIfAborted();
+                const match = /^(?:sha256:([0-9a-f]{64})(?::0)?|media:([0-9a-f]{64}):0)$/.exec(key);
+                if (!match) throw new TypeError('Invalid recovered PDF image key');
+                const blob = media.get(`sha256:${match[1] ?? match[2]}` as MediaId);
+                if (!blob) throw new Error('Recovered PDF image bytes are unavailable');
+                return blob;
+            }, pageSignal);
+            return { source, box, image };
+        };
         const assembly = pinPdfInkAssembly({ revision: recipe.revision, source: recipe.source, writeId: recipe.writeId,
             media: [...doc.media.values()], mediaBlob: id => media.get(id), isCurrent: () => !released,
             release() { released = true; },
             ink: { pages: recipe.pages, sheets: doc.sheetOrder.map(sheet => sheet.id),
                 async readSheetPage(sheet, page, pageSignal) {
-                    pageSignal.throwIfAborted();
-                    const box = stack.rects[page];
-                    if (!box) throw new RangeError('PDF recovery page is unavailable');
-                    const source = await ownedServices.preparePaint(doc, { sheetId: sheet, page, world: box, theme: 'light' }, pageSignal);
-                    const image = createExportImageResolver(token, ownedImages, async (key, readSignal) => {
-                        readSignal.throwIfAborted();
-                        const match = /^(?:sha256:([0-9a-f]{64})(?::0)?|media:([0-9a-f]{64}):0)$/.exec(key);
-                        if (!match) throw new TypeError('Invalid recovered PDF image key');
-                        const blob = media.get(`sha256:${match[1] ?? match[2]}` as MediaId);
-                        if (!blob) throw new Error('Recovered PDF image bytes are unavailable');
-                        return blob;
-                    }, pageSignal);
+                    const { source, box, image } = await prepareSheet(sheet, page, pageSignal);
                     return streamPageDisplayList(source, page, box, 1, image, pageSignal);
+                },
+                async writeSheetPage(sheet: SheetId, page: number, sink: IncrementalPdfPage, pageSignal: AbortSignal) {
+                    const { source, box, image } = await prepareSheet(sheet, page, pageSignal);
+                    await writeIncrementalPdfPage({ source, world: box }, page, 1, image, sink, pageSignal);
                 } },
         }, async writerSignal => {
             const [{ getSharedPdfPool }, { typedPdfWriter }] = await Promise.all([

@@ -411,9 +411,21 @@ exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
 artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected. These operations
+nothing is selected. With exactly one picture selected, the same menu offers
+**Replace picture…** (the new image keeps the old one's centre and longer side;
+a PDF annotation page does not offer it yet), **Crop picture** with six presets,
+and **Invert picture**. With one link card selected it offers **Fetch link
+preview**, which contacts the link's site only when you ask. A row that cannot
+run now stays on the menu and says why, such as a locked picture or a read-only
+canvas. These operations
 and navigation do not edit the source; drawing, Cut and Paste remain unavailable
 in this native viewer.
+
+The agent's **canvas tools** use the document session rather than its viewer.
+They can change an eligible native drawing or notebook while its pane is hidden
+or unmounted; a batch is one undo step and follows the normal save path. A disk
+conflict, emergency read-only setting or unsupported native document still
+refuses changes. This does not enable the viewer's unfinished drawing tools.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you

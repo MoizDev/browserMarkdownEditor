@@ -125,7 +125,8 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
             });
             const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
             if (selected.has(UNDERLAY) || selected.has(CONTENT)) {
-                const source = await pin.paintSource({ sheetId, world: frozen.worldRect, theme: 'light' }, signal); check();
+                const source = await pin.paintSource({ sheetId, world: frozen.worldRect, theme: 'light',
+                    deviceScale: frozen.view.camera.z * frozen.view.viewport.dpr }, signal); check();
                 if (!sameToken(source.token, token) || source.sceneRevision !== revision) throw new Error('Board capture source identity changed');
                 let items = 0;
                 const stream = new PaintStreamJob(source, (item, band) => {

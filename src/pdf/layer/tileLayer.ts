@@ -325,7 +325,7 @@ export class PdfTileLayer implements Layer {
         for (const [id, texture] of this.bridgeTextures) {
             if (!valid.has(id) || texture.device !== device) {
                 this.bridgeTextures.delete(id);
-                this.texturePool.release(texture);
+                texture.device.destroy(texture.handle);
             }
         }
         for (const item of entries) {

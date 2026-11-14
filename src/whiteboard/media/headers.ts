@@ -1,4 +1,4 @@
-export interface RasterHeader { readonly width: number; readonly height: number; readonly animated: boolean }
+export interface RasterHeader { readonly width: number; readonly height: number; readonly animated: boolean; readonly decodePixels?: number }
 const LIMIT = 2 ** 26;
 
 function dimensions(width: number, height: number, animated = false): RasterHeader {
@@ -123,6 +123,18 @@ export function webpHeader(bytes: Uint8Array): RasterHeader {
     const end = view.getUint32(4, true) + 8;
     if (end > bytes.length || end < 20) throw new Error('Truncated WebP');
     const u24 = (pos: number): number => bytes[pos] + bytes[pos + 1] * 256 + bytes[pos + 2] * 65536;
+    const frameSize = (pos: number, data: number, n: number): RasterHeader | null => {
+        if (fourcc(bytes, pos, 'VP8 ')) {
+            if (n < 10 || bytes[data + 3] !== 0x9d || bytes[data + 4] !== 0x01 || bytes[data + 5] !== 0x2a) throw new Error('Invalid WebP frame');
+            return dimensions(view.getUint16(data + 6, true) & 0x3fff, view.getUint16(data + 8, true) & 0x3fff);
+        }
+        if (fourcc(bytes, pos, 'VP8L')) {
+            if (n < 5 || bytes[data] !== 0x2f) throw new Error('Invalid WebP frame');
+            const bits = view.getUint32(data + 1, true);
+            return dimensions(1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff));
+        }
+        return null;
+    };
     let size: RasterHeader | undefined;
     let animated = false;
     for (let pos = 12; pos + 8 <= end;) {
@@ -132,19 +144,29 @@ export function webpHeader(bytes: Uint8Array): RasterHeader {
             if (n !== 10) throw new Error('Invalid WebP canvas');
             size = dimensions(1 + u24(data + 4), 1 + u24(data + 7));
             animated = !!(bytes[data] & 2);
-        } else if (fourcc(bytes, pos, 'VP8 ') && !size) {
-            if (n < 10 || bytes[data + 3] !== 0x9d || bytes[data + 4] !== 0x01 || bytes[data + 5] !== 0x2a) throw new Error('Invalid WebP frame');
-            size = dimensions(view.getUint16(data + 6, true) & 0x3fff, view.getUint16(data + 8, true) & 0x3fff);
-        } else if (fourcc(bytes, pos, 'VP8L') && !size) {
-            if (n < 5 || bytes[data] !== 0x2f) throw new Error('Invalid WebP frame');
-            const bits = view.getUint32(data + 1, true);
-            size = dimensions(1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff));
+        } else if (fourcc(bytes, pos, 'VP8 ') || fourcc(bytes, pos, 'VP8L')) {
+            const frame = frameSize(pos, data, n)!;
+            if (size && (frame.width !== size.width || frame.height !== size.height)) throw new Error('WebP frame differs from canvas');
+            size ??= frame;
         } else if (fourcc(bytes, pos, 'ANMF')) {
             if (n < 16 || !size) throw new Error('Invalid WebP animation');
             const x = u24(data) * 2, y = u24(data + 3) * 2;
             const width = u24(data + 6) + 1, height = u24(data + 9) + 1;
             dimensions(width, height);
             if (x > size.width - width || y > size.height - height) throw new Error('WebP frame exceeds canvas');
+            let found = false;
+            for (let sub = data + 16; sub < data + n;) {
+                if (sub + 8 > data + n) throw new Error('Truncated WebP frame chunk');
+                const length = view.getUint32(sub + 4, true), body = sub + 8;
+                if (length + (length & 1) > data + n - body) throw new Error('Truncated WebP frame chunk');
+                const inner = frameSize(sub, body, length);
+                if (inner) {
+                    if (found || inner.width !== width || inner.height !== height) throw new Error('Invalid WebP frame dimensions');
+                    found = true;
+                }
+                sub = body + length + (length & 1);
+            }
+            if (!found) throw new Error('Missing WebP frame data');
         }
         pos = data + n + (n & 1);
     }

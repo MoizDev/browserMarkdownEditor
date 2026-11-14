@@ -27,7 +27,7 @@ export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolL
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     if (focusMode) return null;
     return <div className="board-chrome-overlay" lang={locale} dir={direction}>
-        <BoardHeader {...header} />
+        <BoardHeader {...header} locale={locale} direction={direction} />
         {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
         <div className="board-chrome-bottom">
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool}

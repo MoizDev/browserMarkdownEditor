@@ -97,7 +97,7 @@ function inspectDocument(text: string, budget: { bytes: number; pixels: number; 
                 : mime === 'image/gif' ? gifHeader(bytes) : mime === 'image/webp' ? webpHeader(bytes)
                     : mime === 'image/avif' ? isoHeader(bytes, 'avif') : null;
             if (!header) throw new Error('Unsupported SVG inline resource');
-            budget.pixels += header.width * header.height;
+            budget.pixels += header.decodePixels ?? header.width * header.height;
             if (budget.pixels > 2 ** 26) throw new Error('SVG inline resources exceed the pixel limit');
         }
     };

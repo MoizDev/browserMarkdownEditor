@@ -1,4 +1,4 @@
-import type { PageGeometry } from '../../platform/types';
+import type { PdfPageExtent } from '../engine/types';
 import type { RenderToken } from '../../platform/render';
 import type { PdfPageLink } from '../pdfLinkModel';
 import type { PdfTileProducer } from '../layer/tileLayer';
@@ -7,7 +7,7 @@ import { stablePdfBlob } from './stableBlob';
 
 /** The pool adapter is the only engine-specific half of this session. */
 export interface OpenTiledDocument {
-    readonly pages: readonly PageGeometry[];
+    readonly pages: readonly PdfPageExtent[];
     readonly poolDocument: PdfPoolDocument;
     readonly producer: PdfTileProducer;
     links(page: number, signal: AbortSignal): Promise<readonly PdfPageLink[]>;
@@ -21,9 +21,10 @@ export interface TiledDocumentPool {
 /** App-owned prompt; null means the user cancelled, never an empty password. */
 export type PdfPasswordRequest = (token: RenderToken, incorrect: boolean, signal: AbortSignal) => Promise<string | null>;
 
-/** Geometry, not path, determines whether older pixels can bridge a version. */
-export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {
-    return JSON.stringify(pages.map(page => [page.index, page.width, page.height, page.rotate, page.userUnit, ...page.toUserSpace]));
+/** Layout signature only. Point mappings and version-bridge authorization must
+ * additionally await exact page geometry; extents never imply an affine. */
+export function pdfGeometryDigest(pages: readonly PdfPageExtent[]): string {
+    return JSON.stringify(['display-extents-v1', pages.map(page => [page.index, page.width, page.height])]);
 }
 
 interface Slot { value: unknown; dispose?: () => void | Promise<void> }

@@ -18,6 +18,8 @@ export interface ConnectorResizeOptions {
     readonly doc: BoardDoc;
     readonly node: Readonly<ConnectorNode>;
     readonly frame: ResizePreview;
+    /** Additional world displacement after the selection-frame scale. */
+    readonly translateWorld?: Vec2;
     readonly current: () => boolean;
     readonly signal: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -27,10 +29,10 @@ export interface ConnectorResizeResult {
     readonly doc: BoardDoc;
     release(): void;
 }
-function mapped(point: Vec2, frame: ResizePreview): Vec2 {
+function mapped(point: Vec2, frame: ResizePreview, delta: Vec2 = { x: 0, y: 0 }): Vec2 {
     const c = Math.cos(frame.box.rotation), s = Math.sin(frame.box.rotation), dx = point.x - frame.anchor.x, dy = point.y - frame.anchor.y;
     const x = (c * dx + s * dy) * frame.scaleX, y = (-s * dx + c * dy) * frame.scaleY;
-    return { x: frame.anchor.x + c * x - s * y, y: frame.anchor.y + s * x + c * y };
+    return { x: frame.anchor.x + c * x - s * y + delta.x, y: frame.anchor.y + s * x + c * y + delta.y };
 }
 
 /** Targets are already staged; bound ends stay bound while free ends and controls map once. */
@@ -42,6 +44,7 @@ export async function prepareConnectorResize(options: ConnectorResizeOptions): P
         && live.rev === liveRevision && source.rev === sourceRevision && doc.rev === revision
         && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Connector resize source changed', 'AbortError'); };
+    if (options.translateWorld && ![options.translateWorld.x, options.translateWorld.y].every(Number.isFinite)) throw new RangeError('Invalid connector resize displacement');
     check(); const original = source.nodes.get(options.node.id), node = doc.nodes.get(options.node.id);
     if (!original || original.kind !== 'connector' || !node || node.kind !== 'connector') throw new Error('Connector resize target disappeared');
     const sourceScope = await acquireBoardGeometryScope(runtime, [node.id], { doc: source, signal, current, cooperate: options.cooperate });
@@ -54,12 +57,12 @@ export async function prepareConnectorResize(options: ConnectorResizeOptions): P
         const threshold = metric.status === 'bracket' ? metric.min : metric.status === 'provisional' ? metric.value : original.width * 3;
         const sourceBody = connectorBody(initial.connector.start.aimWorld, initial.connector.end.aimWorld,
             Math.abs(original.bend) <= threshold ? 0 : original.bend, 0.01);
-        const middle = mapped(connectorBodyPoint(sourceBody, .5), frame), labelPoint = mapped(initial.connector.editMetrics.anchorWorld, frame);
+        const middle = mapped(connectorBodyPoint(sourceBody, .5), frame, options.translateWorld), labelPoint = mapped(initial.connector.editMetrics.anchorWorld, frame, options.translateWorld);
         const pose = worldPose(source, original.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), ops: NodeSetOp[] = [];
         for (const side of ['start', 'end'] as const) {
             const prior = original[side], currentEnd = node[side];
             if (prior.attach) continue;
-            const world = mapped({ x: pose.x + c * prior.x - s * prior.y, y: pose.y + s * prior.x + c * prior.y }, frame);
+            const world = mapped({ x: pose.x + c * prior.x - s * prior.y, y: pose.y + s * prior.x + c * prior.y }, frame, options.translateWorld);
             const local = worldToLocal(doc, node, world);
             // Default, calibration cut by owner: a selection transform never detaches a binding.
             ops.push({ t: 'set', id: node.id, key: side, value: { ...currentEnd, x: local.x, y: local.y } });

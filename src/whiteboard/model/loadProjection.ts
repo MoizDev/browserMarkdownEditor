@@ -1,91 +1,69 @@
-import type { PointInspectionHeader } from '../format/points';
+import { inspectPointsIncremental, type PointInspectionHeader } from '../format/points';
+import { SECURITY_LIMITS } from '../security/limits';
 import type { BoardDocInput } from './doc';
-import type { JsonObject, JsonValue } from './json';
+import type { JsonValue } from './json';
+import { decodeLoadData, encodeLoadData } from './loadCodec';
+import { createLoadedBoardDoc } from './loadDocument';
+import { recountLoadMedia } from './loadMediaCounts';
 import type { LoadProjection, LoadRepairDraft, LoadSampleWire, RehydratedLoad } from './loadTypes';
-import type { MediaId } from './media';
 import type { NodeRecord } from './nodes';
-import type { SampleLease, SampleRef } from './samples';
+import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
+import { validateLoadedNode, validateLoadedRootIncremental } from './validate';
 
-// ExtBag and preserved.fields are the only Maps in a parsed model. Tagging a
-// Map prevents JSON object keys such as __proto__ from becoming properties;
-// its entries are arrays and raw JSON lexemes stay byte-identical strings.
-const MAP = '$boardMap';
-function encode(value: unknown): JsonValue {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (Array.isArray(value)) return value.map(encode);
-    if (value instanceof Map) {
-        const entries: JsonValue[] = [];
-        for (const [key, item] of value) {
-            if (typeof key !== 'string') throw new TypeError('Model map key must be a string');
-            entries.push([key, encode(item)]);
-        }
-        return { [MAP]: entries };
-    }
-    if (typeof value !== 'object' || value === undefined) throw new TypeError('Model value is not inert JSON');
-    const result: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
-    for (const [key, item] of Object.entries(value)) {
-        if (item === undefined) continue;
-        if (key === MAP) throw new TypeError('Reserved projection key in model object');
-        result[key] = encode(item);
-    }
-    return result;
-}
-function object(value: unknown): JsonObject {
-    const result = encode(value);
-    if (!result || Array.isArray(result) || typeof result !== 'object') throw new TypeError('Expected model record');
-    return result as JsonObject;
-}
-function decode(value: JsonValue): unknown {
-    if (value === null || typeof value !== 'object') return value;
-    if (Array.isArray(value)) return value.map(decode);
-    const source = value as JsonObject;
-    if (Object.hasOwn(source, MAP)) {
-        if (Object.keys(source).length !== 1 || !Array.isArray(source[MAP])) throw new TypeError('Invalid projection map');
-        const result = new Map<string, unknown>();
-        for (const entry of source[MAP] as readonly JsonValue[]) {
-            if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || result.has(entry[0])) throw new TypeError('Invalid projection map entry');
-            result.set(entry[0], decode(entry[1]));
-        }
-        return result;
-    }
-    const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    for (const [key, item] of Object.entries(source)) result[key] = decode(item);
-    return result;
-}
-function cancelled(signal?: AbortSignal): void {
-    if (signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
-}
+function cancelled(signal?: AbortSignal): void { signal?.throwIfAborted(); }
 
-/** Encode repaired, ordered records only; this object is inert, not admission authority. */
+/** Repaired and unrepaired parse results use this same inert wire dialect. The
+ * projection itself carries no admission authority or receiving-store handles. */
 export async function projectLoad(draft: LoadRepairDraft, sampleWire: (ref: SampleRef) => LoadSampleWire,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<LoadProjection> {
-    const input = draft.input, nodes: JsonObject[] = [], wires: LoadSampleWire[] = [], seen = new Set<SampleRef>();
+    const input = draft.input, nodes: NodeRecord[] = [], wires: LoadSampleWire[] = [], seen = new Set<SampleRef>();
     let index = 0;
     for (const node of input.nodes ?? []) {
-        if ((index++ & 1023) === 0) { cancelled(signal); await cooperate?.(); }
-        nodes.push(object(node));
+        if ((index++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+        nodes.push(node);
         if (node.kind === 'stroke' && !seen.has(node.samples)) {
             const wire = sampleWire(node.samples);
             if (wire.workerRef !== node.samples) throw new TypeError('Sample projection identity mismatch');
             seen.add(node.samples); wires.push(wire);
         }
     }
-    cancelled(signal);
-    return { version: 1, kind: input.kind, sheets: Array.from(input.sheets, object), nodes,
-        media: Array.from(input.media ?? [], object), ui: object(input.ui), view: object(input.view),
-        host: object(input.host), preserved: object(input.preserved),
-        preservedMediaRefs: [...input.preservedMediaRefs], samples: wires, sources: draft.sources, unmapped: draft.unmapped,
+    const collect = async <T>(source: Iterable<T>): Promise<T[]> => {
+        const values: T[] = [];
+        for (const value of source) {
+            if ((values.length & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            values.push(value);
+        }
+        return values;
+    };
+    const ordered = { version: 1, kind: input.kind, sheets: await collect(input.sheets), nodes,
+        media: await collect(input.media ?? []), ui: input.ui, view: input.view, host: input.host, preserved: input.preserved,
+        preservedMediaRefs: await collect(input.preservedMediaRefs), samples: wires, sources: draft.sources, unmapped: draft.unmapped,
+        ...(draft.removedSources === undefined ? {} : { removedSources: draft.removedSources }),
         ...(draft.savedView === undefined ? {} : { savedView: draft.savedView }) };
+    return await encodeLoadData(ordered, cooperate, signal) as unknown as LoadProjection;
 }
 
-/** Re-admit encoded samples in the receiving store; caller retains creator leases
- * until live-node ownership is installed. This conversion does not validate a
- * graph or make untrusted worker input authoritative. */
+function checkProjection(value: unknown): asserts value is LoadProjection {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid load projection');
+    const p = value as LoadProjection;
+    const keys = ['version', 'kind', 'sheets', 'nodes', 'media', 'ui', 'view', 'host', 'preserved', 'preservedMediaRefs', 'samples', 'sources', 'removedSources', 'unmapped', 'savedView'];
+    for (const key in p) if (!keys.includes(key)) throw new TypeError('Unknown load projection field');
+    if (p.version !== 1 || !['whiteboard', 'notebook', 'pdf-ink'].includes(p.kind)) throw new TypeError('Unsupported load projection version or kind');
+    for (const key of ['sheets', 'nodes', 'media', 'preservedMediaRefs', 'samples', 'sources', 'unmapped'] as const) {
+        if (!Array.isArray(p[key]) || p[key].length > SECURITY_LIMITS.records) throw new TypeError(`Invalid load ${key}`);
+    }
+    if (p.sheets.length < 1 || p.sheets.length > SECURITY_LIMITS.sheets) throw new RangeError('Invalid sheet count');
+}
+
+/** Re-admission owns all newly allocated leases until the host has installed
+ * live ownership. Every worker field is copied through the inert decoder, then
+ * the complete receiving model is validated, not trusted because it has a tag. */
 export async function rehydrateLoad(projection: LoadProjection,
-    admit: (pts: string, header: PointInspectionHeader) => SampleLease,
+    admit: (pts: string, header: PointInspectionHeader) => SampleLease, samples: SampleStoreReader,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<RehydratedLoad> {
-    if (projection.version !== 1) throw new TypeError('Unsupported load projection version');
+    const decoded = await decodeLoadData(projection as unknown as JsonValue, cooperate, signal);
+    checkProjection(decoded);
+    const p = decoded;
     const leases: SampleLease[] = [], refs = new Map<SampleRef, SampleRef>();
     let released = false;
     const release = () => {
@@ -95,31 +73,70 @@ export async function rehydrateLoad(projection: LoadProjection,
         leases.length = 0;
     };
     try {
-        for (let i = 0; i < projection.samples.length; i++) {
+        for (let i = 0; i < p.samples.length; i++) {
             if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
-            const wire = projection.samples[i];
-            if (refs.has(wire.workerRef)) throw new TypeError('Duplicate projected sample handle');
-            const lease = admit(wire.pts, wire.header);
+            const wire = p.samples[i];
+            if (!wire || typeof wire !== 'object' || Object.keys(wire).some(key => !['workerRef', 'pts', 'header'].includes(key))
+                || !Number.isSafeInteger(wire.workerRef) || wire.workerRef < 0 || typeof wire.pts !== 'string'
+                || wire.pts.length > SECURITY_LIMITS.encodedPoints || refs.has(wire.workerRef)) throw new TypeError('Invalid projected sample');
+            // A worker header is a hint, not proof that its encoded bytes agree.
+            const inspected = await inspectPointsIncremental(wire.pts, async () => { cancelled(signal); await cooperate?.(); cancelled(signal); });
+            if (!inspected.ok) throw new TypeError(inspected.error.reason);
+            cancelled(signal);
+            const lease = admit(wire.pts, inspected.value.header);
             try { leases.push(lease); refs.set(wire.workerRef, lease.ref); }
             catch (error) { lease.release(); throw error; }
         }
-        const nodes: NodeRecord[] = [];
-        for (let i = 0; i < projection.nodes.length; i++) {
-            if ((i & 1023) === 0) { cancelled(signal); await cooperate?.(); }
-            const node = decode(projection.nodes[i]) as NodeRecord;
+        const nodes: NodeRecord[] = [], ids = new Set<string>();
+        for (let i = 0; i < p.nodes.length; i++) {
+            if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            const node = p.nodes[i] as unknown as NodeRecord;
+            if (!node || typeof node !== 'object' || typeof node.id !== 'string' || ids.has(node.id)) throw new TypeError('Invalid or duplicate projected node identity');
+            ids.add(node.id);
             if (node.kind === 'stroke') {
                 const ref = refs.get(node.samples);
                 if (ref === undefined) throw new TypeError('Projected stroke references missing samples');
                 nodes.push({ ...node, samples: ref });
             } else nodes.push(node);
         }
+        const sheetIds = new Set<string>(), mediaIds = new Set<string>();
+        for (const sheet of p.sheets) {
+            if (!sheet || typeof sheet !== 'object' || typeof sheet.id !== 'string' || ids.has(sheet.id) || sheetIds.has(sheet.id)
+                || Object.keys(sheet).some(key => !['id', 'name', 'order', 'ext'].includes(key))) throw new TypeError('Invalid projected sheet');
+            sheetIds.add(sheet.id);
+        }
+        for (let i = 0; i < p.media.length; i++) {
+            if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            const entry = p.media[i];
+            if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || mediaIds.has(entry.id)) throw new TypeError('Invalid or duplicate projected media');
+            mediaIds.add(entry.id);
+        }
+        // The decoder reconstructs tagged ExtBag Maps; the top-level reference
+        // count remains a pair array by contract and is validated before Map creation.
+        const counts = new Map();
+        let countOrdinal = 0;
+        for (const pair of p.preservedMediaRefs) {
+            if ((countOrdinal++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || counts.has(pair[0])
+                || !Number.isSafeInteger(pair[1]) || pair[1] < 1) throw new TypeError('Invalid preserved media reference count');
+            counts.set(pair[0], pair[1]);
+        }
+        const input = { kind: p.kind, sheets: p.sheets, nodes, media: p.media, ui: p.ui, view: p.view,
+            host: p.host, preserved: p.preserved, preservedMediaRefs: counts } as unknown as BoardDocInput;
+        const recounted = await recountLoadMedia(input, cooperate, signal);
+        if (recounted.size !== counts.size) throw new TypeError('Projected media counts do not match retained data');
+        for (const [id, count] of recounted) if (counts.get(id) !== count) throw new TypeError('Projected media counts do not match retained data');
+        const doc = await createLoadedBoardDoc(input, cooperate, signal);
+        const root = await validateLoadedRootIncremental(doc, cooperate, signal);
+        if (!root.ok) throw new TypeError(root.reason);
+        let ordinal = 0;
+        for (const node of nodes) {
+            if ((ordinal & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            const check = validateLoadedNode({ doc, samples }, node, ordinal++);
+            if (!check.ok) throw new TypeError(`Node ${node.id}: ${check.reason}`);
+        }
         cancelled(signal);
-        const input = {
-            kind: projection.kind, sheets: projection.sheets.map(value => decode(value)), nodes,
-            media: projection.media.map(value => decode(value)), ui: decode(projection.ui), view: decode(projection.view),
-            host: decode(projection.host), preserved: decode(projection.preserved),
-            preservedMediaRefs: new Map(projection.preservedMediaRefs as readonly (readonly [MediaId, number])[]),
-        } as BoardDocInput;
-        return { input, leases, release };
+        return { input, doc, sources: p.sources, removedSources: p.removedSources ?? [], unmapped: p.unmapped,
+            ...(p.savedView ? { savedView: p.savedView } : {}), leases, release };
     } catch (error) { release(); throw error; }
 }

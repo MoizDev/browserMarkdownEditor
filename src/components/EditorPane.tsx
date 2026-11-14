@@ -7,15 +7,14 @@ import type { ReaderIntegration } from '../types/reading';
 import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
-import ConfirmDialog from './ConfirmDialog';
 import DocumentPane from './DocumentPane';
-import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
 import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
+import type { NativeCanvasHost } from '../types/nativeCanvas';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
@@ -97,6 +96,9 @@ const CanvasPane = lazy(() => import('./CanvasPane'));
 interface EditorPaneProps {
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
+    nativeCanvasHost: NativeCanvasHost;
+    /** E4's App-owned editor host; DocumentPane adoption is the next wiring step. */
+    markdownSessions: import('../editor/markdownSession.types').MarkdownSessionHost;
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
@@ -249,7 +251,7 @@ const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
  * a pane carried across a rename would go on reporting the old one and every
  * edit after it would land nowhere. Injective either way — an id holds no '|'.
  */
-const paneKey = (tab: OpenTab) => `${tab.id}|${tab.file.path}`;
+const paneKey = (tab: OpenTab) => tab.id;
 
 /** The least a pane may be left holding, as a percentage of the editor. */
 function paneFloorPct(totalPx: number): number {
@@ -310,7 +312,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -608,54 +610,16 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
         };
         focusWordCounts(countPath);
         const unsubscribe = subscribeWordCounts(write);
-        const text = countPath ? contentOf(countPath) ?? focusedTab?.content ?? '' : '';
-        const trimmed = text.trim();
-        write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
+        const text = countPath ? contentOf(countPath) : undefined;
+        if (text === undefined) {
+            if (wordCountRef.current) wordCountRef.current.textContent = '—';
+            if (charCountRef.current) charCountRef.current.textContent = '—';
+        } else {
+            const trimmed = text.trim();
+            write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
+        }
         return () => { unsubscribe(); focusWordCounts(null); };
     }, [countPath, contentOf]);
-
-    // ── Embedded images ────────────────────────────────────────────────────
-    // Deleting one is the editor's only action that needs the app: it has to be
-    // confirmed first, since the picture goes to .Garbage with it. The document
-    // edit itself stays inside the editor subsystem — this only decides whether
-    // it happens (see imageWidget.ts).
-    const [imageDelete, setImageDelete] = useState<PaneImageDelete | null>(null);
-    const handleImageDelete = useCallback((request: PaneImageDelete) => setImageDelete(request), []);
-
-    const closeImageDelete = useCallback(() => setImageDelete(null), []);
-    // Not inside a state updater: StrictMode invokes those twice, and this one
-    // edits the document.
-    const runImageDelete = useCallback(() => {
-        imageDelete?.run();
-        setImageDelete(null);
-    }, [imageDelete]);
-
-    // (Escape, the click outside and the focus round trip are ConfirmDialog's.)
-
-    // A pending request names a position in the document that raised it, and
-    // that document can leave the screen while the dialog is up (a tab switch,
-    // ⌘N, the pane being closed). The question stops meaning anything then, so
-    // it is withdrawn rather than answered against the wrong note — removeEmbed
-    // would refuse it anyway, silently.
-    const visibleKey = panes.map(p => p.activePath).join('\n');
-    useEffect(() => {
-        const visible = new Set(visibleKey ? visibleKey.split('\n') : []);
-        setImageDelete(prev => (prev && visible.has(prev.path) ? prev : null));
-    }, [visibleKey]);
-
-    // Drop cached editor states for documents that are no longer open — the
-    // only thing that ever empties App's cache. Keyed on the joined key string
-    // so it doesn't run on every keystroke. It does not run while the graph
-    // view has this component unmounted; its first run on the way back clears
-    // whatever closed meanwhile, which nothing could adopt in between (ids
-    // never repeat — see App's newTabId).
-    const openTabsKey = tabs.map(paneKey).join('\n');
-    useEffect(() => {
-        const open = new Set(openTabsKey ? openTabsKey.split('\n') : []);
-        for (const key of stateCache.keys()) {
-            if (!open.has(key)) stateCache.delete(key);
-        }
-    }, [openTabsKey, stateCache]);
 
     // ── Opening a tab as a column of its own ───────────────────────────────
     // A tab dragged out of its strip and dropped on the panes below leaves its
@@ -979,6 +943,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         stateCache={stateCache}
                         contentOf={contentOf}
                         documentBuffers={documentBuffers}
+                        markdownSessions={markdownSessions}
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
@@ -991,7 +956,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         onToggleMode={onToggleMode}
                         onExportNotebook={onExportNotebook}
                         onOpenNote={onOpenNote}
-                        onImageDelete={handleImageDelete}
                         onNotify={onNotify}
                         onConfirm={onConfirm}
                         revealRequest={revealRequest}
@@ -1095,6 +1059,9 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 // means "this document is some column's showing tab".
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
+                const data = documentBuffers.snapshotForDocument(tab.id)?.data;
+                const content = typeof data === 'string' ? data : tab.representation.nativeCanvasKind ? '' : undefined;
+                if (content === undefined) return null;
                 return (
                     <React.Fragment
                         // Same key as a pane (see paneKey): matched by path
@@ -1123,7 +1090,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             mode={tab.mode}
-                            content={tab.content}
+                            content={content}
                             onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
                             attachCanvasSession={attachCanvasSession}
@@ -1153,6 +1120,9 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 && (isDrawingFile(t.file.name) || isNotebookFile(t.file.name))).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
+                const data = documentBuffers.snapshotForDocument(tab.id)?.data;
+                const content = typeof data === 'string' ? data : tab.representation.nativeCanvasKind ? '' : undefined;
+                if (content === undefined) return null;
                 const fallbackStyle = visible
                     ? {
                         left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
@@ -1178,6 +1148,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         <CanvasPane
                             file={tab.file}
                             documentId={tab.id}
+                            nativeCanvasHost={nativeCanvasHost}
                             representation={tab.representation}
                             isVisible={visible}
                             slotIndex={slot?.index ?? 0}
@@ -1185,7 +1156,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             registerKeyboardTarget={registerKeyboardTarget}
-                            content={tab.content}
+                            content={content}
                             onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
                             attachCanvasSession={attachCanvasSession}
@@ -1247,19 +1218,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         <p className="editor-empty-hint">Select a file from the sidebar to begin editing.</p>
                     </div>
                 </div>
-            )}
-            {imageDelete && (
-                <ConfirmDialog
-                    title="Delete image?"
-                    confirmLabel="Delete"
-                    danger
-                    onConfirm={runImageDelete}
-                    onCancel={closeImageDelete}
-                >
-                    <strong>{imageDelete.name}</strong> is removed from this note, and its file moves
-                    to this folder’s <code>.Garbage</code> unless another note here still shows it.
-                    Undo (⌘Z) brings both back.
-                </ConfirmDialog>
             )}
             {showBacklinks && backlinksAvailable && (
                 <BacklinksPanel

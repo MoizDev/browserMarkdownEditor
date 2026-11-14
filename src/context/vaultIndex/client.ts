@@ -1,6 +1,6 @@
 import { createWorkerClient } from '../../platform/workers';
 import type { WorkerClient } from '../../platform/workers';
-import type { IndexGraph, IndexSession } from '../../utils/vaultIndex/types';
+import type { IndexGraph, IndexMediaSnapshot, IndexSession } from '../../utils/vaultIndex/types';
 import { observeForegroundReads } from './foreground';
 import { newIndexSession } from './session';
 import { notifySearchChanges } from '../../utils/searchChanges';
@@ -39,6 +39,10 @@ export class VaultIndexClient {
     private nextOverlay = 0;
     private overlays = new Map<string, { revision: number; rev: number; text: string }>();
     private resultListeners = new Map<number, (batch: SearchBatch) => void>();
+    private mediaListeners = new Set<() => void>();
+    private mediaAssets?: [string, string[]][];
+    private mediaEpoch = 0;
+    private mediaDirty = true;
     constructor(public session: IndexSession, onGraph: (graph: IndexGraph) => void,
         private readonly onProblem: (problem: unknown) => void, onStatus?: (status: unknown) => void,
         onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {
@@ -46,18 +50,20 @@ export class VaultIndexClient {
             name: `vault-index-${session.sessionNo}`, protocol: 1,
             restartPolicy: { delaysMs: [1000, 4000, 16000], maxFailures: 3, windowMs: 60000 },
             spawn: () => new Worker(new URL('./index.worker.ts', import.meta.url), { type: 'module' }),
-            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes', 'searchChanged'], eventLimit: Infinity,
+            fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes', 'searchChanged', 'mediaChanged'], eventLimit: Infinity,
             onStart: async bootstrap => {
                 if (this.started) this.session = newIndexSession(this.session.vaultId);
                 this.started = true;
                 const session = this.session;
                 this.graphGen = 0;
                 this.graphEpoch++;
+                this.markMediaDirty();
                 await bootstrap.request('open', { session }, control);
                 await bootstrap.request('fgio', { session, active: this.foregroundActive, revision: this.foregroundRevision }, control);
                 await this.sendTree(bootstrap, this.treeGen, this.tree);
+                if (this.mediaAssets) await bootstrap.request('mediaAssets', { session, entries: this.mediaAssets }, control);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
-                queueMicrotask(() => { if (!this.disposed) void this.sweep('open').catch(() => {}); });
+                queueMicrotask(() => { if (!this.disposed) { void this.sweep('open').catch(() => {}); void this.refreshMedia(this.mediaEpoch); } });
             },
         });
         this.worker.on('graph', value => {
@@ -76,6 +82,9 @@ export class VaultIndexClient {
             if (currentEvent(value)) this.resultListeners.get(batch.queryId)?.(batch);
         });
         this.worker.on('searchChanged', value => { if (currentEvent(value)) notifySearchChanges(); });
+        this.worker.on('mediaChanged', value => {
+            if (currentEvent(value) && (value as { treeGen: number }).treeGen === this.treeGen) this.notifyMedia();
+        });
         this.worker.on('fileTimes', value => {
             if (!currentEvent(value)) return;
             const event = value as { changes: [string, number, number][]; sweepComplete: boolean };
@@ -112,12 +121,73 @@ export class VaultIndexClient {
         this.queue = next;
         return next;
     }
+    private notifyMedia(): void {
+        for (const listener of [...this.mediaListeners]) {
+            try { listener(); } catch (error) { console.error('Media subscriber failed:', error); }
+        }
+    }
+    private markMediaDirty(): number {
+        this.mediaDirty = true;
+        const epoch = ++this.mediaEpoch;
+        this.notifyMedia();
+        return epoch;
+    }
+    suspendMedia(): void { if (!this.disposed) this.markMediaDirty(); }
+    subscribeMedia(listener: () => void): () => void {
+        if (this.disposed) return () => {};
+        this.mediaListeners.add(listener);
+        return () => { this.mediaListeners.delete(listener); };
+    }
+    private async refreshMedia(epoch: number): Promise<void> {
+        if (!this.mediaAssets || this.disposed) return;
+        try {
+            await this.queue.catch(() => {});
+            if (this.disposed || epoch !== this.mediaEpoch) return;
+            const session = this.session, treeGen = this.treeGen, publicationEpoch = this.publicationEpoch;
+            await this.worker.request('mediaSweep', { session }, background);
+            if (!this.disposed && epoch === this.mediaEpoch && session === this.session
+                && treeGen === this.treeGen && publicationEpoch === this.publicationEpoch) {
+                this.mediaDirty = false;
+                this.notifyMedia();
+            }
+        } catch (error) { this.reportFailure(error); }
+    }
+    setMediaAssets(entries: [string, string[]][]): Promise<void> {
+        this.mediaAssets = entries.map(([folder, names]) => [folder, [...names]]);
+        const epoch = this.markMediaDirty(), snapshot = this.mediaAssets;
+        return this.serial(async () => {
+            await this.worker.request('mediaAssets', { session: this.session, entries: snapshot }, control);
+        }).then(() => { void this.refreshMedia(epoch); });
+    }
+    setFolderMediaAssets(folder: string, names: readonly string[]): Promise<void> {
+        const entries = new Map(this.mediaAssets ?? []);
+        entries.set(folder, [...names]);
+        return this.setMediaAssets([...entries]);
+    }
+    async mediaSnapshot(folder: string): Promise<IndexMediaSnapshot> {
+        const session = this.session, treeGen = this.treeGen, publicationEpoch = this.publicationEpoch, epoch = this.mediaEpoch;
+        try {
+            const snapshot = await this.worker.request<IndexMediaSnapshot | null>('mediaSnapshot', { session, folder }, control);
+            if (snapshot && !this.disposed && session === this.session && treeGen === this.treeGen
+                && publicationEpoch === this.publicationEpoch && epoch === this.mediaEpoch && !this.mediaDirty) return snapshot;
+            return { folder, fresh: false, boards: snapshot?.boards ?? [] };
+        } catch (error) {
+            this.reportFailure(error);
+            return { folder, fresh: false, boards: [] };
+        }
+    }
+    async assetReferrers(folder: string, name: string): Promise<{ boards: string[]; fresh: boolean }> {
+        const snapshot = await this.mediaSnapshot(folder), wanted = name.toLowerCase();
+        return { fresh: snapshot.fresh, boards: snapshot.boards.filter(board => board.names.some(value => value.toLowerCase() === wanted)).map(board => board.path) };
+    }
     setTree(files: IndexTreeFile[]): Promise<void> {
+        this.markMediaDirty();
         this.tree = files;
         const treeGen = ++this.treeGen;
         return this.serial(() => this.sendTree(this.worker, treeGen, files));
     }
     treeDelta(delta: IndexTreeDelta): Promise<void> {
+        this.markMediaDirty();
         const files = new Map(this.tree.map(file => [file.path, file]));
         for (const path of delta.removed) files.delete(path);
         for (const file of delta.renamed) { files.delete(file.from); files.set(file.to, { path: file.to, kind: file.kind, handle: file.handle }); }
@@ -128,7 +198,7 @@ export class VaultIndexClient {
             await this.worker.request('treeDelta', { session: this.session, treeGen, ...delta }, control);
             void this.worker.request('graph', { session: this.session, stale: true }, background).catch(() => {});
             const changed = [...delta.added.map(file => file.path), ...delta.renamed.map(file => file.to)];
-            if (changed.length) void this.invalidate(changed).catch(() => {});
+            if (changed.length) await this.worker.request('invalidate', { session: this.session, paths: changed }, background);
         });
     }
     prime(path: string, mtime: number, size: number, text: string): Promise<void> {
@@ -179,8 +249,9 @@ export class VaultIndexClient {
         return result;
     }
     async invalidate(paths: string[]): Promise<void> {
+        const epoch = this.markMediaDirty();
         await this.queue.catch(() => {});
-        try { await this.worker.request('invalidate', { session: this.session, paths }, background); }
+        try { await this.worker.request('invalidate', { session: this.session, paths }, background); void this.refreshMedia(epoch); }
         catch (error) { this.reportFailure(error); throw error; }
     }
     async foregroundIO(active: number, revision: number): Promise<void> {
@@ -252,6 +323,8 @@ export class VaultIndexClient {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.markMediaDirty();
+        this.mediaListeners.clear();
         this.stopForeground();
         // The worker owns the write-behind batch and releases its vault lock
         // only after the batch has committed.

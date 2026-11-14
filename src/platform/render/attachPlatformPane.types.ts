@@ -1,4 +1,5 @@
 import type { Camera, Rect, ViewState } from '../types';
+import type { DamageRecord } from './damage';
 import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
 import type { PageStack } from './pageStack';
@@ -74,7 +75,7 @@ export interface PlatformPane {
     setFocused(focused: boolean): void;
     observeSize(): void;
     setLayers(layers: readonly PlatformLayerDefinition[]): void;
-    invalidate(reason: string): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     dispose(): void;
 }

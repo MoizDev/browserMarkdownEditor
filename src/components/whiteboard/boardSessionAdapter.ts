@@ -41,6 +41,8 @@ export function createBoardSessionAdapter<S extends BoardSessionPort>(
         },
         acknowledge(revision, outcome) { if (live()) board.acknowledge(revision, outcome); },
         ...(board.drain ? { drain: () => live() ? board.drain!() : Promise.resolve() } : {}),
+        ...(board.mediaReferences ? { mediaReferences: () => live() ? board.mediaReferences!() : undefined } : {}),
+        ...(board.mediaReferenceIssues ? { mediaReferenceIssues: () => live() ? board.mediaReferenceIssues!() : undefined } : {}),
         ...(board.journalDelta ? { journalDelta: () => live() ? board.journalDelta!() : undefined } : {}),
         ...(board.recover ? { recover: (payload: unknown) => {
             if (!live()) throw new DOMException('Board session ended', 'AbortError');

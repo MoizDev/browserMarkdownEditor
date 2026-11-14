@@ -15,7 +15,8 @@ import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 // the open editor (undoable), a new note refuses a taken name instead of
 // truncating it, a move carries its tabs, a deletion goes to `.Garbage`.
 
-import type { EditorState } from '@codemirror/state';
+import { isolateHistory } from '@codemirror/commands';
+import type { MarkdownSessionHost } from '../editor/markdownSession.types';
 import { MAX_MIRROR_FILE_BYTES, MAX_MIRROR_TOTAL_BYTES, type MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ActiveFile, EditorMode, FileTreeNode, MainView, OpenTab, TabLayout } from '../types';
 import type {
@@ -55,8 +56,8 @@ export interface AgentHostDeps {
     tabs: OpenTab[];
     layout: TabLayout;
     mainView: MainView;
-    /** App's EditorState cache, keyed `${tab.id}|${path}`. */
-    stateCache: Map<string, EditorState>;
+    /** App-owned Markdown sessions, including lazily created viewless sessions. */
+    markdownSessions: MarkdownSessionHost;
     readFile(handle: FileSystemFileHandle): Promise<string>;
     readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
     statFile: import('../types').FileSystemContextValue['statFile'];
@@ -71,8 +72,6 @@ export interface AgentHostDeps {
     /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
     snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
-    /** The save funnel (App.updateTabContent). */
-    updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
      *  open: file time, asset reconcile, graph, search epoch. */
     afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
@@ -296,20 +295,15 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                     }
                 }
                 if (deps.contentOf(path) !== expected) return { ok: false, reason: 'stale' };
-                // Open but not on screen: the document's cached EditorState is what
-                // its next pane adopts, text AND undo history — update it so the
-                // agent's edit is one ⌘Z there too, and never leave it disagreeing
-                // with the buffer (the next mount would show the old text).
-                const next = applyToText(expected, changes);
-                // The exact key (App's paneKey), not a `|path` suffix: a path may
-                // itself contain `|`, and another document's state must not match.
-                const key = `${tab.id}|${path}`;
-                const cached = deps.stateCache.get(key);
-                if (cached && cached.doc.toString() === expected) {
-                    deps.stateCache.set(key, cached.update({ changes, userEvent: 'input.agent' }).state);
+                // The session owns both the undo history and the report to the save funnel,
+                // including when this is the first edit before a pane has ever mounted.
+                try {
+                    return await deps.markdownSessions.dispatch(tab.id, {
+                        changes, userEvent: 'input.agent', annotations: isolateHistory.of('full'),
+                    }) ? { ok: true } : { ok: false, reason: 'error', message: 'The editor closed or changed mid-edit.' };
+                } catch {
+                    return { ok: false, reason: 'stale' };
                 }
-                deps.updateTabContent(path, next);
-                return { ok: true };
             }
 
             // Closed: straight to disk, then the same tail a save runs.

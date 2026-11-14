@@ -237,20 +237,26 @@ class SurfaceBroker {
         if (!wasVisible && view.visible) entry.hiddenAt = null;
         if (wasDrawable && !drawable(entry)) {
             entry.waiting = false;
+            const reservation = entry.reservation;
             try {
                 entry.callbacks.beforeHide();
             } finally {
-                const reservation = entry.reservation;
-                if (!view.visible && reservation?.owner && !reservation.lost && !entry.pending) {
-                    entry.state = 'context-reserved';
-                    try { reservation.owner.releaseGpu('hidden'); }
-                    catch { this.abandon(entry, 'creation-failed'); }
-                    finally { zeroCanvas(reservation.canvas); entry.callbacks.onSurfaceZeroed?.(reservation.canvas); }
-                } else if (reservation) {
-                    this.abandon(entry, 'stale');
+                // A checkpoint can synchronously unmount or show a replacement view.
+                if (this.current(entry) && !drawable(entry) && entry.reservation === reservation) {
+                    if (!entry.view.visible && reservation?.owner && !reservation.lost && !entry.pending) {
+                        entry.state = 'context-reserved';
+                        try { reservation.owner.releaseGpu('hidden'); }
+                        catch { this.abandon(entry, 'creation-failed'); }
+                        finally { zeroCanvas(reservation.canvas); entry.callbacks.onSurfaceZeroed?.(reservation.canvas); }
+                    } else if (reservation) {
+                        this.abandon(entry, 'stale');
+                    }
+                    this.notifyAvailable();
                 }
-                this.notifyAvailable();
             }
+        } else if (wasVisible && !view.visible && entry.reservation?.lost) {
+            // A zero-size pane can still receive a loss while geometry is changing.
+            this.abandon(entry, 'context-lost');
         } else if (!wasDrawable && drawable(entry)) {
             entry.failed = null;
             entry.waiting = !entry.circuit.pinned;
@@ -283,8 +289,15 @@ class SurfaceBroker {
             kept.grant = grant;
             entry.state = 'rebuilding';
             entry.waiting = false;
-            entry.callbacks.onGpuReady(grant);
-            return Promise.resolve({ kind: 'gpu', grant });
+            try { entry.callbacks.onGpuReady(grant); }
+            catch {
+                if (entry.reservation !== kept) return Promise.resolve({ kind: 'stale' });
+                this.abandon(entry, 'creation-failed');
+                entry.failed = 'creation-failed';
+                return Promise.resolve(this.fallback(entry, 'creation-failed'));
+            }
+            return Promise.resolve(this.matches(entry, stamp) && entry.reservation === kept && drawable(entry)
+                ? { kind: 'gpu', grant } : { kind: 'stale' });
         }
         if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING) this.revokeHiddenContexts(1);
         if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING) {
@@ -376,8 +389,14 @@ class SurfaceBroker {
             entry.state = 'rebuilding';
             const grant = this.grant(entry, reservation, false);
             reservation.grant = grant;
-            entry.callbacks.onGpuReady(grant);
-            return { kind: 'gpu', grant };
+            try { entry.callbacks.onGpuReady(grant); }
+            catch {
+                if (entry.reservation !== reservation) return { kind: 'stale' };
+                this.abandon(entry, 'creation-failed');
+                entry.failed = 'creation-failed';
+                return this.fallback(entry, 'creation-failed');
+            }
+            return valid() && drawable(entry) ? { kind: 'gpu', grant } : { kind: 'stale' };
         });
         entry.pending = pending;
         void pending.finally(() => {
@@ -428,22 +447,30 @@ class SurfaceBroker {
         finally {
             try { owner?.dispose('context-lost'); }
             finally {
-                zeroCanvas(reservation.canvas);
-                entry.callbacks.onSurfaceZeroed?.(reservation.canvas);
-                if (entry.circuit.losses.length >= RENDER_CONSTANTS.contextLossPinCount) {
-                    entry.circuit.pinned = true;
-                    this.abandon(entry, 'cpu-pinned');
-                    this.fallback(entry, 'cpu-pinned');
-                    if (!entry.circuit.notified) {
-                        entry.circuit.notified = true;
-                        entry.callbacks.onPinned();
+                const pinned = entry.circuit.losses.length >= RENDER_CONSTANTS.contextLossPinCount;
+                if (pinned) entry.circuit.pinned = true;
+                try {
+                    zeroCanvas(reservation.canvas);
+                    entry.callbacks.onSurfaceZeroed?.(reservation.canvas);
+                } finally {
+                    try {
+                        if (this.current(entry) && entry.reservation === reservation) {
+                            if (pinned) {
+                                try { this.abandon(entry, 'cpu-pinned'); }
+                                finally { if (this.current(entry)) this.fallback(entry, 'cpu-pinned'); }
+                            } else if (!drawable(entry)) this.abandon(entry, 'context-lost');
+                            else {
+                                entry.state = 'lost-waiting';
+                                try { this.fallback(entry, 'context-lost'); }
+                                finally { this.armRestoreClock(entry, reservation); }
+                            }
+                        }
+                    } finally {
+                        if (pinned && !entry.circuit.notified) {
+                            entry.circuit.notified = true;
+                            entry.callbacks.onPinned();
+                        }
                     }
-                } else if (!drawable(entry)) {
-                    this.abandon(entry, 'context-lost');
-                } else {
-                    entry.state = 'lost-waiting';
-                    this.fallback(entry, 'context-lost');
-                    this.armRestoreClock(entry, reservation);
                 }
             }
         }
@@ -464,7 +491,9 @@ class SurfaceBroker {
         reservation.controller = new AbortController();
         entry.generation = reservation.generation;
         entry.state = 'rebuilding';
-        void this.prepare(entry, reservation);
+        void this.prepare(entry, reservation).catch(() => {
+            // Preparation owns rollback and CPU fallback; there is no request caller on restore.
+        });
     }
 
     private armRestoreClock(entry: SurfaceEntry, reservation: Reservation): void {

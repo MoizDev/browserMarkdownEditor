@@ -3,6 +3,8 @@ export type { Camera, Rect, Viewport, ViewState } from '../types';
 export type { AttachPlatformPane, PlatformLayerDefinition, PlatformPane, PlatformPaneOptions, PlatformPresentation } from './attachPlatformPane.types';
 export type { CompositorCaptureOptions, CompositorLayer, CompositorLayerGroup, LayerCoverage, LayerHost, TexturedQuadOptions } from './compositor.types';
 export type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from './types';
+export type { DamageRecord, DamageTags } from './damage';
+export { DamageAccumulator } from './damage';
 export type { PageStack } from './pageStack';
 export type { ByteLease, GfxDevice, GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 export type { BorrowedMirror, MirrorEntry, MirrorStorage, MirrorView } from './mirrorSet';

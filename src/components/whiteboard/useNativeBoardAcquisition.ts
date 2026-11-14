@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createBoardSessionAdapter } from './boardSessionAdapter';
+import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
 import type { AcquiredNativeBoard, NativeBoardAcquisitionOptions, PreparedNativeBoard } from './nativeBoardAcquisitionTypes';
 
@@ -13,18 +14,41 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
     const [entry, setEntry] = useState<{ documentId: string; vaultActivation: number; bytesGeneration: number;
         kind: NativeBoardAcquisitionOptions<S>['kind']; value: AcquiredNativeBoard<S> } | null>(null);
     const { documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
-        emergencyReadOnlyReason, prepare } = options;
+        emergencyReadOnlyReason, prepare, existing } = options;
     useEffect(() => {
         const abort = new AbortController();
         let alive = true;
+        try {
+            const value = existing?.();
+            if (value) {
+                const identity = getSessionIdentity(documentId);
+                if (!identity || identity.bytesGeneration !== bytesGeneration || value.adapter.owner.documentId !== documentId
+                    || value.adapter.owner.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
+                setEntry({ documentId, vaultActivation, bytesGeneration, kind, value });
+                return () => { alive = false; abort.abort(); };
+            }
+        } catch (cause) {
+            if (!(cause instanceof DOMException && cause.name === 'AbortError')) error.current(cause);
+            return () => { alive = false; abort.abort(); };
+        }
         void (async () => {
             let prepared: PreparedNativeBoard<S> | undefined;
             let taken = false;
             try {
+                const identity = getSessionIdentity(documentId);
+                if (!identity || identity.bytesGeneration !== bytesGeneration) throw new DOMException('Board session ended', 'AbortError');
+                const requireOwner = () => {
+                    abort.signal.throwIfAborted();
+                    if (!alive || getSessionIdentity(documentId) !== identity) throw new DOMException('Board session ended', 'AbortError');
+                };
+                await awaitSessionDisposals(documentId);
+                requireOwner();
                 prepared = await prepare(abort.signal);
-                abort.signal.throwIfAborted();
+                requireOwner();
                 let policy: { emergencyReadOnly: boolean } | null = null;
                 const adapter = attachCanvasSession<HostedBoardAdapter<S>>(documentId, (owner, isLiveOwner) => {
+                    requireOwner();
+                    if (owner.session !== identity.serial || !isLiveOwner(owner)) throw new DOMException('Board session ended', 'AbortError');
                     let reason: string | null = emergencyReadOnlyReason;
                     const owned = prepared!.take(owner, isLiveOwner, () => reason);
                     taken = true;
@@ -37,7 +61,8 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                         return createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
                     } catch (cause) { owned.dispose(); throw cause; }
                 });
-                abort.signal.throwIfAborted();
+                requireOwner();
+                if (adapter.owner?.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
                 if (!adapter.board || !adapter.owner) throw new Error('Canvas session is not a board session');
                 policy ??= onNativeCanvasReady({ owner: adapter.owner, vaultActivation, bytesGeneration, kind,
                     legacyOriginalSha256: prepared.legacyOriginalSha256 });
@@ -46,11 +71,11 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                 if (alive) setEntry({ documentId, vaultActivation, bytesGeneration, kind,
                     value: { adapter, emergencyReadOnly: policy.emergencyReadOnly } });
             } catch (cause) {
-                if (alive && !abort.signal.aborted) error.current(cause);
+                if (alive && !abort.signal.aborted && !(cause instanceof DOMException && cause.name === 'AbortError')) error.current(cause);
             } finally { if (prepared && !taken) prepared.dispose(); }
         })();
         return () => { alive = false; abort.abort(); };
-    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare]);
+    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare, existing]);
     return entry && entry.documentId === documentId && entry.vaultActivation === vaultActivation
         && entry.bytesGeneration === bytesGeneration && entry.kind === kind ? entry.value : null;
 }

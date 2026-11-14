@@ -74,6 +74,7 @@ third-party code included (normally "none") · date.
 | `security/limits.ts` | w-d | SEC-W1, SEC-8 | security §3 | Independently implemented inclusive encoded-byte/pixel limits and checked aggregate arithmetic, before allocation/decoding; no tldraw source/package | none | 2026-11-13 |
 | `security/urlPolicy.ts` | w-d | SEC-W1, SEC-5/6/7 | security §8 | Independent URL parser policy and literal IPv4/IPv6 special-address classification; no DNS-rebinding claim, no automatic requests; no third-party matcher code | none | 2026-11-13 |
 | `security/admission.ts` | w-d | SEC-W1, SEC-8 | security §3 | Fixed immutable session/epoch/generation/request jobs, bounded serialized queue and cancellation/current checks; no tldraw source/package | none | 2026-11-13 |
+| `security/validatedImport.ts` | w-d | SEC-W1, SEC-8 | security §3 | Issuer-private one-shot WeakMap brand, trusted schema-validator seam and bounded owned inert data projection; no executable values, accessors or foreign prototypes; no tldraw source/package | none | 2026-11-13 |
 
 ## Ink, scene, rendering and the viewer host (lane w-e)
 

@@ -23,3 +23,23 @@ export interface MediaEntry {
     readonly ext: ExtBag | null;
 }
 export type MediaTable = ReadonlyMap<MediaId, MediaEntry>;
+
+// The filesystem registry owns this non-undoable truth, including retired ids.
+// Change/model never imports the media store. Undefined preserves captured data;
+// null explicitly selects the content-addressed filename.
+export interface MediaLocations {
+    currentFile(id: MediaId): string | null | undefined;
+}
+export function isSafeMediaFile(file: unknown): file is string | null {
+    if (file === null) return true;
+    if (typeof file !== 'string' || !file.length || file.length > 255 || file === '.' || file === '..') return false;
+    for (let i = 0; i < file.length; i++) {
+        const code = file.charCodeAt(i);
+        if (code < 32 || (code >= 127 && code <= 159) || code === 47 || code === 92) return false;
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const low = file.charCodeAt(++i);
+            if (!(low >= 0xdc00 && low <= 0xdfff)) return false;
+        } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+    }
+    return true;
+}

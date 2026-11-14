@@ -2,6 +2,7 @@ import type { Transaction } from '../../change/ops';
 import type { NodeId } from '../../model/ids';
 import { sliceRichText, spliceRichText, type Block, type Marks, type RichText } from '../richText';
 import { trackBlock, trackRun } from '../carriers';
+import { reformatRichBlock } from '../richOperations';
 import { linkUrl, type ToggleMark } from './format';
 
 export interface InputRuleResult { readonly transaction: Transaction; readonly caret: number }
@@ -34,7 +35,7 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
         const number = kind === 'ol' ? Number.parseInt(token, 10) : undefined;
         if (number !== undefined && !Number.isSafeInteger(number)) return null;
         const content = spliceRichText(text, start, caret, { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] }).after[0];
-        const replacement: Block = { ...content, kind, level: 0, ...(number === undefined ? {} : { start: number }) };
+        const replacement = reformatRichBlock(content, kind, 0, number);
         return { transaction: transaction(id, key, start, start + value.length, { blocks: [replacement] }, true), caret: start };
     }
     const patterns: readonly [RegExp, ToggleMark, number][] = [

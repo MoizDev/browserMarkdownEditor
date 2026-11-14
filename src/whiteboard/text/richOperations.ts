@@ -3,7 +3,7 @@ import { projectionLength as indexedLength, projectionPosition, projectionText }
 import { normalizePlainInsertion } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
-import { trackBlock, trackRun } from './carriers';
+import { carrierForTail, trackBlock, trackRun } from './carriers';
 import { runContaining, runIndex } from './runIndex';
 
 const position = projectionPosition;
@@ -12,11 +12,15 @@ function check(text: RichText, from: number, to = from): void {
     if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
         throw new RangeError('Text range must have grapheme boundaries');
 }
-function withoutStart(block: Block): Block {
-    // The native tuple's dormant start slot remains attached to an opaque future tail.
-    if (block.tail !== undefined && block.tail !== '[]') return block;
-    const { start: _start, ...rest } = block;
-    return rest;
+export function reformatRichBlock(block: Block, kind: Block['kind'], level: number, start: number | undefined): Block {
+    if (kind === block.kind && level === block.level && start === block.start) return block;
+    const { start: _start, tail, carriers, ...rest } = block;
+    // A future tuple tail was authored against the old tuple attributes. Move it
+    // to its own range carrier before changing those attributes or removing start.
+    const displaced = tail !== undefined && tail !== '[]' ? carrierForTail(block, 0, blockTextLength(block)) : undefined;
+    const preserved = displaced ? [...(carriers ?? []), displaced] : carriers;
+    return trackBlock({ ...rest, kind, level, ...(start !== undefined ? { start } : {}),
+        ...(tail === '[]' ? { tail } : {}), ...(preserved?.length ? { carriers: preserved } : {}) }, block);
 }
 function insertionBlock(block: Block): Block {
     const { tail: _tail, carriers: _carriers, ...rest } = block;
@@ -104,7 +108,7 @@ export function enter(value: RichText, selection: RichSelection): RichEdit {
     check(value, from, to);
     const found = position(value, from), block = found.block;
     if (from === to && (block.kind === 'ul' || block.kind === 'ol') && blockTextLength(block) === 0) {
-        const replacement = { ...withoutStart(block), kind: 'p' as const, level: 0 };
+        const replacement = reformatRichBlock(block, 'p', 0, undefined);
         return { from: found.start, to: found.start, insert: normalizeRichText({ blocks: [replacement] }), selection: { anchor: from, focus: from }, replaceBlocks: true };
     }
     const next = continuation(block);
@@ -123,10 +127,10 @@ export function blocks(value: RichText, from: number, to: number, kind: Block['k
     const changed = selected.map(block => {
         if (effective === 'indent' || effective === 'outdent') {
             if (block.kind !== 'ul' && block.kind !== 'ol') return block;
-            return { ...block, level: Math.min(7, Math.max(0, block.level + (effective === 'indent' ? 1 : -1))) };
+            return reformatRichBlock(block, block.kind, Math.min(7, Math.max(0, block.level + (effective === 'indent' ? 1 : -1))), block.start);
         }
-        const clean = effective === 'ol' ? block : withoutStart(block);
-        return { ...clean, kind: effective, level: effective === 'ul' || effective === 'ol' ? block.level : 0 };
+        return reformatRichBlock(block, effective, effective === 'ul' || effective === 'ol' ? block.level : 0,
+            effective === 'ol' && block.kind === 'ol' ? block.start : undefined);
     });
     return { from: first.start, to: end, insert: normalizeRichText({ blocks: changed }), selection: { anchor: from, focus: to }, replaceBlocks: true };
 }

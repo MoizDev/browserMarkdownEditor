@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { PlatformLayerDefinition, PlatformPaneOptions } from '../../platform/render';
-import { usePlatformPane } from '../platformPane/usePlatformPane';
+import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/usePlatformPane';
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
 import './viewerHost.css';
 
@@ -24,8 +23,8 @@ export interface ViewerHostProps<T extends object> {
     readonly reason: string | null;
     readonly view: ViewerViewHandle;
     /** Session-owned definitions and services are stable for this view lease. */
-    readonly layers: readonly PlatformLayerDefinition[];
-    readonly platform: Omit<PlatformPaneOptions<T>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
+    readonly layers: UsePlatformPaneOptions<T>['layers'];
+    readonly platform: UsePlatformPaneOptions<T>['services'];
     readonly registerKeyboardTarget: (focus: () => void) => () => void;
     readonly onFocus: () => void;
     readonly chrome?: ReactNode;

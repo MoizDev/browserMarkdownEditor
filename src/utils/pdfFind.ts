@@ -4,7 +4,7 @@ export interface PdfFindProgress {
     done: boolean; capped: boolean; textlessPages: number; failedPages: readonly number[];
     partialPages: readonly number[];
 }
-export interface PdfFindPageText { text: string; tokenBreaks: readonly number[]; quality: 'available' | 'partial' | 'none' }
+export interface PdfFindPageText { text: string; tokenBreaks: readonly number[] | Uint32Array; quality: 'available' | 'partial' | 'none' }
 export interface PdfFindSource {
     pageCount(signal: AbortSignal): Promise<number>;
     page(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
@@ -20,7 +20,7 @@ export interface PdfFindEngine {
     clearIndex(): void;
     dispose(): void;
 }
-const TOKEN_BREAK = '\uE000', LINE_HYPHEN = '\uE001';
+export const TOKEN_BREAK = '\uE000', LINE_HYPHEN = '\uE001';
 const DOCUMENT_BYTES = 32 * 1024 * 1024, APP_BYTES = 64 * 1024 * 1024, HIT_LIMIT = 10_000;
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const abort = () => new DOMException('PDF find cancelled', 'AbortError');
@@ -51,10 +51,11 @@ function queryUnits(query: string): string {
     return key;
 }
 
-type ProjectionChunk = { key: string; offsets: number[] };
+export type ProjectionChunk = { key: string; offsets: number[] };
 /** One producer serves synchronous reveal maps and sliced background indexing.
  * A page can contain a million units; projection must yield as well as matching. */
-function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
+export function* projectionChunks(page: PdfFindPageText, chunkUnits = 4096): Generator<ProjectionChunk> {
+    const chunkSize = Math.max(1, Math.min(4096, Math.floor(chunkUnits) || 4096));
     let key = '', offsets: number[] = [], breaks = 0, space = false, visited = 0;
     const emit = (text: string, source: number) => {
         key += text;
@@ -74,7 +75,7 @@ function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
                     end++;
                     // A long whitespace tail (or dropped-mark page below) can
                     // emit no key units. Bound source work, not just output.
-                    if (++visited >= 4096) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
+                    if (++visited >= chunkSize) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
                 }
             }
             if (lineEnd) { emit(LINE_HYPHEN, start); i = end; space = false; }
@@ -85,11 +86,11 @@ function* projectionChunks(page: PdfFindPageText): Generator<ProjectionChunk> {
                 }
             }
         }
-        if (++visited >= 4096 || offsets.length >= 4096) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
+        if (++visited >= chunkSize || offsets.length >= chunkSize) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
     }
     yield { key, offsets };
 }
-function project(page: PdfFindPageText): { key: string; map: Uint32Array } {
+export function project(page: PdfFindPageText): { key: string; map: Uint32Array } {
     const keys: string[] = [], offsets: number[] = [];
     for (const chunk of projectionChunks(page)) { keys.push(chunk.key); for (const offset of chunk.offsets) offsets.push(offset); }
     offsets.push(page.text.length);
@@ -164,7 +165,13 @@ function advance(state: Uint32Array, machine: Automaton, char: string, seed: num
     }
     return live !== 0;
 }
-async function* matchPage(key: string, units: string, signal: AbortSignal): AsyncGenerator<{ from: number; to: number }> {
+export interface PdfMatchOptions { overlap?: boolean; maxUnits?: 256 | 512 }
+/** Find retains its non-overlapping/256-unit contract; anchor restoration needs
+ * overlapping candidates and the stored quote's 512-unit bound. */
+export async function* matchPage(key: string, units: string, signal: AbortSignal,
+    options: PdfMatchOptions = {}): AsyncGenerator<{ from: number; to: number }> {
+    if (signal.aborted) throw abort();
+    if (!units.length || units.length > (options.maxUnits ?? 256)) return;
     const forward = automaton(units), reverse = automaton(units.split('').reverse().join(''));
     const state = new Uint32Array(forward.words), backwards = new Uint32Array(forward.words);
     let previousEnd = 0, ticks = 0, deadline = performance.now() + 4;
@@ -173,21 +180,21 @@ async function* matchPage(key: string, units: string, signal: AbortSignal): Asyn
         if (performance.now() >= deadline) { await yieldTask(); deadline = performance.now() + 4; }
     }
     for (let i = 0; i < key.length; i++) {
-        if ((++ticks & 4095) === 0) await pause();
+        if ((++ticks & 255) === 0) await pause();
         advance(state, forward, key[i], 1);
         if (!(state[forward.lastWord] & forward.lastBit)) continue;
         const end = i + 1;
         let from = i;
         backwards.fill(0);
         for (let j = i; j >= previousEnd; j--) {
-            if ((++ticks & 4095) === 0) await pause();
+            if ((++ticks & 255) === 0) await pause();
             const live = advance(backwards, reverse, key[j], j === i ? 1 : 0);
             if (backwards[reverse.lastWord] & reverse.lastBit) from = j;
             if (!live) break;
         }
         if (signal.aborted) throw abort();
         yield { from, to: end };
-        previousEnd = end; state.fill(0);
+        if (!options.overlap) { previousEnd = end; state.fill(0); }
     }
 }
 

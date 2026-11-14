@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Tldraw, getSnapshot, createTLStore, loadSnapshot, defaultShapeUtils, defaultBindingUtils, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
@@ -10,7 +10,10 @@ import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
+import { protectPageBackdrops } from './protectPageBackdrops';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen, recordPdfNavigation,
@@ -72,6 +75,7 @@ interface PdfAnnotateCanvasProps {
  * its own background, so it has no white page to contrast against.
  */
 const ANNOTATE_COLOR_SCHEME = 'light';
+const PAPER_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu };
 
 /**
  * Shape types that cannot become paths in the saved PDF, so their pages carry a
@@ -199,6 +203,21 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
+function AnnotationLoadNotice() {
+    return <div className="canvas-readonly-notice" role="alert" onContextMenu={event => event.preventDefault()}><div className="canvas-readonly-card">
+        <h2>PDF annotations are read-only</h2>
+        <p>The existing annotations could not be loaded safely. Switch to View to read the PDF, or use a compatible version to recover them.</p>
+        <p className="canvas-readonly-preserved">The original file has not been changed. No edits will be saved.</p>
+    </div></div>;
+}
+
+class AnnotationLoadBoundary extends Component<{ original: Uint8Array; children: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() { return { failed: true }; }
+    componentDidCatch() { revokePdfSource(this.props.original); }
+    render() { return this.state.failed ? <AnnotationLoadNotice /> : this.props.children; }
+}
+
 export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
     const sniff = useMemo(() => sniffCanvas(props.snapshot, 'pdf'), [props.snapshot]);
     const reason = canvasReadOnlyReason(sniff);
@@ -207,7 +226,26 @@ export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
         // guard: no editor, pending serializer or rebuild capability survives it.
         if (reason) revokePdfSource(props.original);
     }, [reason, props.original]);
-    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyPdfAnnotateCanvas {...props} />;
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
+}
+
+function CheckedPdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    // P-09 validates the envelope; only the library can validate every record
+    // and migration. Reject before an editor, listener or save cache exists.
+    const [loadable] = useState(() => {
+        try {
+            const parsed = parseSnapshot(props.snapshot);
+            if (parsed.snapshot) {
+                const store = createTLStore({ shapeUtils: defaultShapeUtils, bindingUtils: defaultBindingUtils });
+                loadSnapshot(store, parsed.snapshot);
+            }
+            return true;
+        } catch {
+            revokePdfSource(props.original);
+            return false;
+        }
+    });
+    return loadable ? <LegacyPdfAnnotateCanvas {...props} /> : <AnnotationLoadNotice />;
 }
 
 function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
@@ -412,7 +450,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             // Either a first open, or the PDF's page count changed under us —
             // rebuild from scratch rather than leave a half-matching backdrop.
             if (existing.length) {
-                editor.deleteShapes(existing.map(s => s.id));
+                editor.run(() => editor.deleteShapes(existing.map(s => s.id)), { ignoreShapeLock: true });
                 const staleAssets = existing
                     .map(s => (s as TLImageShape).props.assetId)
                     .filter((id): id is TLAssetId => !!id);
@@ -454,6 +492,18 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             // annotation, whatever order they were added in.
             editor.sendToBack(pageShapeIds);
         }
+
+        // Older snapshots may contain pages unlocked or moved by Unlock all.
+        // Repair the view without turning opening a PDF into a document edit.
+        editor.run(() => editor.store.mergeRemoteChanges(() => {
+            for (const shape of editor.getCurrentPageShapes()) {
+                const index = shape.meta?.pdfPage;
+                if (typeof index !== 'number' || !boxes[index] || shape.type !== 'image') continue;
+                editor.updateShape({ id: shape.id, type: 'image', x: boxes[index].x, y: boxes[index].y,
+                    isLocked: true, props: { w: boxes[index].width, h: boxes[index].height } });
+            }
+        }), { ignoreShapeLock: true });
+        const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.pdfPage !== undefined);
 
         // Open on the page being READ, at the reader's size — not on the whole
         // document. This used to zoomToFit() on a first open, which on a long PDF
@@ -892,6 +942,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
+            backdropGuard.dispose();
             closed = true;
             activePaint?.abort();
             if (refreshEmphasis.current === refresh) refreshEmphasis.current = undefined;
@@ -960,11 +1011,12 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                     snapshot={parsed.snapshot}
                     assets={assetStore}
                     onMount={handleMount}
-                    components={CANVAS_COMPONENTS}
+                    components={PAPER_COMPONENTS}
                     shapeUtils={CANVAS_SHAPE_UTILS}
                     options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                     colorScheme={ANNOTATE_COLOR_SCHEME}
+                    user={PAPER_USER}
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />
             </div>

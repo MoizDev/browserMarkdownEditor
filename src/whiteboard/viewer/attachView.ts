@@ -171,8 +171,13 @@ export const attachView: AttachView = options => {
         paintJob = controller;
         const pin = runtime.scene.pin(), selectedSheet = sheet();
         const current = lastView;
-        const world: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
-            width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
+        // The frame covers the viewport plus two of its sides: a progressive coarse tile may extend one tile
+        // beyond the viewport, and every live item it meets must be in the frame to be drawn live.
+        const world: Rect | undefined = current ? (() => {
+            const width = current.viewport.width / current.camera.z, height = current.viewport.height / current.camera.z;
+            const margin = 2 * Math.max(width, height);
+            return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
+        })() : undefined;
         lastSensitive = sensitive;
         const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;

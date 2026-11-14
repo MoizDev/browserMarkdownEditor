@@ -1,9 +1,11 @@
 import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameBudget, RenderToken } from '../../platform/render/types';
 import { PaintBoundsJob } from './paintBounds';
 import { inkCoverageChunks, type PaintFrame, type PaintItem, type PaintNode } from './paintStream';
+import type { Blend } from './colour';
 import type { PaintBand } from './material';
 import type { PaintImageLease, PaintImageProvider } from './resources';
 import type { ScenePaintNodeStream } from './scenePaintStream';
@@ -16,6 +18,7 @@ const intersects = (a: Readonly<Rect>, b: Readonly<Rect>) => a.x <= b.x + b.widt
     && a.y <= b.y + b.height && b.y <= a.y + a.height;
 const sameToken = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
     && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+const blendOf = (item: PaintItem): Blend => item.kind === 'image' ? item.blend : item.material.blend;
 
 export interface StreamingDenseTileOptions {
     /** The stream must bind this signal so an active next() physically drains on abort. */
@@ -23,24 +26,46 @@ export interface StreamingDenseTileOptions {
     readonly rect: Readonly<Rect>;
     readonly scale: number;
     readonly band: PaintBand;
+    /** Live node ids of this band. Each is a barrier the frame draws itself; its pixels are never here. */
+    readonly barriers: ReadonlySet<string>;
     readonly token: RenderToken;
     readonly revision: number;
     readonly isCurrent: () => boolean;
-    readonly accept?: (item: PaintItem) => boolean;
-    /** Caller certifies the interval includes the actual backdrop for multiply. */
-    readonly backdropIncluded?: boolean;
     readonly images: PaintImageProvider;
     readonly host: LayerHost;
     readonly onError: (error: unknown) => void;
     readonly signal?: AbortSignal;
 }
-export interface StreamingDenseTileBitmap {
+/** One rasterized sub-run of a tile: a single blend, drawn by the frame before `end`. The receiver
+ * owns `bitmap` and `bytesLease` and must release both through `releaseDenseTilePart`. */
+export interface DenseTilePart {
     readonly bitmap: ImageBitmap;
     readonly rect: Readonly<Rect>;
-    release(): void;
+    readonly blend: Blend;
+    /** The barrier node this part precedes, or null when it precedes the band's end. */
+    readonly end: string | null;
+    readonly bytesLease: ByteLease;
+    readonly owner: MemoryAllocator;
+    /** Image pixels depend on acquisition, so such a part is never kept as a complete session tile. */
+    readonly hasImage: boolean;
+}
+export function releaseDenseTilePart(part: DenseTilePart): void {
+    try { part.bitmap.close(); } finally { part.owner.release(part.bytesLease); }
 }
 
-/** One immutable pin's ordered stream produces one private tile; no scene-sized inventory is kept. */
+interface Run {
+    readonly canvas: OffscreenCanvas;
+    readonly ctx: OffscreenCanvasRenderingContext2D;
+    readonly scratch: ByteLease;
+    readonly bitmapLease: ByteLease;
+    readonly blend: Blend;
+    painted: number;
+    hasImage: boolean;
+}
+
+/** One tile of one band, built from its own bounded stream. The stream is read in canonical order;
+ * items split into sub-runs at blend changes and at barriers, so the frame can interleave the
+ * tile's parts with the live items it draws. No node or item array is kept. */
 export class StreamingDenseTileJob {
     private readonly controller = new AbortController();
     private readonly apron: Readonly<Rect>;
@@ -55,13 +80,13 @@ export class StreamingDenseTileJob {
     private item: PaintItem | null = null;
     private bounds: PaintBoundsJob | null = null;
     private adapter: CanvasPaintAdapter | null = null;
-    private scratch: ByteLease | null = null;
-    private bitmapLease: ByteLease | null = null;
-    private pathLease: ByteLease | null = null;
+    private run: Run | null = null;
+    private sealed: DenseTilePart[] = [];
+    private finished: DenseTilePart[] = [];
+    private lastBarrier: string | null = null;
+    private barriers = 0;
     private imageBytes = 0;
-    private canvas: OffscreenCanvas | null = null;
-    private ctx: OffscreenCanvasRenderingContext2D | null = null;
-    private bitmap: ImageBitmap | null = null;
+    private pathLease: ByteLease | null = null;
     private estimate = 0;
     private clipIndex = 0;
     private chunkIndex = 0;
@@ -94,8 +119,16 @@ export class StreamingDenseTileJob {
     get blocked(): boolean { return this.blockedValue; }
     get isComplete(): boolean { return this.state === 'complete'; }
     get isEmpty(): boolean { return this.state === 'empty'; }
-    get memoryBytes(): number { return (this.scratch?.bytes ?? 0) + (this.bitmapLease?.bytes ?? 0)
-        + (this.pathLease?.bytes ?? 0) + this.imageBytes; }
+    /** The tile's only part when no barrier split it: the complete band content of this apron. */
+    get singlePart(): DenseTilePart | null {
+        return this.barriers === 0 && this.finished.length === 1 && (this.state === 'complete') ? this.finished[0] : null;
+    }
+    get memoryBytes(): number {
+        let bytes = this.imageBytes + (this.pathLease?.bytes ?? 0) + (this.run ? this.run.scratch.bytes + this.run.bitmapLease.bytes : 0);
+        for (const part of this.sealed) bytes += part.bytesLease.bytes;
+        for (const part of this.finished) bytes += part.bytesLease.bytes;
+        return bytes;
+    }
     get cpuWorkingSet(): number {
         return this.memoryBytes + (this.state === 'start' ? 2 * BITMAP_BYTES : this.state === 'estimate' && !this.pathLease ? this.estimate : 0);
     }
@@ -116,16 +149,67 @@ export class StreamingDenseTileJob {
         this.adapter = null; this.pathLease = null; this.item = null; this.bounds = null;
         try { adapter?.dispose(); } finally { if (lease) this.options.host.allocator.cpu.release(lease); }
     }
-    private releaseCanvas(): void {
-        const canvas = this.canvas, lease = this.scratch;
-        this.canvas = null; this.ctx = null; this.scratch = null;
-        try { if (canvas) { canvas.width = 0; canvas.height = 0; } }
-        finally { if (lease) this.options.host.allocator.cpu.release(lease); }
+    private reserve(bytes: number): ByteLease | null {
+        if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Streaming dense path estimate overflows');
+        return this.options.host.allocator.cpu.reserve(Math.max(1, bytes));
     }
-    private dropBitmap(): void {
-        const bitmap = this.bitmap, lease = this.bitmapLease;
-        this.bitmap = null; this.bitmapLease = null;
-        try { bitmap?.close(); } finally { if (lease) this.options.host.allocator.cpu.release(lease); }
+    /** Discards a sub-run's pixels and returns both of its leases. */
+    private releaseRun(run: Run): void {
+        try { run.canvas.width = 0; run.canvas.height = 0; }
+        finally {
+            try { this.options.host.allocator.cpu.release(run.scratch); }
+            finally { this.options.host.allocator.cpu.release(run.bitmapLease); }
+        }
+    }
+    private releaseParts(parts: DenseTilePart[]): void {
+        for (const part of parts.splice(0)) {
+            try { releaseDenseTilePart(part); } catch (error) { this.report(error); }
+        }
+    }
+    /** Ends the current sub-run: pixels become a sealed part, an unpainted run returns its leases. */
+    private closeRun(): void {
+        const run = this.run;
+        if (!run) return;
+        this.run = null;
+        if (!run.painted) { this.releaseRun(run); return; }
+        const bitmap = run.canvas.transferToImageBitmap();
+        run.canvas.width = 0; run.canvas.height = 0;
+        this.options.host.allocator.cpu.release(run.scratch);
+        this.sealed.push({ bitmap, rect: this.rect, blend: run.blend, end: null, bytesLease: run.bitmapLease,
+            owner: this.options.host.allocator.cpu, hasImage: run.hasImage });
+    }
+    /** Every sealed part precedes this barrier, in the order they were rasterized. */
+    private sealUntil(barrier: string | null): void {
+        this.closeRun();
+        for (const part of this.sealed.splice(0)) this.finished.push({ ...part, end: barrier });
+    }
+    private openRun(blend: Blend): boolean {
+        const scratch = this.reserve(BITMAP_BYTES);
+        if (!scratch) { this.blockedValue = true; return false; }
+        const bitmapLease = this.reserve(BITMAP_BYTES);
+        if (!bitmapLease) { this.options.host.allocator.cpu.release(scratch); this.blockedValue = true; return false; }
+        const canvas = new OffscreenCanvas(SIDE, SIDE), ctx = canvas.getContext('2d');
+        if (!ctx) {
+            this.options.host.allocator.cpu.release(scratch); this.options.host.allocator.cpu.release(bitmapLease);
+            throw new Error('Streaming dense tile context unavailable');
+        }
+        ctx.setTransform(this.options.scale, 0, 0, this.options.scale,
+            2 - this.rect.x * this.options.scale, 2 - this.rect.y * this.options.scale);
+        this.run = { canvas, ctx, scratch, bitmapLease, blend, painted: 0, hasImage: false };
+        return true;
+    }
+    private stop(failed: boolean, error?: unknown): void {
+        if (this.state === 'cancelled' || this.state === 'failed') return;
+        this.state = failed ? 'failed' : 'cancelled';
+        this.options.signal?.removeEventListener('abort', this.abortListener);
+        this.controller.abort(error);
+        for (const release of [() => this.releasePath(), () => { const run = this.run; this.run = null; if (run) this.releaseRun(run); },
+            () => this.releaseParts(this.sealed), () => this.releaseParts(this.finished)]) {
+            try { release(); } catch (cleanupError) { this.report(cleanupError); }
+        }
+        this.node = null;
+        if (failed) this.report(error);
+        void this.startRetirement();
     }
     private startRetirement(): Promise<void> {
         if (this.retirement) return this.retirement;
@@ -138,7 +222,7 @@ export class StreamingDenseTileJob {
             this.report(error); this.rejectRetired(error);
             if (this.state === 'retiring') {
                 this.state = 'failed';
-                try { this.dropBitmap(); } catch (cleanupError) { this.report(cleanupError); }
+                try { this.releaseParts(this.finished); } catch (cleanupError) { this.report(cleanupError); }
             }
         }).finally(() => {
             if (this.state === 'cancelled' || this.state === 'failed') this.options.signal?.removeEventListener('abort', this.abortListener);
@@ -147,25 +231,9 @@ export class StreamingDenseTileJob {
         });
         return this.retirement;
     }
-    private stop(failed: boolean, error?: unknown): void {
-        if (this.state === 'cancelled' || this.state === 'failed') return;
-        this.state = failed ? 'failed' : 'cancelled';
-        this.options.signal?.removeEventListener('abort', this.abortListener);
-        this.controller.abort(error);
-        for (const release of [() => this.releasePath(), () => this.releaseCanvas(), () => this.dropBitmap()]) {
-            try { release(); } catch (cleanupError) { this.report(cleanupError); }
-        }
-        this.node = null;
-        if (failed) this.report(error);
-        void this.startRetirement();
-    }
     cancel(): void { this.stop(false); }
     dispose(): void { this.cancel(); }
     whenRetired(): Promise<void> { return this.retired; }
-    private reserve(bytes: number): ByteLease | null {
-        if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Streaming dense path estimate overflows');
-        return this.options.host.allocator.cpu.reserve(Math.max(1, bytes));
-    }
     private requestStream(): void {
         this.state = 'opening'; this.opening = true;
         const pending = this.track(Promise.resolve().then(() => {
@@ -199,15 +267,13 @@ export class StreamingDenseTileJob {
     }
     private finish(): void {
         try {
-            if (this.painted) {
-                this.bitmap = this.canvas!.transferToImageBitmap();
-            } else this.dropBitmap();
-            this.releaseCanvas(); this.state = 'retiring';
+            this.sealUntil(null);
+            this.state = 'retiring';
             void this.startRetirement().then(() => {
                 try {
                     if (this.state !== 'retiring') return;
                     if (!this.valid()) { this.cancel(); return; }
-                    this.state = this.painted ? 'complete' : 'empty';
+                    this.state = this.finished.length ? 'complete' : 'empty';
                     if (this.state === 'empty') this.options.signal?.removeEventListener('abort', this.abortListener);
                     this.options.host.invalidate('streaming-dense-ready');
                 } catch (error) { this.stop(true, error); }
@@ -248,18 +314,14 @@ export class StreamingDenseTileJob {
             try { this.options.host.invalidate('streaming-dense-image'); } catch (error) { this.report(error); }
         } }, (_ctx, _view, paint) => paint(), error => this.stop(true, error));
     }
-    /** A caller must stop using the job after taking its independently leased bitmap. */
-    takeOwnership(): StreamingDenseTileBitmap {
-        if (this.state !== 'complete' || !this.bitmap || !this.bitmapLease) throw new Error('Streaming tile is not ready');
+    /** Takes the sealed parts of a finished tile. The caller now owns every returned bitmap and lease. */
+    takeParts(): readonly DenseTilePart[] {
+        if (this.state !== 'complete' && this.state !== 'empty') throw new Error('Streaming tile is not finished');
         if (!this.valid()) { this.cancel(); throw new DOMException('Streaming tile is stale', 'AbortError'); }
         this.options.signal?.removeEventListener('abort', this.abortListener);
-        const bitmap = this.bitmap, lease = this.bitmapLease, allocator = this.options.host.allocator.cpu, rect = this.rect;
-        this.bitmap = null; this.bitmapLease = null; this.state = 'cancelled';
-        let held = true;
-        return Object.freeze({ bitmap, rect, release() {
-            if (!held) return; held = false;
-            try { bitmap.close(); } finally { allocator.release(lease); }
-        } });
+        const parts = this.finished; this.finished = [];
+        this.state = 'cancelled';
+        return Object.freeze(parts);
     }
     prepare(view: ViewState, budget: FrameBudget): void {
         if (!this.needsFrame() && !this.blockedValue) return;
@@ -270,26 +332,25 @@ export class StreamingDenseTileJob {
         try {
             while (!sliced.shouldYield()) {
                 if (!this.valid()) { this.cancel(); return; }
-                if (this.state === 'start') {
-                    this.scratch = this.reserve(BITMAP_BYTES);
-                    if (!this.scratch) { this.blockedValue = true; return; }
-                    this.bitmapLease = this.reserve(BITMAP_BYTES);
-                    if (!this.bitmapLease) { this.options.host.allocator.cpu.release(this.scratch); this.scratch = null; this.blockedValue = true; return; }
-                    this.canvas = new OffscreenCanvas(SIDE, SIDE); this.ctx = this.canvas.getContext('2d');
-                    if (!this.ctx) throw new Error('Streaming dense tile context unavailable');
-                    this.ctx.setTransform(this.options.scale, 0, 0, this.options.scale,
-                        2 - this.rect.x * this.options.scale, 2 - this.rect.y * this.options.scale);
-                    this.requestStream(); return;
-                }
+                if (this.state === 'start') { this.requestStream(); return; }
                 if (this.state === 'read') { this.requestNode(); return; }
                 if (this.state === 'items') {
                     const items = this.options.band === 'underlay' ? this.node!.underlay ?? [] : this.node!.content;
                     if (this.itemIndex >= items.length) { this.node = null; this.state = 'read'; continue; }
                     const item = items[this.itemIndex++];
-                    if (this.options.accept && !this.options.accept(item)) continue;
-                    const blend = item.kind === 'image' ? item.blend : item.material.blend;
+                    if (this.options.barriers.has(item.nodeId)) {
+                        // A node's items are contiguous in its band, so one barrier event per node.
+                        if (this.lastBarrier !== item.nodeId) {
+                            this.lastBarrier = item.nodeId; this.barriers++;
+                            this.sealUntil(item.nodeId);
+                        }
+                        continue;
+                    }
+                    this.lastBarrier = null;
+                    const blend = blendOf(item);
                     if (blend !== 'normal' && blend !== 'multiply') throw new Error('Unsupported streaming dense blend');
-                    if (blend === 'multiply' && !this.options.backdropIncluded) throw new Error('Multiply tile requires its actual backdrop');
+                    if (this.run && this.run.blend !== blend) this.closeRun();
+                    if (!this.run && !this.openRun(blend)) { this.itemIndex--; return; }
                     this.item = item; this.bounds = new PaintBoundsJob(item); this.state = 'bounds'; continue;
                 }
                 if (this.state === 'bounds') {
@@ -309,7 +370,10 @@ export class StreamingDenseTileJob {
                     this.adapter!.prepare(tileView, sliced);
                     const prepared = this.adapter?.borrowPrepared();
                     if (!prepared) return;
-                    paintItem2d(this.ctx!, this.item!, prepared.resources);
+                    const run = this.run!;
+                    paintItem2d(run.ctx, this.item!, prepared.resources);
+                    if (this.item!.kind === 'image') run.hasImage = true;
+                    run.painted++;
                     this.releasePath(); this.painted++; this.state = 'items'; continue;
                 }
                 return;

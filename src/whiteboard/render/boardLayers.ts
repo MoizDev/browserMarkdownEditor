@@ -273,9 +273,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             while (!estimate!.done && !budget.shouldYield()) estimateStep(estimate!);
             if (!estimate!.done) return;
             // Initial operation-count defaults; the owner defers binding calibration, not the hierarchy.
-            const mode = density.observe({ frameId: budget.frameId, now: performance.now(),
+            // Dense tiles are streamed from the frame's own pin; a frame that cannot reopen its stream stays direct.
+            const observed = density.observe({ frameId: budget.frameId, now: performance.now(),
                 candidateSegments: estimate!.segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
                 estimatedGpuMs: estimate!.segments * .00004 + estimate!.items * .0001 });
+            const mode = frame.openTile ? observed : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
                 if (useDense) {

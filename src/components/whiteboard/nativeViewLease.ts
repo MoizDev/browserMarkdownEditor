@@ -16,7 +16,7 @@ import type { MediaId } from '../../whiteboard/model/media';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
-import type { ViewerViewParams } from '../../whiteboard/viewer/types';
+import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
 import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions } from './nativeEditingLease';
@@ -35,6 +35,7 @@ export interface NativePdfBackdrop {
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
 export interface NativeViewLease extends BoardViewLease<object> {
     readonly runtime: BoardRuntime;
+    readonly engine: ViewerEngine;
     readonly camera: CameraController;
     readonly editing: ReturnType<typeof createNativeEditingLease> | null;
     getNavigationSnapshot(): NativeNavigationSnapshot;
@@ -277,7 +278,7 @@ export function createNativeViewLease(options: {
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
     const lease: NativeViewLease = {
-        runtime, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        runtime, engine: viewer, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
         refreshAuthority() { if (!disposed) { viewer.setView(viewParameters()); invalidate(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),

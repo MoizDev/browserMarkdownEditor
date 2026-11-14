@@ -1,9 +1,10 @@
 import type { BoardKind, Sheet } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
 import type { NodeRecord } from './nodes';
-import { isValidKey, keysBetween } from './orderKey';
+import { isValidKey, keyBetween } from './orderKey';
 import { NODE_FILE_FIELDS } from './fileFields';
 import type { LoadRepairNotice } from './loadTypes';
+import type { RawJson } from './json';
 
 export interface GraphRepairOptions {
     readonly kind: BoardKind;
@@ -39,13 +40,17 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     const sheets = new Set<ParentId>(options.sheets.map(sheet => sheet.id));
     if (!options.sheets.length) return result([], 'The board has no sheet');
     const root = options.sheets[0].id, items: Item[] = [];
-    const reserved = new Set<string>([...sheets, ...options.nodes.map(node => node.id)]);
+    const reserved = new Set<string>(sheets);
     const byId = new Map<NodeId, Item>();
     const tick = async () => {
         if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
         if (options.cooperate) await options.cooperate();
         if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
     };
+    for (let i = 0; i < options.nodes.length; i++) {
+        if ((i & 1023) === 0) await tick();
+        reserved.add(options.nodes[i].id);
+    }
     for (let i = 0; i < options.nodes.length; i++) {
         if ((i & 1023) === 0) await tick();
         let node = options.nodes[i];
@@ -58,7 +63,10 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             }
             if (!id) return result(items, 'Cannot allocate a unique node identity');
             reserved.add(id);
-            node = { ...node, id: id as NodeId };
+            const fields = new Map(node.ext?.fields);
+            // Existing user metadata wins; the generated JSON string is inert and valid by construction.
+            if (!fields.has('importedId')) fields.set('importedId', JSON.stringify(node.id) as RawJson);
+            node = { ...node, id: id as NodeId, ext: { fields, raw: node.ext?.raw ?? new Map() } };
             const item = { node, ordinal: i }; items.push(item); byId.set(node.id, item); record(item, 'duplicate-id');
         } else { const item = { node, ordinal: i }; items.push(item); byId.set(node.id, item); }
     }
@@ -111,25 +119,34 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             depths.set(path[j].node.id, depth);
         }
     }
-    const children = new Map<ParentId, Item[]>();
+    // Set insertion order is file order here; later dissolution only needs membership.
+    const children = new Map<ParentId, Set<Item>>();
+    let work = 0;
     for (const item of items) {
-        const list = children.get(item.node.parent);
-        if (list) list.push(item); else children.set(item.node.parent, [item]);
+        if ((work++ & 1023) === 0) await tick();
+        let bucket = children.get(item.node.parent);
+        if (!bucket) children.set(item.node.parent, bucket = new Set());
+        bucket.add(item);
     }
-    for (const list of children.values()) {
-        let bad = false;
+    for (const bucket of children.values()) {
+        if ((work++ & 1023) === 0) await tick();
+        let bad = false, protectedOrder = false;
         const seen = new Set<string>();
-        for (let i = 0; i < list.length; i++) {
-            const order = list[i].node.order;
-            if (!isValidKey(order) || seen.has(order)) { bad = true; break; }
+        for (const item of bucket) {
+            if ((work++ & 1023) === 0) await tick();
+            const order = item.node.order;
+            if (!isValidKey(order) || seen.has(order)) bad = true;
             seen.add(order);
+            if (item.node.kind === 'opaque' || NODE_FILE_FIELDS.order.some(token => item.node.ext?.raw.has(token))) protectedOrder = true;
         }
         if (!bad) continue;
-        if (list.some(item => item.node.kind === 'opaque' || NODE_FILE_FIELDS.order.some(token => item.node.ext?.raw.has(token)))) return result(items, 'Repairing order would change an opaque or preserved record');
-        const keys = keysBetween(null, null, list.length);
-        for (let i = 0; i < list.length; i++) {
-            list[i].node = { ...list[i].node, order: keys[i] };
-            record(list[i], 'order');
+        if (protectedOrder) return result(items, 'Repairing order would change an opaque or preserved record');
+        let previous: string | null = null;
+        for (const item of bucket) {
+            if ((work++ & 1023) === 0) await tick();
+            previous = keyBetween(previous, null);
+            item.node = { ...item.node, order: previous };
+            record(item, 'order');
         }
     }
     // Build parent buckets once; a chain of dissolving groups is linear rather
@@ -137,31 +154,36 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     // of its ancestors: its byte-preserved parent cannot be rewritten.
     const opaqueAncestors = new Set<ParentId>();
     for (const item of items) {
+        if ((work++ & 1023) === 0) await tick();
         if (item.node.kind !== 'opaque') continue;
         let parent = item.node.parent;
         for (let depth = 0; depth <= 64; depth++) {
+            if ((work++ & 1023) === 0) await tick();
             opaqueAncestors.add(parent);
             const ancestor = byId.get(parent as NodeId);
             if (!ancestor) break;
             parent = ancestor.node.parent;
         }
     }
-    const live = new Set(items.map(item => item.node.id));
-    const groups = items.filter(item => item.node.kind === 'group').map(item => item.node.id);
+    const live = new Set<NodeId>(), groups: NodeId[] = [];
+    for (const item of items) {
+        if ((work++ & 1023) === 0) await tick();
+        live.add(item.node.id);
+        if (item.node.kind === 'group') groups.push(item.node.id);
+    }
     for (let index = 0; index < groups.length; index++) {
         if ((index & 1023) === 0) await tick();
         const item = byId.get(groups[index]);
         if (!item || !live.has(item.node.id) || item.node.kind !== 'group' || opaqueAncestors.has(item.node.id)) continue;
         const group = item.node;
-        const direct = children.get(group.id) ?? [];
-        if (direct.length >= 2) continue;
+        const direct = children.get(group.id);
+        if (direct && direct.size >= 2) continue;
+        const child = direct?.values().next().value;
         // Removing unknown group fields or silently overriding preserved raw
         // child properties would destroy newer-format content. Keep original.
         if (group.ext && (group.ext.fields.size || group.ext.raw.size)) return result(items, 'A group with preserved metadata cannot be dissolved safely');
-        if (direct[0]?.node.ext?.raw.size) return result(items, 'A group child has preserved properties that prevent safe dissolution');
+        if (child?.node.ext?.raw.size) return result(items, 'A group child has preserved properties that prevent safe dissolution');
         const parentChildren = children.get(group.parent);
-        const parentIndex = parentChildren?.indexOf(item) ?? -1;
-        const child = direct[0];
         if (child) {
             if (child.node.kind === 'opaque') return result(items, 'Repair would move an opaque record');
             const c = Math.cos(group.rotation), s = Math.sin(group.rotation);
@@ -175,10 +197,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
                 locked: group.locked || child.node.locked };
             record(child, 'dissolved-group-child');
         }
-        if (parentChildren && parentIndex >= 0) {
-            if (child) parentChildren.splice(parentIndex, 1, child);
-            else parentChildren.splice(parentIndex, 1);
-        }
+        if (parentChildren?.delete(item) && child) parentChildren.add(child);
         live.delete(group.id); children.delete(group.id);
         record(item, 'dissolved-group');
         const parent = byId.get(group.parent as NodeId);
@@ -216,5 +235,10 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             item.node = { ...node, start, end }; record(item, 'detached-attachment');
         }
     }
-    return result(items.filter(item => live.has(item.node.id)), null);
+    const retained: Item[] = [];
+    for (const item of items) {
+        if ((work++ & 1023) === 0) await tick();
+        if (live.has(item.node.id)) retained.push(item);
+    }
+    return result(retained, null);
 }

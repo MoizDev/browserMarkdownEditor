@@ -103,7 +103,7 @@ import { authorizeKeptPdfRole, canRebuildAnnotatedPdf, canRotatePdfRole, pdfRole
 import type { PdfAnnotationPreflight } from './utils/pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './utils/pdfBuildRefusal';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
-import { anyPending, drain, drainAll, subscribePending } from './utils/unloadCoordinator';
+import { anyPending, drain, drainAll, installDocumentSessions, subscribePending } from './utils/unloadCoordinator';
 import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
@@ -1006,6 +1006,7 @@ export default function App() {
     reportChange: (id, source, options) => sessionReportRef.current(id, source, options),
   }));
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
+  useEffect(() => installDocumentSessions(documentSessions), [documentSessions]);
   const markdownSessions = useMemo<MarkdownSessionHost>(() => {
     const get = (id: string): MarkdownSessionAdapter | undefined => {
       const entry = documentSessions.get(id);

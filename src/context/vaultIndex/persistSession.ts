@@ -45,7 +45,7 @@ export class PersistSession {
                     return values.map((value, i) => ({ ...value, path: (keys[i] as string[])[1], rev: 0 }));
                 }
             }
-        } catch (error) { this.problem('corrupt', String(error)); }
+        } catch (error) { this.problem('corrupt', String(error)); this.reset = true; }
         this.startWriter();
         return [];
     }

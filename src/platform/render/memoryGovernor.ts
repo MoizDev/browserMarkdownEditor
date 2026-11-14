@@ -257,6 +257,10 @@ export class MemoryGovernor {
             count(pane.requestedPixels);
             count(pane.gpuNeedBytes);
             count(pane.cpuNeedBytes);
+            if (pane.cpuMandatoryBytes !== undefined) {
+                count(pane.cpuMandatoryBytes);
+                if (pane.cpuMandatoryBytes > pane.cpuNeedBytes) throw new MemoryAdmissionError('invalid-input');
+            }
             if (!pane.paneId || ids.has(pane.paneId)) throw new MemoryAdmissionError('invalid-input');
             ids.add(pane.paneId);
             if (pane.visible && pane.requestedPixels > 0) { pixels += pane.requestedPixels; visible++; }
@@ -652,7 +656,12 @@ export class MemoryGovernor {
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
-        const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane), need: pane.cpuNeedBytes })), this.target.cpu);
+        const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
+            need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
+        const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);
+        const optional = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
+            need: pane.cpuNeedBytes - (pane.cpuMandatoryBytes ?? pane.cpuNeedBytes) })), this.target.cpu - mandatoryAssigned);
+        for (const [id, bytes] of optional) cpu.set(id, (cpu.get(id) ?? 0) + bytes);
         this.grants = new Map(this.panes.map(pane => {
             const pixelGrant = pixels.get(pane.paneId) ?? 0;
             const q = pane.requestedPixels ? Math.sqrt(pixelGrant / pane.requestedPixels) : 0;

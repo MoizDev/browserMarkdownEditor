@@ -54,7 +54,8 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
                 || sessionField.value !== session || epochField.value !== epoch || generationField.value !== currentGeneration
                 || typeof requestField.value !== 'number' || !validCounter(requestField.value)) return false;
             const active = outstanding.get(requestField.value);
-            return !!active && !active.controller.signal.aborted;
+            // A value-equal clone is not the job object this authority issued.
+            return !!active && active.job === job && !active.controller.signal.aborted;
         } catch { return false; }
     }
     function abortAll(reason: string): void {

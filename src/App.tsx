@@ -1,6 +1,7 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
+import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession } from './utils/canvasSessionBridge';
 import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
@@ -1004,6 +1005,50 @@ export default function App() {
     reportChange: (id, source, options) => sessionReportRef.current(id, source, options),
   }));
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
+  const markdownSessions = useMemo<MarkdownSessionHost>(() => {
+    const get = (id: string): MarkdownSessionAdapter | undefined => {
+      const entry = documentSessions.get(id);
+      return entry?.kind === 'markdown' && 'dispatch' in entry.adapter ? entry.adapter as MarkdownSessionAdapter : undefined;
+    };
+    const ensure: MarkdownSessionHost['ensure'] = (id, create) => {
+      const tab = tabsRef.current.find(candidate => candidate.id === id);
+      if (!tab || !canReadTabText(tab)) return undefined;
+      const existing = documentSessions.get(id);
+      if (existing) return get(id);
+      documentBuffers.open(id, tab.content, true);
+      const entry = documentSessions.ensure(id, 'markdown', bytesGenerationsRef.current.get(id) ?? 0, create);
+      documentBuffers.setOwner(id, { documentId: id, session: entry.serial });
+      return entry.adapter;
+    };
+    return {
+      get, ensure,
+      pathOf: id => tabsRef.current.find(tab => tab.id === id)?.file.path,
+      parentHandleOf: id => tabsRef.current.find(tab => tab.id === id)?.file.parentHandle ?? null,
+      async dispatch(id, spec) {
+        const target = tabsRef.current.find(tab => tab.id === id);
+        if (!target || !canUpdateTabContent(target)) return false;
+        const revision = documentBuffers.revisionForDocument(id)?.revision;
+        const activation = getVaultActivation();
+        let adapter = get(id);
+        if (!adapter) {
+          const [{ EditorState }, { history }, { createMarkdownSession }] = await Promise.all([
+            import('@codemirror/state'), import('@codemirror/commands'), import('./editor/markdownSession'),
+          ]);
+          const current = tabsRef.current.find(tab => tab.id === id);
+          if (!current || !canUpdateTabContent(current) || getVaultActivation() !== activation
+            || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
+          const text = documentBuffers.contentForDocument(id);
+          if (text === undefined) return false;
+          adapter = ensure(id, owner => createMarkdownSession(owner,
+            EditorState.create({ doc: text, extensions: history() }), () => documentBuffers.get(id)?.source));
+        }
+        if (!adapter) return false;
+        adapter.dispatch(spec);
+        editorStates.set(id, adapter.state);
+        return true;
+      },
+    };
+  }, [documentBuffers, documentSessions, editorStates, getVaultActivation]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
     prepareBytesChange(id, generation);
@@ -6060,6 +6105,7 @@ export default function App() {
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
             stateCache={editorStates}
+            markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}
             onConfirm={ask}

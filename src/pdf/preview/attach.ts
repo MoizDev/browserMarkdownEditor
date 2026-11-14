@@ -1,5 +1,5 @@
-import { attachPlatformPane } from '../../platform/render';
-import type { PlatformLayerDefinition, PlatformPane, RenderToken } from '../../platform/render';
+import { attachPlatformPane } from '../../platform/render/cpuEntry';
+import type { Layer, PlatformLayerDefinition, PlatformPane, RenderToken } from '../../platform/render';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { PreviewBitmapLayer } from './bitmapLayer';
 import type { PdfPreview, PreviewBinding, PreviewSnapshot } from '../../utils/pdfPreviewTypes';
@@ -9,6 +9,7 @@ interface PreviewOptions {
     readonly root: HTMLElement;
     readonly token: PreviewBinding;
     readSnapshot(): PreviewSnapshot | null;
+    onNotice(message: string): void;
 }
 
 let nextView = 0;
@@ -37,6 +38,7 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
     options.root.append(host);
     let disposed = false;
     let visible = false;
+    let pressureNotified = false;
     let pane: PlatformPane | null = null;
     let scene: PreviewScene | null = null;
     let colour = background(options.root);
@@ -48,11 +50,20 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
         const identity = getSessionIdentity(token.documentId);
         return identity?.serial === token.session && identity.bytesGeneration === token.bytesGeneration ? token : null;
     };
-    const definition: PlatformLayerDefinition = {
+    const definition: PlatformLayerDefinition & { cpuWorkingSet(layer: Layer, viewport: Readonly<{ width: number; height: number }>): { mandatoryBytes: number; prefetchBytes: number } } = {
         id: 'classic-pdf-pages', group: 'document',
+        cpuWorkingSet(_layer, viewport) {
+            const width = Math.ceil(viewport.width), height = Math.ceil(viewport.height);
+            return { mandatoryBytes: (width + 2 * Math.ceil(width / 512) + 8) * (height + 2 * Math.ceil(height / 512) + 8) * 4,
+                prefetchBytes: 0 };
+        },
         create(layerHost) {
             const layer = new PreviewBitmapLayer(layerHost);
-            scene = new PreviewScene(layer, () => { conceal(); pane?.invalidate('pdf-preview-scene'); });
+            scene = new PreviewScene(layer, () => { conceal(); pane?.invalidate('pdf-preview-scene'); }, () => {
+                if (pressureNotified) return;
+                pressureNotified = true;
+                options.onNotice('PDF platform preview could not fit in memory; showing the classic view.');
+            });
             return layer;
         },
         revision: () => scene?.revision ?? 0,
@@ -78,10 +89,16 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
                     conceal();
                     return;
                 }
+                pressureNotified = false;
                 options.root.classList.add('pdf-platform-preview-live');
             },
             onError(error) { conceal(); console.error('PDF platform preview failed:', error); },
-            onNotice() {},
+            onNotice(message) {
+                if (message === 'memory-pressure' && !pressureNotified) {
+                    pressureNotified = true;
+                    options.onNotice('PDF platform preview could not fit in memory; showing the classic view.');
+                }
+            },
         });
     } catch (error) {
         host.remove();

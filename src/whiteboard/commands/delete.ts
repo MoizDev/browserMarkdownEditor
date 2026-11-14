@@ -1,4 +1,4 @@
-import { deleteNodes, isLocked } from '../change/commands';
+import { deleteNodes } from '../change/commands';
 import type { DeleteResult } from '../change/commands';
 import type { ChangeGeometry } from '../change/coordinates';
 import { ApplyRefused } from '../change/errors';
@@ -26,7 +26,6 @@ export function planDelete(doc: BoardDoc, builder: CommandBuilder, sheet: SheetI
     for (const id of roots) {
         const node = doc.nodes.get(id);
         if (!node || sheetOf(doc, id) !== sheet) refuse('V-1', 'Node is not on this sheet', id);
-        if (isLocked(doc, node)) refuse('schema', 'Locked content cannot be deleted', id);
         if (node.kind === 'opaque' || hasOpaqueDescendant(doc, node.id)) refuse('opaque', 'Opaque content cannot be deleted', id);
     }
     try { return deleteNodes(doc, builder, roots, geometry); }

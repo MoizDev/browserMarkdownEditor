@@ -41,12 +41,12 @@ export class BoardTextLayout implements TextLayoutEngine {
         await Promise.all([...keys.values()].map(key => this.fonts.ensure(key)));
     }
     private face(key: FontKey, size: number): number {
-        const descriptor = fontDescriptor(key);
-        const id = JSON.stringify([descriptor.url, size]);
+        const descriptor = fontDescriptor(key), loaded = this.fonts.isLoaded(key);
+        const id = JSON.stringify([descriptor.url, size, loaded]);
         const old = this.faceIds.get(id);
         if (old !== undefined) return old;
         const m = descriptor.metrics, scale = size / m.unitsPerEm;
-        const face: Face = { css: fontCss(descriptor), size, ascent: m.ascent * scale, descent: m.descent * scale, xHeight: m.xHeight * scale };
+        const face: Face = { key: { ...key }, loaded, css: fontCss(descriptor, loaded), size, ascent: m.ascent * scale, descent: m.descent * scale, xHeight: m.xHeight * scale };
         const next = this.faces.length;
         this.faces.push(face);
         this.faceIds.set(id, next);

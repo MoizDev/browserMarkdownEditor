@@ -36,7 +36,7 @@ function withoutRaw(ext: ExtBag | null, keys: readonly string[]): ExtBag | null 
     return { fields: ext.fields, raw };
 }
 
-export function duplicateSheet(doc: BoardDoc, apply: MutationPort, source: SheetId, id: SheetId): Applied {
+export function duplicateSheet(doc: BoardDoc, apply: MutationPort, source: SheetId, id: SheetId, name?: string): Applied {
     if (doc.sheetOrder.length >= 40) throw new StructureRefused('Maximum pages reached');
     const index = doc.sheetOrder.findIndex(sheet => sheet.id === source);
     if (index < 0) throw new StructureRefused('Sheet no longer exists');
@@ -53,7 +53,7 @@ export function duplicateSheet(doc: BoardDoc, apply: MutationPort, source: Sheet
         for (const child of childrenOf(doc, node.id)) visit(child);
     };
     for (const node of childrenOf(doc, source)) visit(node);
-    const ops: Op[] = [{ t: 'sheet', op: 'create', sheet: { id, name: `${original.name.slice(0, 195)} Copy`,
+    const ops: Op[] = [{ t: 'sheet', op: 'create', sheet: { id, name: name ?? `${original.name.slice(0, 195)} Copy`,
         order: keyBetween(original.order, doc.sheetOrder[index + 1]?.order ?? null),
         ext: withoutRaw(original.ext, ['id', 'name', 'order']) } }];
     for (const node of nodes) {

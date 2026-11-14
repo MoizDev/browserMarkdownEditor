@@ -447,12 +447,16 @@ async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution>
     return ok(body.join('\n'));
 }
 
+function pdfExtractionWarning(page: { quality?: 'partial'; warnings?: readonly string[] }): string {
+    return page.quality === 'partial' ? `[Extraction warning: ${(page.warnings?.join(' ') || 'Text may be incomplete or out of order.').slice(0, 1000)}]` : '';
+}
+
 async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> {
     const first = typeof a.offset === 'number' ? a.offset : 1;
     const maxPages = Math.min(MAX_PDF_PAGES_PER_READ, typeof a.limit === 'number' ? a.limit : MAX_PDF_PAGES_PER_READ);
     const budget = MAX_TOOL_TEXT_CHARS - 1000;
     let pageCount: number;
-    let pages: Array<{ page: number; text: string }>;
+    let pages: Array<{ page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }>;
     let source: string;
 
     const view = openPdfView(path);
@@ -469,9 +473,10 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
             const got = await withTimeout(view.pdfText(batch), REPORTER_TIMEOUT_MS, 'extracting the PDF text');
             let full = false;
             for (const g of got.sort((x, y) => x.page - y.page)) {
-                if (pages.length > 0 && used + g.text.length > budget) { full = true; break; }
+                const size = g.text.length + pdfExtractionWarning(g).length + 1;
+                if (pages.length > 0 && used + size > budget) { full = true; break; }
                 pages.push(g);
-                used += g.text.length;
+                used += size;
             }
             if (full) break;
             p += batch.length;
@@ -493,6 +498,8 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
     const out = [`path: ${path}`, `PDF, ${pageCount} page${pageCount === 1 ? '' : 's'} — text of pages ${first}-${last} (from ${source})`];
     for (const p of pages) {
         out.push('', `=== page ${p.page} ===`);
+        const warning = pdfExtractionWarning(p);
+        if (warning) out.push(warning);
         out.push(p.text || '(no text on this page — it may be a scan or a drawing; look at it with vault_view)');
     }
     if (last < pageCount) out.push('', `…[pages ${last + 1}-${pageCount} not shown; call vault_read with offset=${last + 1} to continue]`);

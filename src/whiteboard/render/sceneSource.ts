@@ -8,6 +8,7 @@ import { compareOrder } from '../model/orderKey';
 import type { ScenePaintRequest } from '../scene/types';
 import type { PaintClip, PaintItem, PaintNode, PaintNodeSource } from './paintStream';
 import type { ScenePaintNodeStream } from './scenePaintStream';
+import type { PaintNodeOrder } from './paintOrder';
 import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: document-model transforms and frame clipping, paint-stream order
@@ -23,7 +24,7 @@ export interface SceneResolveContext {
     readonly allowInkLod: boolean;
 }
 interface ScenePaintFilters {
-    readonly orderedIds?: Iterable<NodeId>;
+    readonly orderedIds?: PaintNodeOrder;
     intersectsPage?(node: Readonly<Node>, context: SceneResolveContext, page: number): boolean;
     visible?(node: Readonly<Node>, context: SceneResolveContext, world: Readonly<Rect>): boolean;
 }
@@ -150,7 +151,10 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
     };
     check();
     if (ports.orderedIds) {
-        for (const id of ports.orderedIds) yield* visit(id);
+        for (const id of ports.orderedIds) {
+            if (id === null) { check(); yield { kind: 'cooperate' }; reset(); }
+            else yield* visit(id);
+        }
     } else {
         const frames: Iterator<Node>[] = [(doc.children.get(scope.sheetId as ParentId) ?? [])[Symbol.iterator]()];
         while (frames.length) {
@@ -176,13 +180,16 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
     const scope: ScenePaintRequest = { ...request, sensitiveNodes, ...(request.world ? { world: { ...request.world } } : {}) };
     const job = scenePaintSource(doc, pinnedToken, scope, ports, controller.signal, true);
     let active: Promise<PaintNode | null> | null = null, releasePromise: Promise<void> | null = null, ended = false;
-    const abort = () => { controller.abort(signal.reason); void release(); };
+    const abort = () => { controller.abort(signal.reason); void release().catch(() => {}); };
     const release = (): Promise<void> => {
         if (releasePromise) return releasePromise;
         controller.abort();
         releasePromise = (async () => {
             try { await active?.catch(() => {}); }
-            finally { ended = true; job.return(undefined as never); signal.removeEventListener('abort', abort); }
+            finally {
+                ended = true;
+                try { job.return(undefined as never); } finally { signal.removeEventListener('abort', abort); }
+            }
         })();
         return releasePromise;
     };
@@ -207,7 +214,10 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
             };
             const promise = run();
             active = promise;
-            void promise.then(() => { if (active === promise) active = null; }, () => { if (active === promise) active = null; });
+            void promise.then(() => { if (active === promise) active = null; }, () => {
+                if (active === promise) active = null;
+                void release().catch(() => {});
+            });
             return promise;
         },
         release,

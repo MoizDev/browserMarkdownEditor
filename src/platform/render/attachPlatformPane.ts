@@ -174,15 +174,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const bandPixels = Math.min(requestedPixels, tilePixels);
             const isolated = layerSet.compositorLayers.filter(binding => binding.isolation).length;
             const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
+            let mandatory = 0, prefetch = 0;
+            for (const layer of layerSet.layers) {
+                const demand = layerSet.definition(layer)?.cpuWorkingSet?.(layer, size?.physical ?? { width: 0, height: 0 });
+                mandatory += Math.max(layer.memory().cpuBytes, demand?.mandatoryBytes ?? 0);
+                prefetch += demand?.prefetchBytes ?? 0;
+            }
+            const cpuMandatoryBytes = Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
+                (requestedPixels + bandPixels) * 4;
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
                     (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
-                // Bootstrap the first raster before live bytes exist, plus derivative bitmap crops
-                // and a readback core even for a purely procedural inverted document.
-                cpuNeedBytes: Math.max(memory.reduce((sum, value) => sum + value.cpuBytes, 0),
-                    requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) + (requestedPixels + bandPixels) * 4,
+                // Working-set demand precedes allocations; prefetch competes only after all visible floors.
+                cpuMandatoryBytes, cpuNeedBytes: cpuMandatoryBytes + prefetch,
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,

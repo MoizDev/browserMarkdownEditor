@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
-import { isCanvasFile, isEpubFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
+import { isCanvasFile, isEpubFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
+import { requestConversionRestore } from '../utils/conversionRestore';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -49,10 +50,11 @@ interface TreeNodeProps {
     /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     depth?: number;
+    createRow?: boolean;
 }
 
 
-function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0, createRow = false }: TreeNodeProps) {
     /* This row's own icon and colour, read from the store rather than taken as
        a prop — see utils/folderStyleStore.ts. The snapshot is the STORED object,
        so a row whose folder was not the one that changed sees an unchanged
@@ -284,7 +286,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         };
 
         const entries: ContextMenuEntry[] = node.kind === 'file'
-            ? [rename, { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
+            ? [rename, ...(isCanvasFile(node.name) || isPdfFile(node.name)
+                ? [{ kind: 'command' as const, id: 'restore-before-conversion', label: 'Restore the copy from before conversion', run: () => requestConversionRestore(node) }]
+                : []), { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
@@ -389,10 +393,21 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         setTreeDropTarget(null);
     };
 
+    if (createRow) {
+        return creating && node.kind === 'directory' ? (
+            <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 + (depth + 1) * 20 }}>
+                <input ref={createInputRef} className="inline-rename-input" type="text"
+                    placeholder={placeholderFor(creating)} onKeyDown={handleCreateKeyDown}
+                    onBlur={() => clearCreateRequest()} onClick={e => e.stopPropagation()} />
+            </div>
+        ) : null;
+    }
+
     if (node.kind === 'file') {
         return (
             <div
                 className={`tree-item tree-file${isActive ? ' is-active' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
+                role="treeitem" aria-level={depth + 1} aria-selected={isActive} tabIndex={-1}
                 data-path={node.path}
                 style={rowStyle}
                 onClick={() => { if (!isRenaming) onFileClick(node); }}
@@ -471,9 +486,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
     }
 
     return (
-        <div className="tree-item-container">
-            <div
+        <div
                 className={`tree-item tree-folder${dragOver || dropPosition === 'into' ? ' drag-over' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
+                role="treeitem" aria-level={depth + 1} aria-expanded={expanded} tabIndex={-1}
                 data-path={node.path}
                 style={rowStyle}
                 onClick={() => { if (!isRenaming) onToggleExpand(node.path); }}
@@ -553,50 +568,6 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                         </button>
                     </span>
                 )}
-            </div>
-            {(expanded || creating) && (
-                <div className="tree-children">
-                    {creating && (
-                        // The app's own input row, exactly the markup and the
-                        // classes the explorer's root create flow already uses
-                        // (FileExplorer's `creatingInRoot` row) — one indent
-                        // level deeper, because what is being named lands inside
-                        // this folder. It replaces a window.prompt(), which is
-                        // the direction 89824e7 took the app: the question is
-                        // asked where the answer will appear.
-                        <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 + (depth + 1) * 20 }}>
-                            <input
-                                ref={createInputRef}
-                                className="inline-rename-input"
-                                type="text"
-                                placeholder={placeholderFor(creating)}
-                                onKeyDown={handleCreateKeyDown}
-                                onBlur={() => clearCreateRequest()}
-                                onClick={(e) => e.stopPropagation()}
-                            />
-                        </div>
-                    )}
-                    {expanded && node.children.map((child) => (
-                        // The MEMO wrapper, not the bare function — otherwise
-                        // recursion would re-render the whole subtree anyway.
-                        <MemoTreeNode
-                            key={child.path}
-                            node={child}
-                            onFileClick={onFileClick}
-                            onCreateFile={onCreateFile}
-                            onCreateFolder={onCreateFolder}
-                            onTrash={onTrash}
-                            onOpenAsVault={onOpenAsVault}
-                            onStyleEntry={onStyleEntry}
-                            onToggleExpand={onToggleExpand}
-                            onMoveFile={onMoveFile}
-                            onRenameFile={onRenameFile}
-                            onImportFiles={onImportFiles}
-                            depth={depth + 1}
-                        />
-                    ))}
-                </div>
-            )}
         </div>
     );
 }

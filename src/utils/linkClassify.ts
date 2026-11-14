@@ -28,7 +28,7 @@ function nonLocal(text: string): boolean {
 
 /** Classify today's regex destination before discarding directory provenance.
  *  This is not a new Markdown parser or a source-relative resolution policy. */
-export function localMarkdownTarget(raw: string): string | null {
+export function localMarkdownTarget(raw: string, allowParent = false): string | null {
     if (hasControl(raw)) return null;
     const text = raw.trim();
     if (!text || text.startsWith('//') || /[\\?#]/.test(text) || nonLocal(text)) return null;
@@ -43,8 +43,9 @@ export function localMarkdownTarget(raw: string): string | null {
         if (hasControl(decoded) || /[\\/?#]/.test(decoded)) return null;
         if (!decoded || decoded === '.') continue;
         if (decoded === '..') {
-            if (!parts.length) return null;
-            parts.pop();
+            if (parts.length && parts[parts.length - 1] !== '..') parts.pop();
+            else if (allowParent && !text.startsWith('/')) parts.push('..');
+            else return null;
         } else {
             parts.push(decoded);
         }

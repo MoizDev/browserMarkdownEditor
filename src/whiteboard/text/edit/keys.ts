@@ -9,8 +9,10 @@ export interface KeyServices {
     // Visual movement is supplied by the caret index built from the renderer's
     // TextPaint, not by a second text layout in the input layer.
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
+    collapse(selection: EditSelection, direction: 'left' | 'right'): number;
     command(command: string): void;
     inList(): boolean;
+    undoTransformation(): boolean;
 }
 
 function adjacentGrapheme(text: string, offset: number, direction: -1 | 1): number {
@@ -42,8 +44,9 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
             : lower === 'c' ? 'copy' : lower === 'x' ? 'cut' : lower === 'v' ? event.shiftKey ? 'paste-plain' : 'paste' : null;
         if (command) { consume(event); services.command(command); return true; }
     }
-    if (mod && event.altKey && /^[0-6]$/.test(event.key)) {
-        consume(event); services.command(`heading-${event.key}`); return true;
+    if (mod && event.altKey && (/^[0-6]$/.test(event.key) || /^Digit[0-6]$/.test(event.code))) {
+        const level = /^[0-6]$/.test(event.key) ? event.key : event.code.slice(-1);
+        consume(event); services.command(`heading-${level}`); return true;
     }
     if (mod && event.shiftKey && (event.key === '7' || event.key === '8' || event.code === 'Digit7' || event.code === 'Digit8')) {
         consume(event); services.command(event.code === 'Digit7' || event.key === '7' ? 'ordered-list' : 'bullet-list'); return true;
@@ -58,6 +61,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         consume(event); services.command('enter'); return true;
     }
     if (event.key === 'Backspace' || event.key === 'Delete') {
+        if (event.key === 'Backspace' && !mod && !event.altKey && anchor === focus && services.undoTransformation()) { consume(event); return true; }
         const backward = event.key === 'Backspace';
         let from = Math.min(anchor, focus), to = Math.max(anchor, focus);
         if (from === to) {
@@ -75,7 +79,8 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         : event.key === 'Home' ? 'line-start' : event.key === 'End' ? 'line-end' : null;
     if (!movement) return false;
     let next: number;
-    if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text.length;
+    if (!event.shiftKey && anchor !== focus && (movement === 'left' || movement === 'right')) next = services.collapse({ anchor, focus }, movement);
+    else if ((mod && mac && (movement === 'up' || movement === 'down')) || (!mac && event.ctrlKey && (movement === 'line-start' || movement === 'line-end'))) next = movement === 'up' || movement === 'line-start' ? 0 : text.length;
     else if (mod && mac && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'line-start' : 'line-end');
     else if (word && (movement === 'left' || movement === 'right')) next = services.move(focus, movement === 'left' ? 'word-left' : 'word-right');
     else next = services.move(focus, movement);

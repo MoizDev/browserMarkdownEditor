@@ -15,12 +15,12 @@ export interface PreparedMutation { write(): void }
 export class ModelInvariantError extends Error {}
 export type ModelOp = Exclude<Op, { readonly t: 'splice' }>;
 type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
-    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs' | 'preservedMediaRefs'> & {
+    'nodes' | 'sheets' | 'media' | 'sheetOrder' | 'children' | 'attachedTo' | 'bySheet' | 'byPage' | 'mediaRefs' | 'preservedMediaRefs' | 'opaqueDescendants'> & {
     nodes: Map<NodeId, Node>; sheets: Map<SheetId, Sheet>; media: Map<MediaId, MediaEntry>;
     sheetOrder: Sheet[]; children: Map<ParentId, Node[]>;
     attachedTo: Map<NodeId, Set<NodeId>>; bySheet: Map<SheetId, Set<NodeId>>;
     byPage: Map<number, Set<NodeId>>; mediaRefs: Map<MediaId, Set<NodeId>>;
-    preservedMediaRefs: Map<MediaId, number>;
+    preservedMediaRefs: Map<MediaId, number>; opaqueDescendants: Map<ParentId, number>;
 };
 function forApply(doc: BoardDoc): MutableDoc {
     // Readonly is ownership, not frozen/copied data. Only the apply path writes
@@ -99,6 +99,41 @@ function subtreeIds(doc: BoardDoc, id: NodeId, output: NodeId[]): void {
     const children = childrenOf(doc, id);
     for (let i = 0; i < children.length; i++) subtreeIds(doc, children[i].id, output);
 }
+// RV-22: strict opaque-descendant counts move O(depth) on EVERY ancestry edit;
+// zero entries are deleted. Inverses run this same path. Public readers get only
+// hasOpaqueDescendant(), never this map. A one-child group's million-node frame
+// must not be walked on every normalization/commit check.
+function opaqueMovePlan(doc: MutableDoc, node: Node, before: ParentId | null, after: ParentId | null): PreparedMutation | undefined {
+    const count = (doc.opaqueDescendants.get(node.id) ?? 0) + (node.kind === 'opaque' ? 1 : 0);
+    if (!count || before === after) return undefined;
+    const delta = new Map<ParentId, number>();
+    const path = (start: ParentId | null, amount: number) => {
+        if (start === null) return;
+        let parent = start;
+        for (let depth = 0; depth <= 64; depth++) {
+            delta.set(parent, (delta.get(parent) ?? 0) + amount);
+            if (isSheetParent(doc, parent)) return;
+            parent = required(doc.nodes.get(parent), 'Opaque ancestor vanished').parent;
+        }
+        throw new ModelInvariantError('Opaque ancestor chain exceeds 64 links');
+    };
+    path(before, -count);
+    path(after, count);
+    const values: { id: ParentId; count: number }[] = [];
+    for (const [id, change] of delta) {
+        if (!change) continue;
+        const value = (doc.opaqueDescendants.get(id) ?? 0) + change;
+        if (!Number.isSafeInteger(value) || value < 0) throw new ModelInvariantError('Opaque descendant count underflow/overflow');
+        values.push({ id, count: value });
+    }
+    return { write() {
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i];
+            if (value.count) doc.opaqueDescendants.set(value.id, value.count);
+            else doc.opaqueDescendants.delete(value.id);
+        }
+    } };
+}
 function createNodePlan(doc: MutableDoc, record: NodeRecord): PreparedMutation {
     const node = createNode(record);
     const siblings = doc.children.get(node.parent) ?? [];
@@ -109,11 +144,13 @@ function createNodePlan(doc: MutableDoc, record: NodeRecord): PreparedMutation {
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) members.change(doc.byPage, node.page, node.id, true);
     if (node.kind === 'connector') transition(members, doc.attachedTo, node.id, [], targets(node));
     transition(members, doc.mediaRefs, node.id, [], nodeMediaForApply(node));
+    const opaque = opaqueMovePlan(doc, node, null, node.parent);
     return { write() {
         doc.nodes.set(node.id, node);
         siblings.splice(position, 0, node);
         doc.children.set(node.parent, siblings);
         members.write();
+        opaque?.write();
     } };
 }
 function deleteNodePlan(doc: MutableDoc, id: NodeId): PreparedMutation {
@@ -126,10 +163,12 @@ function deleteNodePlan(doc: MutableDoc, id: NodeId): PreparedMutation {
     if (doc.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) members.change(doc.byPage, node.page, id, false);
     if (node.kind === 'connector') transition(members, doc.attachedTo, id, targets(node), []);
     transition(members, doc.mediaRefs, id, nodeMediaForApply(node), []);
+    const opaque = opaqueMovePlan(doc, node, node.parent, null);
     return { write() {
         siblings.splice(position, 1);
         if (siblings.length === 0) doc.children.delete(node.parent);
         members.write();
+        opaque?.write();
         // Incoming edges remain discoverable until CH-1 detaches them.
         doc.nodes.delete(id);
     } };
@@ -180,6 +219,7 @@ function setNodePlan(doc: MutableDoc, op: Extract<Op, { readonly t: 'set' }>, ex
         transition(members, doc.mediaRefs, node.id, nodeMediaForApply(node), nodeMediaForApply(after));
     }
     const oldParent = node.parent;
+    const opaque = changed && op.key === 'parent' ? opaqueMovePlan(doc, node, oldParent, op.value) : undefined;
     return { write() {
         if (oldSiblings) {
             oldSiblings.splice(oldPosition, 1);
@@ -192,6 +232,7 @@ function setNodePlan(doc: MutableDoc, op: Extract<Op, { readonly t: 'set' }>, ex
             doc.children.set(nextParent, nextSiblings);
         }
         members?.write();
+        opaque?.write();
     } };
 }
 

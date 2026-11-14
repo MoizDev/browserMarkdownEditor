@@ -9,6 +9,8 @@ export interface ShortcutGroup {
 
 export interface ShortcutsDialogProps {
     readonly label: string;
+    readonly locale: string;
+    readonly direction: 'ltr' | 'rtl';
     readonly closeLabel: string;
     readonly groups: readonly ShortcutGroup[];
     readonly returnFocus: HTMLElement | null;
@@ -16,7 +18,7 @@ export interface ShortcutsDialogProps {
 }
 
 /** Groups are derived by the caller from the board's dispatch keymap. */
-export function ShortcutsDialog({ label, closeLabel, groups, returnFocus, onClose }: ShortcutsDialogProps) {
+export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, returnFocus, onClose }: ShortcutsDialogProps) {
     const labelId = useId();
     const closeButton = useRef<HTMLButtonElement>(null);
     const content = useRef<HTMLDivElement>(null);
@@ -43,14 +45,16 @@ export function ShortcutsDialog({ label, closeLabel, groups, returnFocus, onClos
         window.addEventListener('keydown', onKey, true);
         return () => {
             window.removeEventListener('keydown', onKey, true);
-            if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+            if (returnFocus?.isConnected && getComputedStyle(returnFocus).visibility !== 'hidden') {
+                returnFocus.focus({ preventScroll: true });
+            }
         };
     }, [returnFocus]);
 
     return <div className="board-shortcuts-backdrop" onMouseDown={event => {
         if (event.target === event.currentTarget) onClose();
     }}>
-        <section className="board-shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby={labelId}>
+        <section className="board-shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby={labelId} lang={locale} dir={direction}>
             <header className="board-shortcuts-header"><h2 id={labelId}>{label}</h2>
                 <button type="button" ref={closeButton} className="board-chrome-tool" onClick={onClose}>{closeLabel}</button>
             </header>

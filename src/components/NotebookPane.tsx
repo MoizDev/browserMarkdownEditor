@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
 import type { Editor, TLAssetStore, TLShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
@@ -11,7 +11,10 @@ import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { setNotebookRenderData } from '../utils/notebookRenderCache';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, serializeDelay } from './canvasPen';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
+import { protectPageBackdrops } from './protectPageBackdrops';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -28,6 +31,7 @@ import {
 } from './canvasAgentOps';
 
 interface NotebookPaneProps {
+    isVisible: boolean;
     /** OpenTab.id from the host, never a path or a snapshot record id. */
     documentId?: string;
     /** The notebook's vault path. Every change is reported against it explicitly
@@ -103,7 +107,13 @@ export default function NotebookPane(props: NotebookPaneProps) {
     return canvasReadOnlyReason(sniff) ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyNotebookPane {...props} />;
 }
 
-function LegacyNotebookPane({ documentId, filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
+function LegacyNotebookPane({ documentId, filePath, content, onContentChange, onConfirm, isVisible }: NotebookPaneProps) {
+    const visibilityRef = useRef(isVisible);
+    const setEditorVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
+    useLayoutEffect(() => {
+        visibilityRef.current = isVisible;
+        setEditorVisibilityRef.current?.(isVisible);
+    }, [isVisible]);
     // Parsed once per FILE, not per render: `content` changes on every save
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).
@@ -122,6 +132,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
     useEffect(() => { onConfirmRef.current = onConfirm; }, [onConfirm]);
 
     const editorRef = useRef<Editor | null>(null);
+    const backdropGuardRef = useRef<ReturnType<typeof protectPageBackdrops> | null>(null);
     const uiRef = useRef<NotebookUiState | undefined>(parsed.ui);
     const serializeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Shape ids of the page backdrops — never exported, never counted as ink. */
@@ -137,8 +148,6 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
      *  Display only, so an exported PDF is still printed on white paper. */
     const inverted = useSyncExternalStore(subscribePdfInverted, getPdfInverted);
     useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
-    /** Where the strip opens: the current page when it is toggled on. */
-    const [thumbsStart, setThumbsStart] = useState(0);
     const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
     const controlsRef = useRef<PageControlsHandle | null>(null);
     const shownPageRef = useRef(0);
@@ -348,6 +357,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // Everything below runs BEFORE the listeners attach, so none of it marks
         // a just-opened file dirty.
         layOutPages(editor, paperRef.current);
+        const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.notebookPage !== undefined);
+        backdropGuardRef.current = backdropGuard;
 
         // A new notebook opens ready to write on, not ready to select.
         if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
@@ -378,22 +389,26 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
 
         let firstView = true;
         let viewTimer: ReturnType<typeof setTimeout> | null = null;
-        const stopViewWatch = watchPageView(editor, () => boxesRef.current, ({ top, offset, shown }) => {
-            viewRef.current = { top, offset };
-            // Memory every pass, storage once the view rests — pdfViewState's
-            // arrangement, for the same reason (App reads memory for a tab
-            // with no pane).
-            writeCanvasViewPos(filePath, {
-                kind: 'notebook', page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxesRef.current),
-            }, false);
-            if (viewTimer) clearTimeout(viewTimer);
-            viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
-            if (shown === shownPageRef.current && !firstView) return;
-            firstView = false;
-            shownPageRef.current = shown;
-            controlsRef.current?.setPage(shown);
-            thumbsRef.current?.setCurrentPage(shown);
-        }, TOP_GUTTER);
+        let stopViewWatch: (() => void) | undefined;
+        const startViewWatch = () => {
+            if (stopViewWatch) return;
+            stopViewWatch = watchPageView(editor, () => boxesRef.current, ({ top, offset, shown }) => {
+                viewRef.current = { top, offset };
+                // Memory every pass, storage once the view rests — pdfViewState's
+                // arrangement, for the same reason (App reads memory for a tab
+                // with no pane).
+                writeCanvasViewPos(filePath, {
+                    kind: 'notebook', page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxesRef.current),
+                }, false);
+                if (viewTimer) clearTimeout(viewTimer);
+                viewTimer = setTimeout(() => { viewTimer = null; flushCanvasViewPositions(); }, VIEW_PERSIST_DEBOUNCE_MS);
+                if (shown === shownPageRef.current && !firstView) return;
+                firstView = false;
+                shownPageRef.current = shown;
+                controlsRef.current?.setPage(shown);
+                thumbsRef.current?.setCurrentPage(shown);
+            }, TOP_GUTTER);
+        };
         // A reload unmounts nothing, so the last scroll would die in the
         // debounce without this.
         const onPageHide = () => {
@@ -480,6 +495,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             for (let i = pageAt(boxes, minY); i < boxes.length && boxes[i].y <= maxY; i++) touched.add(i);
         };
         const unlistenThumbs = editor.store.listen(({ changes }) => {
+            if (!visibilityRef.current) return;
             const records = [
                 ...Object.values(changes.added),
                 ...Object.values(changes.updated).flat(),
@@ -549,7 +565,18 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') armFirstChange(); }),
             editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
         ]);
-        const unlistenDoc = editor.store.listen(() => {
+        const unlistenDoc = editor.store.listen(({ changes }) => {
+            const pageChanged = [...Object.values(changes.added), ...Object.values(changes.removed)]
+                .some(record => record.typeName === 'shape' && record.meta?.notebookPage !== undefined);
+            if (pageChanged) {
+                const count = editor.getCurrentPageShapes().filter(shape => shape.meta?.notebookPage !== undefined).length;
+                if (count > 0 && count !== paperRef.current.pageCount) {
+                    const next = { ...paperRef.current, pageCount: count };
+                    paperRef.current = next;
+                    setPaper(next);
+                    layOutPages(editor, next);
+                }
+            }
             if (hasPendingEdits()) schedule();
         }, { source: 'user', scope: 'document' });
         // The pickers live in session scope alongside camera noise that must NOT
@@ -561,9 +588,29 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // Pen WIDTH is not a tldraw style, so changing it touches no store and
         // the listener above never sees it. Without this the width was only
         // remembered if you happened to write afterwards.
-        const unlistenPen = subscribePenScale(saveUiIfChanged);
+        const unlistenPen = subscribePenScale(() => { if (visibilityRef.current) saveUiIfChanged(); });
+
+        const setVisibility = (visible: boolean) => {
+            if (visible) {
+                if (!lockRef.current) lockRef.current = lockCameraToPages(editor, canvasWrapRef.current, boxesRef.current, TOP_GUTTER);
+                startViewWatch();
+                saveUiIfChanged();
+                return;
+            }
+            stopViewWatch?.();
+            stopViewWatch = undefined;
+            lockRef.current?.dispose();
+            lockRef.current = null;
+            if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; flushCanvasViewPositions(); }
+            if (thumbTimer) { clearTimeout(thumbTimer); thumbTimer = null; }
+            touched.clear();
+            flushPending();
+        };
+        setEditorVisibilityRef.current = setVisibility;
+        setVisibility(visibilityRef.current);
 
         return () => {
+            setEditorVisibilityRef.current = null;
             unregisterView();
             stopPending.forEach(stop => stop());
             window.removeEventListener('pagehide', onPageHide);
@@ -572,10 +619,12 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             disposeInvert();
+            backdropGuard.dispose();
+            backdropGuardRef.current = null;
             unlistenDoc();
             unlistenSession();
             unlistenPen();
-            stopViewWatch();
+            stopViewWatch?.();
             unlistenThumbs();
             if (thumbTimer) clearTimeout(thumbTimer);
             lockRef.current?.dispose();
@@ -689,9 +738,14 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
                 danger: true,
             });
             if (!ok) return;
-            // A user deletion, not a remote merge: this SHOULD dirty the file.
-            editor.deleteShapes(doomed.map(s => s.id));
         }
+
+        // The backdrop and ink must share a history step, separate from the
+        // preceding stroke; otherwise Undo loses that stroke (WB-D2).
+        editor.markHistoryStoppingPoint('delete notebook page');
+        backdropGuardRef.current?.allow(() => editor.run(() => {
+            editor.deleteShapes([...doomed.map(s => s.id), pageShapeId(current.pageCount - 1)]);
+        }, { ignoreShapeLock: true }));
 
         const next = { ...current, pageCount: current.pageCount - 1 };
         paperRef.current = next;
@@ -746,7 +800,6 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
     }, []);
 
     const toggleThumbs = useCallback(() => {
-        setThumbsStart(shownPageRef.current);
         setThumbsOpen(open => !open);
     }, []);
 
@@ -765,14 +818,14 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
 
     return (
         <div className={`drawing-pane notebook-pane${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} data-legacy-board="">
-            {thumbsOpen && (
+            {thumbsOpen && isVisible && (
                 <PdfThumbnails
                     key={paperLook}
                     ref={thumbsRef}
                     sizes={thumbSizes}
                     renderThumbnail={renderThumbnail}
                     onSelect={jumpToPage}
-                    initialPage={thumbsStart}
+                    initialPage={shownPageRef.current}
                 />
             )}
             <div className="paged-canvas" ref={canvasWrapRef}>
@@ -786,6 +839,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
                         options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                         colorScheme={NOTEBOOK_COLOR_SCHEME}
+                        user={PAPER_USER}
                         licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                     />
                 </NotebookToolbarContext.Provider>
@@ -826,7 +880,7 @@ function NotebookTopPanel() {
     return state ? <NotebookToolbar {...state} /> : null;
 }
 
-const NOTEBOOK_COMPONENTS = { ...CANVAS_COMPONENTS, TopPanel: NotebookTopPanel };
+const NOTEBOOK_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu, TopPanel: NotebookTopPanel };
 
 function NotebookToolbar({ paper, onChange, onRemovePage }: {
     paper: NotebookPaper;

@@ -16,11 +16,22 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 (pristine) and `tldraw-snapshot.json` (editable strokes). It opens in any viewer *and* reopens here
 as live tldraw shapes.
 
-- **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` uses the build worker's
-  read-only attachment inventory, not the classic renderer. Only a validated `plain`/`annotated`
-  role authorizes its exact pristine source object for saving. Missing, unreadable, ambiguous or
-  unsupported attachments stay tagged read-only; they never become plain PDFs on failure. The
-  outer pages remain readable. The first save adds the attachments; old sibling files still work.
+- **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
+  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a read-only union inventory of every
+  attachment name tree; never the classic renderer), never from one attachment's presence:
+  `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
+  are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
+  `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
+  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. A role-passing
+  snapshot is loaded into an isolated legacy store before mounting; a library rejection or render
+  error revokes its exact source and replaces the editor with a read-only notice. An `original.pdf`
+  alone does NOT make a file ours. A failed or partial read never falls back to `plain`; the outer
+  pages stay readable. The first save of a `plain` PDF adds the attachments, and files from the old
+  spawn-a-sibling behaviour still work. Only `plain` may be rotated (`canRotatePdfRole`).
+- **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
+  `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
+  again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.
+  A refused save returns `skipped` (the revision stays dirty); `failed` is only for IO that threw.
 - **The role read is lazy** (`needsSource`, set on first switch to edit and sticky): every PDF can be
   annotated now, so gating it on the filename is gone, and reading every PDF on open just to find out
   would be an N-MB allocation and a disk read for documents only ever read.

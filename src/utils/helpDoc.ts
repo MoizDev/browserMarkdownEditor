@@ -28,6 +28,8 @@ Switching vaults puts away the notes you had open (saving anything unsaved first
 
 Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs and your settings. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after a few more visits, or installing this app from the address bar. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
 
+If another window resets this app’s local settings, a separate browser-local backup restores your settings, open-tab sessions and saved reading positions automatically. A status-line message says **Settings restored after another tab reset them**; a reset discovered while opening the app may reload it once before your workspace appears. This backup does not survive clearing all of the site’s browser data.
+
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
 
@@ -41,6 +43,10 @@ Along the top of the sidebar sit two tabs — **Files** (the folder) shows the f
 Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
+
+In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; changes apply when you next open a pane. Only engines included in this build are offered. Turning developer settings off restores the normal engine choices without deleting your saved selections.
+
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -258,7 +264,7 @@ With more than one pane open, it searches the pane you last clicked in. While yo
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
 
 ### Auto-Save
-You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
+You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`. If you reload or close the window while a change is still waiting to be saved, the browser asks whether you want to leave, in its own words; choose to stay and the save finishes as usual. Switching away from the window also saves straight away, as far as the browser lets it: that is a best effort, not a guarantee against a crash.
 
 ### When Files Change Outside the App
 Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
@@ -332,9 +338,11 @@ The download icon in the top bar writes a PDF beside the notebook — \`Assignme
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open.
 
-The notebook stays the original you keep writing in. Exporting again overwrites
-the same PDF rather than leaving a pile of copies, and asks first if a PDF of
-that name is there that this notebook did not put there.
+The notebook stays the original you keep writing in. Exporting again uses the
+same PDF name rather than leaving a pile of copies. An existing PDF is kept in
+the folder's Trash before replacement. The app asks first unless it is this
+notebook's unchanged last export; if the target changes during export, export
+again to review it.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone
@@ -369,6 +377,12 @@ Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
 switch tabs, close the file or reload the app.
 
+A drawing or notebook this version cannot read safely — an unreadable file, one
+written in a newer format, or one that is not the kind its name says — **opens
+read-only**: neither drawing on it nor Save can overwrite the original file. An
+empty file is still a valid new board, and every supported drawing and notebook
+opens and saves as usual.
+
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 
@@ -395,6 +409,10 @@ The pane header’s **Word emphasis** toggle paints supported glyphs directly on
 
 The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
+If the PDF reader's code cannot load, its column offers **Retry**. This retries
+the reader, not your files. If the browser retains the loading failure, reload
+the app to try again.
+
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.
 - \`Escape\` or **×** closes the bar and leaves the current match selected, ready for \`Cmd + C\` / \`Ctrl + C\`. Switching tabs keeps each pane's query and results.
@@ -402,11 +420,6 @@ In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, incl
 
 A PDF opens in a reader: scroll it, select its text, search every page with the
 app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a page with the box at the bottom.
-
-If the PDF reader's code cannot load, its column offers **Retry**. This retries
-the reader, not your files. If the browser retains the loading failure, reload
-the app to try again.
-
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
 beside the page box opens a **strip of page thumbnails** down the left; click one
 to go to that page. The button next to it **inverts the pages** so they are easy on the
@@ -436,7 +449,9 @@ back where it started.
 
 A PDF you have already written on is left alone, with a note saying so. Your
 marks are drawn against the pages as they are, and turning the paper would move
-every one of them — so straighten a scan before you start annotating it.
+every one of them — so straighten a scan before you start annotating it. Only a
+plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
+ones this app can read, is left alone too, and its note says what to do instead.
 
 \`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
 **writing on it** — the same toggle every other file has. Draw on it as you would
@@ -459,12 +474,23 @@ rather than being stuck with it. It is also why annotating never builds up:
 every save redraws from that pristine copy, so the marks never thicken or
 double no matter how many times you edit.
 
+**A PDF that cannot be written on safely stays read-only.** Before the pen opens,
+the app checks what the file actually carries, not its name. A PDF holding an
+unrelated \`original.pdf\`, attachments that cannot be read or that contradict each
+other, or annotations written by a newer version stays in the reader with a note
+saying it is read-only; drawing and saving change nothing in it. You can still
+read, select, copy and find in it, and open its Text. Choose **Retry** if an
+attachment could not be read; otherwise open it in a version of the app that wrote
+it, or recover the annotations first. Never delete attachments from your only copy
+just to make the note go away.
+
 Everything around a page — the toolbars, the pen panel, the space the pages sit
 on — follows the app's theme, so a notebook or a PDF is dark at night like the
 rest of the app. The **pages themselves stay white** in either theme, because
 that is paper: it is what the exported PDF prints on, and ink that changed colour
-with the theme would come out invisible in the file. A drawing has no pages, so
-it is dark all over.
+with the theme would come out invisible in the file. Notebook and PDF ink use a
+light ink palette and do not offer the board's Theme menu or its theme shortcut;
+a drawing has its own Theme menu and no paper.
 
 ---
 
@@ -562,6 +588,8 @@ An address written *inside* a label — \`[read this https://example.com now](ht
 
 ### Wiki Links
 \`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
+
+**Neural Brain** and **Linked mentions** follow these note links only: a web link creates no relationship between notes, even when its address ends in \`.md\`. When two notes share a name, a note link chooses the first of them in the vault's own order, whatever order the sidebar is sorted in.
 
 ### Lists
 Unordered Lists:
@@ -688,6 +716,8 @@ It can also look things up on the web.
 
 ### What the agent can change
 It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
+
+Its searches use JavaScript regular-expression syntax. A slow pattern never freezes the editor: after five seconds the search answers anyway, keeps the matches it had found, and says plainly that the result is incomplete.
 
 **It has the same access to your computer as in your terminal.** It can run programs and read and change files anywhere your account can, and it does so without asking first, because nobody could answer a permission prompt in the panel. It is told to make every change to the vault through this app, which is what puts its edits in your editor live and lets \`Cmd + Z\` undo them.
 

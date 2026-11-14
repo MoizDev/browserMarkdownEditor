@@ -23,6 +23,7 @@
 // this is a display-only trick.
 
 import type { Editor } from 'tldraw';
+import { writeStoredValue } from './storage';
 
 /** Remembers the last width used anywhere, so a file that has never been drawn
  *  in opens at the width you were last working at rather than at the default. */
@@ -80,11 +81,7 @@ export function setPenScale(editor: Editor, next: number): void {
     const clamped = clampPenScale(next);
     if (clamped === scales.get(editor)) return;
     scales.set(editor, clamped);
-    try {
-        localStorage.setItem(LAST_USED_KEY, String(clamped));
-    } catch (err) {
-        console.warn('Could not remember the pen width for new files:', err);
-    }
+    writeStoredValue(LAST_USED_KEY, String(clamped));
     for (const listener of listeners) listener();
 }
 

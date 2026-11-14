@@ -49,7 +49,9 @@ import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
-import { readRecord, flushRecord, scopedKey } from '../utils/storage';
+import { ASSETS_DIR } from '../utils/assets';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
+import { readRecord, flushRecord, scopedKey, removeStoredValue } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
@@ -108,11 +110,7 @@ let legacyScrollPositionsDropped = false;
 function scrollAnchorRecord(): Record<string, unknown> {
     if (!legacyScrollPositionsDropped) {
         legacyScrollPositionsDropped = true;
-        try {
-            localStorage.removeItem(LEGACY_SCROLL_POSITIONS_KEY);
-        } catch {
-            // Storage blocked outright: nothing reads the old key anyway.
-        }
+        removeStoredValue(LEGACY_SCROLL_POSITIONS_KEY);
     }
     return readRecord<unknown>(SCROLL_ANCHORS_KEY);
 }
@@ -953,7 +951,7 @@ function DocumentPane({
                     // marked dirty, it would be saved straight back over the
                     // file it came from (editor/externalReload.ts).
                     const fromDisk = update.transactions.some(tr => tr.annotation(externalReload));
-                    onContentChangeRef.current(path, update.state.doc.toString(), fromDisk ? { fromDisk } : undefined);
+                    onContentChangeRef.current(path, docString(update.state.doc), fromDisk ? { fromDisk } : undefined);
                     // Keyed by path, like everything else baked in here.
                     mapRememberedScroll(path, update.changes);
                 }
@@ -998,6 +996,7 @@ function DocumentPane({
 
                             // Into the .Assets folder beside THIS pane's note.
                             const parentHandle = fileRef.current.parentHandle || null;
+                            const assetFolder = joinVaultPath(parentVaultPath(fileRef.current.path), ASSETS_DIR);
                             saveAsset(filename, blob!, parentHandle).then(() => {
                                 // Insert the markdown at cursor
                                 const insertText = `![[${filename}]]\n`;
@@ -1011,7 +1010,7 @@ function DocumentPane({
                                 }
                             }).catch(err => {
                                 console.error('Failed to save pasted image:', err);
-                                alert('Failed to save image to .Assets folder.');
+                                onNotify(`Could not save the pasted image to “${assetFolder}”. Check that this is a writable folder, then try again.`);
                             });
 
                             return true; // We handled the paste

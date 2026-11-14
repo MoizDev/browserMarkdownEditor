@@ -423,7 +423,7 @@ raising the setting later still has history to show.
   No picker: the handle is already in hand, so one would only ask the user to find the folder they
   just right-clicked. It records the vault, so the way back is the vault menu. App does no flushing
   or tab-closing of its own — setting `rootHandle` is the switch, and the vault-switch effect already
-  flushes every open tab before emptying the workspace. It **holds an in-flight ref** covering the
+  drains and saves every open tab before the provider commits the new root, then empties the workspace. It **holds an in-flight ref** covering the
   switch AND its error dialog, so a second right-click cannot stack a second question.
 - **ONE vault switch at a time, across every raiser — `switchInFlightRef`, in the provider.**
   `refreshTree` is not serialized, so two switches at once are two vault walks racing and the
@@ -442,8 +442,8 @@ raising the setting later still has history to show.
 - **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the
   walk, `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree
   standing on failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree`
-  first, and only then do `set(IDB_KEY)` → `setRootHandle` → `setFileTree` with no await between the
-  setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
+  first, then save the handle and await App's registered pre-root-change drain before committing
+  `setRootHandle` → `setFileTree` with no await between the setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
   vaults. `setRootHandle` first and `await refreshTree` after left the app split for the WHOLE walk —
   the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows, nothing
   covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.

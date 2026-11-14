@@ -30,7 +30,12 @@ export interface MediaIngestHost {
     select(ids: readonly NodeId[]): void;
     noticeRefused(files: readonly { readonly name: string; readonly reason: string }[]): void;
 }
-export interface MediaSource { readonly blob: Blob; readonly name: string }
+export interface MediaSource {
+    readonly blob: Blob;
+    readonly name: string;
+    /** Accepted only for our private PNG clipboard type, after its pHYs is checked. */
+    readonly pixelsPerWorldUnit?: number;
+}
 export interface MediaPlacement {
     readonly parent: ParentId;
     readonly page: number;

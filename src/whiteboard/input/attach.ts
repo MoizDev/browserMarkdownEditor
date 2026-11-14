@@ -1,10 +1,11 @@
-import type { CameraController, Point } from '../../platform/render/camera'
+import { surfaceToWorld, type CameraController, type Point } from '../../platform/render/camera'
 import type { BoardSession } from '../session/BoardSession'
 import { TOOLS } from '../model/styles'
 import type { Op } from '../change/ops'
 import { handTool, type HandContext } from './basicTools'
 import { ToolState, type ToolStateSnapshot } from './gesture'
 import { installKeyboard } from './keyboard'
+import { createKeyboardCursor } from './keyboardCursor'
 import { LiveInk, WetInkHandover } from './liveInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
@@ -30,6 +31,7 @@ export interface BoardInputView {
   readonly token: InputToken
   readonly mappings: MappingHistory
   readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void }
+  readonly bindFlush?: (flush: () => void) => Detach
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
   readonly predictionMapping: () => PredictionMapping
@@ -59,6 +61,7 @@ export interface BoardInputServices {
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
+  drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
   continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach
@@ -126,16 +129,17 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
   }
+  const claim = (): boolean => {
+    if (gestureOwner.has(session) || session.isGestureActive) return false
+    gestureOwner.set(session, owner)
+    return true
+  }
+  const releaseClaim = (): void => { if (gestureOwner.get(session) === owner) gestureOwner.delete(session) }
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: services.pointerChanged,
     hover: services.hover,
-    claim() {
-      if (gestureOwner.has(session) || session.isGestureActive) return false
-      gestureOwner.set(session, owner)
-      return true
-    },
-    releaseClaim() { if (gestureOwner.get(session) === owner) gestureOwner.delete(session) },
+    claim, releaseClaim,
     resolve(sample, modifiers, event) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
       start = services.tools.getSnapshot()
@@ -260,20 +264,69 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     owns: event => current() && services.ownsWheel(event),
     changed: () => { if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }; services.cameraChanged() },
   })
+  let keyboardStart: ToolStateSnapshot | null = null
+  const cursor = createKeyboardCursor({
+    token: view.token, current: () => current(),
+    toWorld: point => surfaceToWorld(point, view.camera.camera),
+    ensureVisible(point) {
+      if (services.keyboardCursorVisible) return services.keyboardCursorVisible(point)
+      const viewport = view.camera.viewport
+      const x = Math.max(0, Math.min(viewport.width, point.x)), y = Math.max(0, Math.min(viewport.height, point.y))
+      if (point.x !== x || point.y !== y) { view.camera.panBy({ x: point.x - x, y: point.y - y }); services.cameraChanged() }
+      return { x, y }
+    },
+    show: (point, active) => view.a11y.keyboardCursor?.(point, active),
+    begin(sample, modifiers) {
+      if (!current() || !editable() || !claim()) return false
+      keyboardStart = services.tools.getSnapshot()
+      try {
+        const choice = keyboardStart.active
+        const route = choice.id === 'pen' || choice.id === 'highlighter'
+          ? { tool: ink(choice.id), context: undefined }
+          : services.resolveKeyboardTool?.(choice, sample, modifiers)
+        if (!route || !router.begin(view.token, route.tool, sample, modifiers, route.context)) { keyboardStart = null; releaseClaim(); return false }
+        return true
+      } catch (error) { keyboardStart = null; releaseClaim(); services.error(error); return false }
+    },
+    update: (sample, modifiers) => router.update(view.token, sample.pointerId, [sample], modifiers),
+    finish() {
+      try { router.finish(view.token, -1, 'up'); if (keyboardStart) services.tools.complete(keyboardStart) }
+      finally { keyboardStart = null; releaseClaim() }
+    },
+    escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },
+    undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
+  })
+  const flush = () => {
+    services.cancelPendingGestures()
+    if (cursor.active) cursor.escape()
+    pointer.interrupt('flush')
+  }
+  const stopFlush = view.bindFlush?.(flush)
+  const stopCursor = view.a11y.bindKeyboardCursor?.(() => {
+    if (!current()) return
+    const viewport = view.camera.viewport
+    cursor.activate(services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 })
+    view.surface.focus()
+  })
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
+    cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { spaceHeld = false; zoomHeld = false; pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {
         const cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled) return true
       }
-      if (id === 'undo' && pointer.interrupt('undo')) return true
-      if (id === 'undo' && editable()) { services.history.undo(); return true }
+      if (id === 'undo') {
+        const cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('undo') || cancelled) return true
+        if (editable()) { services.history.undo(); return true }
+      }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
+      if (id.startsWith('style.')) flush()
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
       if (id === 'pan.hold') {
         spaceHeld = true
@@ -307,6 +360,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
       services.cancelPendingGestures()
+      if (cursor.active) cursor.escape()
       pointer.interrupt('flush')
     }
     if (current() && editable() && !syncingSessions.has(session)) {
@@ -339,7 +393,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   updateMirror()
   const detach = () => {
     if (!live) return
-    services.cancelPendingGestures()
+    flush()
+    stopFlush?.(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('auxclick', auxclick)

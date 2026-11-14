@@ -1,7 +1,7 @@
 import type { PageDisplayList, Rect } from '../../platform/types'
 import type { PaintFrame } from '../render/paintStream'
 import { paintFrameDisplayList } from './displayList'
-import type { ExportImage } from './displayList'
+import type { ExportImage, ExportText } from './displayList'
 
 /** Structural writer boundary: the lazy host passes the PDF domain's buildDisplayPdf. */
 export type DisplayPdfWriter = (input: {
@@ -20,7 +20,7 @@ export interface PdfCapturePage {
 /** Project each pinned world rectangle into its physical page; PDF writer clips at page bounds. */
 export async function capturePdf(
   pages: readonly PdfCapturePage[], scale: number, images: ExportImage, writer: DisplayPdfWriter,
-  signal: AbortSignal, notebookSource?: { path: string },
+  signal: AbortSignal, notebookSource?: { path: string }, text?: ExportText,
 ): Promise<Uint8Array> {
   if (!pages.length || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid PDF capture')
   const output: Array<{ width: number; height: number; displayList: PageDisplayList; paper?: PageDisplayList }> = []
@@ -33,7 +33,7 @@ export async function capturePdf(
         || a.bytesGeneration !== b.bytesGeneration || a.session !== b.session) throw new Error('PDF pages must share one pinned revision')
     if (![world.x, world.y, world.width, world.height].every(Number.isFinite) || world.width <= 0 || world.height <= 0) throw new RangeError('Invalid PDF page extent')
     if (paper && paper.page !== page) throw new RangeError('Paper page does not match output page')
-    const list = await paintFrameDisplayList(frame, page, scale, images, signal)
+    const list = await paintFrameDisplayList(frame, page, scale, images, signal, text)
     signal.throwIfAborted()
     output.push({ width: world.width, height: world.height, paper,
       displayList: { page, items: [{ kind: 'group', transform: [1, 0, 0, 1, -world.x, -world.y], items: list.items }] } })

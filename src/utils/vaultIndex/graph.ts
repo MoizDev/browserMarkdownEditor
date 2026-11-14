@@ -28,8 +28,18 @@ export async function assembleGraph(session: IndexSession, graphGen: number, tre
         if ((++work & 127) === 0 && performance.now() - lastYield >= 8) { await slice(); lastYield = performance.now(); }
         const facts = records.get(paths[source])?.facts;
         if (!facts) continue;
-        for (const raw of [...facts.wikilinks, ...facts.mdLinks]) {
+        const targets = [...facts.wikilinks, ...facts.mdLinks];
+        const sourceDepth = paths[source].split('/').length - 1;
+        for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+            const raw = targets[targetIndex];
             if ((++work & 127) === 0 && performance.now() - lastYield >= 8) { await slice(); lastYield = performance.now(); }
+            // Markdown parents are relative to the source folder. Wikilinks
+            // retain their existing basename-only navigation policy.
+            if (targetIndex >= facts.wikilinks.length && !raw.startsWith('/')) {
+                let parents = 0;
+                while (raw.slice(parents * 3, parents * 3 + 3) === '../') parents++;
+                if (parents > sourceDepth) continue;
+            }
             const name = baseName(raw);
             const key = name.toLowerCase();
             if (!key) continue;

@@ -1,6 +1,6 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import { ApplyRefused } from '../change/apply';
-import type { TxBuilder } from '../change/ops';
+import { runAgentBatch } from '../change/agentBatch';
+import type { CommandBuilder } from '../change/ops';
 import type { NodeId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import { AgentApplyCancelled, AgentApplyReadOnly, AgentOpRefused } from './errors';
@@ -14,7 +14,6 @@ export interface AgentApplyResult {
     readonly deleted: string[];
     readonly errors: string[];
 }
-
 export interface AgentOpResult {
     readonly created?: NodeId;
     readonly updated?: readonly NodeId[];
@@ -23,27 +22,22 @@ export interface AgentOpResult {
     readonly problems?: readonly string[];
 }
 export interface AgentOpContext {
-    readonly builder: TxBuilder;
+    readonly builder: CommandBuilder;
     /** Resolves only successful earlier creations, never the current/future op. */
     resolve(reference: string): NodeId;
 }
 export interface AgentApplyHost {
     readonly session: BoardSession;
-    /** The App-owned document/session serial still identifies this session. */
     isCurrent(): boolean;
-    /** Called after waiting, immediately before opening a transaction. */
     readOnlyReason(): string | null;
-    /** Serialize with gestures and other agent edits; reject if signal is aborted. */
-    enqueue<T>(signal: AbortSignal, task: () => T): Promise<T>;
-    /** Synchronously stage one op. Refusals must use AgentOpRefused or ApplyRefused. */
     stage(op: CanvasOp, context: AgentOpContext): AgentOpResult;
 }
 
-function lookup(session: BoardSession, aliases: ReadonlyMap<number, NodeId>, reference: string): NodeId {
+function lookup(session: BoardSession, prior: ReadonlyMap<number, AgentOpResult>, reference: string): NodeId {
     if (reference.startsWith('$')) {
         const match = /^\$(\d+)$/u.exec(reference);
         const index = match ? Number(match[1]) : NaN;
-        const id = Number.isSafeInteger(index) && index > 0 ? aliases.get(index) : undefined;
+        const id = Number.isSafeInteger(index) && index > 0 ? prior.get(index)?.created : undefined;
         if (!id) throw new AgentOpRefused(`${reference} created no shape`);
         return id;
     }
@@ -56,47 +50,31 @@ function lookup(session: BoardSession, aliases: ReadonlyMap<number, NodeId>, ref
     throw new AgentOpRefused(`no shape ${reference}`);
 }
 
-// F-AGENT-002/003/004/005/012/013: only a single synchronous builder is ever
-// open, after gesture serialization. Savepoints isolate expected per-op errors;
-// abort covers internal errors and commit refusal without publishing partial work.
+// F-AGENT-002/003/004/005/012/013: the shared runner owns the single builder,
+// op savepoints and receipt. No async work occurs between begin and commit.
 export async function applyAgentOperations(host: AgentApplyHost, ops: readonly CanvasOp[], signal: AbortSignal): Promise<AgentApplyResult> {
     if (signal.aborted) throw new AgentApplyCancelled();
     if (ops.length < 1 || ops.length > 200) throw new RangeError('Expected 1 to 200 canvas operations');
-    return host.enqueue(signal, () => {
+    return host.session.enqueueAfterGesture(signal, () => {
         if (signal.aborted || !host.isCurrent()) throw new AgentApplyCancelled();
         const reason = host.readOnlyReason();
-        if (reason !== null) throw new AgentApplyReadOnly(reason);
-        const builder = host.session.begin('agent', 'Agent canvas edit');
-        const aliases = new Map<number, NodeId>();
-        const result: AgentApplyResult = { created: [], updated: [], deleted: [], errors: [] };
+        if (reason !== null || host.session.isReadOnly) throw new AgentApplyReadOnly(reason ?? 'Board is read-only');
+        const batch = runAgentBatch(host.session, ops, (op, context) => {
+            const validated = validateAgentOp(op);
+            const staged = host.stage(validated.op, { builder: context.builder,
+                resolve: reference => lookup(host.session, context.prior, reference) });
+            return { value: staged, notes: [...validated.notes, ...(staged.notes ?? [])] };
+        });
+        if (!batch.ok) throw batch.error;
         try {
-            for (let i = 0; i < ops.length; i++) {
-                const point = builder.savepoint();
-                try {
-                    const validated = validateAgentOp(ops[i]);
-                    const staged = host.stage(validated.op, { builder, resolve: reference => lookup(host.session, aliases, reference) });
-                    if (staged.created !== undefined) {
-                        aliases.set(i + 1, staged.created);
-                        result.created.push(staged.created);
-                    }
-                    if (staged.updated) result.updated.push(...staged.updated);
-                    if (staged.deleted) result.deleted.push(...staged.deleted);
-                    for (const note of [...validated.notes, ...(staged.notes ?? [])]) result.errors.push(`op ${i + 1}: note: ${note}`);
-                    for (const problem of staged.problems ?? []) result.errors.push(`op ${i + 1}: ${problem}`);
-                } catch (error) {
-                    if (!(error instanceof AgentOpRefused) && !(error instanceof ApplyRefused)) throw error;
-                    builder.rollbackTo(point);
-                    result.errors.push(`op ${i + 1}: ${error.message}`);
-                }
+            const result: AgentApplyResult = { created: [], updated: [], deleted: [], errors: [...batch.errors] };
+            for (const [number, staged] of batch.accepted) {
+                if (staged.created !== undefined) result.created.push(staged.created);
+                if (staged.updated) result.updated.push(...staged.updated);
+                if (staged.deleted) result.deleted.push(...staged.deleted);
+                for (const problem of staged.problems ?? []) result.errors.push(`op ${number}: ${problem}`);
             }
-            const applied = builder.commit();
-            applied.release();
             return result;
-        } catch (error) {
-            // commit() can close the builder before throwing; abort is harmless only
-            // while open, so a close failure must not obscure the original failure.
-            try { builder.abort(); } catch { /* original failure wins */ }
-            throw error;
-        }
+        } finally { batch.applied.release(); }
     });
 }

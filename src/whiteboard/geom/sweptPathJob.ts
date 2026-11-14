@@ -13,7 +13,7 @@ type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
 type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; radius: Interval }>;
 const PENDING: SweptPathResult = Object.freeze({ status: 'pending' });
 function square(value: number): Interval { return multiply(interval(value), interval(value)); }
-function upperDistance(a: BoundsPoint, b: BoundsPoint): number {
+export function upperIntervalPairDistance(a: BoundsPoint, b: BoundsPoint): number {
     const dx = subtract(a.x, b.x), dy = subtract(a.y, b.y);
     const x = Math.max(Math.abs(dx.lo), Math.abs(dx.hi)), y = Math.max(Math.abs(dy.lo), Math.abs(dy.hi));
     const sum = add(square(x), square(y)); return sqrtInterval({ lo: Math.max(0, sum.lo), hi: sum.hi }).hi;
@@ -23,7 +23,7 @@ function hull(points: CertifiedCurve['points']): readonly [number, number, numbe
     for (const p of points) { x0 = Math.min(x0, p.x.lo); y0 = Math.min(y0, p.y.lo); x1 = Math.max(x1, p.x.hi); y1 = Math.max(y1, p.y.hi); }
     return [x0, y0, x1, y1];
 }
-function lowerDistance(a: CertifiedCurve['points'], b: CertifiedCurve['points']): number {
+export function lowerCurvePairDistance(a: CertifiedCurve['points'], b: CertifiedCurve['points']): number {
     const x = hull(a), y = hull(b);
     const dx = x[2] < y[0] ? Math.max(0, subtract(interval(y[0]), interval(x[2])).lo)
         : y[2] < x[0] ? Math.max(0, subtract(interval(x[0]), interval(y[2])).lo) : 0;
@@ -78,12 +78,12 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                 }
                 const pair = stack.pop();
                 if (pair) {
-                    const lower = lowerDistance(pair.path.points, pair.sweep.points);
+                    const lower = lowerCurvePairDistance(pair.path.points, pair.sweep.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Swept path distance overflows' });
                     if (lower > pair.radius.hi) continue;
                     const a = pair.path.points, b = pair.sweep.points;
-                    const upper = Math.min(upperDistance(a[0], b[0]), upperDistance(a[0], b[b.length - 1]),
-                        upperDistance(a[a.length - 1], b[0]), upperDistance(a[a.length - 1], b[b.length - 1]));
+                    const upper = Math.min(upperIntervalPairDistance(a[0], b[0]), upperIntervalPairDistance(a[0], b[b.length - 1]),
+                        upperIntervalPairDistance(a[a.length - 1], b[0]), upperIntervalPairDistance(a[a.length - 1], b[b.length - 1]));
                     if (upper <= pair.radius.lo) return finish({ status: 'hit' });
                     if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { curveUncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });

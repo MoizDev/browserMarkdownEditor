@@ -10,9 +10,9 @@ import type { PointQuery } from './types';
 export interface PointClipContour { readonly outline: readonly PathOp[]; readonly localToSurface: Affine }
 export type ClippedPointResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 type Plane = Readonly<{ line: ExactLine; sign: -1 | 1 }>;
-type Region = readonly Plane[];
+export type CertifiedClipRegion = readonly Plane[];
 const PENDING: ClippedPointResult = Object.freeze({ status: 'pending' });
-function rectangle(clip: PointClipContour): Region {
+export function preparePointClip(clip: PointClipContour): CertifiedClipRegion {
     const vertices: ExactPoint[] = []; let closed = false;
     for (const op of clip.outline) {
         if (op.op === 'Z') { closed = true; continue; }
@@ -27,18 +27,18 @@ function rectangle(clip: PointClipContour): Region {
     }
     return edges.map(line => ({ line, sign: winding }));
 }
-type Box = readonly [number, number, number, number];
-function boxOf(points: CertifiedCurve['points']): Box {
+export type CertifiedClipBox = readonly [number, number, number, number];
+export function certifiedCurveBox(points: CertifiedCurve['points']): CertifiedClipBox {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const point of points) { x0 = Math.min(x0, point.x.lo); y0 = Math.min(y0, point.y.lo); x1 = Math.max(x1, point.x.hi); y1 = Math.max(y1, point.y.hi); }
     return [x0, y0, x1, y1];
 }
-function expand(box: Box, radius: number): Box {
+export function expandCertifiedClipBox(box: CertifiedClipBox, radius: number): CertifiedClipBox {
     return [subtract(interval(box[0]), interval(radius)).lo, subtract(interval(box[1]), interval(radius)).lo,
         add(interval(box[2]), interval(radius)).hi, add(interval(box[3]), interval(radius)).hi];
 }
 /** inside means the complete interval box is inside; outside means one exact separating plane. */
-function classify(box: Box, region: Region): 'inside' | 'outside' | 'overlap' {
+export function classifyCertifiedClipBox(box: CertifiedClipBox, region: CertifiedClipRegion): 'inside' | 'outside' | 'overlap' {
     if (!box.every(Number.isFinite)) throw new RangeError('Point clipping box overflows');
     const corners = [{ x: box[0], y: box[1] }, { x: box[2], y: box[1] }, { x: box[2], y: box[3] }, { x: box[0], y: box[3] }].map(exactPoint);
     let inside = true;
@@ -53,7 +53,7 @@ function classify(box: Box, region: Region): 'inside' | 'outside' | 'overlap' {
     }
     return inside ? 'inside' : 'overlap';
 }
-function pointBox(point: BoundsPoint): Box { return [point.x.lo, point.y.lo, point.x.hi, point.y.hi]; }
+export function certifiedIntervalPointBox(point: BoundsPoint): CertifiedClipBox { return [point.x.lo, point.y.lo, point.x.hi, point.y.hi]; }
 
 /** Certifies a point hit against actual stroked curves after convex frame clips
  * and convex label exclusions. Unresolved boundary cases remain uncertain. */
@@ -82,10 +82,10 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
     const scale = Number.isFinite(squared.hi) ? sqrtInterval({ lo: Math.max(0, squared.lo), hi: squared.hi }) : interval(0);
     const radius = multiply(interval(options.strokeRadiusLocal), scale), threshold = add(radius, interval(margin));
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped stroke radius overflows' };
-    const frames = options.frames.map(rectangle), exclusions = options.exclusions.map(rectangle);
-    const allowed = (box: Box) => frames.every(region => classify(box, region) === 'inside') && exclusions.every(region => classify(box, region) === 'outside');
-    const invisible = (box: Box) => frames.some(region => classify(box, region) === 'outside') || exclusions.some(region => classify(box, region) === 'inside');
-    const queryBox: Box = [query.point.x, query.point.y, query.point.x, query.point.y];
+    const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
+    const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside') && exclusions.every(region => classifyCertifiedClipBox(box, region) === 'outside');
+    const invisible = (box: CertifiedClipBox) => frames.some(region => classifyCertifiedClipBox(box, region) === 'outside') || exclusions.some(region => classifyCertifiedClipBox(box, region) === 'inside');
+    const queryBox: CertifiedClipBox = [query.point.x, query.point.y, query.point.x, query.point.y];
     const queryAllowed = allowed(queryBox);
     const mapped = (point: Vec2): BoundsPoint => exactPointIntervals(exactAffinePoint(query.localToSurface, point));
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined;
@@ -103,12 +103,12 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                     const lower = lowerPointHullDistance(query.point, curve.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Clipped point distance overflows' });
                     if (lower > threshold.hi) continue;
-                    const bounds = expand(boxOf(curve.points), Math.max(0, radius.hi));
+                    const bounds = expandCertifiedClipBox(certifiedCurveBox(curve.points), Math.max(0, radius.hi));
                     if (invisible(bounds)) continue;
                     for (const endpoint of [curve.points[0], curve.points[curve.points.length - 1]]) {
                         const distance = upperPointIntervalDistance(query.point, endpoint);
                         if (queryAllowed && distance <= radius.lo) return finish({ status: 'hit' });
-                        if (distance <= margin && allowed(pointBox(endpoint))) return finish({ status: 'hit' });
+                        if (distance <= margin && allowed(certifiedIntervalPointBox(endpoint))) return finish({ status: 'hit' });
                     }
                     if (curve.depth >= maxDepth) { uncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });

@@ -4,6 +4,8 @@ import { worldPose } from '../change/coordinates';
 import { compose, inverse } from '../geom/affine';
 import type { PathPickOptions } from '../geom/pick';
 import { createSweptPathJob } from '../geom/sweptPathJob';
+import { createClippedSweptPathJob } from '../geom/clippedSweptPathJob';
+import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
@@ -126,11 +128,13 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 const selected = selectableAtFocus(doc, node.id, focus, sheet);
                 if (!selected) return;
                 if (query.kind === 'polygon' && query.containment && selected !== node.id) throw new BoardRegionUncertain('Group containment requires all visible children');
-                let localPoints: readonly Vec2[] = points;
+                let localPoints: readonly Vec2[] = points, partialFrame = false;
+                const frameClips: PointClipContour[] = [];
                 let ancestor = doc.nodes.get(node.parent as NodeId);
                 for (let depth = 0; ancestor && depth < 64; depth++) {
                     if (ancestor.kind === 'frame') {
                         const frameWorld = matrix(doc, ancestor.id), toFrame = inverse(frameWorld, 1e12), record = scene.worldBounds(node.id);
+                        frameClips.push({ outline: rectPath(0, 0, ancestor.w, ancestor.h), localToSurface: compose(worldToCss, frameWorld) });
                         const bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
                             ? record.selectable : null;
                         if (!toFrame || !bounds) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
@@ -139,12 +143,15 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
-                            if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
-                            const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
-                                { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
-                            localPoints = clipPolygon(localPoints, polygon);
-                            if (!localPoints.length) return;
-                            if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
+                            if (query.kind === 'swept' && node.kind === 'connector') partialFrame = true;
+                            else {
+                                if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
+                                const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
+                                    { x: ancestor.w, y: ancestor.h }, { x: 0, y: ancestor.h }].map(p => exactAffinePoint(frameCss, p));
+                                localPoints = clipPolygon(localPoints, polygon);
+                                if (!localPoints.length) return;
+                                if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
+                            }
                         }
                     }
                     ancestor = doc.nodes.get(ancestor.parent as NodeId);
@@ -210,15 +217,30 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const box = connector.label.paint.box, labelQuery = { ...localQuery, localToSurface: compose(worldToCss, connector.label.localToWorld) } as RegionQuery;
                         parts.push(await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [rectPath(0, 0, box.w, box.h)] }));
                     }
-                    const containment = query.kind === 'polygon' && query.containment;
-                    if (!containment && parts.some(Boolean)) hit = true;
+                    const containment = query.kind === 'polygon' && query.containment, otherHit = parts.some(Boolean);
+                    if (!containment && otherHit && !partialFrame) hit = true;
                     else {
+                        let body = false;
                         if (node.dash !== 'none' && connector.body.length) {
-                            const body = await pathHit([connector.body], worldQuery, pathOptions);
-                            if (connector.bodyExclusions.length && (body || containment)) throw new BoardRegionUncertain('Connector body exclusions require clipped geometry');
+                            if (worldQuery.kind === 'swept' && (frameClips.length || connector.bodyExclusions.length)) {
+                                const exclusions = connector.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToCss, clip.localToWorld) }));
+                                const job = createClippedSweptPathJob([connector.body], worldQuery, { strokeRadiusLocal: node.width / 2, frames: frameClips, exclusions });
+                                try {
+                                    for (;;) {
+                                        check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                        if (value.status === 'pending') { await cooperate(); continue; }
+                                        if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                        body = value.status === 'hit'; break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else {
+                                body = await pathHit([connector.body], worldQuery, pathOptions);
+                                if (connector.bodyExclusions.length && (body || containment)) throw new BoardRegionUncertain('Connector body exclusions require clipped geometry');
+                            }
                             parts.push(body);
                         }
-                        hit = containment ? parts.length > 0 && parts.every(Boolean) : parts.some(Boolean);
+                        if (!containment && !body && otherHit && partialFrame) throw new BoardRegionUncertain('Frame-clipped connector head requires a visible witness');
+                        hit = containment ? parts.length > 0 && parts.every(Boolean) : body || (!partialFrame && otherHit);
                     }
                 } else throw new BoardRegionUncertain(`No real region geometry for ${node.kind}`);
                 check();

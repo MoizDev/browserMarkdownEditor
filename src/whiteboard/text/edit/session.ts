@@ -77,6 +77,7 @@ export class TextEditSession {
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
         this.selection = selection;
         this.lastRich = services.readText();
+        this.words.prime(this.lastRich);
         this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
         this.controller = new TextEditController(id, key, {
             apply: transaction => services.apply(transaction), readText: () => services.readText(),

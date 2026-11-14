@@ -212,7 +212,7 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
         : hits.length ? `${index + 1} of ${hits.length.toLocaleString('en-US')}${progress.capped || !progress.done ? '+' : ''}` : 'No matches');
     const quality = progress ? [progress.textlessPages ? `${progress.textlessPages} ${progress.textlessPages === 1 ? 'page has' : 'pages have'} no text (scans are not OCR’d)` : '',
         progress.failedPages.length ? `${progress.failedPages.length} ${progress.failedPages.length === 1 ? 'page could' : 'pages could'} not be read` : '',
-        progress.partialPages.length ? `${progress.partialPages.length} ${progress.partialPages.length === 1 ? 'page has' : 'pages have'} partial text` : ''].filter(Boolean).join(' · ') : '';
+        progress.partialPages.length ? `${progress.partialPages.length} ${progress.partialPages.length === 1 ? 'page has' : 'pages have'} text-order/extraction warnings` : ''].filter(Boolean).join(' · ') : '';
     return <div className="pdf-find-bar" role="search" aria-label="Find in PDF" onContextMenu={contextMenu}
         onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}
         onKeyDown={event => {

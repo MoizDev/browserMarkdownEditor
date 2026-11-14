@@ -131,6 +131,9 @@ export interface OpenTab {
    * Session-only, like `readError`.
    */
   disk?: 'conflict' | 'deleted';
+  /** PDF rebuild choice is separate from a disk conflict: a kept legacy copy
+   *  informs the reader but does not suspend autosave. Session-only. */
+  pdfRebuild?: PdfRebuildNotice;
   /**
    * Bumped each time a canvas document (drawing, notebook, annotated PDF) is
    * reloaded from disk in place. Part of those panes' React keys, so they
@@ -490,6 +493,8 @@ export interface FileSystemContextValue {
   /** Board media are content-addressed but retain their actual collision-free leaf name. */
   readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
   putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
+  /** Copy a verified pre-conversion backup out of Trash without removing it. */
+  restoreConversionCopy: (request: BoardAssetAccess, item: TrashItem) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
@@ -527,7 +532,7 @@ export interface FileSystemContextValue {
   readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
   readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
   inspectExportTarget: (dir: FileSystemDirectoryHandle, name: string) => Promise<DiskVersion | null>;
-  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }>;
+  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }>;
   /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
   statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
   /** THE document write: writes only if the file still is `expected` (equal
@@ -561,7 +566,16 @@ export interface ContentChangeOptions {
 
 /** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
  *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
-export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry';
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry' | 'keep-pdf' | 'rebuild-pdf';
+
+export interface PdfRebuildNotice {
+  state: 'foreign' | 'kept';
+  generation: string;
+  reason?: 'mismatch' | 'unsupported' | 'malformed';
+  approved?: boolean;
+  copyName?: string;
+  error?: string;
+}
 
 export type VersionedWriteResult =
   | { status: 'written'; version: DiskVersion }

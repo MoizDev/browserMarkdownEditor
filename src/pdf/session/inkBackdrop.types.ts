@@ -22,5 +22,6 @@ export interface PdfInkBackdrop {
         renderPage(page: number, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
         captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
     };
+    setVisible(visible: boolean, focused?: boolean): void;
     dispose(): void;
 }

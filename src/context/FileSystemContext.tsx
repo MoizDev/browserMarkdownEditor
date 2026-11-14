@@ -24,7 +24,7 @@ import {
 import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
     FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
-    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess,
 } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
@@ -1594,6 +1594,111 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // answer as App.writeEntryStyles.
     }), [rootHandle, withMutation]);
 
+    // Serializing puts prevents two in-app imports from choosing the same free
+    // name. File System Access has no exclusive create, so another process can
+    // still race the final name check; never deliberately replace a squatter.
+    const boardAssetQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const boardAssetGuard = useCallback(async (request: BoardAssetAccess, activation: number) => {
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+        if (!/^[a-f0-9]{64}$/.test(request.hash)) throw new Error('Invalid board media hash');
+        if (await request.root.resolve(request.parent) === null) throw new Error('Board folder is outside the vault');
+        const owner = await request.parent.getFileHandle(request.owner.name);
+        if (!await owner.isSameEntry(request.owner)) throw new Error('Board file changed');
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+    }, []);
+    const findBoardAsset = useCallback(async (dir: FileSystemDirectoryHandle, request: BoardAssetAccess) => {
+        const names: string[] = [];
+        for await (const [name, handle] of dir.entries()) {
+            request.signal.throwIfAborted();
+            if (handle.kind === 'file' && name.startsWith(`${request.hash}.`)) names.push(name);
+        }
+        const preferred = request.preferredName;
+        if (preferred && preferred !== '.' && preferred !== '..' && !/[\\/\0]/.test(preferred) && !names.includes(preferred)) names.push(preferred);
+        for (const name of names) {
+            try {
+                const file = await (await dir.getFileHandle(name)).getFile();
+                if (await hashBytes(await file.arrayBuffer()) === request.hash) return { name, blob: file as Blob };
+            } catch (error) {
+                if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
+            }
+        }
+        return null;
+    }, []);
+    const readBoardAsset = useCallback(async (request: BoardAssetAccess) => {
+        const activation = vaultActivationRef.current;
+        await boardAssetGuard(request, activation);
+        let dir: FileSystemDirectoryHandle;
+        try { dir = await request.parent.getDirectoryHandle(ASSETS_DIR); }
+        catch (error) {
+            if (error instanceof DOMException && error.name === 'NotFoundError') {
+                await boardAssetGuard(request, activation);
+                return null;
+            }
+            throw error;
+        }
+        const found = await findBoardAsset(dir, request);
+        await boardAssetGuard(request, activation);
+        return found;
+    }, [boardAssetGuard, findBoardAsset]);
+    const putBoardAsset = useCallback((request: BoardAssetAccess & { extension: string; blob: Blob }) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardAssetGuard(request, activation);
+            if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
+            if (await hashBytes(await request.blob.arrayBuffer()) !== request.hash) throw new Error('Board media hash mismatch');
+            await boardAssetGuard(request, activation);
+            const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
+            const existing = await findBoardAsset(dir, request);
+            await boardAssetGuard(request, activation);
+            if (existing) return existing.name;
+            const temporaryName = await freeEntryName(dir, `.incoming-${crypto.randomUUID()}`);
+            await boardAssetGuard(request, activation);
+            const temporary = await dir.getFileHandle(temporaryName, { create: true });
+            let tempVersion = await temporary.getFile();
+            try {
+                const write = await temporary.createWritable();
+                try {
+                    await write.write(request.blob);
+                    await boardAssetGuard(request, activation);
+                    await write.close();
+                } catch (error) { await write.abort().catch(() => {}); throw error; }
+                const prepared = await temporary.getFile();
+                tempVersion = prepared;
+                if (await hashBytes(await prepared.arrayBuffer()) !== request.hash) throw new Error('Board media staging failed');
+                const name = await freeEntryName(dir, `${request.hash}.${request.extension}`);
+                await boardAssetGuard(request, activation);
+                const target = await dir.getFileHandle(name, { create: true });
+                const output = await target.createWritable();
+                try {
+                    await output.write(prepared);
+                    await boardAssetGuard(request, activation);
+                    await output.close();
+                } catch (error) { await output.abort().catch(() => {}); throw error; }
+                await boardAssetGuard(request, activation);
+                return name;
+            } finally {
+                // Only remove the temp we created, never a name another actor
+                // replaced while the write was in flight.
+                try {
+                    const current = await dir.getFileHandle(temporaryName);
+                    const file = await current.getFile();
+                    if (await current.isSameEntry(temporary) && file.lastModified === tempVersion.lastModified && file.size === tempVersion.size
+                        && await hashBytes(await file.arrayBuffer()) === await hashBytes(await tempVersion.arrayBuffer())) {
+                        await dir.removeEntry(temporaryName);
+                    }
+                } catch { /* a failed cleanup leaves recoverable staging bytes */ }
+            }
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, findBoardAsset, withMutation]);
+
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
      * happens once the last note in that folder stops referring to it (see
@@ -2217,14 +2322,23 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
-    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }> => {
+    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }> => {
         const root = rootHandleRef.current;
+        const current = () => root === rootHandleRef.current && isCurrent();
+        if (!current()) return { status: 'cancelled' };
         if (!expected) {
             // FSA has no exclusive create; the final name check is the narrowest
             // possible window, and counts folders as well as files.
             if (await entryExists(dir, name)) return { status: 'changed' };
+            if (!current()) return { status: 'cancelled' };
             const handle = await dir.getFileHandle(name, { create: true });
-            await writeAllBytes(handle, bytes);
+            if (!current()) return { status: 'cancelled' };
+            const writable = await handle.createWritable();
+            try {
+                await writable.write(bytes as Uint8Array<ArrayBuffer>);
+                if (!current()) { await writable.abort(); return { status: 'cancelled' }; }
+                await writable.close();
+            } catch (error) { await writable.abort().catch(() => {}); throw error; }
             if (root && rootHandleRef.current === root) await patchTreeDirs(root, [parentPath]);
             return { status: 'written', version: await versionAfterWrite(handle, bytes) };
         }
@@ -2239,7 +2353,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // Keep the snapshot even if a later write fails: it is the last known
         // complete version and the existing file is never truncated first.
         await copyFileInto(trash, backupName, file);
-        const result = await writeFileVersioned(handle, bytes, observed);
+        if (!current()) return { status: 'cancelled' };
+        const after = await readSnapshot(handle);
+        const afterVersion = await versionOfSnapshot(after.file, after.buf);
+        if (afterVersion.hash !== observed.hash) return { status: 'changed' };
+        if (!current()) return { status: 'cancelled' };
+        const result = await writeFileVersioned(handle, bytes, afterVersion);
         if (result.status !== 'written') return { status: 'changed' };
         return { status: 'written', version: result.version };
     }), [patchTreeDirs, withMutation, writeFileVersioned]);
@@ -2299,25 +2418,6 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         await writeAllBytes(handle, bytes);
         const version = await versionAfterWrite(handle, bytes);
         await patchTreeDirs(root, [patchFrom ?? parentPath]);
-        return { status: 'written' as const, version, handle };
-    }), [withMutation, patchTreeDirs]);
-
-    // A staged export must not recreate a deleted parent or truncate an existing
-    // target. The name check has the same FSA check/create gap as conflict copies.
-    const createStagedExport = useCallback((parent: FileSystemDirectoryHandle, name: string, parentPath: string, bytes: Uint8Array, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => withMutation(async () => {
-        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
-        if (await entryExists(parent, name)) return { status: 'exists' as const };
-        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
-        const handle = await parent.getFileHandle(name, { create: true });
-        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
-        const writable = await handle.createWritable();
-        try {
-            await writable.write(bytes as Uint8Array<ArrayBuffer>);
-            if (root !== rootHandleRef.current || !isCurrent()) { await writable.abort(); return { status: 'cancelled' as const }; }
-            await writable.close();
-        } catch (error) { await writable.abort().catch(() => {}); throw error; }
-        const version = await versionAfterWrite(handle, bytes);
-        if (root === rootHandleRef.current) await patchTreeDirs(root, [parentPath]);
         return { status: 'written' as const, version, handle };
     }), [withMutation, patchTreeDirs]);
 
@@ -2604,11 +2704,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
-        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     }), [
         rootHandle,
         getVaultActivation,
@@ -2651,11 +2752,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
-        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     ]);
 
     return (

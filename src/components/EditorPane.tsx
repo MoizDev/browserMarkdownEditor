@@ -101,6 +101,8 @@ const CanvasPane = lazy(() => import('./CanvasPane'));
 interface EditorPaneProps {
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
+    /** E4's App-owned editor host; DocumentPane adoption is the next wiring step. */
+    markdownSessions?: import('../editor/markdownSession.types').MarkdownSessionHost;
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];

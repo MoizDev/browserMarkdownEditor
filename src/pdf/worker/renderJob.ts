@@ -39,7 +39,8 @@ export async function runPdfRenderJob(job: RenderJob, bounds: RenderTileBounds, 
             if (hooks.signal.aborted) throw new PdfEngineError('AbortError', 'PDF tile was cancelled');
             if (state === 'done') return copyTile(job.result(), bounds);
             if (state !== 'more') throw new PdfEngineError('EngineBroken', 'Invalid PDF render job state');
-            await new Promise<void>(resolve => {
+            if (hooks.cooperate) await hooks.cooperate();
+            else await new Promise<void>(resolve => {
                 wake = resolve;
                 channel.port1.onmessage = () => { wake = undefined; resolve(); };
                 channel.port2.postMessage(0);

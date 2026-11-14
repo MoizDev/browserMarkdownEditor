@@ -28,7 +28,11 @@ const spelling: BoardToolServicesOptions['spelling'] = {
     },
 };
 
-export interface NativeEmbedInfrastructure { readonly port: EmbedPresentationPort; readonly controller: NativeEmbedController }
+export interface NativeEmbedInfrastructure {
+    readonly port: EmbedPresentationPort;
+    readonly controller: NativeEmbedController;
+    readonly producer: NativeEmbedPresentationProducer;
+}
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
     readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
@@ -68,8 +72,9 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         previousProducer?.dispose();
         if (previousEmbed) {
             options.onEmbedInfrastructure(null);
+            previousEmbed.producer.dispose();
             options.engine.connectEmbeds(null);
-            void previousEmbed.controller.dispose().catch(options.onError);
+            void previousEmbed.controller.dispose().finally(() => previousEmbed.port.dispose()).catch(options.onError);
         }
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
@@ -77,7 +82,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     };
     const input = createBoardInputHost({ ...options, mode: 'edit',
         presented(revision, renderToken: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) {
-            producer?.presented(revision, renderToken, frame, context);
+            embed?.producer.presented(revision, renderToken, frame, context);
             options.presented?.(revision, renderToken, frame, context);
         },
         a11y: {
@@ -93,16 +98,16 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             binding = options.bindClipboard(surface);
             try {
                 const port = createEmbedPresentationPort({ overlay, onError: options.onError });
-                let next: NativeEmbedPresentationProducer | null = null;
                 try {
-                    next = createNativeEmbedPresentationProducer({ port, images: options.toolOptions.images,
-                        memory: options.clipboard.memory, onError: options.onError });
                     const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
                         manifest: options.host.embeds.manifest, containment: options.host.embeds.create, environment: { appOrigin: location.origin },
                         current: () => options.current(options.token), visible: options.visible, onError: options.onError });
-                    // Published only now: the shell learns of the port after the producer that feeds it exists.
-                    producer = next; embed = { port, controller }; options.engine.connectEmbeds(port); options.onEmbedInfrastructure(embed);
-                } catch (error) { next?.dispose(); void port.dispose().catch(options.onError); throw error; }
+                    const producer = createNativeEmbedPresentationProducer({ port, images: options.toolOptions.images,
+                        memory: options.clipboard.memory, onError: options.onError });
+                    embed = { port, controller, producer };
+                    options.engine.connectEmbeds(port);
+                    options.onEmbedInfrastructure(embed);
+                } catch (error) { void port.dispose().catch(options.onError); throw error; }
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
@@ -192,9 +197,9 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     return {
         ...input,
         // Only a complete, sharp, live presentation reaches the producer; anything else releases its pending frame.
-        onPresentation(value: PlatformPresentation | null) {
-            input.onPresentation(value);
-            producer?.onPresentation(value && options.certifyPresentation(value) ? value : null);
+        onPresentation(presentation: Parameters<typeof input.onPresentation>[0]) {
+            input.onPresentation(presentation);
+            embed?.producer.onPresentation(presentation && options.certifyPresentation(presentation) ? presentation : null);
         },
         getTools: () => tools,
         getBinding: () => binding,

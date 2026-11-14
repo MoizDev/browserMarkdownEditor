@@ -131,13 +131,17 @@ export function createNativeViewLease(options: {
     onNotice(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
-    if (options.parameters.mode === 'edit' && (!options.editing || board.doc.kind === 'pdf-ink')) {
+    if (options.parameters.mode === 'edit' && !options.editing) {
         throw new Error('This canvas does not have an authorized editing host');
     }
     if (board.doc.kind === 'pdf-ink' && (!options.pdfBackdrop || !options.readPdfMedia)) {
         throw new Error('The PDF viewer requires its acquired backdrop and media reader');
     }
     if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
+    if (board.doc.kind === 'pdf-ink' && options.parameters.mode === 'edit'
+        && (!options.pdfBackdrop?.sourceToken || !options.pdfBackdrop.isCurrentSource?.() || !host.canWriteSource(identity))) {
+        throw new Error('PDF editing requires its current admitted source');
+    }
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const boardRuntime = runtime;

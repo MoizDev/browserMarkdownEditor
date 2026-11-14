@@ -20,5 +20,11 @@ export function snapshotCopiedTextRange(host: CopySnapshotHost, original: Node, 
         size: styled ? original.size : defaults.size, font: styled ? original.font : defaults.font,
         align: original.kind === 'text' ? original.align : defaults.textAlign,
         autoSize: true, w: Math.max(1, bounds.w / scale), scale });
-    return snapshotTextSelection(host, fragment, node, bounds, { node: original.id, anchor: selection.anchor, focus: selection.focus });
+    // Clipboard records are always world-rooted, even when their source host is paged.
+    const syntheticHost: CopySnapshotHost = { ...host, doc: { ...host.doc, kind: 'whiteboard' },
+        encoder: { ...host.encoder, bounds: candidate => candidate.id === node.id
+            ? [bounds.x, bounds.y, bounds.w, bounds.h] : host.encoder.bounds(candidate) } };
+    const snapshot = snapshotTextSelection(syntheticHost, fragment, node, bounds,
+        { node: original.id, anchor: selection.anchor, focus: selection.focus });
+    return { ...snapshot, payload: { ...snapshot.payload, from: { ...snapshot.payload.from, kind: host.doc.kind } } };
 }

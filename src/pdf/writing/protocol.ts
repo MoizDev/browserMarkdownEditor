@@ -11,6 +11,8 @@ export interface WriterSource {
     pristineFingerprint: string;
     outer: Blob;
     outerFingerprint: string;
+    /** Stable id supplied by the board format owner. */
+    formatId: string;
     geometryEngine: { id: string; build: string; generation: number };
 }
 export type WriterFailureCode = 'encrypted' | 'signed' | 'newer-format' | 'unrecoverable-attachments' | 'resource-limit' | 'cancelled' | 'failure';
@@ -76,7 +78,7 @@ export interface WriterOperations {
         result: EmittedInk;
     };
     'writer.stageAnnotated': {
-        args: { writerSession: string; revision: number; ink: EmittedInk; geometries: PageGeometry[] };
+        args: { writerSession: string; revision: number; ink: EmittedInk; geometries: PageGeometry[]; reservedNames: string[] };
         result: { stageId: string; sourceFingerprint: string; geometryEngine: WriterSource['geometryEngine'] };
     };
     'writer.finishAnnotated': {

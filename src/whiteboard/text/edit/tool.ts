@@ -15,8 +15,9 @@ export const textTool: Tool<TextToolContext> = {
         if (first.source === 'keyboard') return null;
         const origin = context.worldToScreen(first.x, first.y);
         let last = first;
-        let width: number | null = null;
+        let width: number | null = null, ended = false;
         const update = (sample: RealSample) => {
+            if (ended) return;
             last = sample;
             const screen = context.worldToScreen(sample.x, sample.y);
             const threshold = first.source === 'touch' ? 36 : 24;
@@ -29,12 +30,19 @@ export const textTool: Tool<TextToolContext> = {
             kind: 'node-edit', pointerIds: new Set([first.pointerId]),
             update(samples) { for (const sample of samples) if (sample.pointerId === first.pointerId) update(sample); },
             finish(reason) {
+                if (ended) return;
+                ended = true;
                 clearTimeout(hold);
                 context.clearTextColumnPreview();
                 if (reason === 'escape' || reason === 'undo') return;
                 context.createText(width === null ? first.x : Math.min(first.x, last.x), first.y, width);
             },
-            cancel() { clearTimeout(hold); context.clearTextColumnPreview(); },
+            cancel() {
+                if (ended) return;
+                ended = true;
+                clearTimeout(hold);
+                context.clearTextColumnPreview();
+            },
         };
     },
 };

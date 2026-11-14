@@ -46,8 +46,7 @@ export class PointerRouter<Context> {
           const owner = options.router.activeOwner
           if (sample.source === 'pen' && options.penTransitions?.(sample) && options.settled
             && (owner?.kind === 'ink' || owner?.kind === 'erase')) {
-            const transition: PenContactTransitions
-            transition = new PenContactTransitions(sample.pointerId, owner.kind === 'erase' ? 'eraser' : 'ink', {
+            const transition: PenContactTransitions = new PenContactTransitions(sample.pointerId, owner.kind === 'erase' ? 'eraser' : 'ink', {
               current: () => options.current() && this.pen === transition && this.pointerId === sample.pointerId,
               owner: () => options.router.activeOwner,
               finish: reason => options.router.finish(options.token, sample.pointerId, reason),

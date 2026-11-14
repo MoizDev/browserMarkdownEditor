@@ -2,6 +2,7 @@ import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
 import { exactPointIntervals } from './homogeneous';
 import { createFillPointJob } from './fillPoint';
+import { createConvexClipJob, type ConvexClipPolygon } from './convexClip';
 import { classifyCertifiedClipBox, preparePointClip, type PointClipContour } from './clippedPointPathJob';
 import type { PathOp, Vec2 } from './path';
 
@@ -30,6 +31,41 @@ export function createFillVisibilityWitnessJob(paths: readonly (readonly PathOp[
             yield;
         }
         if (![x0, y0, x1, y1].every(Number.isFinite) || x0 > x1 || y0 > y1) return { status: 'unresolved' };
+        const tryPoint = function* (point: Vec2): Generator<void, boolean> {
+            if (![point.x, point.y].every(Number.isFinite)) return false;
+            const box = [point.x, point.y, point.x, point.y] as const;
+            if (!clips.every(frame => classifyCertifiedClipBox(box, frame) === 'inside')) return false;
+            const job = createFillPointJob(paths, point, 'nonzero', { localToWorld: matrix, maxCommands, maxWork });
+            for (;;) {
+                const result = job.step({ deadline: performance.now() + 3, maxWork: 1 });
+                if (result.status === 'pending') { yield; continue; }
+                return result.status === 'inside';
+            }
+        };
+        if (frames.length) {
+            const polygons: ConvexClipPolygon[] = [];
+            for (const frame of frames) {
+                const vertices: Vec2[] = [];
+                for (const op of frame.outline) { if (op.op === 'M' || op.op === 'L') vertices.push(op.p); yield; }
+                if (vertices.length < 3) return { status: 'unresolved' };
+                polygons.push({ points: vertices, localToWorld: frame.localToSurface });
+            }
+            const tolerance = Math.max(1e-9, 64 * Number.EPSILON * Math.max(1, Math.abs(x0), Math.abs(y0), Math.abs(x1), Math.abs(y1)));
+            const intersection = createConvexClipJob(polygons, tolerance);
+            try {
+                for (;;) {
+                    const result = intersection.step({ deadline: performance.now() + 3, maxWork: 1 });
+                    if (!result.done) { yield; continue; }
+                    if (result.result.status === 'bounded') {
+                        const inner = result.result.inner, origin = inner[0];
+                        let x = origin.x, y = origin.y;
+                        for (const point of inner) { x += (point.x - origin.x) / inner.length; y += (point.y - origin.y) / inner.length; yield; }
+                        if (yield* tryPoint({ x, y })) return { status: 'visible' };
+                    }
+                    break;
+                }
+            } finally { intersection.cancel(); }
+        }
         let samples = 0;
         for (let level = 0; level <= 6; level++) {
             const steps = 1 << level;
@@ -37,16 +73,7 @@ export function createFillVisibilityWitnessJob(paths: readonly (readonly PathOp[
                 if (++samples > maxSamples) return { status: 'unresolved' };
                 const tx = (ix + 0.5) / steps, ty = (iy + 0.5) / steps;
                 const point = { x: x0 * (1 - tx) + x1 * tx, y: y0 * (1 - ty) + y1 * ty };
-                if (![point.x, point.y].every(Number.isFinite)) { yield; continue; }
-                const box = [point.x, point.y, point.x, point.y] as const;
-                if (!clips.every(frame => classifyCertifiedClipBox(box, frame) === 'inside')) { yield; continue; }
-                const job = createFillPointJob(paths, point, 'nonzero', { localToWorld: matrix, maxCommands, maxWork });
-                for (;;) {
-                    const result = job.step({ deadline: performance.now() + 3, maxWork: 1 });
-                    if (result.status === 'pending') { yield; continue; }
-                    if (result.status === 'inside') return { status: 'visible' };
-                    break;
-                }
+                if (yield* tryPoint(point)) return { status: 'visible' };
                 yield;
             }
         }

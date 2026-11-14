@@ -295,8 +295,8 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `text/edit/window.ts` | w-i | T-4, E-TXT-21 | text §5.3 | Design, windowed rich projection and Intl.Segmenter grapheme boundaries; no tldraw source | none | 2026-11-13 |
 | `text/edit/host.ts` | w-i | T-4, F-TEXT-006/016/018, WB-D15, E-TXT-2/10/12/15/21/22 | text §§5.1–5.3, 5.6, 5.10 | Design, browser EditContext and textarea APIs, windowed projection, grapheme-safe updates and IME formats, fallback selection and app-menu forwarding | none | 2026-11-13 |
-| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design, TX-2/TX-3 and HistoryController public types; empty deletion, links, formatting announcements, caret blink, edge scroll, typing/cut/paste snapshots and IME chrome | none | 2026-11-13 |
-| `text/edit/controller.ts` | w-i | T-5, F-TEXT-011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations and history-marked input transformations, explicit burst completion | none | 2026-11-13 |
+| `text/edit/session.ts` | w-i | T-4, F-TEXT-003/005/006/011/015/016/018, WB-D15/16/26, E-TXT-1/2/4/5/10/12/15/21 | text §§5.1–5.7, 5.9–5.10; clipboard §3 | Design, TX-2/TX-3 and HistoryController public types; paragraph entry, empty deletion, links, caret blink, edge scroll, typing/cut/paste snapshots and IME chrome | none | 2026-11-13 |
+| `text/edit/controller.ts` | w-i | T-5, F-TEXT-005/011/012/015/016, WB-D26 | text §§4–5; change-and-history §4.3 | Design, public change operations, history-marked input transformations and Enter autolink | none | 2026-11-13 |
 | `text/edit/typingHistory.ts` | w-i | F-TEXT-005/011/016, H-5 | text §§5.4/5.7; change-and-history §4.3 | Design and w-n HistoryController; time and adjacency burst boundaries, IME, rule savepoints and owned-step tokens | none | 2026-11-13 |
 | `text/edit/format.ts` | w-i | WB-D26, E-TXT-14, SEC-5 | text §§4.1, 5.9 | Design, model URL constraints and URL platform API | none | 2026-11-13 |
 | `text/edit/keys.ts` | w-i | F-TEXT-006/011, WB-D14 | text §5.4 | Design, Intl.Segmenter through TX-1, visual selection collapse and transformation undo service | none | 2026-11-13 |
@@ -304,7 +304,7 @@ third-party code included (normally "none") · date.
 | `text/edit/selection.ts` | w-i | F-TEXT-006/018 | text §5.6 | Design and Intl.Segmenter | none | 2026-11-13 |
 | `text/edit/caret.ts` | w-i | F-TEXT-006/018, E-TXT-4 | text §§5.4–5.5, 9 | TX-3 public caret index and design; skips coincident visual stops | none | 2026-11-13 |
 | `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design, platform Rect and affine rectangle bounds | none | 2026-11-13 |
-| `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types; typed delimiters, finite list starts and autolink | none | 2026-11-13 |
+| `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types; typed delimiters, finite list starts and URL/email autolink on space or Enter | none | 2026-11-13 |
 | `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
 | `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design, Intl.Segmenter and punctuation-aware URL exclusion | none | 2026-11-13 |
 | `text/spell/menu.ts` | w-i | COV-29/39, E-TXT-26/28 | text §5.8 | Design; revision capture, stale menu fallback and deadline scheduling | none | 2026-11-13 |

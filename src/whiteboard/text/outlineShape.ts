@@ -1,6 +1,7 @@
 import type { PathCommand } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import { outlineFontUrl } from './outlineFonts';
+import { awaitOutlineResource } from './outlineAbort';
 import type { Face, PaintFragment } from './paint';
 
 type HarfBuzzFont = import('harfbuzzjs').Font;
@@ -14,15 +15,6 @@ export function clearOutlineGlyphCaches(): void {
     for (const slot of loaded.values()) void slot.promise.then(entry => { entry.paths.clear(); entry.bytes = 0; }).catch(() => undefined);
 }
 
-function waitForFont(promise: Promise<FontEntry>, signal: AbortSignal): Promise<FontEntry> {
-    return new Promise((resolve, reject) => {
-        const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Text export cancelled', 'AbortError')); };
-        signal.addEventListener('abort', abort, { once: true });
-        promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); },
-            error => { signal.removeEventListener('abort', abort); reject(error); });
-        if (signal.aborted) abort();
-    });
-}
 async function outlineFont(face: Face, signal: AbortSignal): Promise<FontEntry> {
     signal.throwIfAborted();
     const url = outlineFontUrl(face.key);
@@ -44,7 +36,7 @@ async function outlineFont(face: Face, signal: AbortSignal): Promise<FontEntry> 
         loaded.set(url, created); slot = created;
     }
     slot.waiters++;
-    try { return await waitForFont(slot.promise, signal); }
+    try { return await awaitOutlineResource(slot.promise, signal); }
     finally {
         slot.waiters--;
         if (!slot.waiters && !slot.settled && loaded.get(url) === slot) { loaded.delete(url); slot.controller.abort(); }

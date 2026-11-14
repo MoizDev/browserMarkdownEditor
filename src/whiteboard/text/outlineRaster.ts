@@ -2,6 +2,7 @@ import type { PageDisplayItem, Rgba } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import type { BoardFonts } from './fonts';
 import type { Face, PaintFragment } from './paint';
+import { awaitOutlineResource } from './outlineAbort';
 
 const TILE_SIDE = 1024;
 function colorCss(color: Rgba): string {
@@ -22,7 +23,9 @@ function nonempty(data: Uint8ClampedArray): boolean {
 /** Each fallback bitmap stays small even when one source fragment spans a very wide page. */
 export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, lineTop: number, lineBottom: number,
     color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
-    if (face.loaded && !await fonts.load(face.key)) throw new Error('Export canvas font could not be loaded');
+    context.signal.throwIfAborted();
+    if (face.loaded && !await awaitOutlineResource(fonts.load(face.key), context.signal, 30_000, 'Export canvas font'))
+        throw new Error('Export canvas font could not be loaded');
     context.signal.throwIfAborted();
     const probe = new OffscreenCanvas(1, 1), measuring = probe.getContext('2d');
     if (!measuring) throw new Error('Export canvas is unavailable');
@@ -52,7 +55,8 @@ export async function* rasterTextFragment(fragment: PaintFragment, face: Face, b
             draw.fillText(fragment.text, 0, 0);
             context.signal.throwIfAborted();
             if (nonempty(draw.getImageData(0, 0, tileWidth, tileHeight).data)) {
-                const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
+                const blob = await awaitOutlineResource(canvas.convertToBlob({ type: 'image/png' }), context.signal, 30_000, 'Export bitmap encoding');
+                const bytes = new Uint8Array(await awaitOutlineResource(blob.arrayBuffer(), context.signal, 30_000, 'Export bitmap read'));
                 context.signal.throwIfAborted();
                 item = { kind: 'raster', rect: { x: left + px / density, y: top + py / density,
                     width: tileWidth / density, height: tileHeight / density }, png: bytes, blend };

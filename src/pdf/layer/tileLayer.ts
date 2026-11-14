@@ -77,6 +77,8 @@ export class PdfTileLayer implements Layer {
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
     private motionScaleAt = 0;
+    private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
+    private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
 
@@ -109,6 +111,8 @@ export class PdfTileLayer implements Layer {
             }
         }
         const input = this.demand(view);
+        this.latestDemand = input;
+        this.latestView = view;
         const identity = contentFamily(input);
         if (identity !== this.contentIdentity) {
             for (const [key, entry] of this.entries) this.remove(key, entry);
@@ -287,6 +291,48 @@ export class PdfTileLayer implements Layer {
         this.texturePool.clear(reason === 'context-lost');
         this.pendingFrame = false;
         if (reason === 'hidden') this.hide();
+    }
+
+    /** Prospective tile and cropped-mirror storage, before requests allocate (design §6.3:640–646). */
+    cpuWorkingSet(physical: Readonly<{ width: number; height: number }>): { mandatoryBytes: number; prefetchBytes: number } {
+        if (!Number.isFinite(physical.width) || !Number.isFinite(physical.height) || physical.width <= 0 || physical.height <= 0) {
+            return { mandatoryBytes: 0, prefetchBytes: 0 };
+        }
+        const q = Math.min(1, 8192 / physical.width, 8192 / physical.height,
+            Math.sqrt(16777216 / (physical.width * physical.height)));
+        const width = Math.ceil(physical.width * q), height = Math.ceil(physical.height * q);
+        const input = this.latestDemand, view = this.latestView;
+        if (!input || !view) {
+            // Until the first frame there is no page geometry; admit the maximum intersecting tile grid (§5.1).
+            const columns = Math.ceil(width / 512) + 1, rows = Math.ceil(height / 512) + 1;
+            const mandatoryBytes = columns * rows * 514 * 514 * 4 + (this.mirror ? (width + 2 * columns) * (height + 2 * rows) * 4 : 0);
+            const outer = (Math.ceil(2 * width / 512) + 1) * (Math.ceil(2 * height / 512) + 1);
+            return { mandatoryBytes, prefetchBytes: Math.max(0, outer - columns * rows) * 514 * 514 * 4 };
+        }
+        const factor = view.camera.z * view.viewport.dpr;
+        const viewport = { x: input.viewport.x, y: input.viewport.y, width: width / factor, height: height / factor };
+        const requests = planPdfTileDemand({ ...input, viewport, moving: false, covered: () => false }).requests;
+        const seen = new Set<string>();
+        let mandatoryBytes = 0, prefetchBytes = 0;
+        for (const request of requests) {
+            const key = tileKeyString(request.key);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const bounds = rect(request);
+            const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
+            if (!intersects(bounds, viewport)) { prefetchBytes += bytes; continue; }
+            mandatoryBytes += bytes;
+            if (this.mirror) {
+                const left = Math.max(bounds.x, viewport.x), top = Math.max(bounds.y, viewport.y);
+                const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);
+                const bottom = Math.min(bounds.y + bounds.height, viewport.y + viewport.height);
+                const scale = request.scale.scale;
+                const w = Math.min(request.tile.textureWidth, Math.ceil((right - left) * scale) + 3);
+                const h = Math.min(request.tile.textureHeight, Math.ceil((bottom - top) * scale) + 3);
+                mandatoryBytes += w * h * 4;
+            }
+        }
+        return { mandatoryBytes, prefetchBytes };
     }
 
     /** Expiry drops old GPU pixels immediately, even if a hidden window suspends frames (C1.3). */

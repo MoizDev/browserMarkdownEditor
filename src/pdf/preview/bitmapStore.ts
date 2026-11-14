@@ -65,7 +65,7 @@ export class PreviewBitmapStore {
 
     /** The caller's current predicate checks document identity, request serial and source canvas.
      * Check it after every await: createImageBitmap can finish after eviction, hide or a new blit. */
-    async publish(index: number, key: string, canvas: HTMLCanvasElement, destination: PreviewRect, current: () => boolean): Promise<void> {
+    async publish(index: number, key: string, canvas: HTMLCanvasElement, destination: PreviewRect, current: () => boolean, interest?: PreviewRect): Promise<void> {
         this.cancel(index);
         if (this.disposed || !this.visible || !current()) return;
         const width = canvas.width;
@@ -73,15 +73,23 @@ export class PreviewBitmapStore {
         if (width <= 0 || height <= 0 || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)
             || !Number.isFinite(destination.width) || !Number.isFinite(destination.height)
             || destination.width <= 0 || destination.height <= 0) return;
+        if (interest && (!Number.isFinite(interest.x) || !Number.isFinite(interest.y)
+            || !Number.isFinite(interest.width) || !Number.isFinite(interest.height)
+            || interest.width <= 0 || interest.height <= 0)) return;
+        const x0 = interest ? Math.max(0, Math.floor((interest.x - destination.x) * width / destination.width)) : 0;
+        const y0 = interest ? Math.max(0, Math.floor((interest.y - destination.y) * height / destination.height)) : 0;
+        const x1 = interest ? Math.min(width, Math.ceil((interest.x + interest.width - destination.x) * width / destination.width)) : width;
+        const y1 = interest ? Math.min(height, Math.ceil((interest.y + interest.height - destination.y) * height / destination.height)) : height;
+        if (x1 <= x0 || y1 <= y0) return;
         const pending: PendingCopy = { cancelled: false };
         this.pending.set(index, pending);
         const tiles: PreviewTile[] = [];
         let promoted = false;
         try {
-            for (let y = 0; y < height; y += CROP_SIDE) {
-                for (let x = 0; x < width; x += CROP_SIDE) {
-                    const w = Math.min(CROP_SIDE, width - x);
-                    const h = Math.min(CROP_SIDE, height - y);
+            for (let y = y0; y < y1; y += CROP_SIDE) {
+                for (let x = x0; x < x1; x += CROP_SIDE) {
+                    const w = Math.min(CROP_SIDE, x1 - x);
+                    const h = Math.min(CROP_SIDE, y1 - y);
                     const bytes = w * h * 4;
                     const lease = this.allocator.reserve(bytes);
                     if (!lease) return;

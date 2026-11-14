@@ -1,4 +1,6 @@
 import { NATIVE_VERSION } from '../format/schema';
+import { parseJson } from '../format/jsonRead';
+import type { RawJson } from '../model/json';
 import type { SavedView } from '../format/encode';
 import type { HostBlock } from '../model/doc';
 import type { SampleLease } from '../model/samples';
@@ -32,6 +34,7 @@ export async function importLegacy(text: string, options: LegacyImportOptions): 
     try { draft = await readLegacyRecords(text, options); }
     catch (error) {
         options.signal?.throwIfAborted();
+        options.assertCurrent();
         report.refuse(null, error instanceof Error ? error.message : 'Import could not be read');
     }
     let board: ImportedBoard | null = null;
@@ -48,11 +51,20 @@ export async function importLegacy(text: string, options: LegacyImportOptions): 
             const nodes = repairLegacyTree(draft.nodes, sheets, options.kind, options.repairRoot, report);
             const view = readLegacyView(draft.envelope.session);
             savedView = view.camera;
+            const fields = new Map<string, RawJson>();
+            if (Object.keys(draft.envelope.extras).length) fields.set('legacyEnvelope', parseJson(JSON.stringify(draft.envelope.extras)).raw());
+            if (Object.keys(draft.envelope.documentExtras).length) fields.set('legacyDocument', parseJson(JSON.stringify(draft.envelope.documentExtras)).raw());
             board = admitImportedBoard({ kind: options.kind, sheets, nodes,
                 media: media.map(item => item.entry), ui: readLegacyUi(draft.envelope.ui), view: view.flags,
-                host: options.host, preserved: { version: NATIVE_VERSION, fields: new Map(),
+                host: options.host, preserved: { version: NATIVE_VERSION, fields,
                     records: draft.preservedRecords, end: null }, preservedMediaRefs: new Map() }, options.samples);
         } catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Import could not be admitted'); }
+    }
+    try { options.assertCurrent(); }
+    catch (error) {
+        board?.apply.dispose();
+        for (const lease of leases) lease.release();
+        throw error;
     }
     const result = report.finish();
     let disposed = false;

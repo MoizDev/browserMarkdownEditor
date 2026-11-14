@@ -7,6 +7,7 @@ import type { PathOp, Vec2 } from '../geom/path';
 import { createFillPointJob } from '../geom/fillPoint';
 import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
 import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
+import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
 import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
 import { exactAffinePoint } from '../geom/exactAffine';
@@ -84,10 +85,21 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
         } finally { job.cancel(); }
     };
     const base = { strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
+    const clippedPart = async (path: readonly PathOp[], query: PointQuery, fill: boolean, strokeRadiusLocal: number, marginCss: number) => {
+        const job = createClippedFilledPointJob(path, query, { frames, fill, strokeRadiusLocal, marginCss });
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status !== 'pending') return value;
+                await tick();
+            }
+        } finally { job.cancel(); }
+    };
     if (geometry.label) {
-        const query = { point, input, localToSurface: compose(worldToSurface, geometry.label.localToWorld) };
-        const hit = await run([], query, { ...base, interiorPaths: [rectPath(geometry.label.paint.ink)] });
-        if (hit.status === 'hit') return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: false };
+        const query = { point, input: 'mouse' as const, localToSurface: compose(worldToSurface, geometry.label.localToWorld) };
+        const path = rectPath(geometry.label.paint.ink);
+        const hit = frames.length ? await clippedPart(path, query, true, 0, 0) : await run([], query, { ...base, interiorPaths: [path] });
+        if (hit.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'label' }, uncertain: false };
         if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: true };
     }
     const query: PointQuery = { point, input, localToSurface: worldToSurface };
@@ -95,7 +107,8 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
     let uncertainHead = false;
     for (const head of geometry.heads) {
         const closed = head.at(-1)?.op === 'Z';
-        const hit = await run([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
+        const hit = frames.length ? await clippedPart(head, query, closed, node.width / 2, 4)
+            : await run([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
         if (hit.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'head' }, uncertain: false };
         if (hit.status === 'uncertain') uncertainHead = true;
     }
@@ -112,7 +125,7 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
             for (;;) {
                 const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                 if (value.status === 'pending') { await tick(); continue; }
-                if (value.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: false };
+                if (value.status === 'hit') return { result: { hit: true, distanceCss: value.distanceCss, part: 'body' }, uncertain: false };
                 if (value.status === 'miss') return uncertainHead
                     ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
                 return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: true };
@@ -225,7 +238,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     } else if (node.kind === 'connector') {
                         if (!prepared.connector) throw new Error('Connector picking geometry is unavailable');
                         ({ result, uncertain: ambiguous } = await connectorPoint(node, prepared.connector, matrix, surface, input, frameClips, tick));
-                        if (result.part === 'body' && !ambiguous) clipUncertain = false;
+                        if (!ambiguous) clipUncertain = false;
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
                         let vector = prepared.vector;

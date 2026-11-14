@@ -8,7 +8,7 @@ import type { PathOp, Vec2 } from './path';
 import type { PointQuery } from './types';
 
 export interface PointClipContour { readonly outline: readonly PathOp[]; readonly localToSurface: Affine }
-export type ClippedPointResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
+export type ClippedPointResult = Readonly<{ status: 'pending' | 'miss' }> | Readonly<{ status: 'hit'; distanceCss: number }> | Readonly<{ status: 'uncertain'; reason: string }>;
 type Plane = Readonly<{ line: ExactLine; sign: -1 | 1 }>;
 export type CertifiedClipRegion = readonly Plane[];
 const PENDING: ClippedPointResult = Object.freeze({ status: 'pending' });
@@ -107,8 +107,8 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                     if (invisible(bounds)) continue;
                     for (const endpoint of [curve.points[0], curve.points[curve.points.length - 1]]) {
                         const distance = upperPointIntervalDistance(query.point, endpoint);
-                        if (queryAllowed && distance <= radius.lo) return finish({ status: 'hit' });
-                        if (distance <= margin && allowed(certifiedIntervalPointBox(endpoint))) return finish({ status: 'hit' });
+                        if (queryAllowed && distance <= radius.lo) return finish({ status: 'hit', distanceCss: 0 });
+                        if (distance <= margin && allowed(certifiedIntervalPointBox(endpoint))) return finish({ status: 'hit', distanceCss: distance });
                     }
                     if (curve.depth >= maxDepth) { uncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });

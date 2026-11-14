@@ -40,9 +40,19 @@ async function firstUri(list: string, appOrigin: string, signal: AbortSignal): P
     const value = await firstUriLine(list, signal);
     return value ? url(value, appOrigin) : null;
 }
-function plain(value: string): ClipboardClassification {
-    if (value.length > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard text is too large');
-    return { kind: 'text', text: value.replace(/\r\n?/g, '\n') };
+async function plain(value: string, signal: AbortSignal): Promise<ClipboardClassification> {
+    if (value.length > 2 * SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard text is too large');
+    const parts: string[] = []; let offset = 0, length = 0;
+    while (offset < value.length) {
+        let end = Math.min(value.length, offset + 65536);
+        if (end < value.length && value[end - 1] === '\r') end--;
+        const part = value.slice(offset, end).replace(/\r\n?/g, '\n');
+        length += part.length;
+        if (length > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard text is too large');
+        parts.push(part); offset = end;
+        if (offset < value.length) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+    }
+    return { kind: 'text', text: parts.join('') };
 }
 async function leading(value: string, signal: AbortSignal): Promise<number> {
     let index = 0;
@@ -76,18 +86,18 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
             const address = url(input.text, host.appOrigin);
             if (address) return { kind: 'url', url: address };
             if (svgText(input.text, start)) return { kind: 'svg', text: input.text };
-            return plain(input.text);
+            return plain(input.text, signal);
         }
         return { kind: 'empty' };
     }
     const plainOnly = intent === 'paste-plain' || intent === 'paste-plain-inverted';
     if (plainOnly) {
-        if (input.text) return plain(input.text);
+        if (input.text) return plain(input.text, signal);
         if (input.files.length) return { kind: 'files', files: input.files };
-        if (input.text !== null) return plain(input.text);
+        if (input.text !== null) return plain(input.text, signal);
         if (input.uriList) {
             const first = await firstUriLine(input.uriList, signal);
-            if (first) return plain(first);
+            if (first) return plain(first, signal);
         }
         return { kind: 'empty' };
     }
@@ -120,5 +130,5 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     }
     if (input.svg !== null) return { kind: 'svg', text: input.svg };
     if (input.html !== null) return { kind: 'html', html: input.html };
-    return input.text !== null ? plain(input.text) : { kind: 'empty' };
+    return input.text !== null ? plain(input.text, signal) : { kind: 'empty' };
 }

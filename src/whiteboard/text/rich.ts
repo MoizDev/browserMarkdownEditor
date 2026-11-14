@@ -17,6 +17,7 @@ export { RichSelectionOperations } from './selectionOps';
 export type { LogicalMotion } from './selectionOps';
 export { TextProjectionReader } from './projectionReader';
 export type { ProjectionWindow, ProjectionReadOptions } from './projectionReader';
+export { coalesceCarriersCooperative } from './carriers';
 export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,

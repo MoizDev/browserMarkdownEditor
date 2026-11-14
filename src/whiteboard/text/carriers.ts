@@ -1,4 +1,6 @@
 import type { Block, BlockCarrier, RichText, Run } from './richText';
+import type { PlainTextOptions } from './plainText';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 // Independent future tails stay byte-exact as range carriers, never concatenated positional fields.
 const carrierOrigins = new WeakMap<BlockCarrier, object>();
@@ -134,32 +136,65 @@ export function sliceCarriers(block: Block, from: number, to: number, preserveOr
     const steps = sliceCarrierSteps(block, from, to, preserveOrigin);
     for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
-export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly BlockCarrier[] | undefined {
+function compareCarrier(a: BlockCarrier, b: BlockCarrier): number { return a.from - b.from || a.to - b.to; }
+
+/** Stable bottom-up sort can yield even for a block with many preserved tails. */
+function* sortCarrierSteps(values: BlockCarrier[]): Generator<void, BlockCarrier[]> {
+    let sorted = true, work = 0;
+    for (let i = 1; i < values.length; i++) {
+        if (compareCarrier(values[i - 1], values[i]) > 0) sorted = false;
+        if ((++work & 255) === 0) yield;
+    }
+    if (sorted) return values;
+    let source = values, target = new Array<BlockCarrier>(values.length);
+    for (let width = 1; width < values.length; width *= 2) {
+        for (let first = 0; first < values.length; first += width * 2) {
+            const middle = Math.min(first + width, values.length), end = Math.min(first + width * 2, values.length);
+            let left = first, right = middle, output = first;
+            while (left < middle || right < end) {
+                target[output++] = right >= end || (left < middle && compareCarrier(source[left], source[right]) <= 0)
+                    ? source[left++] : source[right++];
+                if ((++work & 255) === 0) yield;
+            }
+        }
+        [source, target] = [target, source];
+    }
+    return source;
+}
+
+export function* coalesceCarrierSteps(carriers: readonly BlockCarrier[]): Generator<void, readonly BlockCarrier[] | undefined> {
     if (!carriers.length) return undefined;
     const groups = new Map<object, BlockCarrier[]>();
+    let work = 0;
     for (const carrier of carriers) {
-        const origin = carrierOrigin(carrier);
-        const group = groups.get(origin);
+        const origin = carrierOrigin(carrier), group = groups.get(origin);
         if (group) group.push(carrier); else groups.set(origin, [carrier]);
+        if ((++work & 255) === 0) yield;
     }
     const result: BlockCarrier[] = [];
-    for (const group of groups.values()) {
-        group.sort((a, b) => a.from - b.from || a.to - b.to);
+    for (const unsorted of groups.values()) {
+        const group = yield* sortCarrierSteps(unsorted);
         let current = group[0];
         for (let i = 1; i < group.length; i++) {
-            const next = group[i];
-            const bothRanges = current.from < current.to && next.from < next.to;
+            const next = group[i], bothRanges = current.from < current.to && next.from < next.to;
             if (next.from <= current.to && (bothRanges || carrierSource(current) === carrierSource(next)))
                 current = mapCarrier(current, current.from, Math.max(current.to, next.to));
             else { result.push(current); current = next; }
+            if ((++work & 255) === 0) yield;
         }
         result.push(current);
     }
-    result.sort((a, b) => a.from - b.from || a.to - b.to);
-    return result.map(carrier => {
-        const stored = { ...carrier };
-        carrierOrigins.set(stored, carrierOrigin(carrier));
-        carrierSources.set(stored, carrierSource(carrier));
-        return stored;
-    });
+    const sorted = yield* sortCarrierSteps(result);
+    const stored: BlockCarrier[] = [];
+    for (const carrier of sorted) {
+        stored.push(mapCarrier(carrier, carrier.from, carrier.to));
+        if ((++work & 255) === 0) yield;
+    }
+    return stored;
+}
+export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly BlockCarrier[] | undefined {
+    return finishTextSteps(coalesceCarrierSteps(carriers));
+}
+export function coalesceCarriersCooperative(carriers: readonly BlockCarrier[], options: PlainTextOptions): Promise<readonly BlockCarrier[] | undefined> {
+    return finishTextStepsCooperative(coalesceCarrierSteps(carriers), options);
 }

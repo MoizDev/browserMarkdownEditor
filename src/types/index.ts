@@ -107,7 +107,6 @@ export interface OpenTab {
    */
   id: string;
   file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
-  content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab
   dirty: boolean;          // has unsaved edits since the last disk write
   /**
@@ -117,9 +116,8 @@ export interface OpenTab {
    * the path survives in the stored session: skipping it once used to drop it
    * from the vault's saved tabs for good (issue #8).
    *
-   * While it is set, `content` is '' and is NOT the file's text. Nothing may
-   * write it, search it, diff it for assets, or build an editor or canvas from
-   * it — ⌘S force-flushes the focused tab, and would put '' over the note.
+   * While it is set, the buffer is not the file's text. Nothing may write it,
+   * search it, diff it for assets, or build an editor or canvas from it.
    *
    * Session-only, like `id`: the stored session records only paths.
    */

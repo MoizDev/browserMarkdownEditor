@@ -219,9 +219,14 @@ export class GpuCompositor implements PaneCompositor {
             budget.token.deviceGeneration !== this.target.generation) return;
         this.#prepared = { frameId: budget.frameId, token: Object.freeze({ ...budget.token }), snapshot };
         const plan = new GpuIsolationPlan(snapshot.metrics.backingWidth, snapshot.metrics.backingHeight);
-        const isolated = snapshot.layers.some(layer => !!layer.isolation);
-        plan.own((snapshot.appearance.inverted ? 1 : 0) + (isolated ? 1 : 0),
-            snapshot.layers.some(layer => layer.isolation?.blend === 'multiply'));
+        const inverted = snapshot.appearance.inverted;
+        if (inverted) plan.own(1, false);
+        const full = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
+        for (const binding of snapshot.layers) {
+            if (!binding.isolation) continue;
+            plan.own((inverted && binding.group === 'document' ? 1 : 0) + 1,
+                binding.isolation.blend === 'multiply', binding.isolation.bounds?.(frame) ?? full);
+        }
         for (const shortfall of this.#shortfalls) plan.shortfall(shortfall);
         this.#isolationPlan = plan;
         try {

@@ -1,6 +1,7 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
+import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession } from './utils/canvasSessionBridge';
 import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
@@ -32,6 +33,7 @@ import { BoardSaveBaselines, RetirementBacklog, boardMediaDiff, decideAssetRetir
 import { boardMediaRefs } from './utils/boardMediaRefs';
 import { setTerminalStartSource } from './utils/terminalStart';
 import { collectFiles } from './utils/tree';
+import { mapPool } from './utils/pool';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
@@ -43,6 +45,7 @@ import { notifySearchChanges, subscribeSearchChanges } from './utils/searchChang
 import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
+import { materializeRecoveryCopy } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from './utils/recoveryFunnel';
@@ -101,7 +104,7 @@ import { authorizeKeptPdfRole, canRebuildAnnotatedPdf, canRotatePdfRole, pdfRole
 import type { PdfAnnotationPreflight } from './utils/pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './utils/pdfBuildRefusal';
 import { clearViews, getView, moveView } from './utils/viewRegistry';
-import { anyPending, drain, drainAll, subscribePending } from './utils/unloadCoordinator';
+import { anyPending, drain, drainAll, installDocumentSessions, subscribePending } from './utils/unloadCoordinator';
 import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
@@ -453,9 +456,10 @@ export default function App() {
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
+  const classificationSourceRef = useRef<(id: string) => ContentSource | undefined>(() => undefined);
   const [tabs, setTabs] = useReducer(
     (previous: OpenTab[], action: React.SetStateAction<OpenTab[]>) =>
-      classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous),
+      classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous, classificationSourceRef.current),
     [],
   );
   const [closingDocumentIds, setClosingDocumentIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -525,9 +529,29 @@ export default function App() {
     stampIndexedFileTimes(changes);
     if (complete) markIndexTimesReady();
   }, []);
+  const indexMediaAssets = useCallback(async (tree: FileTreeNode[]): Promise<[string, string[]][]> => {
+    const folders = new Map<string, FileSystemDirectoryHandle>();
+    for (const file of collectFiles(tree)) if (isCanvasFile(file.name) && file.parentHandle) folders.set(parentVaultPath(file.path), file.parentHandle);
+    const listings = await mapPool([...folders], async ([folder, parent]): Promise<[string, string[]] | undefined> => {
+      try {
+        const names: string[] = [];
+        const assets = await handleIO.dirIn(parent, ASSETS_DIR).catch(error => {
+          if (error instanceof DOMException && error.name === 'NotFoundError') return null;
+          throw error;
+        });
+        if (assets) for await (const [name, handle] of handleIO.entries(assets)) if (handle.kind === 'file') names.push(name);
+        return [folder, names];
+      } catch { return undefined; } // An omitted listing cannot authorize retirement.
+    }, 2);
+    return listings.filter((entry): entry is [string, string[]] => entry !== undefined);
+  }, [handleIO]);
+  const indexMediaChanged = useCallback(() => {
+    for (const folder of assetBacklogRef.current.all()) requeueAssetFolderRef.current(folder);
+  }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, autoStart: indexStartupActivation === searchActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes,
+    mediaAssets: indexMediaAssets, onMediaChanged: indexMediaChanged });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
@@ -995,6 +1019,7 @@ export default function App() {
   const bytesGenerationsRef = useRef(new Map<string, number>());
   const bufferPathIdsRef = useRef(new Map<string, string>());
   const [documentBuffers] = useState(() => createDocumentBuffers(path => bufferPathIdsRef.current.get(path)));
+  classificationSourceRef.current = id => documentBuffers.get(id)?.source;
   const seedDocumentBuffer = useCallback((id: string, path: string, content: string, readable: boolean) => {
     documentBuffers.open(id, content, readable);
     if (!bufferPathIdsRef.current.has(path)) bufferPathIdsRef.current.set(path, id);
@@ -1004,6 +1029,52 @@ export default function App() {
     reportChange: (id, source, options) => sessionReportRef.current(id, source, options),
   }));
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
+  useEffect(() => installDocumentSessions(documentSessions), [documentSessions]);
+  const markdownSessions = useMemo<MarkdownSessionHost>(() => {
+    const get = (id: string): MarkdownSessionAdapter | undefined => {
+      const entry = documentSessions.get(id);
+      return entry?.kind === 'markdown' && 'dispatch' in entry.adapter ? entry.adapter as MarkdownSessionAdapter : undefined;
+    };
+    const ensure: MarkdownSessionHost['ensure'] = (id, create) => {
+      const tab = tabsRef.current.find(candidate => candidate.id === id);
+      if (!tab || !canReadTabText(tab)) return undefined;
+      const existing = documentSessions.get(id);
+      if (existing) return get(id);
+      if (!documentBuffers.get(id)) return undefined;
+      const entry = documentSessions.ensure(id, 'markdown', bytesGenerationsRef.current.get(id) ?? 0, create);
+      documentBuffers.setOwner(id, { documentId: id, session: entry.serial });
+      entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, entry.adapter), dispose => dispose());
+      return entry.adapter;
+    };
+    return {
+      get, ensure,
+      pathOf: id => tabsRef.current.find(tab => tab.id === id)?.file.path,
+      parentHandleOf: id => tabsRef.current.find(tab => tab.id === id)?.file.parentHandle ?? null,
+      async dispatch(id, spec) {
+        const target = tabsRef.current.find(tab => tab.id === id);
+        if (!target || !canUpdateTabContent(target)) return false;
+        const revision = documentBuffers.revisionForDocument(id)?.revision;
+        const activation = getVaultActivation();
+        let adapter = get(id);
+        if (!adapter) {
+          const [{ EditorState }, { history }, { createMarkdownSession }] = await Promise.all([
+            import('@codemirror/state'), import('@codemirror/commands'), import('./editor/markdownSession'),
+          ]);
+          const current = tabsRef.current.find(tab => tab.id === id);
+          if (!current || !canUpdateTabContent(current) || getVaultActivation() !== activation
+            || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
+          const text = documentBuffers.contentForDocument(id);
+          if (text === undefined) return false;
+          adapter = ensure(id, owner => createMarkdownSession(owner,
+            EditorState.create({ doc: text, extensions: history() }), () => documentBuffers.get(id)?.source));
+        }
+        if (!adapter) return false;
+        adapter.dispatch(spec);
+        editorStates.set(id, adapter.state);
+        return true;
+      },
+    };
+  }, [documentBuffers, documentSessions, editorStates, getVaultActivation]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
     prepareBytesChange(id, generation);
@@ -1055,7 +1126,10 @@ export default function App() {
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => {
     tabsRef.current = tabs;
-    for (const tab of tabs) seedDocumentBuffer(tab.id, tab.file.path, tab.content, canReadTabText(tab));
+    for (const tab of tabs) {
+      if (!bufferPathIdsRef.current.has(tab.file.path)) bufferPathIdsRef.current.set(tab.file.path, tab.id);
+      documentBuffers.setReadable(tab.id, canReadTabText(tab));
+    }
     // A reader needs its identity before its editable engine mounts. The
     // bridge attaches that engine later without replacing its serial or slots.
     for (const path of visiblePaths(layout)) {
@@ -1070,7 +1144,7 @@ export default function App() {
         entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
       }
     }
-  }, [tabs, layout, documentBuffers, documentSessions, seedDocumentBuffer]);
+  }, [tabs, layout, documentBuffers, documentSessions]);
   const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
     (documentId, create) => attachCanvasSession(documentSessions, documentId, create), [documentSessions]);
   const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
@@ -1781,7 +1855,7 @@ export default function App() {
       seedDocumentBuffer(id, node.path, content, !readError && representationFor(node.name).bufferKind === 'text');
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
+        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
       // openTab re-checks too, and focuses an existing tab rather than minting a
       // second one — the same race, answered the same way.
       setLayout(l => openTabIn(l, node.path));
@@ -2320,22 +2394,7 @@ export default function App() {
     } finally { if (!trashOwned) trashInFlightRef.current = false; }
   }, [currentPdfOwner, setDiskState, setPdfRebuildNotice]);
 
-  const contentOf = useCallback((path: string): string | undefined => {
-    const text = documentBuffers.contentOf(path);
-    if (text !== undefined) return text;
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (!tab) return undefined;
-    const buffer = documentBuffers.get(tab.id);
-    if (buffer?.readable) return text;
-    // Until every PDF caller migrates to snapshotOf, its legacy snapshot is
-    // still needed by the annotate and print paths. Other unreadable kinds
-    // must never be exposed as empty text.
-    if (tab.representation.loadedKind === 'pdf') {
-      const data = documentBuffers.snapshotOf(path)?.data;
-      return typeof data === 'string' ? data : undefined;
-    }
-    return buffer ? undefined : canReadTabText(tab) ? tab.content : undefined;
-  }, [documentBuffers]);
+  const contentOf = useCallback((path: string): string | undefined => documentBuffers.contentOf(path), [documentBuffers]);
 
   /**
    * Writes are SERIALIZED per document (by id, so a rename mid-write cannot
@@ -2347,8 +2406,6 @@ export default function App() {
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
   /** Documents with a write queued or running — App.hasUnsaved. */
   const flushingRef = useRef(new Map<string, number>());
-  // A report can precede React's commit; the exit guard and save must see it now.
-  const pendingRevisionsRef = useRef(new Map<string, { revision: number; saved: number }>());
   const guardedRef = useRef(false);
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
@@ -2356,17 +2413,12 @@ export default function App() {
   }, []);
   const syncExitGuard = useCallback(() => {
     const pending = anyPending() || flushingRef.current.size > 0
-      || [...pendingRevisionsRef.current.values()].some(r => r.revision > r.saved);
+      || tabsRef.current.some(tab => documentSessions.hasPendingEdits(tab.id));
     if (pending === guardedRef.current) return;
     guardedRef.current = pending;
     if (pending) window.addEventListener('beforeunload', beforeUnload);
     else window.removeEventListener('beforeunload', beforeUnload);
-  }, [beforeUnload]);
-  const reportRevision = useCallback((id: string) => {
-    const previous = pendingRevisionsRef.current.get(id);
-    pendingRevisionsRef.current.set(id, { revision: (previous?.revision ?? 0) + 1, saved: previous?.saved ?? 0 });
-    syncExitGuard();
-  }, [syncExitGuard]);
+  }, [beforeUnload, documentSessions]);
   const pendingWritesRef = useRef(new Map<string, { revision: number; promise: Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> }>());
 
   /**
@@ -2417,9 +2469,11 @@ export default function App() {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
     if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
-    // A PDF serializer awaits its own immediate save; re-entering drain there
-    // would wait on that same serializer forever. Its snapshot is already parked.
-    if (!serializerCallback) try { await drain(initial.id); } catch (error) {
+    // Save captures immediately. Only leaving the document awaits unfinished
+    // work; legacy serializers retain their migration fallback until attached.
+    const initialSource = documentBuffers.get(initial.id)?.source;
+    const legacyCanvas = (isCanvasFile(initial.file.name) || initial.representation.loadedKind === 'pdf') && typeof initialSource === 'string';
+    if (!serializerCallback && (closing || legacyCanvas)) try { await drain(initial.id); } catch (error) {
       console.error('Could not serialize pending document:', error);
       return 'failed';
     }
@@ -2434,14 +2488,14 @@ export default function App() {
       const prior = documentBuffers.get(tab.id)?.source;
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
         && (typeof prior === 'string' || !prior || prior.owner.session !== source.owner.session || source.revision > prior.revision)) {
-        documentBuffers.report(tab.id, source);
-        reportRevision(tab.id);
+        sessionReportRef.current(tab.id, source);
+        clearSaveTimer(path);
       }
     } catch (error) { console.error('Could not capture document:', error); return 'failed'; }
-    const pendingRevision = pendingRevisionsRef.current.get(tab.id);
-    const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
+    const pendingRevision = documentBuffers.revisionForDocument(tab.id);
+    const pending = documentSessions.hasPendingEdits(tab.id);
     const bufferedSource = documentBuffers.get(tab.id)?.source;
-    const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string';
+    const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string' && documentSessions.get(tab.id)?.kind !== 'markdown';
     const policy = nativePoliciesRef.current.get(tab.id);
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
@@ -2454,9 +2508,13 @@ export default function App() {
     let captured;
     try { captured = documentBuffers.snapshotOf(path); }
     catch (error) { console.error('Could not capture document:', error); return 'failed'; }
-    const snapshot = typeof captured?.data === 'string' ? captured.data : contentOf(path) ?? tab.content;
+    if (!captured || (!nativeSource && typeof captured.data !== 'string')) {
+      console.error('Could not capture document: its buffer is unavailable.');
+      return 'failed';
+    }
+    const snapshot = typeof captured.data === 'string' ? captured.data : '';
     if (!nativeSource && isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
-    const revision = pendingRevision?.revision ?? 0;
+    const revision = captured?.revision ?? pendingRevision?.revision ?? 0;
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
@@ -2593,8 +2651,6 @@ export default function App() {
         });
         // Only clear `dirty` if the content hasn't changed since we snapshotted.
         // By id: a rename mid-write moved the document, not the write.
-        const currentRevision = pendingRevisionsRef.current.get(id);
-        if (currentRevision && revision > currentRevision.saved) currentRevision.saved = revision;
         if (sourceRevision !== undefined && documentSessions.get(id) === sessionAtCall) sessionAtCall?.adapter.acknowledge(sourceRevision, 'written');
         if (bufferRevision !== undefined) {
           documentBuffers.markSaved(id, bufferRevision);
@@ -2618,7 +2674,7 @@ export default function App() {
             }
           }
         }
-        const current = (!currentRevision || currentRevision.revision === revision) && !documentBuffers.isDirty(id);
+        const current = !documentSessions.hasPendingEdits(id);
         setTabs(prev => prev.map(t =>
           t.id === id && current ? { ...t, dirty: false } : t));
         // Any column on screen, not only the focused one: with the editor split
@@ -2671,7 +2727,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, recoveryEvent, reportRevision, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2717,16 +2773,13 @@ export default function App() {
     }
     if (!accepted) return;
     assetReferenceRevisionRef.current++;
-    documentBuffers.open(target.id, target.content, canReadTabText(target));
+    const wasDirty = documentBuffers.isDirty(target.id);
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk);
     if (!buffer) return;
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
-    if (options?.fromDisk) {
-      if (typeof content === 'string') setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content } : t));
-      return;
-    }
-    reportRevision(target.id);
+    if (options?.fromDisk) return;
+    syncExitGuard();
     const baseline = getBaseline(target.id), vaultId = currentVaultIdRef.current;
     if (baseline && vaultId) {
       const session = documentSessions.get(target.id);
@@ -2746,21 +2799,15 @@ export default function App() {
       }
     }
     notifySearchChanges();
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    if (!wasDirty || target.representation.loadedKind === 'pdf' && target.representation.bufferKind !== 'annotationSnapshot') {
+      setTabs(prev => prev.map(t => t.id === target.id && !t.readError ? { ...t, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
+    }
     scheduleSave(path);
-  }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, reportRevision, scheduleSave]);
+  }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
   };
-
-  const updateAgentTabContent = useCallback((path: string, content: string) => {
-    if (__BME_BENCH__) {
-      const previous = agentContentReportRef.current;
-      agentContentReportRef.current = true;
-      try { updateTabContent(path, content); } finally { agentContentReportRef.current = previous; }
-    }
-  }, [updateTabContent]);
 
   /**
    * Buffer an edit and write it NOW, skipping the save debounce.
@@ -2790,8 +2837,7 @@ export default function App() {
         try { await drainAll(); } catch (error) { console.error('Could not serialize pending documents:', error); }
         if (getVaultActivation() !== activation) return;
         const work = tabsRef.current.flatMap(tab => {
-          const revision = pendingRevisionsRef.current.get(tab.id);
-          if (!revision || revision.revision <= revision.saved) return [];
+          if (!documentSessions.hasPendingEdits(tab.id)) return [];
           return [flushTab(tab.file.path, true)];
         });
         await Promise.allSettled(work);
@@ -2831,13 +2877,13 @@ export default function App() {
     await drain(id);
     await flushChainsRef.current.get(id);
     if (!current()) throw new Error('The document changed while preparing to print.');
-    const content = contentOf(path);
+    const revision = documentBuffers.revisionForDocument(id)?.revision;
     const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
       if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
     }
-    if (!current() || contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
+    if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
     const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
     let disk: Awaited<ReturnType<typeof readBytesVersioned>>;
     try { disk = await readBytesVersioned(handle as FileSystemFileHandle); }
@@ -2847,8 +2893,8 @@ export default function App() {
     }
     if (current() && baseline && disk.version.hash !== baseline.hash) setDiskState(id, 'conflict');
     if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
-        contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
-    const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
+        documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
+    const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && documentBuffers.revisionForDocument(id)?.revision === revision &&
       !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
     const validate = async () => {
       if (!valid()) return false;
@@ -2862,7 +2908,7 @@ export default function App() {
       }
     };
     return { bytes: disk.bytes, valid, validate };
-  }, [contentOf, flushTab, readBytesVersioned, setDiskState]);
+  }, [documentBuffers, flushTab, readBytesVersioned, setDiskState]);
 
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
@@ -2975,21 +3021,22 @@ export default function App() {
       pdfDeparturesRef.current.add(tab.id);
       try {
         await drain(tab.id);
-        const content = contentOf(path);
+        const revision = documentBuffers.revisionForDocument(tab.id)?.revision;
+        const snapshot = documentBuffers.snapshotForDocument(tab.id)?.data;
         const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
         const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
-        if (outcome === 'failed' || contentOf(path) !== content || getView(path)?.hasPendingEdits?.() ||
+        if (outcome === 'failed' || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || getView(path)?.hasPendingEdits?.() ||
             outcome === 'skipped' && (now.dirty || documentBuffers.isDirty(now.id))) {
-          if (outcome === 'skipped' && !pdfSnapshotRefusal(content ?? '')) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
+          if (outcome === 'skipped' && (typeof snapshot !== 'string' || !pdfSnapshotRefusal(snapshot))) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
           return false;
         }
       } catch (error) { notifyRef.current(`Could not finish PDF annotations: ${describeReadError(error)}`); return false; }
       finally { pdfDeparturesRef.current.delete(tab.id); }
     }
     return true;
-  }, [contentOf, flushTab]);
+  }, [documentBuffers, flushTab]);
 
   // Keep the gesture synchronous for the directory picker/permission prompt.
   // A refused PDF revision stays in its current vault instead of being dropped
@@ -2998,10 +3045,11 @@ export default function App() {
     const tab = tabsRef.current.find(t => t.representation.loadedKind === 'pdf' &&
       (t.dirty || documentBuffers.isDirty(t.id) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
     if (!tab) return true;
-    const refusal = pdfSnapshotRefusal(contentOf(tab.file.path) ?? '');
+    const snapshot = documentBuffers.snapshotForDocument(tab.id)?.data;
+    const refusal = typeof snapshot === 'string' ? pdfSnapshotRefusal(snapshot) : undefined;
     notifyRef.current(refusal ? new PdfBuildRefused(refusal).message : 'Keep this vault open until its PDF annotations are saved. Resolve any notice first, or wait for the pending save.');
     return false;
-  }, [contentOf]);
+  }, [documentBuffers]);
   const pickDirectorySafely = useCallback(() => canLeavePdfVault() ? pickDirectory() : Promise.resolve('busy' as const), [canLeavePdfVault, pickDirectory]);
   const openRecentVaultSafely = useCallback((vault: Parameters<typeof openRecentVault>[0]) => canLeavePdfVault() ? openRecentVault(vault) : Promise.resolve('busy' as const), [canLeavePdfVault, openRecentVault]);
 
@@ -3014,11 +3062,12 @@ export default function App() {
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       documentSessions.release(doc.id, 'tab-close');
+      editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
       void documentSessions.settled(doc.id).then(() => documentBuffers.remove(doc.id));
       bytesGenerationsRef.current.delete(doc.id);
       void recoveryEvent({ type: 'release', documentId: doc.id });
-      pendingRevisionsRef.current.delete(doc.id); syncExitGuard();
+      syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
       clearPdfRotation(doc.id);
       flushReaderViewState(); flushPdfTextViewState();
@@ -3041,7 +3090,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-  }, [clearSaveTimer, documentBuffers, documentSessions, recoveryEvent, syncExitGuard]);
+  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, recoveryEvent, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -3073,8 +3122,8 @@ export default function App() {
     if (keep) {
       const result = await flushTab(path, false, true);
       const tab = tabsRef.current.find(t => t.file.path === path);
-      const revision = tab && pendingRevisionsRef.current.get(tab.id);
-      if (result === 'failed' || (result === 'skipped' && revision && revision.revision > revision.saved)) throw new Error('Could not preserve the overwritten document.');
+      const pending = !!tab && documentSessions.hasPendingEdits(tab.id);
+      if (result === 'failed' || (result === 'skipped' && pending)) throw new Error('Could not preserve the overwritten document.');
     }
     releaseTab(path);
     // Its tab goes too. renamePath would drop it as it re-points the moved
@@ -3135,8 +3184,7 @@ export default function App() {
           return;
         }
         const result = await flushTab(path);
-        const revision = pendingRevisionsRef.current.get(tab.id);
-        const pending = !!revision && revision.revision > revision.saved;
+        const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {
           setLayout(l => openTabIn(l, path));
@@ -3223,6 +3271,7 @@ export default function App() {
       const current = tabsRef.current.find(t => t.id === tab.id);
       if (!current) return false;
       setBaseline(tab.id, version);
+      if (!documentBuffers.get(tab.id)) seedDocumentBuffer(tab.id, current.file.path, content, representationFor(current.file.name).bufferKind === 'text');
       documentBuffers.report(tab.id, content, true);
       documentBuffers.setReadable(tab.id, representationFor(current.file.name).bufferKind === 'text');
       bumpBytesGeneration(tab.id);
@@ -3234,7 +3283,7 @@ export default function App() {
       }
       assetReadableWakeRef.current.add(current.file.path);
       setTabs(prev => prev.map(t =>
-        t.id === tab.id && t.readError ? { ...t, content, readError: undefined, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
+        t.id === tab.id && t.readError ? { ...t, readError: undefined, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
       return true;
     } catch (err) {
       const current = tabsRef.current.find(t => t.id === tab.id);
@@ -3261,7 +3310,7 @@ export default function App() {
     } finally {
       retryingReadsRef.current.delete(tab.id);
     }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration]);
+  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer]);
   // handleFileClick is declared long before this, and reads it through a ref
   // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
@@ -3432,10 +3481,7 @@ export default function App() {
       if (results.some(result => result === 'failed' || result === 'changed' || result === 'deleted')) {
         throw new Error('A document could not be saved; the vault was not switched.');
       }
-      const pending = docs.some(tab => {
-        const revision = pendingRevisionsRef.current.get(tab.id);
-        return !!revision && revision.revision > revision.saved;
-      });
+      const pending = docs.some(tab => documentSessions.hasPendingEdits(tab.id));
       if (!pending && !anyPending()) {
         for (const tab of docs) {
           documentSessions.release(tab.id, 'vault-switch');
@@ -3449,8 +3495,7 @@ export default function App() {
         return;
       }
       if (results.some((result, i) => {
-        const revision = pendingRevisionsRef.current.get(docs[i].id);
-        return result === 'skipped' && !!revision && revision.revision > revision.saved;
+        return result === 'skipped' && documentSessions.hasPendingEdits(docs[i].id);
       })) {
         throw new Error('A document cannot be saved; the vault was not switched.');
       }
@@ -3512,8 +3557,8 @@ export default function App() {
 
   useEffect(() => { notifySearchChanges(); }, [fileTree]);
   const searchBuffers = useCallback(() => tabsRef.current.flatMap(tab => {
-    const revision = pendingRevisionsRef.current.get(tab.id);
-    if (!revision || revision.revision <= revision.saved || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
+    const revision = documentBuffers.revisionForDocument(tab.id);
+    if (!revision || revision.revision <= revision.savedRevision || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
     const text = contentOf(tab.file.path);
     return text === undefined ? [] : [{ path: tab.file.path, revision: revision.revision, text }];
   }), [contentOf]);
@@ -3712,7 +3757,8 @@ export default function App() {
         // single merge and restoreLayout see exactly what they did.
         const readVersions = new Map<PendingRestoreEntry, DiskVersion>();
         await Promise.all(pending.entries.map(async entry => {
-          if (entry.help || entry.dropped) return;
+          if (entry.help) { entry.content = await loadHelpDoc(); return; }
+          if (entry.dropped) return;
           for (;;) {
             // Resolved by the entry's CURRENT path from the vault root, not
             // through the claim-time tree's handle: a rename that already ran
@@ -3814,6 +3860,7 @@ export default function App() {
         // round-trips plus a full refreshTree walk, against a commit already
         // queued — not reachable in practice.)
 
+        if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== currentVaultId || restorePendingRef.current !== pending) return;
         const restored: OpenTab[] = [];
         const origins: string[] = [];
         const relabel = new Map<string, string>();
@@ -3825,7 +3872,9 @@ export default function App() {
         for (const entry of pending.entries) {
           if (claimed.has(entry.path)) continue;
           if (entry.help) {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: await loadHelpDoc(), mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
+            const id = newTabId();
+            seedDocumentBuffer(id, entry.path, entry.content!, true);
+            restored.push({ id, file: { name: 'Help Guide', isHelp: true, path: entry.path }, mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
           } else {
             const node = live.get(entry);
             if (!node) continue;
@@ -3835,9 +3884,11 @@ export default function App() {
               if (version) setBaseline(id, version);
               else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
             }
+            seedDocumentBuffer(id, node.path, entry.readError !== undefined ? '' : entry.content!,
+              entry.readError === undefined && representationFor(node.name).bufferKind === 'text');
             restored.push(entry.readError !== undefined
-              ? { id, file: node, content: '', mode: 'read', dirty: false, readError: entry.readError, representation: representationFor(node.name, false, 0, true) }
-              : { id, file: node, content: entry.content!, mode: 'read', dirty: false, representation: representationFor(node.name) });
+              ? { id, file: node, mode: 'read', dirty: false, readError: entry.readError, representation: representationFor(node.name, false, 0, true) }
+              : { id, file: node, mode: 'read', dirty: false, representation: representationFor(node.name) });
             if (entry.path !== entry.origin) relabel.set(entry.origin, entry.path);
           }
           claimed.add(entry.path);
@@ -3880,7 +3931,8 @@ export default function App() {
         // save after a retry diff every embed as removed. The retry seeds it.
         for (const tab of restored) {
           if (tab.readError) continue;
-          if (!assetRefsRef.current.has(tab.file.path) && !boardBaselinesRef.current.capture(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
+          const data = documentBuffers.snapshotForDocument(tab.id)?.data;
+          if (typeof data === 'string' && !assetRefsRef.current.has(tab.file.path) && !boardBaselinesRef.current.capture(tab.file.path)) rememberAssetRefs(tab.file, data);
         }
         // Which of these shared a column, and which tab each column showed. A
         // session written before the editor had columns has no record of it,
@@ -3925,7 +3977,6 @@ export default function App() {
         // stored for the task or two until the merge's own write. flushSync is
         // not used to close it: only a reload landing in that gap could cost
         // anything.
-        for (const tab of restored) seedDocumentBuffer(tab.id, tab.file.path, tab.content, canReadTabText(tab));
         release();
         setTabs(prev => {
           const open = new Set(prev.map(t => t.file.path));
@@ -4043,7 +4094,6 @@ export default function App() {
     setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
       id,
       file: { name: 'Help Guide', isHelp: true, path },
-      content,
       representation: representationFor('Help Guide', true),
       mode: 'read',
       dirty: false,
@@ -4282,8 +4332,7 @@ export default function App() {
       const saved = await Promise.all(doomedTabs.filter(t => t.representation.loadedKind !== 'pdf').map(t => flushTab(t.file.path, false, true)));
       const savedTabs = doomedTabs.filter(t => t.representation.loadedKind !== 'pdf');
       if (saved.some((result, i) => {
-        const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
-        return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+        return result === 'failed' || (result === 'skipped' && documentSessions.hasPendingEdits(savedTabs[i].id));
       })) return false;
       // …and let the asset reconciles those saves queued run to completion, so
       // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
@@ -4484,8 +4533,7 @@ export default function App() {
             const savedTabs = displacedTabs.filter(t => t.representation.loadedKind !== 'pdf');
             const saved = await Promise.all(savedTabs.map(t => flushTab(t.file.path, false, true)));
             if (saved.some((result, i) => {
-              const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
-              return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+              return result === 'failed' || (result === 'skipped' && documentSessions.hasPendingEdits(savedTabs[i].id));
             })) return { status: 'error' as const };
             // …and re-drain the reconcile queue: the question above took real
             // time, and a retire can have queued a picture move into the very
@@ -4761,7 +4809,7 @@ export default function App() {
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
           && (typeof buffered === 'string' || !buffered || buffered.owner.session !== sessionSource.owner.session || sessionSource.revision > buffered.revision)) {
           documentBuffers.report(doc.id, sessionSource);
-          reportRevision(doc.id);
+          syncExitGuard();
         }
         let replacement: { content: string; readError?: string } | undefined;
         if (changedKind) {
@@ -4832,7 +4880,10 @@ export default function App() {
         bufferPathIdsRef.current.set(dest, doc.id);
         if (changedKind) {
           documentSessions.release(doc.id, 'kind-change');
-          if (replacement) documentBuffers.report(doc.id, replacement.content, true);
+          if (replacement) {
+            if (!documentBuffers.get(doc.id)) seedDocumentBuffer(doc.id, dest, replacement.content, !replacement.readError && representationFor(handle.name).bufferKind === 'text');
+            documentBuffers.report(doc.id, replacement.content, true);
+          }
           documentBuffers.setOwner(doc.id, { documentId: doc.id, session: 0 });
           documentBuffers.setReadable(doc.id, !replacement?.readError && representationFor(handle.name).bufferKind === 'text');
           void recoveryEvent({ type: 'release', documentId: doc.id });
@@ -4845,14 +4896,14 @@ export default function App() {
             // a file carried along by its folder keeps the one it had.
             ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle }, readerCapabilities: undefined,
                 representation: changedKind ? representationFor(handle.name,false,t.representation.generation+1,!!replacement?.readError) : {...t.representation,generation:t.representation.generation+1},
-                ...(replacement ? {...replacement,dirty:false,disk:undefined,mode:'read' as const} : {}), diskRev:(t.diskRev??0)+1 }
+                ...(replacement ? {readError: replacement.readError,dirty:false,disk:undefined,mode:'read' as const} : {}), diskRev:(t.diskRev??0)+1 }
             : t));
         // The layout indexes documents by path too — a tab left pointing at
         // the old one would have no document to draw.
         setLayout(l => renamePath(l, from, dest));
         });
         if (changedKind) {
-          editorStates.delete(`${doc.id}|${from}`);
+          editorStates.delete(doc.id);
           clearPdfRenderData(from);
           assetRefsRef.current.delete(from);
           diskStateRef.current.delete(doc.id);
@@ -4871,7 +4922,7 @@ export default function App() {
       catch (error) { console.error('Could not move recovery records:', error); }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, reportRevision]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard, seedDocumentBuffer]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4954,10 +5005,7 @@ export default function App() {
    *  a write may be in flight, and a canvas keeps strokes in its own debounce
    *  App cannot see (the reporter's hasPendingEdits). */
   const hasUnsaved = useCallback((tab: OpenTab): boolean => {
-    const revision = pendingRevisionsRef.current.get(tab.id);
-    return tab.dirty
-      || documentSessions.hasPendingEdits(tab.id)
-      || !!(revision && revision.revision > revision.saved)
+    return documentSessions.hasPendingEdits(tab.id)
       || saveTimersRef.current.has(tab.file.path)
       || flushingRef.current.has(tab.id)
       || !!getView(tab.file.path)?.hasPendingEdits?.();
@@ -4995,13 +5043,12 @@ export default function App() {
     setBaseline(id, version);
     diskStateRef.current.delete(id);
     pdfRebuildRef.current.delete(id);
-    pendingRevisionsRef.current.delete(id);
     syncExitGuard();
+    if (!documentBuffers.get(id)) seedDocumentBuffer(id, path, text, canReadTabText(tab));
     if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
       // The parked original would otherwise be rebuilt over the new file by
       // the next annotation save.
       if (isPdfFile(file.name)) clearPdfRenderData(path);
-      documentBuffers.open(id, tab.content, canReadTabText(tab));
       documentBuffers.report(id, text, true);
       const existing = documentSessions.get(id);
       if (existing && (isCanvasFile(file.name) || isPdfFile(file.name))) {
@@ -5013,23 +5060,21 @@ export default function App() {
         next.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, next.adapter), dispose => dispose());
       }
       setTabs(prev => prev.map(t => (t.id === id
-        ? { ...t, content: text, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
+        ? { ...t, dirty: false, disk: undefined, pdfRebuild: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
         : t)));
       return;
     }
-    if (!getView(path)?.replaceFromDisk?.(text)) {
-      const key = `${id}|${path}`;
-      const cached = editorStates.get(key);
-      if (cached) {
-        const spec = reloadSpec(cached, text);
-        if (spec) editorStates.set(key, cached.update(spec).state);
-      }
-      updateTabContent(path, text, { fromDisk: true });
-    }
+    const markdown = markdownSessions.get(id);
+    if (markdown) {
+      const spec = reloadSpec(markdown.state, text);
+      if (spec) markdown.dispatch(spec);
+      else updateTabContent(path, markdown.checkpoint(), { fromDisk: true });
+      editorStates.set(id, markdown.state);
+    } else updateTabContent(path, text, { fromDisk: true });
     // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, updateTabContent, rememberAssetRefs, syncExitGuard]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, editorStates, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer]);
 
   /**
    * Follow a rename/move made on disk: open documents, expanded folders, icons,
@@ -5345,8 +5390,14 @@ export default function App() {
      *  with no annotations to rebuild it from. */
     const mine = async (): Promise<string | Uint8Array | null> => {
       await getView(path)?.flushPending?.();
-      const content = contentOf(path) ?? '';
-      if (!isPdf) return content;
+      const snapshot = documentBuffers.snapshotForDocument(id);
+      if (!snapshot) throw new Error('The document buffer is unavailable.');
+      let content = snapshot.data;
+      if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
+        content = await content.run(new AbortController().signal);
+      }
+      if (content instanceof Blob) content = new Uint8Array(await content.arrayBuffer());
+      if (!isPdf || typeof content !== 'string') return content;
       const data = getPdfRenderData(path);
       if (!data) return null;
       const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
@@ -5366,7 +5417,6 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const savedRevision = pendingRevisionsRef.current.get(id)?.revision ?? 0;
         const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
         const data = await mine();
         if (data === null) {
@@ -5389,8 +5439,6 @@ export default function App() {
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
         diskStateRef.current.delete(id);
-        const pendingRevision = pendingRevisionsRef.current.get(id);
-        if (pendingRevision && savedRevision > pendingRevision.saved) pendingRevision.saved = savedRevision;
         if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
         syncExitGuard();
         if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
@@ -5502,7 +5550,7 @@ export default function App() {
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
+        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
       return true;
     } catch (err) {
       console.error('Agent could not open a file:', err);
@@ -5557,7 +5605,7 @@ export default function App() {
       tabs,
       layout,
       mainView,
-      stateCache: editorStates,
+      markdownSessions,
       readFile,
       readFileBytes,
       readFileVersioned,
@@ -5569,7 +5617,6 @@ export default function App() {
       nameTaken,
       contentOf,
       snapshotOf: documentBuffers.snapshotOf,
-      updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
         notifySearchChanges();
@@ -5811,7 +5858,8 @@ export default function App() {
       try {
         const version = await snapshot.fingerprint();
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
-        const bytes = typeof entry.copy === 'string' ? new TextEncoder().encode(entry.copy) : entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+        const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
+        const bytes = typeof copy === 'string' ? new TextEncoder().encode(copy) : copy instanceof Blob ? new Uint8Array(await copy.arrayBuffer()) : copy;
         const copyHash = await hashBytes(bytes);
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
         if (copyHash === version.hash) return 'equal';
@@ -5827,15 +5875,18 @@ export default function App() {
     const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
     if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
     const adapter = recoveryAdapter(tab.id);
-    if (adapter?.recover) { await adapter.recover(entry.payload); return; }
-    if (typeof entry.payload !== 'string' || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
-    if (!getView(entry.path)?.replaceFromDisk?.(entry.payload)) {
-      const key = `${tab.id}|${entry.path}`;
-      const cached = editorStates.get(key);
-      if (cached) { const spec = reloadSpec(cached, entry.payload); if (spec) editorStates.set(key, cached.update(spec).state); }
+    if (adapter?.recover) {
+      await adapter.recover(typeof entry.payload === 'string' ? { kind: 'markdown', text: entry.payload } : entry.payload);
+      return;
     }
-    updateTabContent(entry.path, entry.payload);
-  }, [hasUnsaved, inspectRecovery, editorStates, updateTabContent]);
+    const payload = entry.payload;
+    const recoveredText = typeof payload === 'string' ? payload : payload && typeof payload === 'object' && 'kind' in payload && payload.kind === 'markdown' && 'text' in payload && typeof payload.text === 'string' ? payload.text : undefined;
+    if (recoveredText === undefined || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
+    const expected = contentOf(entry.path), revision = documentBuffers.revisionForDocument(tab.id)?.revision;
+    const { isolateHistory } = await import('@codemirror/commands');
+    if (expected === undefined || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    if (!await markdownSessions.dispatch(tab.id, { changes: { from: 0, to: expected.length, insert: recoveredText }, userEvent: 'input.recover', annotations: isolateHistory.of('full') })) throw new Error('The document changed while recovery was being prepared.');
+  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
     const root = rootHandleRef.current;
@@ -5843,7 +5894,8 @@ export default function App() {
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
     if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
-    const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+    const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
+    const data = copyData instanceof Blob ? new Uint8Array(await copyData.arrayBuffer()) : copyData;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);
@@ -6060,6 +6112,7 @@ export default function App() {
             onExportNotebook={handleExportNotebook}
             onOpenNote={openNoteByName}
             stateCache={editorStates}
+            markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}
             onConfirm={ask}

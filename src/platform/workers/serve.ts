@@ -77,8 +77,10 @@ type Task = {
 function mainMessage(value: unknown): value is MainMessage {
     if (!value || typeof value !== 'object') return false;
     const m = value as Record<string, unknown>;
-    const id = m.id ?? m.cancel ?? m.reprioritise ?? m.pause ?? m.resume;
-    if (m.v !== 1 || !Number.isSafeInteger(id) || (id as number) < 1) return false;
+    const kinds = ['id', 'cancel', 'reprioritise', 'pause', 'resume'].filter(key => key in m);
+    if (m.v !== 1 || kinds.length !== 1) return false;
+    const id = m[kinds[0]];
+    if (!Number.isSafeInteger(id) || (id as number) < 1) return false;
     if ('id' in m) return typeof m.op === 'string' && 'args' in m && isPriority(m.priority)
         && (m.deadlineMs === undefined || (typeof m.deadlineMs === 'number' && Number.isFinite(m.deadlineMs) && m.deadlineMs >= 0));
     return 'cancel' in m || 'pause' in m || 'resume' in m || ('reprioritise' in m && isPriority(m.priority));

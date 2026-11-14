@@ -9,6 +9,7 @@ import { PdfTiledDocumentSession } from './documentSession';
 import type { TiledDocumentPool } from './documentSession';
 import type { PdfTiledSource, PdfTiledSourceFactory } from './hostTypes';
 import { pdfSessionCapturer } from './sessionCapture';
+import { requestPdfPassword } from './passwords';
 
 const sourceSlot = Symbol('tiled PDF source');
 interface Entry {
@@ -56,7 +57,7 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                     void fingerprintSnapshot(blob, requestSignal).then(hash => {
                         if (current(token)) holder.binding.onReaderVersion(holder.binding.identity, { ...stat, hash });
                     }).catch(() => {});
-                });
+                }, requestPdfPassword);
                 entry = { token, session, get binding() { return holder.binding; }, set binding(value) { holder.binding = value; } };
                 identity.setSlot(sourceSlot, entry, old => old.session.close());
             } else entry.binding = reading;

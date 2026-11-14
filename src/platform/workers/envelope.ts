@@ -104,6 +104,7 @@ export function isPriority(value: unknown): value is Priority {
 
 export function isWorkerMessage(value: unknown): value is WorkerMessage {
     if (!record(value) || value.v !== 1) return false;
+    if (['hello', 'id', 'event'].filter(key => key in value).length !== 1) return false;
     if ('hello' in value) {
         const h = value.hello;
         return record(h) && Number.isInteger(h.protocol) && typeof h.buildId === 'string'

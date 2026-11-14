@@ -11,3 +11,12 @@ export function installPdfTiledSourceFactory(next: PdfTiledSourceFactory): () =>
 }
 
 export function getPdfTiledSourceFactory(): PdfTiledSourceFactory | undefined { return factory; }
+
+/** The host is fetched only for an explicitly selected tiled document (C6.1). */
+export async function ensurePdfTiledSourceFactory(): Promise<PdfTiledSourceFactory> {
+    if (factory) return factory;
+    const { startPdfPool } = await import('./startup');
+    startPdfPool();
+    if (!factory) throw new Error('The contained PDF engine is unavailable');
+    return factory;
+}

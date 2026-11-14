@@ -158,9 +158,9 @@ discipline**, so a single new import undoes it silently:
   at its write sites; pdf-lib itself (`pdfBuild.ts`, `pdfRotate.ts`) is imported only by the worker.
 - Reader (pdf.js) and writer (pdf-lib) **never import each other** — they share names via `pdfFormat`.
 - The writer runs in a **DOM-less Web Worker**, so `pdfBuild.ts` must never reach for the DOM.
-- `PdfPane` and `CanvasPane` are `React.lazy` in `EditorPane`, `PdfAnnotateCanvas` is `React.lazy` in
-  `PdfPane`, and `DrawingPane`/`NotebookPane` are `React.lazy` in `CanvasPane` — so viewing a PDF
-  never pulls in tldraw.
+- `PdfPane` uses the demand/idle-shared resolved-component cache in `pdfPaneModule`; `CanvasPane`
+  remains `React.lazy` in `EditorPane`. `PdfAnnotateCanvas` is `React.lazy` in `PdfPane`, and
+  `DrawingPane`/`NotebookPane` are `React.lazy` in `CanvasPane` — viewing a PDF never pulls in tldraw.
 - `components/canvasAgentOps.ts` (the AI agent's hands on a canvas) imports tldraw: ONLY the three
   canvas panes may import it. `utils/pdfText.ts` (closed-PDF text/render for the agent) imports pdf.js
   and is reached only through `import('./pdfText')`. `utils/canvasViewState.ts`, like

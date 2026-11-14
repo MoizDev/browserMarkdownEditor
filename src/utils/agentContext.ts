@@ -273,7 +273,7 @@ async function pdfPagesText(view: ViewReporter, pages: number[], budget: number)
     const got = await withTimeout(view.pdfText(wanted), PDF_TEXT_TIMEOUT_MS);
     if (!got) return 'Text of the pages on screen: could not be extracted in time (read it with vault_read).';
     const parts = got.sort((a, b) => a.page - b.page)
-        .map(p => `--- page ${p.page} ---\n${p.text.trim() || '(no text on this page — a scan or a drawing; see the picture or vault_view)'}`);
+        .map(p => `--- page ${p.page} ---\n${p.quality === 'partial' ? `[Extraction warning: ${p.warnings?.join(' ') || 'Text may be incomplete or out of order.'}]\n` : ''}${p.text.trim() || '(no text on this page — a scan or a drawing; see the picture or vault_view)'}`);
     if (pages.length > wanted.length) parts.push(`(pages ${pageList(pages.filter(p => !wanted.includes(p)))} are also on screen)`);
     return fit(`Text of the pages on screen:\n${parts.join('\n')}`, budget);
 }

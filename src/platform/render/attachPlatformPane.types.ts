@@ -29,11 +29,17 @@ export interface PlatformPaneOptions<T extends object> {
     readonly paneId: string;
     readonly viewLease: number;
     readonly documentToken: RenderToken;
-    readonly session: { readonly mirrors: MirrorSet<T> | null; checkpoint(): void };
+    readonly session: {
+        readonly mirrors: MirrorSet<T> | null;
+        checkpoint(): void;
+        captureRegion?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
+    };
     readonly layers: readonly PlatformLayerDefinition[];
     readonly initialVisible: boolean;
     readonly initialFocused: boolean;
     readonly layout: Readonly<PageStack> | null;
+    /** Optional immutable layout snapshot for page/sheet changes after attachment. */
+    readLayout?(): Readonly<PageStack> | null;
     readAppearance(): CompositorAppearance;
     currentToken(): RenderToken | null;
     readCamera(): Camera;

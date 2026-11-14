@@ -11,7 +11,7 @@ import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
-import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
+import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fileTypes';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
 import type { NativeCanvasHost } from '../types/nativeCanvas';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
@@ -1093,7 +1093,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 out: their slot draws the retry message, and a float would cover
                 it. */}
             {tabs.filter(t => !t.file.isHelp && !t.readError
-                && (isDrawingFile(t.file.name) || isNotebookFile(t.file.name))).map(tab => {
+                && (t.representation.loadedKind === 'drawing' || t.representation.loadedKind === 'notebook')).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
                 const data = documentBuffers.snapshotForDocument(tab.id)?.data;

@@ -560,6 +560,7 @@ export interface FileSystemContextValue {
  *  so the tab stays clean and nothing is scheduled to be written. */
 export interface ContentChangeOptions {
   fromDisk?: boolean;
+  fromJournal?: boolean;
 }
 
 /** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and

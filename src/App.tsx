@@ -1225,6 +1225,26 @@ export default function App() {
           return bytes;
         } finally { snapshot.dispose(); }
       },
+      async appendJournal(identity, source, capture) {
+        if (!current(identity) || !writable(identity) || typeof source === 'string'
+          || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
+          || !documentSessions.isLiveOwner(identity.documentId, source.owner)) {
+          throw new DOMException('Canvas session ended or read-only', 'AbortError');
+        }
+        const prior = documentBuffers.get(identity.documentId)?.source;
+        if (sourceIsNewer(source, prior)) sessionReportRef.current(identity.documentId, source, { fromJournal: true });
+        const tab = current(identity), buffered = documentBuffers.get(identity.documentId);
+        if (!tab || !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
+        if (!buffered || typeof buffered.source === 'string' || buffered.source.kind !== source.kind
+          || buffered.source.owner.documentId !== source.owner.documentId || buffered.source.owner.session !== source.owner.session
+          || buffered.source.revision !== source.revision) return;
+        const baseline = getBaseline(identity.documentId), vaultId = currentVaultIdRef.current;
+        if (!baseline || !vaultId) throw new Error('Recovery baseline is unavailable');
+        void recoveryEvent({ type: 'change', documentId: identity.documentId, vaultId, path: tab.file.path,
+          fingerprint: baseline.hash, kind: tab.representation.loadedKind, revision: buffered.revision, capture: () => capture });
+        void recoveryEvent({ type: 'checkpoint', documentId: identity.documentId });
+        await recoveryJournal.flush();
+      },
       async readMedia(identity, media, signal) {
         const found = await readBoardAsset(request(identity, media, signal));
         if (!found) return null;
@@ -1240,7 +1260,7 @@ export default function App() {
         return name;
       },
     };
-  }, [documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset]);
+  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, recoveryEvent, recoveryJournal]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
@@ -2865,6 +2885,13 @@ export default function App() {
       } catch { /* Measurement must not interrupt a content report. */ }
     }
     if (!accepted) return;
+    const prior = documentBuffers.get(target.id)?.source;
+    if (!options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
+      && prior.owner.documentId === content.owner.documentId && prior.owner.session === content.owner.session
+      && content.revision <= prior.revision) {
+      if (content.revision === prior.revision && !options?.fromJournal) scheduleSave(path);
+      return;
+    }
     assetReferenceRevisionRef.current++;
     const wasDirty = documentBuffers.isDirty(target.id);
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk, !options?.fromDisk);
@@ -2895,7 +2922,7 @@ export default function App() {
     if (!wasDirty || target.representation.loadedKind === 'pdf' && target.representation.bufferKind !== 'annotationSnapshot') {
       setTabs(prev => prev.map(t => t.id === target.id && !t.readError ? { ...t, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     }
-    scheduleSave(path);
+    if (!options?.fromJournal) scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);

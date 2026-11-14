@@ -1,7 +1,11 @@
 import { EditorView, Decoration, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { countEditorTransaction, measureEditorRender } from './editorPerf';
+import { countEditorSlice, countEditorTransaction, measureEditorRender } from './editorPerf';
+import { docAnalysisField } from './docAnalysis';
+import { planPreviewWindows } from './livePreviewWindows';
+import type { PreviewWindow } from './livePreviewWindows';
+import { incrementalEditorEnabled } from '../utils/engineRouting';
 import type { SyntaxNode } from '@lezer/common';
 import { EditorSelection, Facet, Prec, RangeSet, RangeValue, StateField } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
@@ -306,6 +310,7 @@ interface LivePreview {
     images: readonly { from: number; to: number }[];
     tables: readonly { from: number; to: number }[];
     tableSelected: boolean;
+    analysisRev: number;
 }
 
 /**
@@ -335,7 +340,17 @@ function cursorOnLine(state: EditorState, from: number, to: number): boolean {
  * The Live Preview plugin — hides markdown syntax when cursor is away
  * and renders styled content, KaTeX math widgets, and Image widgets.
  */
-function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: EditorMode): LivePreview {
+function previewSlice(state: EditorState, from: number, to: number): string {
+    if (__BME_BENCH__) countEditorSlice(to - from);
+    return state.sliceDoc(from, to);
+}
+
+function* inWindow<T extends { from: number; to: number }>(items: readonly T[], window: PreviewWindow): Iterable<T> {
+    for (let i = firstRangeEndingAfter(items, window.from); i < items.length && items[i].from < window.to; i++) yield items[i];
+}
+
+function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: EditorMode,
+    window: PreviewWindow = { from: 0, to: view.state.doc.length + 1 }): LivePreview {
     const { state } = view;
     const decorations: Range<Decoration>[] = [];
     const atoms: Range<AtomicRange>[] = [];
@@ -360,6 +375,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const intersectsCode = (a: number, b: number) => overlapsRange(codeRanges, a, b);
 
     syntaxTree(state).iterate({
+        from: window.from, to: Math.min(state.doc.length, window.to),
         enter(node) {
             const { type, from, to } = node;
             const name = type.name;
@@ -481,7 +497,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
             // === INLINE CODE ===
             if (name === 'InlineCode') {
                 // Find backtick boundaries
-                const content = state.doc.sliceString(from, to);
+                const content = previewSlice(state, from, to);
                 const openTicks = content.match(/^`+/)?.[0].length || 1;
                 const closeTicks = openTicks;
 
@@ -522,7 +538,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 if (lang === 'mermaid' && closed && (editorMode === 'read' || !cursorOnLine(state, from, to))) {
                     const firstContent = startLine.number + 1, lastContent = endLine.number - 1;
                     const code = firstContent <= lastContent
-                        ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
+                        ? previewSlice(state, state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
                     if (code.trim()) {
                         decorations.push(
                             Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
@@ -542,7 +558,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 // included, so the block reads as ONE rectangle whose (hidden)
                 // fence rows double as top/bottom padding. Start/end classes
                 // round just the outer corners.
-                for (let i = startLine.number; i <= endLine.number; i++) {
+                for (let i = Math.max(startLine.number, state.doc.lineAt(window.from).number);
+                    i <= Math.min(endLine.number, state.doc.lineAt(Math.min(state.doc.length, window.to - 1)).number); i++) {
                     const line = state.doc.line(i);
                     const bits = (i === startLine.number ? 1 : 0) | (i === endLine.number ? 2 : 0);
                     decorations.push(CODEBLOCK_LINE[bits].range(line.from));
@@ -694,7 +711,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 // level further out — see insideLinkLabel.
                 if (insideLinkLabel(node.node)) return false;
 
-                const href = externalHref(state.doc.sliceString(from, to));
+                const href = externalHref(previewSlice(state, from, to));
                 if (href) decorations.push(externalLinkMark(href).range(from, to));
                 return false;
             }
@@ -707,7 +724,8 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 const startLine = state.doc.lineAt(from).number;
                 const endLine = state.doc.lineAt(to).number;
 
-                for (let i = startLine; i <= endLine; i++) {
+                for (let i = Math.max(startLine, state.doc.lineAt(window.from).number);
+                    i <= Math.min(endLine, state.doc.lineAt(Math.min(state.doc.length, window.to - 1)).number); i++) {
                     const line = state.doc.line(i);
                     const lineText = line.text;
                     const quotePrefix = lineText.match(/^>\s?/);
@@ -808,9 +826,9 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // Regions come from findMathRegions (computed above). Cursor outside →
     // rendered KaTeX widget; cursor inside → the raw source stays visible and
     // gets Obsidian-style LaTeX syntax highlighting in Fira Code.
-    for (const region of mathRegions) {
+    for (const region of inWindow(mathRegions, window)) {
         if (editorMode !== 'read' && cursorInRange(state, region.from, region.to)) {
-            decorations.push(...latexSourceDecorations(state.sliceDoc(region.from, region.to), region.from));
+            decorations.push(...latexSourceDecorations(previewSlice(state, region.from, region.to), region.from));
             continue;
         }
         decorations.push(
@@ -823,10 +841,10 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
     // you can see whether the next keystroke lands inside math mode.
     if (editorMode !== 'read') {
-        for (const match of analysis.lines.dollars) {
+        for (const match of inWindow(analysis.lines.dollars, window)) {
             const { from, to } = match;
             if ((to - from) % 2 !== 0) continue;
-            if (state.sliceDoc(Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
+            if (previewSlice(state, Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
             if (intersectsMath(from, to)) continue;
             if (intersectsCode(from, to)) continue;
             decorations.push(LATEX_DELIM.range(from, to));
@@ -835,7 +853,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
     // === HIGHLIGHTS (==text==) ===
     // Matches: ==highlighted text==
-    for (const match of analysis.lines.highlights) {
+    for (const match of inWindow(analysis.lines.highlights, window)) {
         const { from, to } = match;
 
         if (intersectsMath(from, to)) continue;
@@ -871,7 +889,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const images: { from: number; to: number }[] = [];
     const tables: { from: number; to: number }[] = [];
     let tableSelected = false;
-    for (const match of analysis.objects.embeds) {
+    for (const match of inWindow(analysis.objects.embeds, window)) {
         const { from, to, filename, width } = match;
 
         if (!match.accepted) continue;
@@ -896,7 +914,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // === WIKILINKS (Obsidian Syntax) ===
     // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
     // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
-    for (const match of analysis.lines.wikilinks) {
+    for (const match of inWindow(analysis.lines.wikilinks, window)) {
         if (match.groups[0] === '!') continue; // image embed, not a note link
 
         const { from, to } = match;
@@ -947,7 +965,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // the atom below and the editable widget in step: an atomic, never-revealed
     // range with no contenteditable cell in it would be a block of the user's
     // own text with no way to put a caret in it at all.
-    for (const span of analysis.objects.tables) {
+    for (const span of inWindow(analysis.objects.tables, window)) {
         // A table written inside code is being QUOTED, not tabulated — and it
         // matters more here than for any other construct, exactly as it does
         // for images: an object that is never revealed and whose range is
@@ -967,7 +985,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         tableSelected ||= selected;
         decorations.push(
             Decoration.replace({
-                widget: new TableWidget(state.sliceDoc(span.from, span.to), editable, selected,
+                widget: new TableWidget(previewSlice(state, span.from, span.to), editable, selected,
                     state.facet(readingEmphasisFacet)),
             }).range(span.from, span.to)
         );
@@ -976,17 +994,18 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     }
 
     return {
-        deco: Decoration.set(decorations, true),
+        deco: Decoration.set(decorations.filter(range => range.from >= window.from && range.from < window.to), true),
         // SORTED: images and tables are each a left-to-right pass, but tables
         // are appended after images, so the two runs interleave in the document
         // and the combined array is not in order. (This comment used to say the
         // opposite and was right at the time — it is exactly the kind of stale
         // claim that would make a later reader delete the `true`.)
-        atoms: RangeSet.of(atoms, true),
+        atoms: RangeSet.of(atoms.filter(range => range.from >= window.from && range.from < window.to), true),
         imageSelected,
         images,
         tables,
         tableSelected,
+        analysisRev: analysis.rev,
     };
 }
 
@@ -1151,6 +1170,33 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
     return result;
 }
 
+function splicePreview(previous: LivePreview, tr: Transaction, windows: readonly PreviewWindow[],
+    parts: readonly LivePreview[], imageCtx: ImageContext, editorMode: EditorMode): LivePreview {
+    let deco = previous.deco.map(tr.changes), atoms = previous.atoms.map(tr.changes);
+    let images = previous.images.map(span => ({ from: tr.changes.mapPos(span.from, 1), to: tr.changes.mapPos(span.to, -1) }));
+    let tables = previous.tables.map(span => ({ from: tr.changes.mapPos(span.from, 1), to: tr.changes.mapPos(span.to, -1) }));
+    for (let i = 0; i < windows.length; i++) {
+        const w = windows[i], part = parts[i], limit = Math.min(tr.state.doc.length, w.to);
+        const additions: Range<Decoration>[] = [], atomAdditions: Range<AtomicRange>[] = [];
+        part.deco.between(w.from, limit, (from, to, value) => { additions.push(value.range(from, to)); });
+        part.atoms.between(w.from, limit, (from, to, value) => { atomAdditions.push(value.range(from, to)); });
+        const keep = (from: number) => from < w.from || from >= w.to;
+        deco = deco.update({ filterFrom: w.from, filterTo: limit, filter: keep, add: additions, sort: true });
+        atoms = atoms.update({ filterFrom: w.from, filterTo: limit, filter: keep, add: atomAdditions, sort: true });
+        images = images.filter(span => keep(span.from)).concat(part.images.filter(span => !keep(span.from)));
+        tables = tables.filter(span => keep(span.from)).concat(part.tables.filter(span => !keep(span.from)));
+    }
+    images.sort((a, b) => a.from - b.from); tables.sort((a, b) => a.from - b.from);
+    const selection = tr.state.selection.main;
+    const atSelection = (spans: readonly { from: number; to: number }[]) => {
+        const i = firstRangeEndingAfter(spans, Math.max(-1, selection.from - 1));
+        const span = spans[i];
+        return !!span && span.from === selection.from && span.to === selection.to;
+    };
+    return { deco, atoms, images, tables, imageSelected: imageCtx.editable && atSelection(images),
+        tableSelected: editorMode !== 'read' && atSelection(tables), analysisRev: tr.state.field(docAnalysisField).rev };
+}
+
 // The field survives compartment reconfiguration and cached-state adoption.
 // Context objects are stable per pane and mode; equal identities need no work.
 export const imageContextFacet = Facet.define<ImageContext, ImageContext | null>({
@@ -1164,7 +1210,7 @@ export const livePreviewField = StateField.define<LivePreview>({
             const imageCtx = state.facet(imageContextFacet)!;
             const editorMode = modeOf(state);
             if (__BME_BENCH__) {
-                return measureEditorRender(state, true, () => buildDecorations(viewShim, imageCtx, editorMode));
+                return measureEditorRender(state, 'create', state.doc.length, () => buildDecorations(viewShim, imageCtx, editorMode));
             }
             return buildDecorations(viewShim, imageCtx, editorMode);
         },
@@ -1186,11 +1232,26 @@ export const livePreviewField = StateField.define<LivePreview>({
             // Restating the same selection cannot change a construct's reveal state.
             const selectionChanged = editorMode !== 'read' && !tr.state.selection.eq(tr.startState.selection);
             if (tr.docChanged || treeAdvanced || selectionChanged || modeChanged) {
-                const viewShim = { state: tr.state };
-                if (__BME_BENCH__) {
-                    return measureEditorRender(tr.state, false, () => buildDecorations(viewShim, imageCtx, editorMode));
+                const state = tr.state, viewShim = { state };
+                const full = (reason: 'mode' | 'coverage' | 'revGap' | 'error') => __BME_BENCH__
+                    ? measureEditorRender(state, reason, state.doc.length, () => buildDecorations(viewShim, imageCtx, editorMode))
+                    : buildDecorations(viewShim, imageCtx, editorMode);
+                if (modeChanged) return full('mode');
+                if (!incrementalEditorEnabled() || imageCtx !== tr.startState.facet(imageContextFacet) ||
+                    state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) return full('coverage');
+                const analysis = state.field(docAnalysisField, false);
+                if (!analysis || analysis.rev < decorations.analysisRev || analysis.rev > decorations.analysisRev + 1 ||
+                    (analysis.rev !== decorations.analysisRev && analysis.delta?.forRev !== analysis.rev)) return full('revGap');
+                try {
+                    const windows = planPreviewWindows(tr, analysis, editorMode !== 'read', analysis.rev !== decorations.analysisRev);
+                    if (windows.reduce((sum, window) => sum + window.to - window.from, 0) > (state.doc.length + 1) / 2) return full('coverage');
+                    const parts = windows.map(window => __BME_BENCH__
+                        ? measureEditorRender(state, null, window.to - window.from, () => buildDecorations(viewShim, imageCtx, editorMode, window))
+                        : buildDecorations(viewShim, imageCtx, editorMode, window));
+                    return splicePreview(decorations, tr, windows, parts, imageCtx, editorMode);
+                } catch {
+                    return full('error');
                 }
-                return buildDecorations(viewShim, imageCtx, editorMode);
             }
             if (imageCtx !== tr.startState.facet(imageContextFacet)) {
                 let deco = decorations.deco;

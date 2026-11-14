@@ -352,7 +352,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
+    clearLatches: () => { services.textInput?.cancelPending(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
       if (id === 'escape') {

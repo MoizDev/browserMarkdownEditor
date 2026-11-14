@@ -245,9 +245,15 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
                 let centre: Vec2;
                 try {
-                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-                    for (const id of ids) { const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
-                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
+                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visited = 0;
+                    for (const id of ids) {
+                        const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+                        if (++visited % 128 === 0) {
+                            await new Promise<void>(resolve => setTimeout(resolve, 0));
+                            if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+                        }
+                    }
                     centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
                 } finally { scope.release(); }
                 if (!active()) return;

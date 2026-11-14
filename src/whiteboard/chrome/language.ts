@@ -6,11 +6,11 @@ export interface LanguageTable {
     readonly strings: Readonly<Record<string, string>>;
 }
 
-export interface BoardLocale { readonly code: string; readonly name: string; readonly dir: 'ltr' | 'rtl' }
+export interface BoardLocale { readonly code: string; readonly name: string; readonly dir: 'ltr' | 'rtl'; readonly ready: boolean }
 export const boardLocales: readonly BoardLocale[] = locales as readonly BoardLocale[];
 const files = import.meta.glob<{ default: LanguageTable }>('./i18n/*.json');
 export function availableBoardLocales(): readonly BoardLocale[] {
-    return boardLocales.filter(locale => !!files[`./i18n/${locale.code}.json`]);
+    return boardLocales.filter(locale => locale.ready && !!files[`./i18n/${locale.code}.json`]);
 }
 const cache = new Map<string, Promise<LanguageTable>>();
 
@@ -20,7 +20,7 @@ function parameters(text: string): string[] {
 
 async function fetchTable(code: string): Promise<LanguageTable> {
     const load = files[`./i18n/${code}.json`];
-    if (!load || !boardLocales.some(item => item.code === code)) throw new RangeError(`Unsupported board language: ${code}`);
+    if (!load || !boardLocales.some(item => item.code === code && item.ready)) throw new RangeError(`Unsupported board language: ${code}`);
     const value = (await load()).default;
     if (!value || !value.strings || !Array.isArray(value.englishTerms) || (value.dir !== 'ltr' && value.dir !== 'rtl')) {
         throw new Error(`Invalid board language table: ${code}`);

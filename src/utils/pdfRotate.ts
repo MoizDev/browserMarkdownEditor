@@ -35,7 +35,15 @@ export async function rotatePdfPages(
     // them), and pdf-lib's load() only reads its input — see the ownership note
     // in pdfBuild.buildAnnotatedPdf. The copy this replaces was a whole extra
     // document, 220MB for the largest textbook measured.
-    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, ...LOAD_WITHOUT_TICKS });
+    let doc: PDFDocument;
+    try {
+        doc = await PDFDocument.load(bytes, LOAD_WITHOUT_TICKS);
+    } catch (error) {
+        if (error instanceof Error && error.message.toLowerCase().includes('encrypted')) {
+            throw new Error('This PDF is encrypted. It has not been changed.');
+        }
+        throw error;
+    }
     const pages = doc.getPages();
     if (!pages.length) throw new Error('This PDF has no pages to rotate.');
 

@@ -66,7 +66,7 @@ export async function prepareRaster(
         let path = geometry.get(key)
         if (!path) {
           const job = item.kind === 'ink'
-            ? new InkPath2dJob(item.coverage, itemScale, [item.coverage.boundsLocal.x, item.coverage.boundsLocal.y])
+            ? new InkPath2dJob(item.coverage, itemScale, [item.coverage.boundsLocal.x, item.coverage.boundsLocal.y], Number.MAX_SAFE_INTEGER)
             : new Path2dJob(item.d, origin(item.d))
           path = await finishPath(job, signal)
           geometry.set(key, path)

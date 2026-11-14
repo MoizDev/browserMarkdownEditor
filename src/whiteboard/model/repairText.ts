@@ -1,7 +1,6 @@
 import type { Block, BlockCarrier, Marks, RichText, Run } from '../text/richText';
 import { projectBlockCarrier } from './projectCarrierRanges';
 import { validBlockCarrier } from './validate';
-import { NODE_FILE_FIELDS } from './fileFields';
 import type { RawJson } from './json';
 import type { LoadRepairNotice } from './loadTypes';
 import type { NodeRecord } from './nodes';
@@ -189,7 +188,10 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
             if (key && Reflect.get(node, key) !== null) {
                 const fixed = await repair(Reflect.get(node, key));
                 if (fixed.changed) {
-                    if (NODE_FILE_FIELDS[key].some(token => node.ext?.raw.has(token))) return { nodes, changedOrdinals: new Set(), notices: [], readOnlyReason: `Repair would override preserved ${key} on ${node.id}` };
+                    // Plan document-model §9.3: a preserved raw token is the write authority until the user sets
+                    // this property (change/apply drops it), so the repaired rich text is only the in-memory
+                    // projection that drawing and editing read. Refusing the board here would make a malformed
+                    // rich text read-only for a repair the plan defines as formatting-only (§9.2).
                     node = { ...node, [key]: fixed.value } as NodeRecord;
                     changed.add(i); notices.push({ code: 'rich-text', count: 1, nodeIds: [node.id] });
                     if (fixed.replacements) notices.push({ code: 'rich-text-replaced-surrogates', count: fixed.replacements, nodeIds: [node.id] });

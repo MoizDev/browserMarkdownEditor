@@ -34,7 +34,14 @@ export interface SampleLease {
     release(): void; // Idempotent; live nodes, history and snapshots each own their lease.
 }
 
+export interface SampleSummary {
+    readonly localBounds: readonly [x: number, y: number, w: number, h: number];
+    readonly maxPressure: number | null;
+}
+
 export interface SampleStoreReader {
+    /** Sealed conservative metadata only; never forces native-point decoding. */
+    summary?(ref: SampleRef): SampleSummary | null;
     has(ref: SampleRef): boolean;
     count(ref: SampleRef): number;
     pressureMode(ref: SampleRef): 'real' | 'none'; // Sealed metadata; no view allocation or decode.

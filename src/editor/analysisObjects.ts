@@ -94,29 +94,46 @@ function embedsFor(doc: Text, openers: readonly number[], terms: readonly number
 interface RegexLine { from: number; to: number; text: string }
 
 // Regex ^/m also sees U+2028 and U+2029, unlike CodeMirror's line model.
-function regexLine(doc: Text, pos: number): RegexLine {
-    const line = doc.lineAt(Math.max(0, Math.min(pos, doc.length)));
-    const at = Math.min(pos - line.from, line.text.length);
-    let from = at;
-    while (from > 0 && line.text[from - 1] !== '\u2028' && line.text[from - 1] !== '\u2029') from--;
-    let to = at;
-    while (to < line.text.length && line.text[to] !== '\u2028' && line.text[to] !== '\u2029') to++;
-    return { from: line.from + from, to: line.from + to, text: line.text.slice(from, to) };
+// Cache each CM line's separators: repeatedly slicing a single long CM line
+// with thousands of regex lines would otherwise make a region walk quadratic.
+function regexLines(doc: Text): (pos: number) => RegexLine {
+    const cache = new Map<number, { text: string; separators: number[] }>();
+    return position => {
+        const pos = Math.max(0, Math.min(position, doc.length));
+        const line = doc.lineAt(pos);
+        let entry = cache.get(line.from);
+        if (!entry) {
+            const text = line.text, separators: number[] = [];
+            for (let i = 0; i < text.length; i++) if (text[i] === '\u2028' || text[i] === '\u2029') separators.push(i);
+            entry = { text, separators };
+            cache.set(line.from, entry);
+        }
+        const at = Math.min(pos - line.from, entry.text.length);
+        let lo = 0, hi = entry.separators.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (entry.separators[mid] < at) lo = mid + 1; else hi = mid;
+        }
+        const from = lo ? entry.separators[lo - 1] + 1 : 0;
+        const to = entry.separators[lo] ?? entry.text.length;
+        return { from: line.from + from, to: line.from + to, text: entry.text.slice(from, to) };
+    };
 }
 
 function isBarrier(line: string): boolean {
-    return !line.startsWith('|') && !/^[\s:|\-]*$/.test(line);
+    return !line.startsWith('|') && !/^[\s:|-]*$/.test(line);
 }
 
-function tableRegion(doc: Text, pos: number): CharRange {
-    let line = regexLine(doc, pos), from = line.from, to = line.to;
+function tableRegion(doc: Text, lineAt: (pos: number) => RegexLine, pos: number): CharRange {
+    const line = lineAt(pos);
+    let from = line.from, to = line.to;
     while (from > 0) {
-        const previous = regexLine(doc, from - 1);
+        const previous = lineAt(from - 1);
         if (isBarrier(previous.text)) break;
         from = previous.from;
     }
     while (to < doc.length) {
-        const next = regexLine(doc, to + 1);
+        const next = lineAt(to + 1);
         if (isBarrier(next.text)) { to = next.from; break; }
         to = next.to;
     }
@@ -173,10 +190,11 @@ export function updateObjects(previous: ObjectScans, oldDoc: Text, doc: Text, ch
     }
     const embeds = embedsFor(doc, openers, terminators, tails, code, math, reusable);
 
-    const oldWindows = mergeRanges(edits.map(c => ({ from: tableRegion(oldDoc, c.fromA).from, to: tableRegion(oldDoc, c.toA).to })));
+    const oldLines = regexLines(oldDoc), newLines = regexLines(doc);
+    const oldWindows = mergeRanges(edits.map(c => ({ from: tableRegion(oldDoc, oldLines, c.fromA).from, to: tableRegion(oldDoc, oldLines, c.toA).to })));
     const newWindows = mergeRanges(oldWindows.map(window => {
         const from = changes.mapPos(window.from, -1), to = changes.mapPos(window.to, 1);
-        return { from: tableRegion(doc, from).from, to: tableRegion(doc, to).to };
+        return { from: tableRegion(doc, newLines, from).from, to: tableRegion(doc, newLines, to).to };
     }));
     const kept = previous.tables.filter(table => !oldWindows.some(window => table.from < window.to && table.to > window.from))
         .map(table => {

@@ -108,6 +108,19 @@ third-party code included (normally "none") · date.
 | `import/records/common.ts` | w-o | IMP-1, IMP-3 | import §§2–3; current-format §2 | Observed shape and backdrop layout | none | 2026-11-13 |
 | `import/records/sheets.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed page and metadata fields | none | 2026-11-13 |
 | `import/records/stroke.ts` | w-o | IMP-1/2, E-IMP-15 | import §3; geometry §3.2 | Observed segment/style fields and documented width table; public sample model | none | 2026-11-13 |
+| `import/records/basic.ts` | w-o | IMP-1 | import §3; current-format §2 | Documented group, frame, embed and line records | none | 2026-11-13 |
+| `import/records/bindings.ts` | w-o | IMP-1, E-IMP-5 | import §§3,6 | Documented connector bindings and dangling-target rule | none | 2026-11-13 |
+| `import/records/fields.ts` | w-o | IMP-1, E-IMP-3 | import §§2–3,6 | Observed properties and unknown-field refusal | none | 2026-11-13 |
+| `import/records/labelled.ts` | w-o | IMP-1 | import §3; geometry §3.2 | Documented figure, text, note and connector fields; rich reader injected | none | 2026-11-13 |
+| `import/records/media.ts` | w-o | IMP-1, E-IMP-6 | import §3; security §4 | Inline asset format and w-q SEC-W4 admission seam | none | 2026-11-13 |
+| `import/records/pictures.ts` | w-o | IMP-1 | import §3; current-format §2 | Observed picture, video and bookmark fields | none | 2026-11-13 |
+| `import/records/view.ts` | w-o | IMP-1 | import §3; current-format §§2,6 | Documented session, camera and UI fields | none | 2026-11-13 |
+| `import/scale.ts` | w-o | IMP-3, E-IMP-9 | import §3.1; contracts C2.3 | Uniform page-local transformation of public model records | none | 2026-11-13 |
+| `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
+| `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
+| `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | Documented record families, report and host admission contracts | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source retention, ordered draft and model admission | none | 2026-11-13 |
 
 ## Export and whiteboard host (lane w-k)
 

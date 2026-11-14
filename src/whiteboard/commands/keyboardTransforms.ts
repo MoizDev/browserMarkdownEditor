@@ -56,8 +56,11 @@ export function createBoardKeyboardTransforms(options: BoardKeyboardTransformOpt
                     if (![centre.x, centre.y].every(Number.isFinite)) throw new RangeError('Invalid rotation centre');
                 } finally { scope.release(); }
                 const radians = (clockwise ? 1 : -1) * Math.PI / (fine ? 192 : 12);
-                const radius = Math.max(1, Math.abs(centre.x) * Number.EPSILON * 8, Math.abs(centre.y) * Number.EPSILON * 8);
+                const radius = Math.max(1, Math.abs(centre.x) * Number.EPSILON * 256, Math.abs(centre.y) * Number.EPSILON * 256);
                 const down = { x: centre.x + radius, y: centre.y }, pointer = { x: centre.x + radius * Math.cos(radians), y: centre.y + radius * Math.sin(radians) };
+                const realised = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
+                if (![down.x, down.y, pointer.x, pointer.y].every(Number.isFinite) || Math.abs(realised - radians) > 1e-6 * Math.abs(radians))
+                    throw new RangeError('Keyboard rotation cannot be represented at this coordinate magnitude');
                 const plan = await createBoardRotationPlan({ runtime, ids: selected, centre, down, orientation: 0,
                     current: stable, signal, cooperate: options.cooperate });
                 try { const preview = await plan.preview(pointer, false, signal); plan.commit(preview); }

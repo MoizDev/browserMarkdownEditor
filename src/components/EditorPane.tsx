@@ -1164,6 +1164,7 @@ export default function EditorPane({ reading, tabs, closingDocumentIds, layout, 
                         <CanvasPane
                             file={tab.file}
                             documentId={tab.id}
+                            representation={tab.representation}
                             isVisible={visible}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}

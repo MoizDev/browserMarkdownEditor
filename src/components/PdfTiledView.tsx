@@ -6,6 +6,7 @@ import { assertPdfCopyAllowed, PDF_ENCRYPTED_READ_ONLY, tiledPdfCapabilities } f
 import { cameraForPagedPosition, fitWidthZ, pageAt, pageStack, pagedConstraint, pagedPosition } from '../platform/render';
 import type { Camera, PlatformPaneOptions, Rect, Viewport, ViewState } from '../platform/render';
 import { pdfGeometryDigest, type OpenTiledDocument, type PdfTiledDocumentSession } from '../pdf/session/documentSession';
+import type { PdfSessionCapturer } from '../pdf/session/sessionCapture';
 import { pdfPageLayerDefinition } from '../pdf/layer/definition';
 import type { PdfMirrorPixels, PdfSessionMirrors } from '../pdf/layer/tileMirror';
 import { pdfMirrorCoverage } from '../pdf/layer/coverage';
@@ -15,6 +16,7 @@ import type { MirrorSelection } from '../pdf/overlay/textMirror';
 import type { PdfSelectionState } from '../pdf/text/selectionState';
 import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
+import type { PdfReadingBinding } from '../types/reading';
 import { pdfAgentPages } from '../pdf/text/agentText';
 import { flushPdfViewPositions, getPdfInverted, readPdfNavigationRevision, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
@@ -51,12 +53,14 @@ function paneBackground(): readonly [number, number, number, number] {
 }
 
 interface Props {
+    readonly reading: PdfReadingBinding;
     readonly session: PdfTiledDocumentSession;
     readonly document: OpenTiledDocument;
     readonly filePath: string;
     readonly isVisible: boolean;
     readonly isFocused: boolean;
     readonly mirror: PdfSessionMirrors;
+    readonly capturer: PdfSessionCapturer;
     readonly onRotate?: (delta: number, pageIndex?: number) => void;
     readonly findMemory: PdfFindMemory;
     readonly selectionState: PdfSelectionState;
@@ -68,8 +72,8 @@ interface Props {
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
-export default function PdfTiledView({ session, document: pdf, filePath, isVisible, isFocused,
-    mirror, findMemory, selectionState, selectedText, onRotate, onOpenTextView, onMirrorSelection, onNotice }: Props) {
+export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
+    mirror, capturer, findMemory, selectionState, selectedText, onRotate, onOpenTextView, onMirrorSelection, onNotice }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const [lease] = useState(() => ++nextViewLease);
@@ -81,6 +85,15 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
     const stack = useMemo(() => pageStack(pdf.pages), [pdf]);
     const geometryDigest = useMemo(() => pdfGeometryDigest(pdf.pages), [pdf]);
     const capabilities = useMemo(() => tiledPdfCapabilities(pdf.poolDocument.info), [pdf]);
+    useEffect(() => {
+        if (!session.isCurrent()) return;
+        reading.onReaderStatus(reading.identity, pdf.poolDocument.info.repairStatus === 'repaired'
+            ? { phase: 'partial', message: 'This PDF required repair; editing is unavailable.' } : { phase: 'ready' });
+        reading.onReaderCapabilities(reading.identity, { surface: 'pdf-original',
+            emphasis: { kind: 'inactive', reason: 'Emphasis is unavailable for this PDF view.' },
+            text: capabilities.copy === true ? 'available' : 'none', find: capabilities.copy === true,
+            appearance: 'fixed', copy: capabilities.copy === true });
+    }, [capabilities, reading, session, pdf]);
     const constraint = useMemo(() => pagedConstraint(stack, LIMITS, INSETS), [stack]);
     const initial = useRef(readPdfViewPos(filePath));
     const camera = useRef<Camera>({ x: 0, y: 0, z: 1 });
@@ -260,7 +273,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
 
     const services = useMemo<Omit<PlatformPaneOptions<PdfMirrorPixels>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>>(() => ({
         paneId: `pdf:${session.token.documentId}:${lease}`, viewLease: lease,
-        session: { mirrors: mirror.mirrors, checkpoint: () => {} },
+        session: { mirrors: mirror.mirrors, checkpoint: () => {}, captureRegion: capturer.captureRegion },
         readMirrorView: mirrorView, mirrorQuad: mirror.mirrorQuad,
         mirrorCoverage: (view, drawn) => pdfMirrorCoverage(stack, view, drawn), layout: stack,
         readAppearance: () => ({ background: [...paneBackground()], inverted: getPdfInverted() }),
@@ -313,7 +326,7 @@ export default function PdfTiledView({ session, document: pdf, filePath, isVisib
         },
         onPresentation: () => {}, onError: error => onNotice(error instanceof Error ? error.message : 'PDF viewer is unavailable.'),
         onNotice: message => onNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.' : 'PDF rendering switched to a compatible mode.'),
-    }), [lease, mirror, mirrorView, onNotice, pageLayer, pdf, session, stack, textMirror.updateView, find.onView, filePath, persist, correctReveal]);
+    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, textMirror.updateView, find.onView, filePath, persist, correctReveal]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;

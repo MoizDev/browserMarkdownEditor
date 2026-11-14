@@ -51,9 +51,9 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 ## Architecture: what every change must respect
 
 - **The four layers, and what may not cross between them.** `src/context/` is the only code that touches
-  the File System Access API; its index worker (`vaultIndex/reader.ts`) only READS handles
-  `vaultIndex/client.ts` sends it; writes stay in `FileSystemContext`. `src/editor/` is CodeMirror land
-  and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
+  the File System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by
+  `vaultIndex/client.ts`; listing, prompts and all mutations stay on the main thread in `FileSystemContext`.
+  `src/editor/` is CodeMirror land and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
   hook. `src/components/` is React; `src/utils/` is pure or DOM-light. An import crossing those lines is
   the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an

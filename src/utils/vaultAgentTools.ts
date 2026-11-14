@@ -39,6 +39,7 @@ import { validateAgainstSchema } from './agentSchema';
 import { creationDiff, lineDiff } from './agentDiff';
 import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sha256Hex } from './agentMedia';
 import { formatShape, summarizeCanvasFile, type FileShape } from './canvasFileSummary';
+import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 import { isTextFile } from './vaultSearch';
 import { collectFiles } from './tree';
 import { isEpubFile, isCanvasFile, isNativeDrawingFile, isImageFile, isNotebookFile, isPdfFile } from './fileTypes';
@@ -517,9 +518,19 @@ function shapeLines(shapes: Array<ShapeSummary & { sizeUnknown?: boolean }>, bud
 const COORDS_PAGED = 'Coordinates are page-relative: x/y in points from the top-left corner of `page`.';
 const COORDS_DRAWING = 'Coordinates are the canvas\'s own units.';
 
+async function readableCanvasText(ctx: Ctx, path: string): Promise<string> {
+    const text = await ctx.host.readText(path);
+    ctx.ensureLive();
+    if (text === null) throw new ToolError(`"${path}" could not be read.`);
+    const reason = canvasReadOnlyReason(sniffCanvas(text, path));
+    if (reason) throw new ToolError(reason);
+    return text;
+}
+
 /** Shapes of a drawing/notebook from its live pane, or failing that its file. */
 async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | undefined): Promise<{ lines: string[]; head: string[] }> {
     assertSupportedCanvasFormat(path);
+    const text = await readableCanvasText(ctx, path);
     const name = baseName(path);
     const notebook = isNotebookFile(name);
     const view = getView(path);
@@ -536,9 +547,6 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
         return { head, lines: shapeLines(shapes, budget, pageHint) };
     }
 
-    const text = await ctx.host.readText(path);
-    ctx.ensureLive();
-    if (text === null) throw new ToolError(`"${path}" could not be read.`);
     const summary = summarizeCanvasFile(notebook ? 'notebook' : 'drawing', text);
     if ('error' in summary) throw new ToolError(`"${path}": ${summary.error}.`);
     const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, not open — read from the saved file`];
@@ -907,6 +915,9 @@ function assertCanvasPath(path: string): void {
 }
 
 async function liveCanvas(ctx: Ctx, path: string): Promise<ViewReporter & { canvas: NonNullable<ViewReporter['canvas']> }> {
+    // Check the loaded bytes even if a reporter exists: a reload/retarget can
+    // revoke authority before an old reporter's cleanup has run.
+    if (!isPdfFile(path)) await readableCanvasText(ctx, path);
     let view = getView(path);
     if (!view?.canvas) {
         view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;

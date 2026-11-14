@@ -70,7 +70,7 @@ export async function writeRecoveryEntry(entry: RecoveryEntry, refused: () => vo
     requestDurability(refused);
 }
 
-/** The acknowledgement is revision-specific: it cannot erase a newer checkpoint. */
+/** An acknowledgement cannot erase or rebase a newer checkpoint. */
 export async function acknowledgeRecovery(vaultId: string, journalId: string, revision: number): Promise<void> {
     const db = await open();
     const tx = db.transaction('entries', 'readwrite');
@@ -79,7 +79,8 @@ export async function acknowledgeRecovery(vaultId: string, journalId: string, re
     const request = store.get([vaultId, journalId]);
     request.onsuccess = () => {
         const entry = request.result as RecoveryEntry | undefined;
-        if (entry && entry.revision <= revision) store.delete([vaultId, journalId]);
+        if (!entry) return;
+        if (entry.revision <= revision) store.delete([vaultId, journalId]);
     };
     await finished;
 }

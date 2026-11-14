@@ -1,6 +1,8 @@
 import type { PdfDocumentSession } from './pdfDocumentSession';
 import { createPdfFindEngine } from './pdfFind';
 import type { PdfFindEngine } from './pdfFind';
+import { resolvePdfTextAnchor } from './pdfTextAnchors';
+import type { PdfTextAnchorOptions, PdfTextAnchorResolution } from './pdfTextAnchors';
 import { Limiter } from './pool';
 import { pdfPageGeometry, projectPdfPageV1 } from './pdfPageText';
 import type { PdfPageText, PdfProjectionItem, PdfSemanticRole } from './pdfPageText';
@@ -14,6 +16,7 @@ export interface PdfTextAnchor {
     quote: string; before: string; after: string; alignHint?: number;
 }
 export type LocationCause = 'restore' | 'layout' | 'user-scroll' | 'user-navigation' | 'search' | 'link' | 'annotation';
+export const USER_TEXT_NAVIGATION_CAUSES = ['user-scroll', 'user-navigation', 'search', 'link'] as const;
 export interface PdfTextPage extends PdfPageText { digest: string }
 export interface PdfFindHit { anchor: PdfTextAnchor; snippet: string }
 export interface PdfFindBatch {
@@ -31,6 +34,7 @@ export interface PdfTextReader {
     readonly findEngine: PdfFindEngine;
     find(query: string, signal?: AbortSignal): AsyncIterable<PdfFindBatch>;
     navigate(anchor: PdfTextAnchor): Promise<PdfTextAnchor>;
+    resolveAnchor(anchor: PdfTextAnchor, options: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution>;
     setWindow(index0: number): void;
     setVisible(visible: boolean): void;
     dispose(): void;
@@ -110,7 +114,7 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
             try {
                 while (true) {
                     if (signal.aborted) throw abort();
-                    const { done, value } = await reader.read();
+                    const { done, value } = await session.health.guard(reader.read(), signal);
                     if (signal.aborted) throw abort();
                     if (done) break;
                     for (const item of value.items as PdfProjectionItem[]) {
@@ -130,12 +134,18 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
                     // waiting for that acknowledgement strands a partial page.
                     if (limited) { void reader.cancel(new Error('PDF text safety limit reached')).catch(() => {}); break; }
                 }
-            } finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
+            } finally {
+                signal.removeEventListener('abort', cancel);
+                // A dead worker may never acknowledge cancellation; the local
+                // stream still closes immediately and releases its pending read.
+                void reader.cancel(abort()).catch(() => {});
+                reader.releaseLock();
+            }
             if (signal.aborted) throw abort();
             const roles = new Map<string, PdfSemanticRole>();
             // Tags help exclude known code/formula. Untagged content is still only
             // a best-effort projection, never a promise to reconstruct PDF semantics.
-            const structure = await page.getStructTree().catch(() => null);
+            const structure = await session.health.guard(page.getStructTree(), signal).catch(() => null);
             if (signal.aborted) throw abort();
             function walk(node: { role?: string; id?: string; children?: unknown[] }, inherited: PdfSemanticRole = 'prose', depth = 0) {
                 if (depth > 128 || roles.size > PDF_TEXT_LIMITS.pageItems) return;
@@ -237,6 +247,14 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
         void pump(); return promise;
     }
     const findEngine = createPdfFindEngine({ pageCount: signal => pageCount(signal), page: (index, signal) => getPage(index, signal, 1) });
+    async function resolveAnchor(anchor: PdfTextAnchor, options: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution> {
+        const signal = AbortSignal.any([lifetime.signal, visibility.signal, ...(options.signal ? [options.signal] : [])]);
+        const total = await pageCount(signal);
+        const index = Math.min(total - 1, Math.max(0, Math.floor(Number.isFinite(anchor.physicalPageIndex) ? anchor.physicalPageIndex : 0)));
+        windowCenter = index;
+        const page = await getPage(index, signal);
+        return resolvePdfTextAnchor(page, { ...anchor, physicalPageIndex: index }, { ...options, signal });
+    }
     return {
         generation: session.generation,
         getPageCount: pageCount,
@@ -270,19 +288,8 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
                     unavailablePages: [...new Set([...batch.failedPages, ...batch.partialPages])] };
             }
         },
-        async navigate(anchor) {
-            const total = await pageCount();
-            const index = Math.min(total - 1, Math.max(0, Math.floor(Number.isFinite(anchor.physicalPageIndex) ? anchor.physicalPageIndex : 0)));
-            windowCenter = index;
-            const page = await getPage(index);
-            let offset = Math.max(0, Math.min(page.text.length, Number.isFinite(anchor.offsetUTF16) ? anchor.offsetUTF16 : 0));
-            if (anchor.quote && page.text.slice(offset, offset + anchor.quote.length) !== anchor.quote) {
-                const first = page.text.indexOf(anchor.quote);
-                if (first >= 0 && page.text.indexOf(anchor.quote, first + 1) < 0) offset = first;
-                else options.onStatus?.({ phase: 'partial', message: 'Text changed; restored approximately within the physical page.' });
-            }
-            return pdfTextAnchor(page, offset, anchor.alignHint);
-        },
+        resolveAnchor,
+        async navigate(anchor) { return (await resolveAnchor(anchor, { sameSchema: true })).anchor; },
         setWindow(index0) { windowCenter = index0; },
         setVisible(next) {
             if (visible === next) return;

@@ -141,7 +141,7 @@ interface EditorPaneProps {
     onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
-    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean }>;
+    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true

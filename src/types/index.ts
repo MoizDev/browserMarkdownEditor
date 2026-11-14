@@ -513,6 +513,8 @@ export interface FileSystemContextValue {
   /** readFile, plus the DiskVersion of exactly the bytes read. */
   readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
   readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  inspectExportTarget: (dir: FileSystemDirectoryHandle, name: string) => Promise<DiskVersion | null>;
+  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }>;
   /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
   statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
   /** THE document write: writes only if the file still is `expected` (equal

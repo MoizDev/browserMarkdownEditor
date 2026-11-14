@@ -46,6 +46,9 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...p
                 toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
             <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
                 current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
-                open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen} />
+                open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
+                reorder={props.readOnly ? undefined : (from, to) => {
+                    try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }
+                }} />
         </div>}{sheets.menu}</>;
 }

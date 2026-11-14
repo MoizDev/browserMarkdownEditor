@@ -1,3 +1,4 @@
+import { getTerminalContextActive, subscribeTerminalContext } from '../../utils/terminalContext';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import { MemoryGovernor } from './memoryGovernor';
 import type { PaneMemoryDemand, MemoryTrouble } from './memoryGovernor';
@@ -30,6 +31,8 @@ export class PlatformRuntime {
             evict: bytes => { surfaceBroker.revokeHiddenContexts(Math.ceil(bytes / POLICY.keptContextReserveBytes)); },
         });
         surfaceBroker.configure({ contextAllocator: context });
+        surfaceBroker.setTerminalContextActive(getTerminalContextActive());
+        subscribeTerminalContext(active => surfaceBroker.setTerminalContextActive(active));
         this.lifecycles = new PaneLifecycleHost(this.governor, () => {
             const panes = [...this.panes.values()];
             const pane = panes.find(pane => { const demand = pane.demand(); return demand.visible && demand.focused; }) ??

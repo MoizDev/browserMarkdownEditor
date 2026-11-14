@@ -34,7 +34,7 @@ export async function applyNativeCanvasOperations(options: {
         ? Math.max(0, Math.min(host.paper.pageCount - 1, position.page)) : 0;
     const mutation = createNativeAgentMutation({ runtime, source: {
         isCurrent: () => guard.isCurrent() && !signal.aborted && source.isCurrent(),
-        writeBlock: () => source.canWrite() ? null : 'The native canvas source is not currently writable.',
+        writeBlock: () => source.writeBlockReason() ?? (source.canWrite() ? null : 'The native canvas source is not currently writable.'),
         sheet: () => sheet, page: () => page,
     } });
     // The genuine C2 facade is installed before lifting only the temporary viewer seal.

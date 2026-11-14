@@ -1227,18 +1227,26 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && (entry.bytesGeneration === identity.bytesGeneration || retained) ? tab : undefined;
     };
-    const writableSource = (identity: NativeCanvasIdentity) => {
+    // The first failing guard names the refusal; a null result is the only state in which the source may be written.
+    const writeBlockSource = (identity: NativeCanvasIdentity): string | null => {
       const policy = nativePoliciesRef.current.get(identity.documentId);
       const entry = documentSessions.get(identity.documentId);
-      return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
-        && policy.activation === identity.vaultActivation && policy.kind === identity.kind
-        && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasHostedNativeOwner(entry, identity.documentId) && !!getBaseline(identity.documentId)
-        && !diskStateRef.current.has(identity.documentId)
-        && (identity.kind !== 'pdfInk' || policy.pdfWriteAuthority?.canWriteSource() === true);
+      if (!current(identity)) return 'The native canvas session has ended.';
+      if (!policy) return 'The native canvas is not available for editing.';
+      if (policy.emergencyReadOnly) return 'This canvas is in emergency read-only mode.';
+      if (policy.session !== identity.session || policy.activation !== identity.vaultActivation || policy.kind !== identity.kind
+        || policy.sourceGeneration !== identity.bytesGeneration || policy.retainedThroughGeneration !== entry?.bytesGeneration)
+        return 'The native canvas changed; reopen it to continue.';
+      if (!hasHostedNativeOwner(entry, identity.documentId)) return 'The native canvas has no active editor.';
+      if (!getBaseline(identity.documentId)) return 'The file has no disk baseline yet.';
+      if (diskStateRef.current.has(identity.documentId)) return 'The file changed on disk; resolve the conflict first.';
+      if (identity.kind === 'pdfInk' && policy.pdfWriteAuthority?.canWriteSource() !== true) return 'The PDF source is locked for writing.';
+      return null;
     };
-    const writable = (identity: NativeCanvasIdentity) => writableSource(identity)
-      && hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId);
+    const writableSource = (identity: NativeCanvasIdentity) => writeBlockSource(identity) === null;
+    const writeBlockReason = (identity: NativeCanvasIdentity): string | null => writeBlockSource(identity)
+      ?? (hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId) ? null : 'Another editor holds this canvas for writing.');
+    const writable = (identity: NativeCanvasIdentity) => writeBlockReason(identity) === null;
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
@@ -1276,6 +1284,7 @@ export default function App() {
       isCurrent: identity => !!current(identity),
       canWriteSource: identity => writableSource(identity),
       canWrite: identity => writable(identity),
+      writeBlockReason: identity => writeBlockReason(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;
         return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;
@@ -6341,6 +6350,7 @@ export default function App() {
     }
     const isCurrent = () => nativeCanvasHost.isCurrent(identity) && nativeCanvasHost.session(tab.id) === acquired.adapter;
     return { identity, runtime, isCurrent, canWrite: () => isCurrent() && nativeCanvasHost.canWrite(identity),
+      writeBlockReason: () => isCurrent() ? nativeCanvasHost.writeBlockReason(identity) : 'The native canvas session has ended.',
       activateEditing() {
         if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error('The native canvas source is not writable.');
         if (!acquired.adapter.activateEditing) throw new Error('The native session has no editing admission.');

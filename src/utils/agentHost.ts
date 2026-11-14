@@ -76,6 +76,8 @@ export interface AgentHostDeps {
         readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
         isCurrent(): boolean;
         canWrite(): boolean;
+        /** Named refusal for the facade's write block; null only when canWrite() holds. */
+        writeBlockReason(): string | null;
         activateEditing(): void;
         readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     }>;

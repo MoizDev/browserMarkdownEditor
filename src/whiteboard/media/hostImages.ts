@@ -28,7 +28,7 @@ export function createBoardHostImages(options: {
     readonly signal?: AbortSignal;
     /** Repaints the view when a playing video presents a new frame. */
     readonly invalidate?: () => void;
-}): PaintImageProvider & { dispose(): void; setVisible(visible: boolean): void; readonly memory: MemoryAllocator; readonly frames: VideoFrameRegistry } {
+}): PaintImageProvider & { dispose(): void; setVisible(visible: boolean): void; setDemand(keys: ReadonlySet<string>): void; readonly memory: MemoryAllocator; readonly frames: VideoFrameRegistry } {
     const identity = Object.freeze({ ...options.identity }), token = Object.freeze({ ...options.token });
     if (!validBoardIdentity(identity) || !Number.isSafeInteger(token.vaultEpoch) || token.vaultEpoch < 0
         || !Number.isSafeInteger(token.session) || token.session < 0 || !Number.isSafeInteger(token.bytesGeneration)
@@ -102,6 +102,11 @@ export function createBoardHostImages(options: {
                 if (!disposed && !signal.aborted && !retired) { try { options.onError(error); } catch { /* Keep the decoder error. */ } }
                 throw error;
             }
+        },
+        /** The tile keys the view last drew. Tile rasters outside them are released; a view that draws none never creates a residency. */
+        setDemand(keys: ReadonlySet<string>) {
+            if (disposed || (!residency && keys.size === 0)) return;
+            tileResidency().setDemand(keys, new Set());
         },
         /** The view's one visibility signal for picture memory: a hidden pane releases tile rasters and stops their decodes. */
         setVisible(next: boolean) {

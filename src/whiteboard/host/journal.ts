@@ -89,11 +89,12 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             capture.acknowledge(revision, baseline);
         },
         async drain() {
-            // Include appends enqueued while an earlier append was in flight.
+            // A recovery can enqueue its cumulative append only after replay commits.
             for (;;) {
-                const pending = tail;
+                const currentReplay = replay, pending = tail;
+                if (currentReplay) await currentReplay;
                 await pending;
-                if (pending === tail) break;
+                if (!replay && pending === tail) break;
             }
             if (failure !== undefined) { const error = failure; failure = undefined; throw error; }
         },

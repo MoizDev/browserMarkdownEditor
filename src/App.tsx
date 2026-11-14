@@ -1,7 +1,8 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
-import { createCanvasSessionBridge } from './utils/canvasSessionBridge';
+import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
+import type { AttachCanvasSession } from './utils/canvasSessionBridge';
 import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
@@ -1068,6 +1069,8 @@ export default function App() {
       }
     }
   }, [tabs, layout, documentBuffers, documentSessions, seedDocumentBuffer]);
+  const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
+    (documentId, create) => attachCanvasSession(documentSessions, documentId, create), [documentSessions]);
   const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
   const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
     const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
@@ -6045,6 +6048,7 @@ export default function App() {
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
             onNativeCanvasReady={onNativeCanvasReady}
+            attachCanvasSession={attachNativeCanvasSession}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}

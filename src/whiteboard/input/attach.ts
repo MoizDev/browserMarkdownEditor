@@ -65,6 +65,7 @@ export interface BoardInputServices {
 
 const attached = new WeakMap<HTMLElement, Detach>()
 const gestureOwner = new WeakMap<BoardSession, symbol>()
+const syncingSessions = new WeakSet<BoardSession>()
 const sessionPenMode = new WeakMap<BoardSession, { enabled: boolean; listeners: Set<(enabled: boolean) => void> }>()
 
 // View generations own listeners only. The session owns history, gesture queue and
@@ -303,7 +304,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       services.cancelPendingGestures()
       pointer.interrupt('flush')
     }
-    if (current() && editable()) {
+    if (current() && editable() && !syncingSessions.has(session)) {
       const ops: Op[] = []
       const tool = TOOLS.find(id => id === snapshot.active.id)
       if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
@@ -317,6 +318,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (current()) view.a11y.toolState(snapshot)
   }
   const stopMirror = services.tools.subscribe(updateMirror)
+  const stopSession = session.subscribe(() => {
+    if (!current() || !editable()) return
+    const snapshot = services.tools.getSnapshot()
+    syncingSessions.add(session)
+    try {
+      if (snapshot.locked !== session.doc.view.toolLock) {
+        services.tools.setLocked(session.doc.view.toolLock)
+        services.persistToolLock?.(session.doc.view.toolLock)
+      }
+      const tool = session.doc.ui.tool
+      if (snapshot.active.id !== tool && services.tools.getRegistration(tool)) services.tools.setTool(tool)
+    } finally { syncingSessions.delete(session) }
+  })
   updateMirror()
   const detach = () => {
     if (!live) return
@@ -330,7 +344,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)
     sharedPenMode.listeners.delete(onPenMode)
-    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopMirror(); stopWet()
+    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror(); stopWet()
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
     if (gestureOwner.get(session) === owner) gestureOwner.delete(session)
   }

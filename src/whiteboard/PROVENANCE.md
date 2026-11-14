@@ -317,7 +317,7 @@ third-party code included (normally "none") · date.
 | `media/mips.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §§4/9; rendering §8.4 | Bounded mip geometry, visible tiles and one-texel interior-edge apron | none | 2026-11-13 |
 | `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, local-only source validation, shared worker priorities and memory leases | none | 2026-11-13 |
 | `media/animation.ts` | lane w-q | F-MEDIA-011; SEC-4 | media §5 | Largest-eight visible animation scheduler; hide pauses until current frame reloads | none | 2026-11-13 |
-| `clipboard/types.ts` | lane w-q | F-CLIP-002/003/005/010; F-DROP-001/005; SEC-8 | clipboard §§3–6/9 | Fixed-shape transfer, placement and text-editor interfaces | none | 2026-11-13 |
+| `clipboard/types.ts` | lane w-q | F-CLIP-002/003/005/010; F-DROP-001/005; SEC-8 | clipboard §§3–6/9 | Fixed-shape transfer, PNG density, placement and text-editor interfaces | none | 2026-11-13 |
 | `clipboard/transfer.ts` | lane w-q | F-DROP-001/003/005/007; SEC-8 | clipboard §§3/9 | Synchronous browser transfer capture and Files/URI drag acceptance | none | 2026-11-13 |
 | `clipboard/classify.ts` | lane w-q | F-CLIP-005/007/012; F-DROP-003/004; SEC-8 | clipboard §3 | Classification order, security URL policy and isolated HTML/worker ports | none | 2026-11-13 |
 | `clipboard/rendition.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §2.3; text §4.1 | Fixed-shape rich text projection with inert DOM node construction | none | 2026-11-13 |

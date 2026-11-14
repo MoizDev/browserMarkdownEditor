@@ -310,6 +310,7 @@ export class PdfTileLayer implements Layer {
             borrow.release();
             if (sharp) {
                 mirrors.retainViewport(new Set(job.ids));
+                mirror.store.remember(job.view);
                 this.mirrorKey = job.key;
             }
             this.mirrorJob = null;

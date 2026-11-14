@@ -1,5 +1,5 @@
 import { runReaderHostCommand } from './utils/documentReading';
-import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
+import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -2575,7 +2575,7 @@ export default function App() {
       const source = documentSessions.checkpoint(tab.id);
       const prior = documentBuffers.get(tab.id)?.source;
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
-        && (typeof prior === 'string' || !prior || prior.owner.session !== source.owner.session || source.revision > prior.revision)) {
+        && sourceIsNewer(source, prior)) {
         sessionReportRef.current(tab.id, source);
         clearSaveTimer(path);
       }
@@ -2939,8 +2939,7 @@ export default function App() {
     const pagehide = () => {
       checkpointSessions((id, source) => {
         const prior = documentBuffers.get(id)?.source;
-        if (source === prior || typeof source !== 'string' && prior && typeof prior !== 'string'
-          && source.owner.session === prior.owner.session && source.revision <= prior.revision) return;
+        if (!sourceIsNewer(source, prior)) return;
         sessionReportRef.current(id, source);
       });
       void recoveryEvent({ type: 'checkpoint' });
@@ -4910,7 +4909,7 @@ export default function App() {
         const sessionSource = documentSessions.checkpoint(doc.id);
         const buffered = documentBuffers.get(doc.id)?.source;
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
-          && (typeof buffered === 'string' || !buffered || buffered.owner.session !== sessionSource.owner.session || sessionSource.revision > buffered.revision)) {
+          && sourceIsNewer(sessionSource, buffered)) {
           documentBuffers.report(doc.id, sessionSource);
           syncExitGuard();
         }
@@ -5510,13 +5509,12 @@ export default function App() {
       const prior = documentBuffers.get(id)?.source;
       if (checkpoint && typeof checkpoint !== 'string') {
         if (!documentSessions.isLiveOwner(id, checkpoint.owner)) throw new Error('The document session changed.');
-        if (typeof prior === 'string' || !prior || prior.owner.session !== checkpoint.owner.session || checkpoint.revision > prior.revision) {
+        if (sourceIsNewer(checkpoint, prior)) {
           sessionReportRef.current(id, checkpoint);
         }
       }
       const source = documentBuffers.get(id)?.source;
-      if (checkpoint && typeof checkpoint !== 'string' && (typeof source === 'string' || !source
-        || source.owner.session !== checkpoint.owner.session || source.revision < checkpoint.revision)) {
+      if (checkpoint && typeof checkpoint !== 'string' && sourceIsNewer(checkpoint, source)) {
         throw new Error('The current document revision could not be captured.');
       }
       const snapshot = documentBuffers.snapshotForDocument(id);

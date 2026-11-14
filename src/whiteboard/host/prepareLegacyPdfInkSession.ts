@@ -60,7 +60,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
                 && value.revision === job.revision && current() && source.isCurrent();
             const convert = (hostBlock: ReturnType<typeof source.createPreviewHost>) => acquireLegacyBoard({ bytes: source.snapshot,
                 kind: 'pdf-ink', host: hostBlock, token, zMax: options.zMax, memory, nativeReport, identity: job,
-                isCurrent, signal: internal.signal });
+                isCurrent, readAsset: (src, assetSignal) => host.readLegacyAsset(identity, src, assetSignal), signal: internal.signal });
             preview = await convert(source.createPreviewHost());
             if (preview.status !== 'editable') throw new Error(`Legacy PDF ink cannot be converted: ${preview.legacyReport.unrepresentable.map(issue => issue.reason).join('; ')}`);
             const visual = await inspectPdfVisualModel(preview.native.load, { signal: internal.signal });

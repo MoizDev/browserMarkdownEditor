@@ -27,6 +27,7 @@ import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
 import { isClassicPdfCancellation, pdfOpenFailure, recordClassicRenderFailure, classicPdfFailureIsFatal } from '../utils/pdfClassicHealth';
 import { Limiter } from '../utils/pool';
+import { composePdfCapture } from '../utils/pdfCapture';
 import PdfRenderNotice from './PdfRenderNotice';
 import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
@@ -928,15 +929,14 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 inverted: getPdfInverted(),
             };
         },
-        // The page canvases on screen, cropped to the scroll box, as one PNG —
-        // what the reader sees minus the chrome, and never inverted (that is a
-        // CSS filter; the canvases hold the real page).
+        // The screen's canvases are unfiltered bitmaps; apply their display-only
+        // filter once when composing the cropped view.
         async capture(maxSide) {
             const el = scrollRef.current, L = layoutRef.current;
             if (!el || !L) return null;
             const visible = visiblePageIndices();
             if (!visible.length) return null;
-            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current;
+            const gen = docGenRef.current, dpr = canvasDpr(), preference = emphasisRef.current, invert = getPdfInverted();
             const top = el.scrollTop, left = el.scrollLeft;
             // Resume/zoom stand-ins may stay on screen, but are not current
             // pixels for a tool. A later request can capture the finished view.
@@ -970,7 +970,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 // The paper first: a page still rasterizing is white, as on screen.
                 const pr = clip(pageEl.getBoundingClientRect());
                 if (!pr) continue;
-                ctx.fillStyle = '#ffffff';
+                ctx.fillStyle = invert ? '#000000' : '#ffffff';
                 ctx.fillRect((pr.left - view.left) * scale, (pr.top - view.top) * scale, (pr.right - pr.left) * scale, (pr.bottom - pr.top) * scale);
                 if (canvas.width === 0) continue;
                 // The bitmap may be a band of the page (pageRegion), so map
@@ -980,18 +980,21 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 if (!ir || cr.width <= 0 || cr.height <= 0) continue;
                 const kx = canvas.width / cr.width;
                 const ky = canvas.height / cr.height;
+                ctx.save();
+                if (invert) ctx.filter = 'invert(1) hue-rotate(180deg)';
                 ctx.drawImage(
                     canvas,
                     (ir.left - cr.left) * kx, (ir.top - cr.top) * ky, (ir.right - ir.left) * kx, (ir.bottom - ir.top) * ky,
                     (ir.left - view.left) * scale, (ir.top - view.top) * scale, (ir.right - ir.left) * scale, (ir.bottom - ir.top) * scale,
                 );
+                ctx.restore();
             }
             const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
             out.width = 0;
             out.height = 0;
             for (const i of visible) session.health.assertComplete(i);
             return docGenRef.current === gen && layoutRef.current === L && canvasDpr() === dpr
-                && emphasisRef.current === preference && el.scrollTop === top && el.scrollLeft === left ? png : null;
+                && emphasisRef.current === preference && getPdfInverted() === invert && el.scrollTop === top && el.scrollLeft === left ? png : null;
         },
         async pdfText(pages) {
             const doc = docStateRef.current?.doc;
@@ -1010,10 +1013,11 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const ds = docStateRef.current;
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
-            const gen = docGenRef.current;
+            const gen = docGenRef.current, invert = getPdfInverted(), preference = emphasisRef.current;
             const lease = await session.acquireRender(pageNumber - 1);
             let canvas: HTMLCanvasElement | undefined;
             let task: RenderTask | undefined;
+            let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
             try {
                 const page = lease.page;
                 const actual = page.getViewport({ scale: 1 });
@@ -1025,7 +1029,13 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
                 session.markRendered(pageNumber - 1);
-                task = page.render({ canvas, canvasContext: ctx, viewport });
+                const key = classicEmphasisPageKey(session.emphasisIdentity.token, pageNumber - 1, page);
+                const verdict = session.emphasisVerdicts.getVerdict(key);
+                const useOn = preference && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
+                const plan = useOn ? getPdfEmphasisPlan(page, classicEmphasisPlanKey(key)) : undefined;
+                if (useOn && !plan) return null;
+                if (plan) emphasis = bindPdfNativeEmphasis(page, ctx, plan);
+                task = page.render({ canvas, canvasContext: ctx, viewport, operationsFilter: emphasis?.operationsFilter });
                 await session.health.guard(task.promise);
                 session.health.assertComplete(pageNumber - 1);
                 const output = canvas;
@@ -1033,9 +1043,12 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.width = 0;
                 canvas.height = 0;
                 session.health.assertComplete(pageNumber - 1);
-                return docGenRef.current === gen && docStateRef.current === ds ? png : null;
+                if (!png || docGenRef.current !== gen || docStateRef.current?.gen !== ds.gen || getPdfInverted() !== invert || emphasisRef.current !== preference) return null;
+                const result = invert ? await composePdfCapture(png, true, '#000000') : png;
+                return docGenRef.current === gen && docStateRef.current?.gen === ds.gen && getPdfInverted() === invert && emphasisRef.current === preference ? result : null;
             } finally {
                 if (task) { task.cancel(); await task.promise.catch(() => {}); }
+                emphasis?.dispose();
                 if (canvas) { canvas.width = 0; canvas.height = 0; }
                 lease.release();
             }

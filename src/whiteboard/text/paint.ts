@@ -39,6 +39,11 @@ export interface PaintLine {
     readonly top: number;
     readonly bottom: number;
     readonly baseline: number;
+    /** Inline origin, including alignment, also defined for an empty line. */
+    readonly x: number;
+    /** Projection range includes a consumed hard break, if any. */
+    readonly src: readonly [number, number];
+    readonly direction: 'ltr' | 'rtl';
     /** Left-to-right visual order; marker fragments are included. */
     readonly fragments: readonly PaintFragment[];
 }
@@ -127,6 +132,8 @@ export interface TextMeasurement {
 /** Synchronous layout on a document or worker canvas; no font loading or zoom is implicit. */
 export interface TextLayoutEngine {
     readonly faceTable: FaceTable;
+    /** Starts all needed face loads, waiting at most 100ms before using fallbacks. */
+    prepare(request: TextLayoutRequest): Promise<void>;
     measure(request: TextLayoutRequest): TextMeasurement;
     layout(request: TextLayoutRequest): TextPaint;
     /** Expensive prefix measurement is deferred until the node is edited. */

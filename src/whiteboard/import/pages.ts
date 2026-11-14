@@ -1,3 +1,4 @@
+import type { Node } from '../model/nodes';
 import { backdropRole, type LegacyShape } from './records/common';
 
 // IMP-3, E-IMP-7/9: legacy rectangles come from the saved backdrop, not a new PDF layout.
@@ -48,8 +49,22 @@ export function notebookPages(width: number, height: number, count: number): rea
 }
 
 export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
-export function preparePageMapper(pages: readonly LegacyPageMapping[], bounds: (shape: LegacyShape) => LegacyWorldBounds):
-    (shape: LegacyShape) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
+export type LegacyBoundsPreparation = (nodes: readonly Node[]) => (node: Node) => LegacyWorldBounds;
+export type PageSource =
+    | { readonly kind: 'notebook'; readonly width: number; readonly height: number; readonly count: number }
+    | { readonly kind: 'pdf-ink'; readonly pages: readonly DisplayPage[] };
+
+export function createPagePreparation(source: PageSource, geometry: LegacyBoundsPreparation):
+    (shapes: readonly LegacyShape[], nodes: readonly Node[]) => ReturnType<typeof preparePageMapper<Node>> {
+    return (shapes, nodes) => {
+        const pages = source.kind === 'notebook' ? notebookPages(source.width, source.height, source.count)
+            : legacyPdfPages(shapes, source.pages);
+        return preparePageMapper(pages, geometry(nodes));
+    };
+}
+export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(
+    pages: readonly LegacyPageMapping[], bounds: (shape: T) => LegacyWorldBounds):
+    (shape: T) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
     return shape => {
         const box = bounds(shape);
         if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {

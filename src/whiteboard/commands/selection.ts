@@ -1,17 +1,21 @@
 import { pageAt } from '../../platform/render/pageStack';
 import { allocateOrderKeys, isLocked, reparentNode, selectedRoots, setIfChanged } from '../change/commands';
 import { worldPose } from '../change/coordinates';
+import { inverse } from '../geom/affine';
+import { acquireBoardGeometryScope } from './geometryScope';
 import type { CommandBuilder } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/ids';
 import { createFrame, createGroup, type Node } from '../model/nodes';
 import { boardPageStack, pageOrigin } from '../model/pages';
-import { BoundsQuality, type Box } from '../scene/bounds';
+import type { Box } from '../scene/bounds';
 
 export interface BoardSelectionCommandOptions {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
+    /** Current presented zoom; frame selection padding is measured in CSS pixels. */
+    readonly zoom: () => number;
     readonly cooperate?: () => Promise<void>;
 }
 export type SelectionOrder = 'front' | 'back' | 'forward' | 'backward';
@@ -94,27 +98,24 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         if (next !== parent) throw new Error('Selection ancestry is too deep');
         return opacity;
     };
-    const bounds = async (roots: readonly Node[], state: Capture, signal: AbortSignal): Promise<Box> => {
-        const scene = runtime.scene ?? await runtime.ready; check(state, signal);
-        let box: [number, number, number, number] | null = null;
-        const pending = [...roots]; let visited = 0, started = performance.now();
-        while (pending.length) {
-            const node = pending.pop()!;
-            if (node.kind === 'group') {
-                for (const child of childrenOf(doc, node.id)) {
-                    pending.push(child);
-                    if (++visited >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, signal); visited = 0; started = performance.now(); }
-                }
-                continue;
+    const bounds = async (roots: readonly Node[], parent: ParentId, state: Capture, signal: AbortSignal): Promise<Box> => {
+        const lease = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, cooperate, current: () => {
+            try { check(state, signal); return true; } catch { return false; }
+        } });
+        try {
+            check(state, signal);
+            const pose = isSheetParent(doc, parent) ? null : worldPose(doc, parent);
+            const c = Math.cos(pose?.rotation ?? 0), s = Math.sin(pose?.rotation ?? 0);
+            const target = inverse([c, s, -s, c, pose?.x ?? 0, pose?.y ?? 0], 1e12);
+            if (!target) throw new Error('Frame selection parent is not invertible');
+            let box: Box | null = null;
+            for (const node of roots) {
+                const next = await lease.boundsInSpace(node.id, target); check(state, signal);
+                box = box ? [Math.min(box[0], next[0]), Math.min(box[1], next[1]), Math.max(box[2], next[2]), Math.max(box[3], next[3])] : next;
             }
-            const value = await scene.ensureExactBounds(node.id, signal); check(state, signal);
-            const next = value?.selectable;
-            if (!next || value?.quality !== BoundsQuality.Exact || !next.every(Number.isFinite)) throw new Error(`Exact selection bounds unavailable: ${node.id}`);
-            box = box ? [Math.min(box[0], next[0]), Math.min(box[1], next[1]), Math.max(box[2], next[2]), Math.max(box[3], next[3])]
-                : [next[0], next[1], next[2], next[3]];
-        }
-        if (!box) throw new Error('Selection is empty');
-        return box;
+            if (!box) throw new Error('Selection is empty');
+            return box;
+        } finally { lease.release(); }
     };
     const commit = <T>(state: Capture, signal: AbortSignal, label: string, run: (builder: CommandBuilder) => T,
         select?: (result: T) => readonly NodeId[]): T => {
@@ -154,12 +155,12 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                 }
             }
             let world = worldPose(doc, roots[0].id), width = 0, height = 0;
+            const zoom = kind === 'frame' ? options.zoom() : 1;
+            if (!Number.isFinite(zoom) || zoom <= 0) throw new RangeError('Frame selection needs a valid presented zoom');
             if (kind === 'frame') {
-                const box = await bounds(roots, state, activeSignal), padding = 24;
-                const corners = [[box[0], box[1]], [box[2], box[1]], [box[0], box[3]], [box[2], box[3]]];
-                const positions = corners.map(([x, y]) => local(parent, { x, y }));
-                const left = Math.min(...positions.map(p => p.x)) - padding, top = Math.min(...positions.map(p => p.y)) - padding;
-                const right = Math.max(...positions.map(p => p.x)) + padding, bottom = Math.max(...positions.map(p => p.y)) + padding;
+                const box = await bounds(roots, parent, state, activeSignal), padding = 25 / zoom;
+                const left = box[0] - padding, top = box[1] - padding;
+                const right = box[2] + padding, bottom = box[3] + padding;
                 width = right - left; height = bottom - top;
                 if (!isSheetParent(doc, parent)) {
                     const pose = worldPose(doc, parent), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -171,6 +172,7 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                 }
             }
             return builder => {
+                if (kind === 'frame' && options.zoom() !== zoom) throw new DOMException('Frame selection view changed', 'AbortError');
                 const siblings = childrenOf(doc, parent), lastBranch = branch(roots[roots.length - 1], parent);
                 const index = siblings.findIndex(node => node.id === lastBranch.id);
                 if (index < 0) throw new Error('Selection insertion point disappeared');

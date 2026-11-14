@@ -210,6 +210,7 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        wakeAt(deadlineMs) { if (!disposed) layers.wakeAt(deadlineMs); },
         getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {

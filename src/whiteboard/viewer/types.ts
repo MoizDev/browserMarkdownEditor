@@ -64,6 +64,8 @@ export interface ViewerEngine {
     readonly scene: SceneSpatial;
     readonly accessibility: ViewerAccessibilitySource;
     getSnapshot(): ViewerSnapshot;
+    /** The layers' own deadline: a wake invalidates the view and nothing else. Picture animation schedules through it. */
+    wakeAt(deadlineMs: number | null): void;
     getView(): ViewerViewParams;
     subscribe(listener: () => void): () => void;
     setView(params: ViewerViewParams): void;

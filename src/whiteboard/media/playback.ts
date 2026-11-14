@@ -32,6 +32,8 @@ interface Player {
     closed: boolean;
     /** One snapshot at a time: a frame that arrives while the last is copying is the next one to be shown. */
     snapshotting: boolean;
+    /** The copy in flight. The source it reads (object URL and charge) is dropped only after this settles. */
+    copying: Promise<void> | null;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
@@ -128,7 +130,7 @@ export class BoardVideoPlayback {
                 url = URL.createObjectURL(source.blob);
                 const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
-                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false, snapshotting: false };
+                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false, snapshotting: false, copying: null };
                 state.player = player; state.muted = true;
                 if (this.host.mode === 'hidden-dom') {
                     if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
@@ -172,17 +174,20 @@ export class BoardVideoPlayback {
     }
     /** Copies the element's current frame out as an immutable bitmap. Its lifetime is the registry's, not the element's. */
     private presentFrame(player: Player): void {
-        const frames = this.host.frames;
-        if (!frames || player.closed || player.snapshotting || player.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const frames = this.host.frames, video = player.video;
+        if (!frames || player.closed || player.snapshotting || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        // Charged before the copy allocates. A refused charge defers this frame; the next frame callback asks again.
+        const lease = frames.admitFrame(video.videoWidth * video.videoHeight * 4);
+        if (!lease) return;
         player.snapshotting = true;
-        createImageBitmap(player.video).then(bitmap => {
-            player.snapshotting = false;
-            if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { bitmap.close(); return; }
-            frames.present(player.id, bitmap);
+        const copy: Promise<void> = createImageBitmap(video).then(bitmap => {
+            if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { bitmap.close(); frames.release(lease); return; }
+            frames.present(player.id, bitmap, lease);
         }, () => {
-            player.snapshotting = false;
+            frames.release(lease);
             if (!player.closed && this.host.current()) this.host.error(player.id, 'This video frame could not be shown');
-        });
+        }).finally(() => { player.snapshotting = false; if (player.copying === copy) player.copying = null; });
+        player.copying = copy;
     }
     private close(state: State): void {
         const player = state.player; if (!player || player.closed) return;
@@ -196,7 +201,10 @@ export class BoardVideoPlayback {
             if (player.callback !== null) player.video.cancelVideoFrameCallback(player.callback);
             player.video.pause(); player.video.removeAttribute('src'); player.video.load();
         } finally {
-            player.video.remove(); URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
+            player.video.remove();
+            // The decoder is stopped above. The source (object URL and charge) waits for a copy the browser already started.
+            const dropSource = () => { URL.revokeObjectURL(player.url); this.host.memory.release(player.memory); };
+            if (player.copying) void player.copying.then(dropSource, dropSource); else dropSource();
         }
     }
 }

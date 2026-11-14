@@ -118,6 +118,8 @@ function estimateStep(state: Estimate): void {
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
 export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
     invalidate(reason?: string): void;
+    /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
+    wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintFrame | null;
 }
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
@@ -412,6 +414,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.readyFrame = () => {
         if (disposed) return null;
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;

@@ -25,8 +25,17 @@ interface Frame {
 }
 
 export interface VideoFrameRegistry {
-    /** Takes ownership of the bitmap. Refusal (disposed, or no memory) closes it and returns false. */
-    present(node: string, bitmap: ImageBitmap): boolean;
+    /** Charges bytes to this view's memory before anything allocates them; null when disposed or when memory is refused. */
+    reserve(bytes: number): ByteLease | null;
+    /** Gives back a charge that no frame or decoder took. */
+    release(lease: ByteLease): void;
+    /**
+     * Charges a new presented frame. Null defers it: memory is refused, or this view already holds RETAINED_VERSIONS
+     * superseded frames for paints still in flight. The caller asks again on its next paint, and drops nothing that is held.
+     */
+    admitFrame(bytes: number): ByteLease | null;
+    /** Takes ownership of the bitmap and its charge. Refusal (disposed) closes the bitmap, releases the charge and returns false. */
+    present(node: string, bitmap: ImageBitmap, lease: ByteLease): boolean;
     /** Stops a node: its latest frame retires, and nothing new can be leased for it. */
     retire(node: string): void;
     /**
@@ -58,6 +67,12 @@ function videoKeysOf(frame: PaintFrame): string[] {
         item.kind === 'image' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX) ? [item.imageKey] : []);
 }
 
+/**
+ * Superseded frames one view may keep alive for paints in flight. Each holds its bitmap and charge until released, so a
+ * slow paint must not let them pile up: beyond this count the next frame is deferred, never a held one closed.
+ */
+const RETAINED_VERSIONS = 2;
+
 export function createVideoFrameRegistry(options: { readonly memory: MemoryAllocator; readonly invalidate: () => void }): VideoFrameRegistry {
     const { memory } = options;
     const frames = new Map<string, Frame>(), latest = new Map<string, Frame>(), sequence = new Map<string, number>(), shown = new Set<string>();
@@ -72,6 +87,8 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
     };
     const retireFrame = (frame: Frame) => { frame.retired = true; if (frame.refs === 0) drop(frame); };
     const aborted = () => new DOMException('Video frame is no longer current', 'AbortError');
+    // A retired frame still in the map is one a paint holds, so this is the held-version count the cap reads.
+    const heldVersions = () => { let held = 0; for (const frame of frames.values()) if (frame.retired) held++; return held; };
     const hold = (key: string): (() => void) => {
         const frame = frames.get(key);
         if (disposed || !frame || frame.closed) throw new Error('Cannot retain a video frame that is no longer held');
@@ -84,10 +101,14 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
         };
     };
     return {
-        present(node, bitmap) {
-            if (disposed) { bitmap.close(); return false; }
-            const lease = memory.reserve(bitmap.width * bitmap.height * 4);
-            if (!lease) { bitmap.close(); return false; }
+        reserve(bytes) { return disposed ? null : memory.reserve(bytes); },
+        release(lease) { memory.release(lease); },
+        admitFrame(bytes) {
+            if (disposed || heldVersions() >= RETAINED_VERSIONS) return null;
+            return memory.reserve(bytes);
+        },
+        present(node, bitmap, lease) {
+            if (disposed) { bitmap.close(); memory.release(lease); return false; }
             const seq = (sequence.get(node) ?? 0) + 1;
             sequence.set(node, seq);
             const frame: Frame = { key: videoFrameKey(node, seq), node, bitmap, lease, refs: 0, retired: false, closed: false };

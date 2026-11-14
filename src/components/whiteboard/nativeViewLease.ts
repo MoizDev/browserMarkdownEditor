@@ -180,6 +180,8 @@ export function createNativeViewLease(options: {
         },
         current: () => current() && parameters.visible,
         invalidate: () => invalidate(),
+        // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
+        wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
         error: (_id, message) => options.onNotice(message) });
     // The world rectangle this view shows; a sheet's picture counts for its overlap with it, and a picture inside a frame
     // counts for its whole box (its frame's transform is not resolved here, and only the overlap ranks which animate).

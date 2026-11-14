@@ -71,11 +71,13 @@ export function createContainedFrame(options: ContainedFrameOptions): ContainedF
         port: channel.port1,
         mount(container) {
             if (closed || mounted) throw new Error('Contained frame is closed or already mounted');
-            options.signal?.throwIfAborted();
-            mounted = true;
-            options.signal?.addEventListener('abort', dispose, { once: true });
-            try { frame.srcdoc = options.html; container.append(frame); }
-            catch (error) { dispose(); throw error; }
+            try {
+                options.signal?.throwIfAborted();
+                mounted = true;
+                options.signal?.addEventListener('abort', dispose, { once: true });
+                frame.srcdoc = options.html;
+                container.append(frame);
+            } catch (error) { dispose(); throw error; }
         },
         dispose,
     };

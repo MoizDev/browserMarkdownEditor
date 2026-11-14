@@ -1,25 +1,26 @@
 import { NODE_DEFAULTS } from '../model/defaults';
 import { MEDIA_MIMES } from '../model/media';
 import type { MediaMime } from '../model/media';
+import { SECURITY_LIMITS } from '../security/limits';
 export { MEDIA_MIMES } from '../model/media';
 export type { MediaMime } from '../model/media';
 
 // FMT-1; native-format §§3,5,6,10. These are file types, not the live model.
 export const NATIVE_VERSION = [1, 0] as const;
 export const FORMAT_LIMITS = Object.freeze({
-    fileBytes: 1024 ** 3,
-    records: 5_000_000,
-    recordBytes: 64 * 1024 ** 2,
-    pointsChars: 48 * 1024 ** 2,
-    points: 1_000_000,
-    textChars: 1_000_000,
-    richTextDepth: 32,
+    fileBytes: SECURITY_LIMITS.fileBytes,
+    records: SECURITY_LIMITS.records,
+    recordBytes: SECURITY_LIMITS.recordBytes,
+    pointsChars: SECURITY_LIMITS.encodedPoints,
+    points: SECURITY_LIMITS.pointsPerStroke,
+    textChars: SECURITY_LIMITS.textCharacters,
+    richTextDepth: SECURITY_LIMITS.richDepth,
     richTextBlocks: 100_000, // R-W30: checked lexically, before materializing any block/run arrays.
-    jsonDepth: 128, // security §3.2 also bounds inert future values
-    idChars: 128,
-    sheets: 1_000, // 40 is the creation UI's cap, not a file rejection rule
-    parentDepth: 64,
-    world: 10_000_000,
+    jsonDepth: SECURITY_LIMITS.jsonDepth, // security §3.2 also bounds inert future values
+    idChars: SECURITY_LIMITS.idCharacters,
+    sheets: SECURITY_LIMITS.sheets, // 40 is the creation UI's cap, not a file rejection rule
+    parentDepth: SECURITY_LIMITS.parentDepth,
+    world: SECURITY_LIMITS.world,
     // R-W11: notebook page setting is finite here; model/normalizePaper clamps to 1..500.
     // R-W11: authored PDF page facts are not clamped (PDF stream/C2.3; 06-text 10k-page fixtures).
     pdfPages: 65_536,

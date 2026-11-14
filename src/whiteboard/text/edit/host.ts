@@ -203,6 +203,8 @@ export class EditHost {
         }
     }
 
+    get textOffsetBase(): number { return this.window.start; }
+
     updateBounds(control: DOMRect, selection: DOMRect): void {
         this.context?.updateControlBounds(control);
         this.context?.updateSelectionBounds(selection);

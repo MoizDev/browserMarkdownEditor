@@ -49,22 +49,27 @@ export async function validateLoadSources(sources: readonly ReadSourceRecord[], 
     let steps = 0, started = performance.now();
     const tick = async () => { check(); await cooperate?.(); check(); started = performance.now(); steps = 0; };
     const ordinals = new Set<number>();
-    let end = 0;
+    let end = 0, previousOrdinal = -1;
     check();
     for (const entry of sources) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
-        if (!source(entry, baseline.size) || ordinals.has(entry.position.ordinal) || entry.position.byteOffset < end) throw new TypeError('Invalid live source metadata');
+        if (!source(entry, baseline.size) || entry.position.ordinal <= previousOrdinal
+            || entry.position.byteLength === 0 || entry.position.byteOffset < end) throw new TypeError('Invalid live source metadata');
         ordinals.add(entry.position.ordinal);
+        previousOrdinal = entry.position.ordinal;
         end = entry.position.byteOffset + entry.position.byteLength;
     }
     for (const entry of removedSources) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
-        if (!source(entry, baseline.size)) throw new TypeError('Invalid removed source metadata');
+        if (!source(entry, baseline.size) || entry.position.byteLength === 0 || ordinals.has(entry.position.ordinal)) throw new TypeError('Invalid removed source metadata');
+        ordinals.add(entry.position.ordinal);
     }
     for (const entry of unmapped) {
         if (++steps >= 256 || performance.now() - started >= 3) await tick();
         if (!fields(entry, ['raw', 'position', 'reason']) || !boundedString(entry.raw, FORMAT_LIMITS.recordBytes)
-            || !position(entry.position, baseline.size) || !boundedString(entry.reason, 10_000)) throw new TypeError('Invalid unmapped source metadata');
+            || !position(entry.position, baseline.size) || entry.position.byteLength === 0 || ordinals.has(entry.position.ordinal)
+            || !boundedString(entry.reason, 10_000)) throw new TypeError('Invalid unmapped source metadata');
+        ordinals.add(entry.position.ordinal);
     }
     check();
 }

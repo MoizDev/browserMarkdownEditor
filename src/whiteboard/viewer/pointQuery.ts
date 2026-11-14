@@ -1,6 +1,6 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import { cameraTransform, worldToSurface } from '../../platform/render/camera';
-import { worldToLocal } from '../change/coordinates';
+import { worldPose, worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -164,8 +164,12 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
                     for (let depth = 0; parent && depth < 64; depth++) {
                         if (parent.kind === 'frame') {
+                            const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                            const frame: Affine = [c, s, -s, c, pose.x, pose.y], worldPoint = exactPoint(point);
+                            const corners = [{ x: 0, y: 0 }, { x: parent.w, y: 0 }, { x: parent.w, y: parent.h }, { x: 0, y: parent.h }]
+                                .map(p => exactAffinePoint(frame, p));
+                            if (corners.some((corner, i) => exactSide(exactLineBetween(corner, corners[(i + 1) % 4]), worldPoint) < 0)) { clipped = true; break; }
                             const local = worldToLocal(doc, parent, point);
-                            if (local.x < 0 || local.y < 0 || local.x > parent.w || local.y > parent.h) { clipped = true; break; }
                             // A halo witness near the clip edge can belong entirely to hidden geometry.
                             const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
                             if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;

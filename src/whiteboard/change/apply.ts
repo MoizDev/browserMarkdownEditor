@@ -1,7 +1,7 @@
 import { isSheetParent, sheetOf, type BoardDoc, type Sheet } from '../model/doc';
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { ExtBag, RawJson } from '../model/json';
-import type { MediaId } from '../model/media';
+import { isSafeMediaFile, type MediaId, type MediaLocations } from '../model/media';
 import { createNode, type Node } from '../model/nodes';
 import type { SampleLease, SampleRef, SampleStoreReader } from '../model/samples';
 import { BOARD_FILE_FIELDS, NODE_FILE_FIELDS } from '../model/fileFields';
@@ -81,6 +81,26 @@ function invalidate(ext: ExtBag | null, keys: readonly string[]): ExtBag | null 
         raw.delete(key);
     }
     return raw ? raw.size || ext.fields.size ? { fields: ext.fields, raw } : null : undefined;
+}
+// Physical filenames are not history. Only actual undo/redo admission projects
+// them; rollback calls planOp directly and restores captured file/raw data exactly.
+function replayMediaLocation(op: Op, locations: MediaLocations | undefined): Op {
+    if (!locations) return op;
+    const id = op.t === 'media' && op.op === 'add' ? op.entry.id
+        : op.t === 'ext' && op.target === 'media' ? op.id as MediaId : undefined;
+    if (id === undefined) return op;
+    const file = locations.currentFile(id);
+    if (file === undefined) return op;
+    if (!isSafeMediaFile(file)) throw new ApplyFailed('media-location', 'The media registry returned an unsafe filename');
+    if (op.t === 'media' && op.op === 'add') {
+        const ext = invalidate(op.entry.ext, ['file']);
+        return { ...op, entry: { ...op.entry, file, ext: ext === undefined ? op.entry.ext : ext } };
+    }
+    if (op.t === 'ext') {
+        const ext = invalidate(op.value, ['file']);
+        return ext === undefined ? op : { ...op, value: ext };
+    }
+    return op;
 }
 function richValue(node: Node, key: 'text' | 'label'): RichText | null {
     return Reflect.get(node, key) as RichText | null;
@@ -294,6 +314,12 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
                 inverse = [{ t: 'media', op: 'drop', id: input.entry.id,
                     ...((doc.preservedMediaRefs.get(input.entry.id) ?? 0) > 0 ? { restoreMissing: true as const } : {}) }];
                 raw.extension(null, input.entry.ext);
+            } else if (input.op === 'set-file') {
+                const entry = required(doc.media.get(input.id), 'Inverse media file target vanished');
+                forward = model = { ...input };
+                extAfter = 'restoreExt' in input ? input.restoreExt : invalidate(entry.ext, ['file']);
+                inverse = [{ t: 'media', op: 'set-file', id: input.id, file: entry.file, restoreExt: entry.ext }];
+                if (extAfter !== undefined) raw.extension(entry.ext, extAfter);
             } else {
                 const entry = required(doc.media.get(input.id), 'Inverse media target vanished');
                 forward = model = { ...input };
@@ -340,7 +366,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
     return { forward, inverse, mutation, counts, delta, refs, live, ...touched };
 }
 
-export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}, geometry?: ChangeGeometry): ApplyController {
+export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}, geometry?: ChangeGeometry, mediaLocations?: MediaLocations): ApplyController {
     const live = new Map<NodeId, SampleLease>();
     try {
         for (const node of doc.nodes.values()) {
@@ -459,14 +485,19 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     throw error;
                 } finally { close(); }
             };
-            const stageBody = (op: Op): void => {
+            const stageBody = (input: Op): void => {
                 const opIndex = attempted++;
+                const replay = origin === 'undo' || origin === 'redo' || origin === 'revert';
+                // Even a mixed content step cannot replay filesystem bookkeeping.
+                if (replay && input.t === 'media' && input.op === 'set-file') return;
+                let op = input;
                 const result = validateOp(context, op, opIndex);
                 if (!result.ok) throw new ApplyRefused(result);
                 let plan: OpPlan | undefined, captured: NormalizationStep['captured'];
                 try {
+                    if (replay) op = replayMediaLocation(op, mediaLocations);
                     plan = planOp(doc, op);
-                    captured = !plan || origin === 'undo' || origin === 'redo' || origin === 'revert' ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
+                    captured = !plan || replay ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
                 } catch (error) {
                     if (error instanceof ApplyRefused) throw new ApplyRefused({ ok: false, code: error.code, reason: error.reason, nodeId: error.nodeId, opIndex });
                     return fail(error, error instanceof ModelInvariantError);

@@ -119,15 +119,23 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 if ((i & 255) === 255) { await cooperate(); check(); }
             }
             check();
-            let regions: readonly (readonly Vec2[])[] = [points];
-            if (query.kind === 'polygon' && !query.containment && points.length > 3) {
+            let regions: readonly (readonly Vec2[])[] = [points], decomposedContainment = false;
+            if (query.kind === 'polygon' && points.length > 3) {
                 const triangulation = createPolygonTriangulationJob(points);
                 try {
                     for (;;) {
                         const value = triangulation.step({ deadline: performance.now() + 3, maxWork: 128 });
                         if (value.status === 'pending') { await cooperate(); check(); continue; }
                         if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
-                        regions = value.triangles; break;
+                        let convex = points.length <= 64, winding = 0;
+                        for (let i = 0; i < points.length; i++) {
+                            const side = orient2d(points[i], points[(i + 1) % points.length], points[(i + 2) % points.length]);
+                            if (!side || (winding && winding !== side)) convex = false;
+                            if (side) winding = side;
+                            if ((i & 255) === 255) { await cooperate(); check(); }
+                        }
+                        if (!query.containment || !convex) { regions = value.triangles; decomposedContainment = query.containment; }
+                        break;
                     }
                 } finally { triangulation.cancel(); }
             }
@@ -335,6 +343,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     await cooperate(); check();
                 }
                 if (!result?.hit && uncertain) throw uncertain;
+                if (result && !result.hit && decomposedContainment)
+                    throw new BoardRegionUncertain('Containment spans a non-convex lasso partition');
                 if (result) {
                     evaluated.set(resolved.id, result);
                     if (result.hit && !(query.kind === 'polygon' && query.containment && result.selected !== resolved.id))

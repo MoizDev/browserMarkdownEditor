@@ -37,17 +37,25 @@ export function createTextEditingManager(ports: TextEditingManagerPorts): TextEd
         const initial = selection ?? { anchor: 0, focus: item.kind === 'frame' ? item.name.length
             : item.kind === 'text' || item.kind === 'sticky' ? projectionLength(item.text)
             : item.kind === 'figure' || item.kind === 'connector' ? item.label ? projectionLength(item.label) : 0 : 0 };
+        let binding: TextEditBinding | null = null;
         try {
             const supplied = ports.binding(id, key, initial, creationToken);
             const holder: { binding?: TextEditBinding } = {};
             const options = { ...supplied, view: { ...supplied.view, creationToken,
                 finish: () => { if (current === holder.binding) current = null; supplied.view.finish(); } } };
-            const binding = bindTextEditor(options);
+            binding = bindTextEditor(options);
             holder.binding = binding;
             current = binding;
             binding.editor.focus();
-            return true;
-        } catch (error) { ports.error(error); return false; }
+            return current === binding;
+        } catch (error) {
+            if (binding && current === binding) {
+                current = null;
+                try { binding.close(false); } catch (cleanup) { ports.error(cleanup); }
+            }
+            ports.error(error);
+            return false;
+        }
     }
     function create(x: number, y: number, width: number | null): NodeId | null {
         if (disposed) return null;
@@ -78,7 +86,9 @@ export function createTextEditingManager(ports: TextEditingManagerPorts): TextEd
         create,
         type(id, text) {
             if (!text || !start(id)) return false;
-            current?.insertText(text);
+            const binding = current;
+            if (!binding) return false;
+            binding.insertText(text);
             return true;
         },
         refresh() { current?.refresh(); },

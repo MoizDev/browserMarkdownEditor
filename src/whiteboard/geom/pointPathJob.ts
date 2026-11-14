@@ -31,7 +31,7 @@ export function isUniformDistanceMatrix(matrix: Affine): boolean {
 }
 function middle(a: BoundsPoint, b: BoundsPoint): BoundsPoint {
     const half = interval(0.5);
-    return { x: multiply(add(a.x, b.x), half), y: multiply(add(a.y, b.y), half) };
+    return { x: add(multiply(a.x, half), multiply(b.x, half)), y: add(multiply(a.y, half), multiply(b.y, half)) };
 }
 export function splitCertifiedCurve(curve: Curve): readonly [Curve, Curve] {
     const p = curve.points, depth = curve.depth + 1;
@@ -71,9 +71,10 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid point path job');
     let finished: PointPathJobResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0;
-    if (!isUniformDistanceMatrix(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
-    const scaleSquared = add(square(matrix[0]), square(matrix[1]));
-    const scale = sqrtInterval({ lo: Math.max(0, scaleSquared.lo), hi: scaleSquared.hi });
+    if (options.strokeRadiusLocal && !isUniformDistanceMatrix(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
+    const scaleSquared = options.strokeRadiusLocal ? add(square(matrix[0]), square(matrix[1])) : interval(0);
+    if (!Number.isFinite(scaleSquared.hi)) finished = { status: 'uncertain', reason: 'Point path transform scale overflows' };
+    const scale = Number.isFinite(scaleSquared.hi) ? sqrtInterval({ lo: Math.max(0, scaleSquared.lo), hi: scaleSquared.hi }) : interval(0);
     const radius = add(multiply(interval(options.strokeRadiusLocal), scale), interval(margin));
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Point path radius overflows' };
     const fill = options.interiorPaths?.length

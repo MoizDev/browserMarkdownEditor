@@ -21,8 +21,7 @@ async function outlineFont(face: Face, signal: AbortSignal): Promise<FontEntry> 
     let slot = loaded.get(url);
     if (!slot) {
         const controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Export font deadline exceeded', 'TimeoutError')), 30_000);
-        let created!: FontSlot;
-        const promise = Promise.all([import('harfbuzzjs'), fetch(url, { signal: controller.signal })]).then(async ([hb, response]) => {
+        const promise: Promise<FontEntry> = Promise.all([import('harfbuzzjs'), fetch(url, { signal: controller.signal })]).then(async ([hb, response]) => {
             if (!response.ok) throw new Error('Export font could not be loaded');
             const bytes = await response.arrayBuffer(), source = new hb.Face(new hb.Blob(bytes));
             const font = new hb.Font(source);
@@ -32,7 +31,7 @@ async function outlineFont(face: Face, signal: AbortSignal): Promise<FontEntry> 
             if (loaded.get(url) === created) loaded.delete(url);
             throw error;
         }).finally(() => clearTimeout(timer));
-        created = { controller, waiters: 0, settled: false, promise };
+        const created: FontSlot = { controller, waiters: 0, settled: false, promise };
         loaded.set(url, created); slot = created;
     }
     slot.waiters++;

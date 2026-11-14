@@ -215,7 +215,7 @@ export class TextEditSession {
             event.preventDefault(); event.stopPropagation();
             const layout = this.services.layout();
             const caret = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
-            const at = point(layout.localToClient, caret.x, caret.bottom);
+            const at = point(layout.localToClient, caret.x, (caret.top + caret.bottom) / 2);
             this.services.menu(at.x, at.y);
             return;
         }

@@ -48,6 +48,8 @@ export interface Webgl2Services {
     observeFenceAge?(oldestPendingMs: number): void;
     /** Native GPU time only; disjoint samples are discarded, never replaced with CPU timing. */
     observeGpuTiming?(p95Ms: number, samples: number, disjoint: boolean): void;
+    /** Native offscreen attachment incompleteness, distinct from unsupported features or loss. */
+    onFramebufferFailure?(): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
@@ -1607,18 +1609,26 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, texture.width, texture.height);
                 gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, target.depthStencil);
             }
-            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new ArenaError('unsupported');
+            this.#assertFramebuffer();
             if (desc.samples === 4) {
                 const resolve = gl.createFramebuffer();
                 if (!resolve) throw new ArenaError('allocation');
                 target.resolveFramebuffer = resolve;
                 gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
                 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture.texture, 0);
-                if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new ArenaError('unsupported');
+                this.#assertFramebuffer();
             }
             return target;
         } catch (error) { if (!gl.isContextLost()) this.#deleteTarget(target); throw error; }
     }
+    #assertFramebuffer(): void {
+        const gl = this.#healthy();
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) return;
+        this.#healthy();
+        this.#services.onFramebufferFailure?.();
+        throw new ArenaError('unsupported');
+    }
+
     #compile(shader: ShaderModule): NativeProgram {
         const gl = this.#usable();
         const program = gl.createProgram();

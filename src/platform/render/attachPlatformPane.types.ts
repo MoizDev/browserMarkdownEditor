@@ -38,6 +38,8 @@ export interface PlatformPaneOptions<T extends object> {
     readonly initialVisible: boolean;
     readonly initialFocused: boolean;
     readonly layout: Readonly<PageStack> | null;
+    /** Optional immutable layout snapshot for page/sheet changes after attachment. */
+    readLayout?(): Readonly<PageStack> | null;
     readAppearance(): CompositorAppearance;
     currentToken(): RenderToken | null;
     readCamera(): Camera;

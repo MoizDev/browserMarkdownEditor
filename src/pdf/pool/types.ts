@@ -4,9 +4,16 @@ import type { Priority, RequestOptions } from '../../platform/workers/envelope';
 import type { DocInfo, RawPdfLink, RawOutlineNode, PageComplexity } from '../engine/types';
 import type { WriterOperations } from '../writing/protocol';
 import type { PdfArgs, PdfResult, PdfEngineOp, PdfDocKey, PdfTextDetail, PageTextReply, PageTileArgs, PageTileResult,
-    PageProbeArgs, PageProbeResult, PdfWorkerStats } from '../worker/protocol';
+    PageProbeArgs, PageProbeResult, PdfWorkerStats, TileVariant } from '../worker/protocol';
 
 export type PdfRequestOptions = Pick<RequestOptions, 'priority' | 'signal' | 'deadlineMs'>;
+export type PdfPageBitmapOptions = PdfRequestOptions & TileVariant & {
+    profileKey: string;
+    annotations?: boolean;
+    forms?: boolean;
+    /** Refuse an oversized capture; never silently reduce the requested scale. */
+    maxPixels?: number;
+};
 export interface PdfOpenOptions {
     /** App-owned full session token; only its first three fields enter docKey. */
     token: RenderToken;
@@ -32,6 +39,10 @@ export interface PdfPoolDocument {
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
     text(page: number, detail: PdfTextDetail, options: PdfRequestOptions): Promise<PageTextReply>;
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions): Promise<PageTileResult>;
+    /** Independent of viewport demand; composes exact-scale tiles, caller owns bitmap. */
+    renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap>;
+    /** Plain/emphasis follows explicit options, but dispatch is always priority 3. */
+    thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap>;
     links(page: number, options: PdfRequestOptions): Promise<RawPdfLink[]>;
     outline(options: PdfRequestOptions): Promise<RawOutlineNode[]>;
     complexity(page: number, options: PdfRequestOptions): Promise<PageComplexity>;

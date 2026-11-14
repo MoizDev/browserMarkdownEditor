@@ -1,17 +1,12 @@
 import type { PageGeometry, PageDisplayList } from '../../platform/types';
-import type { ReaderToken } from '../../types/reading';
+import type { RenderToken } from '../../platform/render/types';
+import type { PdfDocKey } from '../worker/protocol';
 
 /** C2/C5 worker payloads only. Handles, live board sessions and callbacks stay on the host. */
-export interface WriterDocumentKey {
-    vaultEpoch: number;
-    documentId: string;
-    /** Changes only when bytes change, not when a path is renamed. */
-    bytesGeneration: number;
-    source: 'outer' | 'original';
-}
 export interface WriterSource {
-    token: ReaderToken;
-    docKey: WriterDocumentKey;
+    token: RenderToken;
+    /** Canonical key uses bytesGeneration, not the rename-bumped reader token. */
+    docKey: PdfDocKey;
     pristine: Blob;
     pristineFingerprint: string;
     outer: Blob;

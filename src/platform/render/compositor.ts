@@ -211,7 +211,6 @@ export class GpuCompositor implements PaneCompositor {
 
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.#check();
-        const view = frame.view;
         const snapshot = this.#snapshot;
         this.#isolationPlan = null;
         this.#isolationReadyFrame = -1;

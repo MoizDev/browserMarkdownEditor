@@ -1534,7 +1534,7 @@ export default function App() {
       }
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
-      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined]));
+      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) : undefined]));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
       const unsavedBoards = new Map(boards.map(board => [board.path, unsavedBoardContentRef.current.get(board.path)]));
       // Dirty-only save acknowledgements do not change a reference proof.
@@ -1546,7 +1546,7 @@ export default function App() {
           return tab.id === old.id && tab.file.path === old.file.path
             && tab.readError === old.readError && tab.representation === old.representation
             && documentBuffers.revisionForDocument(tab.id)?.revision === proofRevisions.get(tab.id)
-            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? latestContentRef.current.get(tab.file.path) ?? tab.content : undefined) === proofContents.get(tab.file.path)
+            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) : undefined) === proofContents.get(tab.file.path)
             && (!isCanvasFile(tab.file.name) || !getView(tab.file.path)?.hasPendingEdits?.());
         });
       let retired = false;
@@ -2322,10 +2322,12 @@ export default function App() {
     }
   }, [tabs]);
   const contentOf = useCallback((path: string): string | undefined => {
+    const text = documentBuffers.contentOf(path);
+    if (text !== undefined) return text;
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab) return undefined;
     const buffer = documentBuffers.get(tab.id);
-    if (buffer?.readable) return documentBuffers.contentOf(path);
+    if (buffer?.readable) return text;
     // Until every PDF caller migrates to snapshotOf, its legacy snapshot is
     // still needed by the annotate and print paths. Other unreadable kinds
     // must never be exposed as empty text.
@@ -3218,6 +3220,9 @@ export default function App() {
       const current = tabsRef.current.find(t => t.id === tab.id);
       if (!current) return false;
       setBaseline(tab.id, version);
+      documentBuffers.report(tab.id, content, true);
+      documentBuffers.setReadable(tab.id, representationFor(current.file.name).bufferKind === 'text');
+      bumpBytesGeneration(tab.id);
       // The asset-diff baseline the restore held back, taken under the path the
       // document answers to NOW.
       if ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
@@ -3253,7 +3258,7 @@ export default function App() {
     } finally {
       retryingReadsRef.current.delete(tab.id);
     }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState]);
+  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration]);
   // handleFileClick is declared long before this, and reads it through a ref
   // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);

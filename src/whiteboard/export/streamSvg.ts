@@ -5,6 +5,7 @@ import { PaintStreamJob } from '../render/paintStream'
 import type { PaintItem, PaintNodeSource } from '../render/paintStream'
 import { paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
+import { createExportTextResolver } from './textResolver'
 
 function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDisplayItem {
   if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers)) }
@@ -29,6 +30,7 @@ export async function streamSvg(
   signal.throwIfAborted()
   const identity: BoardJobIdentity = { session: crypto.randomUUID(), epoch: source.token.vaultEpoch, revision: source.sceneRevision }
   const streamId = crypto.randomUUID(), client = boardWorker('export')
+  const text = createExportTextResolver(source, signal)
   const current = (candidate: BoardJobIdentity) => !signal.aborted && source.isCurrent()
     && candidate.session === identity.session && candidate.epoch === identity.epoch && candidate.revision === identity.revision
   const opts = { priority: 0 as const, signal }
@@ -57,7 +59,7 @@ export async function streamSvg(
       const items: PageDisplayItem[] = []
       for (const item of chunk) {
         signal.throwIfAborted()
-        items.push(await paintItemDisplay(item, scale, image, signal))
+        items.push(await paintItemDisplay(item, scale, image, signal, text))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0

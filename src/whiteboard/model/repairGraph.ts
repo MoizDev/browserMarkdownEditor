@@ -40,12 +40,13 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     const root = options.sheets[0].id, items: Item[] = [];
     const reserved = new Set<string>([...sheets, ...options.nodes.map(node => node.id)]);
     const byId = new Map<NodeId, Item>();
-    const tick = async (index: number) => {
+    const tick = async () => {
         if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
-        if ((index & 1023) === 0 && options.cooperate) await options.cooperate();
+        if (options.cooperate) await options.cooperate();
+        if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
     };
     for (let i = 0; i < options.nodes.length; i++) {
-        await tick(i);
+        if ((i & 1023) === 0) await tick();
         let node = options.nodes[i];
         if (!isValidId(node.id) || byId.has(node.id) || sheets.has(node.id)) {
             if (node.kind === 'opaque') return result(items, 'An opaque record has a duplicate or invalid identity');
@@ -70,7 +71,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     };
     const done = new Set<NodeId>();
     for (let i = 0; i < items.length; i++) {
-        await tick(i);
+        if ((i & 1023) === 0) await tick();
         let item: Item | undefined = items[i];
         if (done.has(item.node.id)) continue;
         const path: Item[] = [], positions = new Map<NodeId, number>();
@@ -96,7 +97,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     // incorrectly passes the per-path depth limit.
     const depths = new Map<NodeId, number>();
     for (let i = 0; i < items.length; i++) {
-        await tick(i);
+        if ((i & 1023) === 0) await tick();
         const path: Item[] = []; let item: Item | undefined = items[i];
         while (item && !depths.has(item.node.id)) { path.push(item); item = byId.get(item.node.parent as NodeId); }
         let depth = item ? depths.get(item.node.id)! : 0;

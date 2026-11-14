@@ -15,6 +15,7 @@ import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoin
 import { dyadicMultiply, dyadicSubtract } from '../geom/numeric';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
+import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { InkCoverage } from '../ink/outline';
@@ -269,7 +270,20 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                             }
                             if (result.hit && !ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {
-                            result = vector.point(query);
+                            void vector.key;
+                            const descriptor = vectorNarrowDescriptor(vector);
+                            if (descriptor) {
+                                const job = createVectorPointJob(descriptor, query);
+                                try {
+                                    for (;;) {
+                                        const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                        if (value.status === 'pending') { await tick(); continue; }
+                                        if (value.status === 'hit') result = value.result;
+                                        else if (value.status === 'uncertain') { result = { hit: true, distanceCss: 0, part: value.part }; ambiguous = true; }
+                                        break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else result = vector.point(query);
                             if (targetMode && result.hit) ambiguous = true;
                         }
                     }

@@ -12,6 +12,7 @@ import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
+import { createVectorRegionJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
 import { orient2d } from '../geom/predicates';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
@@ -194,7 +195,19 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
                         } finally { resolvedLine.release(); }
                     }
-                    hit = vector.region(localQuery).hit;
+                    void vector.key;
+                    const descriptor = vectorNarrowDescriptor(vector);
+                    if (descriptor) {
+                        const job = createVectorRegionJob(descriptor, localQuery);
+                        try {
+                            for (;;) {
+                                check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                if (value.status === 'pending') { await cooperate(); continue; }
+                                if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                hit = value.status === 'hit'; break;
+                            }
+                        } finally { job.cancel(); }
+                    } else hit = vector.region(localQuery).hit;
                 } else if (prepared.connector && node.kind === 'connector') {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };

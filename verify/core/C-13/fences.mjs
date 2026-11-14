@@ -224,7 +224,9 @@ try {
         const awayHeading = item.closed ? item.complete : item.heading;
         await search(page, awayHeading);
         await content.locator('.cm-line.cm-live-heading').filter({ hasText: awayHeading }).click({ position: { x: 120, y: 10 } });
-        if (item.diagram) await content.locator('.cm-mermaid-widget svg').waitFor({ timeout: 20000 });
+        if (await content.locator('.cm-mermaid-widget').count()) {
+            await content.locator('.cm-mermaid-widget svg').waitFor({ timeout: 20000 });
+        }
         row.away = await snapshot(content);
         check(row.away.diagrams === (item.diagram ? 1 : 0), `away ${item.name} diagram eligibility restored`);
         if (!item.diagram) check(row.away.start?.trim() === '' && (!item.closed || row.away.end?.trim() === ''), `away ${item.name} fences hidden again`);

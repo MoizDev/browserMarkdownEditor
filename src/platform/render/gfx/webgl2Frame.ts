@@ -60,6 +60,7 @@ export interface EncodedDraw {
     readonly count: number;
     readonly instances: number;
     readonly scissor: RectI;
+    readonly standInRatio?: number;
 }
 export interface TargetRequest {
     width: number;
@@ -529,7 +530,8 @@ class DevicePass implements GpuPass {
             const scissor = intersect(intersect(rect(cmd.scissor), this.#clip), this.#scope.bounds);
             if (this.#scope.empty || !cmd.count || !cmd.instances || !scissor.width || !scissor.height) return;
             const command: EncodedDraw = { pipeline, uniforms, textures, vertices, index,
-                first: cmd.first, count: cmd.count, instances: cmd.instances, scissor };
+                first: cmd.first, count: cmd.count, instances: cmd.instances, scissor,
+                ...(__BME_BENCH__ && cmd.standInRatio !== undefined ? { standInRatio: cmd.standInRatio } : {}) };
             const context = this.#scope;
             this.#frame.command(() => pipeline.draw(command, context));
         });

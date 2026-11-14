@@ -33,7 +33,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
         }
         void (async () => {
             let prepared: PreparedNativeBoard<S> | undefined;
-            let taken = false;
+            let taken = false, failedTakeCleanup: Promise<void> | undefined;
             try {
                 const identity = getSessionIdentity(documentId);
                 if (!identity || identity.bytesGeneration !== bytesGeneration) throw new DOMException('Board session ended', 'AbortError');
@@ -59,7 +59,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                         reason = policy.emergencyReadOnly ? emergencyReadOnlyReason : null;
                         if (policy.emergencyReadOnly && !owned.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');
                         return createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
-                    } catch (cause) { owned.dispose(); throw cause; }
+                    } catch (cause) { failedTakeCleanup = Promise.resolve().then(() => owned.dispose()); throw cause; }
                 });
                 requireOwner();
                 if (adapter.owner?.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
@@ -72,7 +72,10 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                     value: { adapter, emergencyReadOnly: policy.emergencyReadOnly } });
             } catch (cause) {
                 if (alive && !abort.signal.aborted && !(cause instanceof DOMException && cause.name === 'AbortError')) error.current(cause);
-            } finally { if (prepared && !taken) prepared.dispose(); }
+            } finally {
+                try { if (failedTakeCleanup) await failedTakeCleanup; } catch (cause) { error.current(cause); }
+                try { if (prepared && !taken) await prepared.dispose(); } catch (cause) { error.current(cause); }
+            }
         })();
         return () => { alive = false; abort.abort(); };
     }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare, existing]);

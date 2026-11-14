@@ -23,6 +23,8 @@ export interface CanvasPaintAdapter {
 
 export interface PreparedPaint2d {
     readonly frame: PaintFrame;
+    /** Canonical source whose pin and presentation acknowledgement own a derived frame. */
+    readonly sourceFrame?: PaintFrame;
     readonly resources: PaintResources2d;
 }
 

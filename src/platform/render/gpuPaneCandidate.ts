@@ -54,9 +54,9 @@ export class GpuPaneCandidate {
         const now = performance.now();
         const backing = new SurfaceBacking({ governor: this.options.runtime.governor, paneId: this.options.paneId,
             owner: this.options.owner, id, canvas: preparation.canvas, displayed: false, now });
-        let generation!: Generation;
+        const generationRef: { current: Generation | null } = { current: null };
         const defer = (action: () => void): void => {
-            const expected = generation;
+            const expected = generationRef.current;
             if (!expected) return;
             queueMicrotask(() => {
                 if (this.current === expected && !expected.disposed && !preparation.signal.aborted) action();
@@ -78,7 +78,8 @@ export class GpuPaneCandidate {
                 onFramebufferFailure: () => defer(() => this.options.runtime.trouble('framebuffer')),
                 evict: () => defer(this.options.onEvict) });
         } catch (error) { backing.close(); throw error; }
-        generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
+        const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
+        generationRef.current = generation;
         this.current = generation;
         try {
             const bundle = await factory({ preparation, services: services.services,

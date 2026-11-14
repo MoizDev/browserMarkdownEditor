@@ -1,4 +1,5 @@
 import type { Block, RichText } from '../text/richText';
+import { isGraphemeBoundary } from '../text/graphemes';
 
 // R-W18/R-W21: temporary O(existing runs), allocation-free projection lookup.
 // TX-2 replaces these scans with its cached lengths/offsets; TX-1 adds the owed
@@ -50,6 +51,24 @@ export function spliceBlockCount(text: RichText | null, from: number, to: number
         position++;
     }
     return text.blocks.length - removed + inserted - 1;
+}
+
+const blockProjection = new WeakMap<Block, string>();
+
+/** Runs may split a grapheme; segment the complete immutable block, not each run. */
+export function isTextGraphemeBoundary(text: RichText | null, offset: number): boolean {
+    if (!text) return offset === 0;
+    let position = 0;
+    for (const block of text.blocks) {
+        const length = blockTextLength(block);
+        if (offset <= position + length) {
+            let plain = blockProjection.get(block);
+            if (plain === undefined) { plain = block.runs.map(run => run.text).join(''); blockProjection.set(block, plain); }
+            return isGraphemeBoundary(plain, offset - position);
+        }
+        position += length + 1;
+    }
+    return false;
 }
 
 export function isSurrogateBoundary(text: RichText | null, offset: number): boolean {

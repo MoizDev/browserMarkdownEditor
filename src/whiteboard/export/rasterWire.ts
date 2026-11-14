@@ -1,6 +1,5 @@
-import type { PaintImageItem, PaintPathItem } from '../render/paintStream'
+import type { PaintImageItem, PaintPathItem, PaintTextItem } from '../render/paintStream'
 
-/** Ink coverage is converted to its shared nonzero outline before transfer. Text will
- * retain its laid-out payload when the renderer's text item contract is published. */
-export type RasterWireItem = PaintPathItem | PaintImageItem
+/** Ink coverage becomes its shared nonzero outline; laid-out text remains text for fillText. */
+export type RasterWireItem = PaintPathItem | PaintImageItem | PaintTextItem
 export interface RasterWireImage { readonly key: string; readonly bitmap: ImageBitmap }

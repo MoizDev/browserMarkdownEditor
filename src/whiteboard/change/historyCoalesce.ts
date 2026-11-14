@@ -28,7 +28,7 @@ function mergeSplices(first: HistoryOperation, last: HistoryOperation): HistoryO
     try {
         const relativeFrom = b.from - previous.from, relativeTo = b.to - previous.from;
         if (relativeFrom < 0 || relativeTo > textLength(previous.insert)) return;
-        const next = spliceRichText(previous.insert, relativeFrom, relativeTo, b.insert, b.wholeBlocks).text;
+        const next = spliceRichText(previous.insert, relativeFrom, relativeTo, b.insert, b.wholeBlocks === true || b.replaceBlocks === true).text;
         const forward: Op = { t: 'splice', id: a.id, key: a.key, from: original.from,
             to: original.from + textLength(original.insert), insert: next, wholeBlocks: true };
         const inverse: Op = { ...original, to: previous.to };

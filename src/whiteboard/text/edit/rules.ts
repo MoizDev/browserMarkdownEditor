@@ -15,8 +15,8 @@ function blockAt(text: RichText, offset: number): { block: Block; start: number;
     return null;
 }
 
-function transaction(id: NodeId, key: 'text' | 'label', from: number, to: number, insert: RichText, wholeBlocks = false): Transaction {
-    return { origin: 'tool', label: 'Format typed text', ops: [{ t: 'splice', id, key, from, to, insert, ...(wholeBlocks ? { wholeBlocks: true as const } : {}) }] };
+function transaction(id: NodeId, key: 'text' | 'label', from: number, to: number, insert: RichText, replaceBlocks = false): Transaction {
+    return { origin: 'tool', label: 'Format typed text', ops: [{ t: 'splice', id, key, from, to, insert, ...(replaceBlocks ? { replaceBlocks: true as const } : {}) }] };
 }
 
 // Each rule is returned as one splice so the history service can join it to the

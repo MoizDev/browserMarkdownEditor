@@ -1,3 +1,15 @@
+/** One select-all keyboard route shared by the classic and tiled surfaces. */
+export function bindPdfSelectAll(root: HTMLElement, select: () => boolean | void): () => void {
+    const onKey = (event: KeyboardEvent) => {
+        if (event.defaultPrevented || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'a') return;
+        const target = event.target;
+        if (target instanceof HTMLElement && (target.closest('input, textarea, select, [role="dialog"], [role="menu"]') || target.isContentEditable)) return;
+        if (select() !== false) event.preventDefault();
+    };
+    root.addEventListener('keydown', onKey, true);
+    return () => root.removeEventListener('keydown', onKey, true);
+}
+
 interface TextPoint {
     node: Text;
     offset: number;
@@ -126,15 +138,10 @@ export function bindPdfTextLayerSelection(root: HTMLElement, options: PdfTextSel
         if (focus) document.getSelection()?.setBaseAndExtent(drag.anchor.node, drag.anchor.offset, focus.node, focus.offset);
     };
     const pointerEnd = (event: PointerEvent) => { if (event.pointerId === drag?.id) finish(); };
-    const selectAll = (event: KeyboardEvent) => {
-        if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'a') return;
-        const target = event.target;
-        if (target instanceof HTMLElement && (target.closest('input, textarea, select') || target.isContentEditable)) return;
+    const selectAll = () => {
         const layers = root.querySelectorAll('.textLayer');
         const first = Array.from(layers).find(layer => layer.childNodes.length);
         const last = Array.from(layers).reverse().find(layer => layer.childNodes.length);
-        // Even a textless page must not select app chrome.
-        event.preventDefault();
         const selection = document.getSelection();
         if (!selection) return;
         cancelCopy();
@@ -174,7 +181,7 @@ export function bindPdfTextLayerSelection(root: HTMLElement, options: PdfTextSel
     root.addEventListener('pointerup', pointerEnd);
     root.addEventListener('pointercancel', pointerEnd);
     root.addEventListener('lostpointercapture', pointerEnd);
-    root.addEventListener('keydown', selectAll, true);
+    const unbindSelectAll = bindPdfSelectAll(root, selectAll);
     return () => {
         finish(); cancelCopy(); whole = undefined;
         document.removeEventListener('selectionchange', selectionChanged);
@@ -184,6 +191,6 @@ export function bindPdfTextLayerSelection(root: HTMLElement, options: PdfTextSel
         root.removeEventListener('pointerup', pointerEnd);
         root.removeEventListener('pointercancel', pointerEnd);
         root.removeEventListener('lostpointercapture', pointerEnd);
-        root.removeEventListener('keydown', selectAll, true);
+        unbindSelectAll();
     };
 }

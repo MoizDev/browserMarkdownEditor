@@ -1,0 +1,11 @@
+.pdf-tiled-content {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+.pdf-tiled-view.has-thumbs .pdf-tiled-content { left: var(--pdf-thumbs-width); }
+.pdf-tiled-surface, .pdf-tiled-overlays { position: absolute; inset: 0; }
+.pdf-tiled-surface { overflow: hidden; touch-action: none; }
+.pdf-tiled-surface canvas { position: absolute; inset: 0; }
+.pdf-tiled-overlays { pointer-events: none; }
+.pdf-tiled-link { pointer-events: auto; }

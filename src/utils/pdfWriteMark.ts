@@ -51,7 +51,9 @@ export async function checkPdfWriteMark(bytes: Uint8Array): Promise<PdfWriteMark
         const idStart = end + idHeader.length, idEnd = idStart + 32;
         if (!matches(bytes, end, idHeader) || idEnd > bytes.length) return { kind: 'foreign', reason: 'malformed' };
         writeId = String.fromCharCode(...bytes.subarray(idStart, idEnd));
-        if (!/^[0-9a-f]{32}$/.test(writeId) || (idEnd < bytes.length && ![0, 9, 10, 12, 13, 32].includes(bytes[idEnd]))) return { kind: 'foreign', reason: 'malformed' };
+        // PDFium's public attachment API writes the mark as a literal string
+        // in /Params, so ')' is also a valid terminator after the write id.
+        if (!/^[0-9a-f]{32}$/.test(writeId) || (idEnd < bytes.length && ![0, 9, 10, 12, 13, 32, 41].includes(bytes[idEnd]))) return { kind: 'foreign', reason: 'malformed' };
     }
     const zeroed = bytes.slice();
     zeroed.fill(0x30, start, end);

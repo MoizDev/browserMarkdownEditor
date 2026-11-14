@@ -1,13 +1,55 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
 import { createBoardAgentAdapter, type AgentAdapterHost } from '../agent/adapter';
-import { listAgentSheets, type AgentGeometry, type ShapePage, type ShapeQuery } from '../agent/shapes';
-import type { BoardDoc, BoardKind } from '../model/doc';
+import { summarizeAgentNode, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from '../agent/shapes';
+import { childrenOf, type BoardDoc, type BoardKind, type Sheet } from '../model/doc';
 import type { SampleStore } from '../ink/samples';
 import type { PngCapture } from '../export/capturePng';
 import type { BoardSession } from '../session/BoardSession';
 import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
+
+async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
+    revision: number, labelled: boolean, guard: () => void): Promise<ShapePage> {
+    const page = query.page, requested = query.offset ?? 0, limit = query.limit ?? 200;
+    if (!Number.isSafeInteger(revision) || revision < 0 || !Number.isSafeInteger(requested) || requested < 0
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 200
+        || (page !== undefined && (!Number.isSafeInteger(page) || page < 1))
+        || (query.revision !== undefined && (!Number.isSafeInteger(query.revision) || query.revision < 0))) throw new RangeError('Invalid shape query');
+    const changed = query.revision !== undefined && query.revision !== revision, offset = changed ? 0 : requested;
+    const shapes: ShapeSummary[] = [], sections: { offset: number; name: string; index: number }[] = [];
+    let total = 0, chars = 0, exhausted = false, work = 0;
+    for (const sheet of sheets) {
+        let started = false;
+        const stack: { nodes: ReturnType<typeof childrenOf>; index: number }[] = [{ nodes: childrenOf(doc, sheet.id), index: 0 }];
+        while (stack.length) {
+            if ((work++ & 255) === 0) {
+                guard();
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                guard();
+            }
+            const top = stack[stack.length - 1];
+            if (top.index >= top.nodes.length) { stack.pop(); continue; }
+            const node = top.nodes[top.index++], children = childrenOf(doc, node.id);
+            if (children.length) stack.push({ nodes: children, index: 0 });
+            const nodePage = doc.kind === 'whiteboard' ? undefined : geometry.page(node);
+            if (page !== undefined && nodePage !== page) continue;
+            if (total >= offset && shapes.length < limit && !exhausted) {
+                const summary = summarizeAgentNode(node, geometry, nodePage), size = JSON.stringify(summary).length + 1;
+                if (chars + size > 58_500) exhausted = true;
+                else {
+                    if (labelled && !started) { sections.push({ offset: total, name: sheet.name, index: doc.sheetOrder.indexOf(sheet) }); started = true; }
+                    shapes.push(summary); chars += size;
+                }
+            }
+            total++;
+        }
+    }
+    guard();
+    const nextOffset = offset + shapes.length;
+    return { shapes, total, revision, ...(nextOffset < total ? { nextOffset } : {}),
+        ...(changed ? { revisionChanged: true as const } : {}), ...(labelled ? { sections } : {}) };
+}
 
 /** The host supplies the live session's canonical geometry and actual owner guard. */
 export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAuthority): {
@@ -21,7 +63,12 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
                 authority.assertContext(context);
                 if (!host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
                 const revision = host.session.doc.rev;
-                const result = adapter.shapePage(query);
+                const sheet = host.session.doc.sheets.get(host.sheet());
+                if (!sheet) throw new RangeError('Sheet does not exist');
+                const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, query, revision, false, () => {
+                    authority.assertContext(context);
+                    if (!host.isCurrent() || host.session.doc.rev !== revision) throw new DOMException('Board changed during shape projection', 'AbortError');
+                });
                 authority.assertContext(context);
                 if (!host.isCurrent() || host.session.doc.rev !== revision || result.revision !== revision) {
                     throw new DOMException('Board changed during shape projection', 'AbortError');
@@ -81,7 +128,8 @@ export async function readClosedAgentProjection(options: {
             const projection = await options.project(acquired.load.doc, acquired.samples, context.signal);
             try {
                 guard();
-                const result = listAgentSheets(acquired.load.doc, projection.geometry, options.query, options.diskRevision);
+                const result = await listPinnedShapes(acquired.load.doc, acquired.load.doc.sheetOrder, projection.geometry,
+                    options.query, options.diskRevision, true, guard);
                 guard();
                 await options.assertBaseline(context.signal);
                 guard();

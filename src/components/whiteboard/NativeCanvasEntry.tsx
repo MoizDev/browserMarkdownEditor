@@ -218,7 +218,10 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
     const [editingFailure, setEditingFailure] = useState<{ documentId: string; session: number; reason: string } | null>(null);
     const editingUnavailable = useCallback((cause: unknown) => setEditingFailure({ documentId: identity.documentId, session: identity.session,
         reason: cause instanceof Error ? cause.message : String(cause) }), [identity.documentId, identity.session]);
-    const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
+    const onError = useCallback((cause: unknown) => {
+        console.error('Native canvas acquisition failed:', cause);
+        setError(cause instanceof Error ? cause.message : String(cause));
+    }, []);
     const prepare = useCallback((signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind === 'pdfInk') throw new Error('Canvas identity does not match this entry');
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: identity.kind, signal,

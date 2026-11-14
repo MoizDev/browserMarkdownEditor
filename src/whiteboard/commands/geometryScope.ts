@@ -2,14 +2,14 @@ import type { Affine, Rect } from '../../platform/types';
 import { worldPose } from '../change/coordinates';
 import type { WorldPose } from '../change/coordinates';
 import type { Box } from '../geom/bounds';
-import { inverse } from '../geom/affine';
+import { inverse, transformPoint } from '../geom/affine';
 import type { AttachmentSurface } from '../geom/connectorTypes';
-import { attachedPolylineTargets, isAttachedPolyline, polylineSurface, resolvePolylinePoints, TOLERANCE_WORLD, type AttachedPolyline } from '../geom/polylineResolve';
-import type { Point } from '../model/nodes';
+import { polylineMatrix, polylinePointSteps, POLYLINE_TOLERANCE_WORLD, type AttachedPolyline } from '../geom/polylinePoints';
+import { attachedPolylineTargets, isAttachedPolyline, polylineSurface, polylineSurfaceClips, settlePolylineSteps } from '../geom/polylineResolve';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import type { Node, Point, PolylineNode } from '../model/nodes';
 import { compareOrder } from '../model/orderKey';
 import { IDENTITY, logicalAggregateBox, matrix, type LogicalSource } from './logicalGeometry';
 
@@ -22,9 +22,13 @@ export interface BoardGeometryScopeOptions {
     readonly current?: () => boolean;
     readonly cooperate?: () => Promise<void>;
 }
+/** The scope's semantic geometry: the renderer's connector/box queries plus the resolved polyline tip. */
+export type BoardGeometryScopeGeometry = BoardRuntime['render']['changeGeometry'] & {
+    resolvedPolylineTip(doc: BoardDoc, polyline: PolylineNode, terminal: 'start' | 'end'): Point;
+};
 export interface BoardGeometryScope {
     readonly doc: BoardDoc;
-    readonly geometry: BoardRuntime['render']['changeGeometry'];
+    readonly geometry: BoardGeometryScopeGeometry;
     localBounds(id: NodeId): Box;
     logicalBounds(id: NodeId): Readonly<Rect>;
     /** Actual logical geometry in the caller's rigid target space. */
@@ -122,9 +126,9 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
                 if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
                 const attachments = value.vector?.attachments;
                 if (!attachments) throw new Error(`Polyline attachment target has no supported surface: ${targetId}`);
-                surfaces.set(targetId, polylineSurface(doc, target, attachments, revision));
+                surfaces.set(targetId, polylineSurface(doc, target, attachments, revision, polylineSurfaceClips(doc, target)));
             }
-            const points = await resolvePolylinePoints(node as AttachedPolyline, doc, surfaces, { tolerance: TOLERANCE_WORLD, signal, cooperate, check });
+            const points = await settlePolylineSteps(polylinePointSteps(node as AttachedPolyline, doc, surfaces, POLYLINE_TOLERANCE_WORLD, check), signal, cooperate);
             check(); if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
             return points;
         };
@@ -208,7 +212,19 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
             if (id) checkNode(id);
             if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError'); };
         guard();
-        const geometry: BoardGeometryScope['geometry'] = {
+        // A bound end is the resolved local point from this scope's own steps, mapped by the polyline's pose.
+        const polylineTip = (candidate: BoardDoc, line: PolylineNode, terminal: 'start' | 'end'): Point => {
+            guard(line.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
+            const current = doc.nodes.get(line.id);
+            if (!current || current.kind !== 'polyline') throw new Error(`Polyline is outside geometry scope: ${line.id}`);
+            const points = polylinePoints.get(current.id) ?? (isAttachedPolyline(current) ? undefined : current.points);
+            if (!points) throw new Error(`Attached polyline geometry is unresolved: ${current.id}`);
+            const end = points[terminal === 'start' ? 0 : points.length - 1];
+            if (!end) throw new Error(`Polyline end is missing: ${current.id}`);
+            return transformPoint(polylineMatrix(doc, current.id), end);
+        };
+        const geometry: BoardGeometryScopeGeometry = {
+            resolvedPolylineTip: polylineTip,
             resolvedTip(candidate, connector, terminal) { guard(connector.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
                 return render.changeGeometry.resolvedTip(candidate, connector, terminal); },
             worldBoundsCenter(candidate, node) { guard(node.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');

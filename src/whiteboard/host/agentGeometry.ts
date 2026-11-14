@@ -57,6 +57,11 @@ export function createAgentGeometryReader(options: {
             guard(connector);
             return scope!.geometry.resolvedTip(candidate, connector, end);
         },
+        resolvedPolylineTip(candidate, polyline, end) {
+            guard();
+            // The scope fences every polyline it resolved; an unresolved attached end throws instead of guessing.
+            return scope!.geometry.resolvedPolylineTip(candidate, polyline, end);
+        },
     });
     return {
         geometry: projection.geometry,

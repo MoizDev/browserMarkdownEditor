@@ -4,7 +4,8 @@ import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Point } from '../model/nodes';
 import type { AttachmentSurface } from './connectorTypes';
-import { polylineSurface, resolvePolylinePoints, TOLERANCE_WORLD, type AttachedPolyline, attachedPolylineTargets } from './polylineResolve';
+import { polylinePointSteps, POLYLINE_TOLERANCE_WORLD, type AttachedPolyline } from './polylinePoints';
+import { attachedPolylineTargets, polylineSurface, polylineSurfaceClips, settlePolylineSteps } from './polylineResolve';
 
 export interface PolylineAttachmentOptions {
     readonly runtime: BoardRuntime;
@@ -24,7 +25,7 @@ export interface ResolvedPolylineAttachments {
 export async function resolvePolylineAttachments(node: AttachedPolyline, options: PolylineAttachmentOptions): Promise<ResolvedPolylineAttachments> {
     const { runtime } = options, session = runtime.session, live = session.doc, doc = options.doc ?? live;
     const revision = doc.rev, liveRevision = live.rev, owner = session.owner, signal = options.signal ?? new AbortController().signal;
-    const tolerance = options.toleranceWorld ?? TOLERANCE_WORLD;
+    const tolerance = options.toleranceWorld ?? POLYLINE_TOLERANCE_WORLD;
     let released = false, epoch: number | undefined;
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === live
         && live.rev === liveRevision && doc.rev === revision && (epoch === undefined || runtime.render.text.fonts.epoch === epoch);
@@ -41,9 +42,9 @@ export async function resolvePolylineAttachments(node: AttachedPolyline, options
             const geometry = await runtime.render.prepareForPick(target, signal, doc); check();
             const surface = geometry.vector?.attachments;
             if (!surface) throw new Error(`Polyline attachment target has no supported surface: ${id}`);
-            surfaces.set(id, polylineSurface(doc, target, surface, revision));
+            surfaces.set(id, polylineSurface(doc, target, surface, revision, polylineSurfaceClips(doc, target)));
         }
-        const points = await resolvePolylinePoints(node, doc, surfaces, { tolerance, signal, cooperate: options.cooperate, check });
+        const points = await settlePolylineSteps(polylinePointSteps(node, doc, surfaces, tolerance, check), signal, options.cooperate);
         check();
         return { points, fontEpoch: epoch, release() { if (!released) { released = true; scope.release(); } } };
     } catch (error) { scope.release(); throw error; }

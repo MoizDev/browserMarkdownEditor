@@ -74,7 +74,8 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
     const projection = () => {
         const reader = createStagedGeometryReader(runtime.render, runtime.session.doc, syncSignal);
         return createAgentProjection(runtime.session.doc, { worldBox: node => reader.worldBox(node),
-            localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip });
+            localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip,
+            resolvedPolylineTip: reader.resolvedPolylineTip });
     };
     const host: AgentAdapterHost = {
         get session() { return runtime.session; },

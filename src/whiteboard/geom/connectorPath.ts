@@ -5,6 +5,7 @@ import type { AttachmentSurface, ConnectorBody } from './connectorTypes';
 import { connectorBodyPoint, connectorBodyTangent } from './connectors';
 import { arcToCubics, type PathOp, type Vec2 } from './path';
 import { areSimpleConnectorPolygons, exactConnectorLineCrossings } from './connectorExactClip';
+import { curvedConnectorLineCrossings } from './connectorCurveClip';
 
 export function bodyLength(body: ConnectorBody): number {
     if (!Number.isFinite(body.length) || body.length < 0) throw new RangeError('Invalid connector body length');
@@ -83,14 +84,7 @@ export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurfa
     if (body.kind === 'line') {
         const contours = [surface, ...surface.clips];
         if (yield* areSimpleConnectorPolygons(contours)) return yield* exactConnectorLineCrossings(body.start, body.end, length, contours, error, maxPieces);
-        const intervals = clipped(body.start, body.end, surfaces, maxPieces);
-        for (let i = 0; i < intervals.length; i++) {
-            const interval = intervals[i];
-            if (interval.from > 0) add(interval.from * length, true);
-            if (interval.to < 1) add(interval.to * length, false);
-            yield;
-        }
-        return Object.freeze(result);
+        return yield* curvedConnectorLineCrossings(body.start, body.end, length, contours, error, maxPieces);
     }
     const radius = body.arc.radius, sweep = Math.abs(body.arc.sweep);
     if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(sweep) || !sweep) throw new RangeError('Invalid connector arc');

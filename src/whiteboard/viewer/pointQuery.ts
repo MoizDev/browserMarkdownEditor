@@ -7,8 +7,8 @@ import type { PathOp, Vec2 } from '../geom/path';
 import { pointPath } from '../geom/pick';
 import { createFillPointJob } from '../geom/fillPoint';
 import { exactAffinePoint } from '../geom/exactAffine';
-import { exactPointIntervals } from '../geom/homogeneous';
-import { segmentIntersection } from '../geom/predicates';
+import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
+import { dyadicMultiply, dyadicSubtract } from '../geom/numeric';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
@@ -46,9 +46,17 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
 const interior = (path: readonly PathOp[], query: PointQuery) => pointPath([], query,
     { interiorPaths: [path], strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 }).hit;
 function exactStraightBoundary(path: readonly PathOp[], query: PointQuery): boolean {
-    const mapped = (p: Vec2): Vec2 | null => {
-        const q = exactPointIntervals(exactAffinePoint(query.localToSurface, p));
-        return q.x.lo === q.x.hi && q.y.lo === q.y.hi ? { x: q.x.lo, y: q.y.lo } : null;
+    const mapped = (p: Vec2): ExactPoint => exactAffinePoint(query.localToSurface, p);
+    const point = exactPoint(query.point);
+    const compare = (a: ExactPoint, b: ExactPoint, axis: 'x' | 'y') => {
+        const value = dyadicSubtract(dyadicMultiply(a[axis], b.w), dyadicMultiply(b[axis], a.w)).n;
+        return value < 0n ? -1 : value > 0n ? 1 : 0;
+    };
+    const onSegment = (a: ExactPoint, b: ExactPoint): boolean => {
+        if (sameExactPoint(a, b)) return sameExactPoint(a, point);
+        return exactSide(exactLineBetween(a, b), point) === 0
+            && compare(point, a, 'x') * compare(point, b, 'x') <= 0
+            && compare(point, a, 'y') * compare(point, b, 'y') <= 0;
     };
     let start: Vec2 | undefined, previous: Vec2 | undefined;
     for (const op of path) {
@@ -56,8 +64,7 @@ function exactStraightBoundary(path: readonly PathOp[], query: PointQuery): bool
         if (!previous || !start) throw new RangeError('Attachment outline must begin with M');
         const next = op.op === 'Z' ? start : op.p;
         if (op.op !== 'C') {
-            const a = mapped(previous), b = mapped(next);
-            if (a && b && segmentIntersection(a, b, query.point, query.point).kind !== 'none') return true;
+            if (onSegment(mapped(previous), mapped(next))) return true;
         }
         previous = next;
     }

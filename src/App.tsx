@@ -2831,7 +2831,6 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
-  const agentContentReportRef = useRef(false);
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
@@ -2845,15 +2844,14 @@ export default function App() {
     if (__BME_BENCH__) {
       try {
         const kind = target?.representation.loadedKind ?? 'unknown';
-        const caller = options?.fromDisk ? 'disk' : agentContentReportRef.current ? 'agent'
+        const caller = options?.fromDisk ? 'disk'
           : `pane:${['markdown', 'text', 'code', 'tex'].includes(kind) ? 'note' : kind}`;
         const root = perfRoot();
         const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as {
           reports: Record<string, number>; rejected: Record<string, number>; ownerlessReports: Record<string, number>;
         };
         funnel.reports[caller] = (funnel.reports[caller] ?? 0) + 1;
-        // Today's string reporters have no session owner, including refusals.
-        funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
+        if (typeof content === 'string') funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
         if (!accepted) funnel.rejected[caller] = (funnel.rejected[caller] ?? 0) + 1;
       } catch { /* Measurement must not interrupt a content report. */ }
     }

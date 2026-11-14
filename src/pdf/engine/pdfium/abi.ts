@@ -27,6 +27,8 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
         callbacks: { NeedToPauseNow: 'FPDF_BOOL (*)(struct _IFSDK_PAUSE *)' } },
     FPDF_FILEWRITE: { alias: 'fileWrite', size: 8, fields: { version: 0, WriteBlock: 4 },
         callbacks: { WriteBlock: 'int (*)(struct FPDF_FILEWRITE_ *, const void *, unsigned long)' } },
+    FPDF_IMAGEOBJ_METADATA: { alias: 'imageMetadata', size: 28, fields: { width: 0, height: 4,
+        horizontal_dpi: 8, vertical_dpi: 12, bits_per_pixel: 16, colorspace: 20, marked_content_id: 24 } },
     FS_MATRIX: { alias: 'matrix', size: 24, fields: { a: 0, b: 4, c: 8, d: 12, e: 16, f: 20 } },
     FS_RECTF: { alias: 'rect', size: 16, fields: { left: 0, top: 4, right: 8, bottom: 12 } },
     FS_SIZEF: { alias: 'size', size: 8, fields: { width: 0, height: 4 } },

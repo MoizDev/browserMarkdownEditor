@@ -1,13 +1,14 @@
 import { renderTokenKey, tileKeyString } from '../../platform/render';
 import type { Priority } from '../../platform/workers/envelope';
 import type { PageTileArgs, PageTileResult } from '../worker/protocol';
+import type { WithoutDocKey } from '../pool/types';
 import type { PdfTileRequest } from './tileDemand';
 import type { CreatePdfTileProducer, PdfTileProducerOptions } from './tileProducer.types';
 
 interface Flight {
     readonly controller: AbortController;
     readonly promise: Promise<PageTileResult>;
-    readonly args: Omit<PageTileArgs, 'docKey'>;
+    readonly args: WithoutDocKey<PageTileArgs>;
     waiters: number;
     priority: Priority;
     settled: boolean;
@@ -28,7 +29,7 @@ function priority(request: PdfTileRequest, focused: boolean): Priority {
 export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTileProducerOptions) => {
     const { document } = options;
     // The pool returns reply credit only when every bitmap conversion has finished (C5.3).
-    const releaseTile = (document as typeof document & { releaseTile(result: PageTileResult): void }).releaseTile.bind(document);
+    const releaseTile = document.releaseTile.bind(document);
     const flights = new Map<string, Flight>();
     return {
         render(request, signal) {
@@ -43,7 +44,7 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
             if (!flight) {
                 if (!Number.isSafeInteger(++nextRequest)) return Promise.reject(new RangeError('PDF tile request ids exhausted'));
                 const interior = request.tile.interior;
-                const args: Omit<PageTileArgs, 'docKey'> = { page: request.page, reqId: nextRequest, scale: request.scale.scale,
+                const args: WithoutDocKey<PageTileArgs> = { page: request.page, reqId: nextRequest, scale: request.scale.scale,
                     rect: { x: interior.x, y: interior.y, w: interior.width, h: interior.height },
                     ...variant, annotations: options.annotations, forms: options.forms };
                 const controller = new AbortController();
@@ -88,8 +89,10 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     return true;
                 };
                 const abort = () => {
+                    // The caller's bitmap reservation stays held until an already-started decode settles (C5.3).
+                    if (converting) return;
                     if (finish()) reject(abortError(signal));
-                    if (!converting) releaseWaiter();
+                    releaseWaiter();
                 };
                 signal.addEventListener('abort', abort, { once: true });
                 if (signal.aborted) { abort(); return; }
@@ -100,7 +103,8 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     if (result.docKey !== document.docKey || result.reqId !== args.reqId || result.page !== args.page ||
                         result.scale !== args.scale || result.rect.x !== args.rect.x || result.rect.y !== args.rect.y ||
                         result.rect.w !== args.rect.w || result.rect.h !== args.rect.h || result.variant !== args.variant ||
-                        result.profileKey !== args.profileKey || result.w !== width || result.h !== height ||
+                        result.profileKey !== args.profileKey || result.annotations !== args.annotations || result.forms !== args.forms ||
+                        JSON.stringify(result.emphasis) !== JSON.stringify(args.emphasis) || result.w !== width || result.h !== height ||
                         !(result.pixels instanceof ArrayBuffer) || result.pixels.byteLength !== width * height * 4) {
                         throw new Error('PDF tile reply does not match its request');
                     }

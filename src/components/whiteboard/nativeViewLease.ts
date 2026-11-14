@@ -82,6 +82,7 @@ export interface NativeViewLease extends BoardViewLease<object> {
     /** An outer source owner can fence input while its real view is covered or rebinding. */
     setInputPermitted(permitted: boolean): void;
     canMutateView(): boolean;
+    isCurrent(): boolean;
     /** Transfer only after the old input and platform have detached. */
     takeCameraForRebind(): NativeCameraHandoff;
     refreshAuthority(): void;
@@ -138,7 +139,16 @@ export function createNativeViewLease(options: {
     let inputPermitted = true;
     let backdrop = options.pdfBackdrop;
     let surface: HTMLElement | null = null;
-    const current = () => !disposed && host.isCurrent(identity);
+    function sourceCurrent() {
+        if (!backdrop?.sourceToken) return true;
+        try { const source = backdrop.sourceToken, paint = boardRuntime.paintToken;
+            return backdrop.isCurrentSource?.() === true && source.documentId === paint.documentId && source.session === paint.session &&
+                source.vaultEpoch === paint.vaultEpoch && source.bytesGeneration === paint.bytesGeneration &&
+                source.documentId === token.documentId && source.session === token.session && source.vaultEpoch === token.vaultEpoch &&
+                source.bytesGeneration === token.bytesGeneration; }
+        catch (error) { options.onError(error); return false; }
+    }
+    const current = () => !disposed && host.isCurrent(identity) && sourceCurrent();
     const publish = () => { if (!disposed) for (const listener of [...listeners]) listener(); };
     const invalidate = () => { platformPane?.invalidate('native-view'); publish(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
@@ -345,15 +355,6 @@ export function createNativeViewLease(options: {
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
-    function sourceCurrent() {
-        if (!backdrop?.sourceToken) return true;
-        try { const source = backdrop.sourceToken, paint = boardRuntime.paintToken;
-            return backdrop.isCurrentSource?.() === true && source.documentId === paint.documentId && source.session === paint.session &&
-                source.vaultEpoch === paint.vaultEpoch && source.bytesGeneration === paint.bytesGeneration &&
-                source.documentId === token.documentId && source.session === token.session && source.vaultEpoch === token.vaultEpoch &&
-                source.bytesGeneration === token.bytesGeneration; }
-        catch (error) { options.onError(error); return false; }
-    }
     const updateInput = () => {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
@@ -362,6 +363,7 @@ export function createNativeViewLease(options: {
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
         canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
             current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
+        isCurrent() { return current() && sourceCurrent(); },
         takeCameraForRebind() {
             if (disposed || cameraTransferred || platformPane || surface) throw new Error('Detach the old view before transferring its camera');
             cameraOwner.unbind(); cameraTransferred = true;

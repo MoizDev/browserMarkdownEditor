@@ -3,7 +3,7 @@ import { reorderBidiLine } from './bidi';
 import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from './fonts';
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
-import { makeCaretIndex } from './caretIndex';
+import { CaretLineCache, makeCaretIndex } from './caretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 import type { Marks } from './richText';
@@ -25,6 +25,7 @@ export class BoardTextLayout implements TextLayoutEngine {
     private readonly faceIds = new Map<string, number>();
     readonly faceTable: FaceTable = { faces: this.faces };
     private readonly layouts = new Map<string, { paint: TextPaint; measurement: TextMeasurement }>();
+    private readonly caretLines = new CaretLineCache();
     constructor(private readonly measurer: ReferenceMeasurer, private readonly fonts: BoardFonts) {}
     async prepare(request: TextLayoutRequest): Promise<void> {
         const keys = new Map<string, FontKey>();
@@ -242,5 +243,5 @@ export class BoardTextLayout implements TextLayoutEngine {
     }
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
-    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer); }
+    caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
 }

@@ -397,8 +397,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
             path.setAttribute('stroke-width', String(1 / frame.view.camera.z)); group.append(path);
         }
-        const selection = manager.current.editor.getSelection();
-        let caretColour = 'var(--text-normal)';
+        const selection = manager.current.editor.getSelection(), edited = active && doc.nodes.get(active);
+        const fallbackSwatch = edited?.kind === 'text' ? edited.color
+            : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
+                : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
+        let caretColour = colourCss(engine.getSnapshot().palette.stroke[fallbackSwatch]);
         outer: for (const line of paint.lines) for (const fragment of line.fragments) {
             if (selection.focus >= fragment.src[0] && selection.focus <= fragment.src[1]) {
                 caretColour = colourCss(engine.getSnapshot().palette.stroke[fragment.ink.swatch]);

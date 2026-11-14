@@ -648,7 +648,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                 const exportOptions = { background: false, bounds, padding: 0, darkMode: false } as const;
 
                 try {
-                    const overlay: PageOverlay = {};
+                    const overlay: PageOverlay = { geometry: pages[i] };
                     const rasterShapes = onThisPage.filter(s => RASTER_ONLY_SHAPES.has(s.type));
                     const vectorShapes = onThisPage.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
 

@@ -3179,6 +3179,8 @@ export default function App() {
           setLayout(l => openTabIn(l, path));
           return;
         }
+        await drain(tab.id);
+        if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         const result = await flushTab(path);
         const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
@@ -3471,6 +3473,8 @@ export default function App() {
   useEffect(() => registerBeforeRootChange(async () => {
     const activation = getVaultActivation();
     for (;;) {
+      await drainAll();
+      if (getVaultActivation() !== activation) throw new Error('The vault changed while saving.');
       const docs = [...tabsRef.current];
       const results = await Promise.all(docs.map(tab => flushTab(tab.file.path)));
       if (getVaultActivation() !== activation) throw new Error('The vault changed while saving.');
@@ -4799,6 +4803,12 @@ export default function App() {
         const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
         if (rootHandleRef.current !== rootHandle) return [];
         const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
+        if (changedKind) {
+          await drain(doc.id);
+          if (rootHandleRef.current !== rootHandle) return [];
+          if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
+          if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
+        }
         const sessionSource = documentSessions.checkpoint(doc.id);
         const buffered = documentBuffers.get(doc.id)?.source;
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
@@ -4821,12 +4831,14 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!live) break;
-          needsSave = live.dirty || documentBuffers.isDirty(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
+          needsSave = live.dirty || documentSessions.hasPendingEdits(doc.id) || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from)
             || documentBuffers.revisionForDocument(doc.id)?.revision !== revisionAtMoveStart;
           if (!changedKind || !needsSave) break;
+          await drain(doc.id);
           await getView(from)?.flushPending?.();
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
+          if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
           const captured = documentBuffers.snapshotOf(from);
           const textRevision = captured?.revision;
           const snapshot = captured?.data ?? contentOf(from);
@@ -4848,15 +4860,18 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
           if (!latest) break;
-          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()) break;
+          if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()
+            && !documentSessions.get(doc.id)?.adapter.hasPendingEdits()) break;
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
+        if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         // A destination opened during retargeting must not share this path or
         // lose its new edits. Closing preservation uses its own loaded kind.
         if (tabsRef.current.some(t => t.file.path === dest)) {
           if (!await preparePdfDeparture([dest])) return [];
           await releaseOverwritten(dest, from, true);
         }
+        if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
@@ -5467,6 +5482,8 @@ export default function App() {
       if (!handle) { setDiskState(id, 'deleted'); return; }
 
       if (action === 'reload') {
+        await drain(id);
+        if (documentSessions.get(id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
         const keep = await mine();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
@@ -5487,6 +5504,9 @@ export default function App() {
       // A read-only PDF has no local version to prefer. Reopen the current
       // bytes rather than leave a clean tab behind a revoked preflight.
       if (isPdf && !getPdfRenderData(path)) {
+        await drain(id);
+        const current = tabsRef.current.find(t => t.id === id);
+        if (!current || hasUnsaved(current)) throw new Error('Pending annotations cannot be reloaded yet.');
         const disk = await readBytesVersioned(handle);
         const now = tabsRef.current.find(t => t.id === id);
         if (now) reloadFromDisk(now, '', disk.version);

@@ -14,7 +14,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
     const [entry, setEntry] = useState<{ documentId: string; vaultActivation: number; bytesGeneration: number;
         kind: NativeBoardAcquisitionOptions<S>['kind']; value: AcquiredNativeBoard<S> } | null>(null);
     const { documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
-        emergencyReadOnlyReason, prepare, existing } = options;
+        emergencyReadOnlyReason, prepare, existing, acceptConvertedSource } = options;
     useEffect(() => {
         const abort = new AbortController();
         let alive = true;
@@ -45,6 +45,10 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                 requireOwner();
                 prepared = await prepare(abort.signal);
                 requireOwner();
+                if (prepared.conversionPending && (!prepared.legacyOriginalSha256 || !/^[a-f0-9]{64}$/.test(prepared.legacyOriginalSha256))) {
+                    throw new Error('Legacy conversion requires a verified original digest');
+                }
+                if (prepared.conversionPending && !acceptConvertedSource) throw new Error('Legacy conversion has no source acceptance port');
                 let policy: { emergencyReadOnly: boolean } | null = null;
                 const adapter = attachCanvasSession<HostedBoardAdapter<S>>(documentId, (owner, isLiveOwner) => {
                     requireOwner();
@@ -68,6 +72,11 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
                     legacyOriginalSha256: prepared.legacyOriginalSha256 });
                 if (!policy) throw new DOMException('Board session ended', 'AbortError');
                 if (policy.emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');
+                if (taken && prepared.conversionPending && !policy.emergencyReadOnly) {
+                    const source = adapter.checkpoint();
+                    if (typeof source === 'string') throw new Error('Legacy conversion did not produce a deferred source');
+                    acceptConvertedSource!(source, prepared.legacyOriginalSha256!);
+                }
                 if (alive) setEntry({ documentId, vaultActivation, bytesGeneration, kind,
                     value: { adapter, emergencyReadOnly: policy.emergencyReadOnly } });
             } catch (cause) {
@@ -78,7 +87,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
             }
         })();
         return () => { alive = false; abort.abort(); };
-    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare, existing]);
+    }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason, prepare, existing, acceptConvertedSource]);
     return entry && entry.documentId === documentId && entry.vaultActivation === vaultActivation
         && entry.bytesGeneration === bytesGeneration && entry.kind === kind ? entry.value : null;
 }

@@ -1,4 +1,5 @@
 import type { MediaId } from '../model/media';
+import type { ClipboardCache } from '../../utils/clipboardCache';
 import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type ClipboardEnvelope } from './encode';
 import type { CopySnapshot } from './snapshot';
 
@@ -10,11 +11,15 @@ export interface CachedClipboard {
     readonly plain: string;
     readonly cacheOnly: boolean;
 }
+export interface ClipboardCut {
+    commit(): void;
+    release(): void;
+}
 export interface ClipboardCopyHost {
-    readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
+    readMedia(snapshot: CopySnapshot, id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;
     /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
-    prepareCut(snapshot: CopySnapshot): () => void;
+    prepareCut(snapshot: CopySnapshot): ClipboardCut;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     notice(message: string): void;
 }
@@ -24,13 +29,16 @@ function release(held: HeldSnapshot): void {
     for (const lease of held.snapshot.leases) lease.release();
 }
 
-/** One session-wide copy cache. A cache hit requires the immutable exact envelope,
- * not just the nonce; a cache-only marker additionally requires exact plain text. */
+class WrittenSnapshot {
+    constructor(readonly held: HeldSnapshot, readonly envelope: ClipboardEnvelope) {}
+}
+
+/** Candidates belong to documents; successful copies belong to the App window.
+ * A cache hit proves the exact envelope, and cache-only also proves plain text. */
 export class ClipboardCopy {
     private candidate: Candidate | null = null;
-    private written: { held: HeldSnapshot; envelope: ClipboardEnvelope } | null = null;
     private disposed = false;
-    constructor(private readonly host: ClipboardCopyHost) {}
+    constructor(private readonly host: ClipboardCopyHost, private readonly cache: ClipboardCache) {}
 
     setSelection(snapshot: CopySnapshot | null): void {
         if (this.disposed) throw new Error('Clipboard cache is closed');
@@ -43,7 +51,7 @@ export class ClipboardCopy {
         catch (error) { release(held); throw error; }
         const candidate: Candidate = { held, controller, envelope };
         this.candidate = candidate;
-        void prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), controller.signal).then(inline => {
+        void prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(snapshot, id, signal), controller.signal).then(inline => {
             controller.signal.throwIfAborted();
             if (this.candidate !== candidate) return;
             const next = encodeClipboardNow(snapshot, inline);
@@ -57,19 +65,19 @@ export class ClipboardCopy {
     }
 
     match(encoded: string, plain: string): CachedClipboard | null {
-        const entry = this.written;
-        if (!entry || entry.envelope.encoded !== encoded || (entry.envelope.cacheOnly && entry.envelope.plain !== plain)) return null;
+        const entry = this.cache.match(encoded, plain);
+        if (!(entry instanceof WrittenSnapshot)) return null;
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly };
     }
 
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;
-        let commitCut: (() => void) | undefined;
+        let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && candidate.held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
-            if (cut) commitCut = this.host.prepareCut(candidate.held.snapshot);
+            if (cut) preparedCut = this.host.prepareCut(candidate.held.snapshot);
             const envelope = candidate.envelope;
             event.clipboardData.setData('text/plain', envelope.plain);
             event.clipboardData.setData('text/html', envelope.html);
@@ -77,12 +85,12 @@ export class ClipboardCopy {
             this.remember(candidate.held, envelope);
             if (envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (candidate.held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
-            commitCut?.();
+            preparedCut?.commit();
             return true;
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
             return false;
-        }
+        } finally { preparedCut?.release(); }
     }
 
     async copyMenu(cut = false): Promise<void> {
@@ -90,23 +98,23 @@ export class ClipboardCopy {
         if (!candidate) throw new Error('Nothing selected');
         const held = candidate.held;
         held.count++;
+        let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${held.snapshot.skippedOpaque.join(', ')}`);
-            const commitCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
+            preparedCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
             const envelope = candidate.envelope;
             await navigator.clipboard.write([new ClipboardItem({
                 'text/plain': new Blob([envelope.plain], { type: 'text/plain' }),
                 'text/html': new Blob([envelope.html], { type: 'text/html' }),
             })]);
-            if (this.disposed) return;
             this.remember(held, envelope);
             if (envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${held.snapshot.skippedOpaque.join(', ')}`);
-            commitCut?.();
+            preparedCut?.commit();
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
-        } finally { release(held); }
+        } finally { try { preparedCut?.release(); } finally { release(held); } }
     }
 
     async duplicate(): Promise<void> {
@@ -125,14 +133,12 @@ export class ClipboardCopy {
         if (this.disposed) return;
         this.disposed = true;
         this.dropCandidate();
-        if (this.written) release(this.written.held);
-        this.written = null;
     }
 
     private remember(held: HeldSnapshot, envelope: ClipboardEnvelope): void {
         held.count++;
-        if (this.written) release(this.written.held);
-        this.written = { held, envelope };
+        this.cache.replace({ encoded: envelope.encoded, plain: envelope.plain, cacheOnly: envelope.cacheOnly,
+            value: new WrittenSnapshot(held, envelope), release: () => release(held) });
     }
     private dropCandidate(): void {
         if (!this.candidate) return;

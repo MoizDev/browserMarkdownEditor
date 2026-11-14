@@ -2,7 +2,7 @@ import type { NotebookPaper } from '../../utils/paper';
 import type { NodeId, ParentId, SheetId } from './ids';
 import type { ExtBag, RawJson } from './json';
 import type { MediaEntry, MediaId, MediaTable } from './media';
-import { createNode, type Node, type NodeRecord, type NodeTable } from './nodes';
+import { attachedTargets, createNode, type Node, type NodeRecord, type NodeTable } from './nodes';
 import { compareOrder, type OrderKey } from './orderKey';
 import type { UiBlock } from './styles';
 
@@ -171,10 +171,7 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
                 parent = container.parent;
             }
         }
-        if (node.kind === 'connector') {
-            if (node.start.attach) addMember(attachedTo, node.start.attach.target, node.id);
-            if (node.end.attach) addMember(attachedTo, node.end.attach.target, node.id);
-        }
+        for (const target of attachedTargets(node)) addMember(attachedTo, target, node.id);
         if ((node.kind === 'picture' || node.kind === 'clip') && node.media) addMember(mediaRefs, node.media, node.id);
         if (node.kind === 'linkcard' && node.preview) {
             if (node.preview.image) addMember(mediaRefs, node.preview.image, node.id);

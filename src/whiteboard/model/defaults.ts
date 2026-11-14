@@ -31,7 +31,7 @@ export const NODE_DEFAULTS = {
         labelAt: 0.5,
         labelScale: 1,
     },
-    polyline: {},
+    polyline: { startAttach: null, endAttach: null },
     frame: {},
     group: {},
     picture: {},

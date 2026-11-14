@@ -61,5 +61,12 @@ export default defineConfig({
   // every one `undefined` — so `getAssetUrlsByImport()` threw at canvasPen's
   // module scope and no canvas (annotate, drawing, notebook) could open under
   // `npm run dev`. Served unbundled, Vite resolves them as it does in a build.
-  optimizeDeps: { exclude: ['@tldraw/assets'] },
+  optimizeDeps: {
+    exclude: ['@tldraw/assets'],
+    // Worker-only imports escape the HTML scan. Observed: discovering these
+    // after mount changed React's shared-chunk URL; NativePdfEntry then used
+    // a second dispatcher while React DOM still held the original module.
+    // Pre-optimization does not fetch these lazy workers in the browser.
+    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell'],
+  },
 })

@@ -150,6 +150,15 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             result = { bytes: outputBytes(o.bytes), sourceFingerprint, geometries: pages };
             break;
         }
+        case 'writer.verifyRotation': {
+            const input = args as WriterOperations['writer.verifyRotation']['args'];
+            const o = record(value, ['bytes', 'sourceFingerprint', 'outputSha', 'geometries']);
+            const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.outerFingerprint);
+            const pages = geometries(o.geometries);
+            if (!pages.length || pages.length !== input.expected.length) invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), sourceFingerprint, outputSha: fingerprint(o.outputSha), geometries: pages };
+            break;
+        }
         case 'writer.release': record(value, []); result = {}; break;
         default: return invalidPdfReply();
     }

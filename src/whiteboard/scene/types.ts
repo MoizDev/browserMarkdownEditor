@@ -3,6 +3,8 @@ import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
 import type { NodeId, SheetId } from '../model/ids';
 import type { BoardDoc } from '../model/doc';
+import type { Node } from '../model/nodes';
+import type { SceneMetadata } from './snapshotDoc';
 import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { BoundsQuality, Box } from './bounds';
@@ -37,6 +39,9 @@ export interface SceneSnapshot {
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
     worldBounds(id: NodeId): SceneBounds | null;
+    /** Pinned immutable row and metadata reads; neither scans the document. */
+    readNodeNow(id: NodeId): Node | undefined;
+    metadataNow(): SceneMetadata;
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;

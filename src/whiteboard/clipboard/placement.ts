@@ -18,7 +18,7 @@ export interface BoardClipboardPlacement {
 export interface BoardClipboardPlacementOptions {
     readonly receivingBoardId: string;
     readonly target: Readonly<ClipboardTarget>;
-    readonly source: Pick<BoardPayload, 'from' | 'bounds'>;
+    readonly source: { readonly from: BoardPayload['from'] | null; readonly bounds: ClipboardBounds };
     readonly containsFrame: boolean;
     readonly doc: BoardDoc;
     readonly cameraZoom: number;
@@ -44,8 +44,8 @@ function clampPoint(doc: BoardDoc, point: ClipboardPoint): ClipboardPoint {
 }
 export function planBoardClipboardPlacement(options: BoardClipboardPlacementOptions): BoardClipboardPlacement {
     const { receivingBoardId, target, source, doc, cameraZoom, intent } = options;
-    if (!identity(receivingBoardId) || !target || !source || !source.from || !identity(source.from.board) || !identity(source.from.sheet)
-        || !['whiteboard', 'notebook', 'pdf-ink'].includes(source.from.kind) || !identity(target.session) || !identity(target.sheet)
+    if (!identity(receivingBoardId) || !target || !source || (source.from !== null && (!source.from || !identity(source.from.board) || !identity(source.from.sheet)
+        || !['whiteboard', 'notebook', 'pdf-ink'].includes(source.from.kind))) || !identity(target.session) || !identity(target.sheet)
         || !Number.isSafeInteger(target.vaultEpoch) || target.vaultEpoch < 0 || !Number.isSafeInteger(target.generation) || target.generation < 0
         || typeof target.pasteAtCursor !== 'boolean' || typeof options.containsFrame !== 'boolean'
         || !boundsValid(source.bounds) || !boundsValid(target.viewport) || target.viewport.w <= 0 || target.viewport.h <= 0
@@ -53,6 +53,7 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         || !['paste', 'paste-inverted', 'paste-plain', 'paste-plain-inverted', 'drop', 'duplicate'].includes(intent)) {
         throw new RangeError('Invalid clipboard placement input');
     }
+    if (source.from === null && intent === 'duplicate') throw new Error('External content cannot be duplicated');
     if (doc.kind !== doc.host.kind || !doc.sheets.has(target.sheet)) throw new Error('Clipboard target sheet is stale');
     if (target.pointer !== null && (!target.pointer || !Number.isFinite(target.pointer.x) || !Number.isFinite(target.pointer.y))) {
         throw new RangeError('Invalid clipboard pointer');
@@ -68,7 +69,7 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     const viewportCentre = { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
     const inside = bounds.x >= viewport.x && bounds.y >= viewport.y
         && bounds.x + bounds.w <= viewport.x + viewport.w && bounds.y + bounds.h <= viewport.y + viewport.h;
-    const same = source.from.board === receivingBoardId && source.from.sheet === target.sheet;
+    const same = source.from !== null && source.from.board === receivingBoardId && source.from.sheet === target.sheet;
     const inverted = intent === 'paste-inverted' || intent === 'paste-plain-inverted';
     const cursor = target.pasteAtCursor !== inverted;
     let centre: ClipboardPoint, preserve = false;

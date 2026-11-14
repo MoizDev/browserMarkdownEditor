@@ -39,14 +39,11 @@ export function paintStrokeNode(node: Readonly<StrokeNode>, coverage: readonly I
     return { content: [{ ...base, material: inkMaterial(resolveSwatch(palette, node.color)!, context.opacity) }] };
 }
 
-/** Geometry has already resolved draw/dash/crop contours. Paint only assigns
- * material roles, inherited alpha and the captured world/clip transforms. */
-export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVectorGeometry,
+function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry;
         readonly signal: AbortSignal;
-        readonly cooperate?: () => Promise<void>;
-    }): Promise<PaintNode> {
+    }): Generator<void, PaintNode> {
     const content: PaintItem[] = [], color = 'color' in node && node.color !== null ? node.color : 'grey';
     const base = { nodeId: node.id, geometryKey: geometry.key, localToWorld: context.world, clips: context.clips };
     let index = 0;
@@ -84,7 +81,7 @@ export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVecto
                 for (const line of figureHatch(geometry as FigureGeometry, node, { x: 0, y: 0, width: node.w, height: node.h + node.growY },
                     Math.PI / 4, 8, 0, 1_000_000, 1_000_000)) {
                     d.push(['M', line.start.x, line.start.y], ['L', line.end.x, line.end.y]);
-                    if ((++count & 255) === 0) { options.signal.throwIfAborted(); await options.cooperate?.(); }
+                    if ((++count & 255) === 0) { options.signal.throwIfAborted(); yield; options.signal.throwIfAborted(); }
                 }
                 content.push(path(d, 1, undefined, color, context.clips, resolveSwatch(palette, color, fillRole)));
             } else {
@@ -106,4 +103,33 @@ export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVecto
     for (let i = 0; i < geometry.text.length; i++) content.push(textItem(node, geometry.key, geometry.text[i], i, context, palette, faces));
     options.signal.throwIfAborted();
     return { content };
+}
+
+/** Geometry has already resolved draw/dash/crop contours; painting assigns
+ * material roles and captured transforms, without decoding media. */
+export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVectorGeometry,
+    context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
+        readonly media?: MediaEntry; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
+    }): Promise<PaintNode> {
+    const job = vectorNodePaint(node, geometry, context, palette, faces, options);
+    try {
+        for (;;) {
+            options.signal.throwIfAborted();
+            const next = job.next(); if (next.done) return next.value;
+            await options.cooperate?.(); options.signal.throwIfAborted();
+        }
+    } finally { job.return(undefined as never); }
+}
+
+export function paintVectorNodeNow(node: Readonly<Node>, geometry: BoardVectorGeometry,
+    context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
+        readonly media?: MediaEntry; readonly signal: AbortSignal;
+    }): PaintNode {
+    const job = vectorNodePaint(node, geometry, context, palette, faces, options);
+    try {
+        for (;;) {
+            options.signal.throwIfAborted();
+            const next = job.next(); if (next.done) return next.value;
+        }
+    } finally { job.return(undefined as never); }
 }

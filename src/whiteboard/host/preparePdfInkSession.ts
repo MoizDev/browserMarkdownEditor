@@ -52,7 +52,12 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     const acquisition = await options.prepareOwned({ outer, token, isCurrent: current }, signal);
     if (acquisition.kind === 'read-only') {
         if (signal.aborted || !current()) { await acquisition.dispose(); throw stale(); }
-        return { kind: 'read-only' as const, reason: acquisition.reason, dispose: () => acquisition.dispose() };
+        return { kind: 'read-only' as const, reason: acquisition.reason,
+            ...(acquisition.notebookSource && acquisition.outerFingerprint && acquisition.isCurrent ? {
+                notebookSource: acquisition.notebookSource, outerFingerprint: acquisition.outerFingerprint,
+                isCurrent: () => !signal.aborted && current() && acquisition.isCurrent!(),
+            } : {}),
+            dispose: () => acquisition.dispose() };
     }
     let accepted;
     try { signal.throwIfAborted(); if (!current()) throw stale(); accepted = acquisition.take(); }

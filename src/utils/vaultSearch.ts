@@ -1,5 +1,3 @@
-import { mapPool } from './pool';
-import { decodeDocumentText } from './diskVersion';
 // Vault-wide search (VSCode-style): matches file names and file contents
 // across the whole vault. The pure matching logic lives here so the sidebar
 // SearchPanel stays a thin view; contents are served from an in-memory cache
@@ -15,12 +13,6 @@ const NON_TEXT_RE = /\.(pdf|jpe?g|png|gif|webp|bmp|ico|avif|heic|mp[34]|m4[av]|w
 export function isTextFile(name: string): boolean {
     return !NON_TEXT_RE.test(name);
 }
-
-/** Content-indexing limits: skip any single file larger than 4MB and stop
- *  caching once 128MB of text is held (a stray log dump shouldn't balloon
- *  memory); skipped files remain searchable by name. */
-const MAX_INDEXED_FILE_SIZE = 4 * 1024 * 1024;
-const MAX_INDEXED_TOTAL_SIZE = 128 * 1024 * 1024;
 
 /** Result caps, VSCode-style: bound per-keystroke work and DOM size. */
 const MAX_MATCHES_PER_FILE = 100;
@@ -152,75 +144,3 @@ export function searchVault(
     return { files: [...nameMatched, ...contentOnly], matchCount, clipped };
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * VAULT TEXT CACHE
- * Keeps every text file's content in memory so each keystroke searches
- * synchronously. sync() re-validates against the current tree: unchanged
- * files (same lastModified + size) are never re-read, removed/renamed paths
- * are dropped. Text is line-ending-normalized to \n so match offsets always
- * agree with the CodeMirror document (which normalizes the same way).
- * ───────────────────────────────────────────────────────────────────────── */
-
-interface CacheEntry {
-    mtime: number;
-    size: number;
-    text?: string;
-}
-
-export interface VaultTextCache {
-    /** Load/refresh contents for `files`; returns a path → text snapshot. */
-    sync(files: FileTreeFileNode[], readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<Map<string, string>>;
-    /** Forget everything (e.g. when a different vault is opened). */
-    clear(): void;
-}
-
-export function createVaultTextCache(): VaultTextCache {
-    let entries = new Map<string, CacheEntry>();
-    // Bumped by clear() so an in-flight sync from the previous vault can't
-    // repopulate the cache after it was wiped.
-    let generation = 0;
-
-    return {
-        async sync(files: FileTreeFileNode[], readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<Map<string, string>> {
-            const startedGeneration = generation;
-            const next = new Map<string, CacheEntry>();
-            let totalSize = 0;
-            // Bounded: firing a whole vault's `getFile()` at once queues every
-            // one of them on the browser's file thread and holds every decoded
-            // payload alive until the slowest lands (utils/pool.ts). In tree
-            // order too, so which files fit the budget below is the same answer
-            // every time rather than a race.
-            await mapPool(files, async (node) => {
-                try {
-                    const file = await readSnapshot(node.handle);
-                    if (file.size > MAX_INDEXED_FILE_SIZE) return;
-                    // Synchronous check-then-add, so parallel tasks can't
-                    // blow the budget between the two statements.
-                    if (totalSize + file.size > MAX_INDEXED_TOTAL_SIZE) return;
-                    totalSize += file.size;
-                    const prev = entries.get(node.path);
-                    let entry = prev;
-                    if (!entry || entry.mtime !== file.lastModified || entry.size !== file.size) {
-                        const bytes = await file.arrayBuffer(); // Do not cache transient IO failures.
-                        let text: string | undefined;
-                        try { text = decodeDocumentText(bytes).replace(/\r\n?/g, '\n'); }
-                        catch { /* Invalid bytes are a stat-validated negative entry, not text. */ }
-                        entry = { mtime: file.lastModified, size: file.size, text };
-                    }
-                    next.set(node.path, entry);
-                } catch {
-                    // Unreadable (moved/locked) — its name remains searchable.
-                }
-            });
-            if (generation === startedGeneration) entries = next;
-
-            const snapshot = new Map<string, string>();
-            for (const [path, entry] of next) if (entry.text !== undefined) snapshot.set(path, entry.text);
-            return snapshot;
-        },
-        clear() {
-            generation++;
-            entries = new Map();
-        },
-    };
-}

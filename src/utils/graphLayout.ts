@@ -40,6 +40,12 @@ function growFloats(old: Float64Array, size: number) {
 function growInts(old: Int32Array, size: number) {
     const next = new Int32Array(size); next.set(old); return next;
 }
+function spreadBits(value: number): number {
+    value = (value | (value << 8)) & 0x00ff00ff;
+    value = (value | (value << 4)) & 0x0f0f0f0f;
+    value = (value | (value << 2)) & 0x33333333;
+    return (value | (value << 1)) & 0x55555555;
+}
 
 /** Rebuilt in retained storage; depth-limited buckets also handle all-coincident
  *  inputs without infinite subdivision. Child order and bucket order are fixed. */
@@ -55,6 +61,11 @@ export class RepulsionTree {
     private children = new Int32Array(0);
     private head = new Int32Array(0);
     private nextPoint = new Int32Array(0);
+    private order = new Uint32Array(0);
+    private orderScratch = new Uint32Array(0);
+    private codes = new Uint32Array(0);
+    private radix = new Uint32Array(256);
+    private pointCount = -1;
     // A depth-first quadtree walk has at most 1+3*depth pending siblings.
     private stack = new Int32Array(1 + 3 * MAX_DEPTH);
 
@@ -78,17 +89,70 @@ export class RepulsionTree {
         return c;
     }
 
+    // Reuse the partition only while every body still belongs to its leaf.
+    // Centres are nevertheless recomputed every step: stale mass would change
+    // the force and could make a containing cell look like a distant one.
+    private refresh(x: Float64Array, y: Float64Array): boolean {
+        if (x.length !== this.pointCount || !this.used) return false;
+        for (let c = 0; c < this.used; c++) {
+            if (this.children[c * 4] !== -1) continue;
+            let mx = 0, my = 0;
+            const left = this.left[c], top = this.top[c], right = left + this.width[c], bottom = top + this.width[c];
+            for (let i = this.head[c]; i !== -1; i = this.nextPoint[i]) {
+                if (x[i] < left || x[i] > right || y[i] < top || y[i] > bottom) return false;
+                mx += x[i]; my += y[i];
+            }
+            if (this.count[c]) { this.massX[c] = mx / this.count[c]; this.massY[c] = my / this.count[c]; }
+        }
+        for (let c = this.used - 1; c >= 0; c--) {
+            if (this.children[c * 4] === -1 || !this.count[c]) continue;
+            let mx = 0, my = 0;
+            for (let q = 0; q < 4; q++) {
+                const child = this.children[c * 4 + q];
+                mx += this.massX[child] * this.count[child]; my += this.massY[child] * this.count[child];
+            }
+            this.massX[c] = mx / this.count[c]; this.massY[c] = my / this.count[c];
+        }
+        return true;
+    }
+
     rebuild(x: Float64Array, y: Float64Array): void {
+        if (this.refresh(x, y)) return;
         this.used = 0;
+        this.pointCount = x.length;
         if (!x.length) return;
-        if (this.nextPoint.length < x.length) this.nextPoint = new Int32Array(x.length);
+        if (this.nextPoint.length < x.length) {
+            this.nextPoint = new Int32Array(x.length);
+            this.order = new Uint32Array(x.length);
+            this.orderScratch = new Uint32Array(x.length);
+            this.codes = new Uint32Array(x.length);
+        }
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (let i = 0; i < x.length; i++) {
             minX = Math.min(minX, x[i]); minY = Math.min(minY, y[i]);
             maxX = Math.max(maxX, x[i]); maxY = Math.max(maxY, y[i]);
         }
-        this.cell(minX, minY, Math.max(1, maxX - minX, maxY - minY));
+        const width = Math.max(1, maxX - minX, maxY - minY);
+        this.cell(minX, minY, width);
         for (let i = 0; i < x.length; i++) {
+            const px = Math.min(65535, Math.floor((x[i] - minX) / width * 65536));
+            const py = Math.min(65535, Math.floor((y[i] - minY) / width * 65536));
+            this.codes[i] = (spreadBits(px) | (spreadBits(py) << 1)) >>> 0;
+            this.order[i] = i;
+        }
+        // Stable four-byte radix order groups nearby bodies without allocating
+        // or changing their public indices (the coincidence rule uses those).
+        let order = this.order, scratch = this.orderScratch;
+        for (let shift = 0; shift < 32; shift += 8) {
+            this.radix.fill(0);
+            for (let j = 0; j < x.length; j++) this.radix[(this.codes[order[j]] >>> shift) & 255]++;
+            let total = 0;
+            for (let b = 0; b < 256; b++) { const count = this.radix[b]; this.radix[b] = total; total += count; }
+            for (let j = 0; j < x.length; j++) { const i = order[j]; scratch[this.radix[(this.codes[i] >>> shift) & 255]++] = i; }
+            const previous = order; order = scratch; scratch = previous;
+        }
+        for (let j = 0; j < x.length; j++) {
+            const i = order[j];
             let c = 0, depth = 0;
             this.nextPoint[i] = -1;
             while (true) {

@@ -240,8 +240,11 @@ export class MediaResidency implements PaintImageProvider {
                 frameCount = result.frameCount;
             } catch (error) {
                 job.workerRequest = undefined;
-                await this.worker.recycle('media raster interrupted').catch(() => undefined);
-                if (!current()) throw error;
+                if (!current()) {
+                    // A cancelled native decode may still hold scratch in the shared worker.
+                    if (this.visible && !this.disposed) await this.worker.recycle('media raster cancelled').catch(() => undefined);
+                    throw error;
+                }
                 if (source.mime !== 'image/svg+xml') throw error;
                 bitmap = await rasterSvgInProfile(svgFrameFactory, blob, source.width, source.height, geometry, job.identity, () => current(), signal);
             }

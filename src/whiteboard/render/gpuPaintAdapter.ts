@@ -4,6 +4,7 @@ import type { GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gf
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
+import { analyticInkPaint, createAnalyticInk, type AnalyticInkPaint } from './analyticInk';
 import type { PaintFrame, PaintItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
@@ -11,12 +12,14 @@ import { paintItem2d } from './reference/paint2d';
 const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string }
-interface Tile { item: PaintItem; x: number; y: number; cached: CachedTile }
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; analytic?: never }
+    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never }; 
 interface Plan {
     frame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number;
     x0: number; y0: number; x1: number; y1: number;
     band: PaintBand; item: number; x: number; y: number; tiles: Record<PaintBand, Tile[]>;
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
+    analyticReady: boolean;
 }
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -45,11 +48,13 @@ function contentKey(item: PaintItem): string {
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
-    let deniedFrame: PaintFrame | null = null, deniedProjection = '', movingScale = 0;
+    let movingScale = 0;
     const cache = new Map<string, CachedTile>();
+    const analytic = createAnalyticInk(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
     const drop = (plan: Plan | null) => {
         if (!plan) return;
         for (const band of ['underlay', 'content'] as const) for (const tile of plan.tiles[band]) {
+            if (tile.analytic) continue;
             const entry = tile.cached;
             if (--entry.refs === 0) { cache.delete(entry.key); entry.device.destroy(entry.texture); }
         }
@@ -68,21 +73,23 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         prepare(view: ViewState, budget: FrameBudget): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId; currentToken = { ...budget.token };
+            analytic.prepare();
             const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
             if (!prepared || !device || !documentMatches(prepared.frame, budget.token) || device.generation !== budget.token.deviceGeneration ||
                 host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
             const scale = rasterScale(view, demand);
-            if (denied && (deniedFrame !== prepared.frame || deniedProjection !== projection(view))) denied = false;
+            // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
+            denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
             if (staged && (!valid(staged, view, scale) || staged.frame !== prepared.frame)) { drop(staged); staged = null; denied = false; }
-            if ((ready?.frame === prepared.frame && valid(ready, view, scale)) || denied) return;
+            if ((ready?.frame === prepared.frame && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
                 staged = { frame: prepared.frame, token: { ...budget.token }, device, projection: projection(view), scale,
-                    x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '' };
+                    x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready() };
             }
             const p = staged;
             try {
@@ -93,6 +100,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         drop(ready); ready = p; staged = null; return;
                     }
                     const item = items[p.item];
+                    if (p.analyticReady && !p.tileBounds && item.kind === 'ink') {
+                        const paint = analyticInkPaint(item, view);
+                        if (paint) { p.tiles[p.band].push({ item, x: 0, y: 0, analytic: paint }); p.item++; continue; }
+                    }
                     if ((item.kind === 'image' ? item.blend : item.material.blend) !== 'normal') {
                         throw new Error('Unsupported GPU board paint: multiply blend');
                     }
@@ -118,10 +129,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         return;
                     }
                     const cpu = host.allocator.cpu.reserve(CPU_BYTES);
-                    if (!cpu) { denied = true; deniedFrame = p.frame; deniedProjection = p.projection; return; }
+                    if (!cpu) { denied = true; return; }
                     scratch = cpu.bytes;
                     const gpu = host.allocator.gpu.reserve(GPU_BYTES);
-                    if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; deniedFrame = p.frame; deniedProjection = p.projection; return; }
+                    if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; return; }
                     if (!budget.claimUpload(GPU_BYTES)) { host.allocator.gpu.release(gpu); host.allocator.cpu.release(cpu); scratch = 0; return; }
                     let canvas: OffscreenCanvas | null = null, bitmap: ImageBitmap | null = null, texture: TextureHandle | null = null;
                     let attached = false;
@@ -147,25 +158,35 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.item++; p.tileBounds = null; } }
                     return;
                 }
-            } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; deniedFrame = p.frame; deniedProjection = p.projection; report(error); throw error; }
+            } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },
         readyFrame(): PaintFrame | null { return disposed ? null : ready?.frame ?? null; },
+        coverage(view: ViewState): { complete: boolean; sharp: boolean } {
+            const complete = !!ready && validDevice(ready) && ready.projection === projection(view);
+            return { complete, sharp: complete && ready!.scale >= view.camera.z * view.viewport.dpr };
+        },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
             if (!ready || !validDevice(ready)) return;
             const factor = view.camera.z * view.viewport.dpr / ready.scale;
             for (const tile of ready.tiles[band]) {
                 if (omitNodes?.has(tile.item.nodeId)) continue;
+                if (tile.analytic) {
+                    // A camera change requires a fresh Float64-to-device packing, not stretched old uniforms.
+                    const paint = analyticInkPaint(tile.analytic.item, view);
+                    if (!paint) throw new Error('Analytic ink projection became unavailable');
+                    analytic.draw(pass, paint); continue;
+                }
                 const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
                 const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
                 host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: ready.projection === projection(view) ? 'current' : 'standin' });
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean { return !disposed && !denied && (!!staged || !ready || ready.frame !== reference.readyFrame()); },
         memory(): { gpuBytes: number; cpuBytes: number } {
             return { gpuBytes: cache.size * GPU_BYTES, cpuBytes: scratch };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } { return { mandatoryBytes: CPU_BYTES, prefetchBytes: 0 }; },
-        dispose(): void { if (!disposed) { disposed = true; reset(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); } },
     };
 }

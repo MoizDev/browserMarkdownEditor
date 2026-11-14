@@ -16,6 +16,9 @@ export interface CanonicalizationCandidate {
     readonly pins: Uint8Array;
     readonly retained: Uint8Array;
     readonly publishedRawCount: number;
+    readonly publishedRetained: Uint8Array;
+    readonly publishedRetainedCount: number;
+    readonly frozen: SampleSequence;
     readonly captureDeviceScale: number;
 }
 // One candidate, at most three affected cubics. W-E1b can replace this certificate without changing
@@ -36,6 +39,10 @@ export const certifyExactCollinear: OmissionCertificate = (c) => {
     // determinant when differences/products fit 52 bits; controls may still round off that line,
     // so E1 conservatively keeps those for the full curved certificate rather than assert equality.
     if (dx !== 0 && dy !== 0) return false;
+    if (c.frozen.count) {
+        const i = c.frozen.count - 1, x = c.frozen.x(i), y = c.frozen.y(i);
+        if (dx === 0 ? x !== ax || (dy > 0 ? y > ay : y < ay) : y !== ay || (dx > 0 ? x > ax : x < ax)) return false;
+    }
     const pressure = c.rawPressure[0];
     let previous = dx === 0 ? ay : ax;
     for (let i = 0; i < c.rawCount; i++) {
@@ -61,6 +68,8 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
     rawCount = 0;
     retainedCount = 0;
     publishedRawCount = 0;
+    readonly publishedRetained = new Uint8Array(AUTHORING_WINDOW_CAPACITY);
+    publishedRetainedCount = 0;
     received = 0;
     certifiedOmitted = 0;
     exactRedundant = 0;
@@ -106,7 +115,12 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
             this.certifiedOmitted++;
         }
     }
-    markPublished(): void { this.publishedRawCount = this.rawCount; this.packingSincePublication = 0; }
+    markPublished(): void {
+        this.publishedRawCount = this.rawCount;
+        this.publishedRetained.set(this.retained.subarray(0, this.retainedCount));
+        this.publishedRetainedCount = this.retainedCount;
+        this.packingSincePublication = 0;
+    }
     snapshot(skippedRetained = 0): SampleSequence {
         const frozen = this.frozen.snapshot(), tailCount = this.retainedCount - skippedRetained;
         const count = frozen.count + tailCount;
@@ -163,7 +177,7 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
             this.rawPressure[j] = this.rawPressure[source]; this.incomingKinds[j] = this.incomingKinds[source];
             this.pins[j] = this.pins[source]; this.retained[j] = j;
         }
-        this.rawCount = keep; this.retainedCount = keep; this.publishedRawCount = 0;
+        this.rawCount = keep; this.retainedCount = keep; this.publishedRawCount = 0; this.publishedRetainedCount = 0;
     }
     private appendFrozen(i: number): void {
         this.frozen.append(this.rawXY[2 * i], this.rawXY[2 * i + 1],

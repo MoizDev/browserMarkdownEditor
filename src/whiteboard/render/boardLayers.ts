@@ -8,6 +8,7 @@ import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
+import { createGpuPaintAdapter } from './gpuPaintAdapter';
 
 /** Until a real GPU executor exists the pane must select its Canvas2D backend. */
 export const BOARD_BACKEND_PREFERENCE = 'canvas2d' as const;
@@ -95,6 +96,7 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
+    let gpu: ReturnType<typeof createGpuPaintAdapter> | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
     let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null;
     let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackMask = 0;
@@ -120,6 +122,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const clearResources = (reason: GpuReleaseReason) => {
         // The reference adapter keeps CPU paths on context loss; this owner must
         // explicitly evict them before returning its CPU leases for any release.
+        gpu?.release(reason);
         adapter?.release(reason === 'context-lost' ? 'pressure' : reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
         estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); ackFrame = null; ackOmit = null; ackMask = 0;
@@ -131,6 +134,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             adapter = createCanvasPaintAdapter({ frames: options.frames, images: options.images,
                 invalidate: () => activeHost()?.invalidate('board-resource') },
             (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
+            gpu = createGpuPaintAdapter(adapter, host, report);
         }
         return adapter;
     };
@@ -167,6 +171,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
+            gpu?.prepare(view, budget);
             prune(frame, adapter.readyFrame());
         } catch (error) { report(error); }
     };
@@ -192,7 +197,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             let ended = false;
             const layer: Layer = {
                 prepare,
-                drawGpu() { throw new Error('Board layer is Canvas2D-only; select the canvas2d backend'); },
+                drawGpu(pass, view) {
+                    const frame = gpu?.readyFrame();
+                    if (!frame) return;
+                    const omit = options.omitNodes?.(frame) ?? null;
+                    drawn.set(band, { frame, omit });
+                    gpu!.drawGpu(pass, view, band, omit ?? undefined);
+                },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
                     if (!frame) return;
@@ -201,9 +212,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
                 },
                 releaseGpu(reason) { clearResources(reason); },
-                memory() { return { gpuBytes: 0, cpuBytes: allocatorHost === host ? reserved : 0 }; },
+                memory() {
+                    const extra = gpu?.memory();
+                    return allocatorHost === host ? { gpuBytes: extra?.gpuBytes ?? 0, cpuBytes: reserved + (extra?.cpuBytes ?? 0) }
+                        : { gpuBytes: 0, cpuBytes: 0 };
+                },
                 needsFrame() {
-                    return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || !!adapter?.needsFrame())));
+                    return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || !!adapter?.needsFrame()
+                        || !!host.device() && !!gpu?.needsFrame())));
                 },
                 onFramePresented(revision, token) { acknowledge(band, revision, token); },
                 dispose() {
@@ -212,7 +228,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);
                     if (!hosts.size) {
-                        disposed = true; adapter?.dispose(); adapter = null;
+                        disposed = true; gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
                         options.frames.clear(); known.clear(); presented = null;
                     } else if (!allocatorHost) allocatorHost = activeHost()!;
                 },
@@ -220,13 +236,20 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             return layer;
         },
         revision() { return options.requestedRevision(); },
-        cpuWorkingSet() { return { mandatoryBytes: hosts.get(band) === allocatorHost ? reserved + (estimate && !reservations.has(estimate.frame) ? estimate.bytes : 0) : 0, prefetchBytes: 0 }; },
+        cpuWorkingSet() {
+            const upcoming = estimate && !reservations.has(estimate.frame) ? estimate.bytes : 0;
+            const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
+            return { mandatoryBytes: hosts.get(band) === allocatorHost ? reserved + upcoming + scratch : 0, prefetchBytes: 0 };
+        },
         critical() { return !adapter?.readyFrame(); },
-        coverage(layer, frame) {
-            const ready = adapter?.readyFrame(), requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
+        coverage(layer, frame, backend) {
+            const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
+            const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
+            const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
+            if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
             if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
             const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision() && options.frames.isCurrent(ready);
-            return current ? { complete: true, sharp: true } : { complete: false, sharp: false, staleVersion: true };
+            return current ? { complete: true, sharp: gpuCoverage?.sharp ?? true } : { complete: false, sharp: false, staleVersion: true };
         },
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;

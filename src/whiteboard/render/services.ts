@@ -19,6 +19,7 @@ import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
 import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
+import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import { paintStrokeNode, paintVectorNode, paintVectorNodeNow } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
@@ -133,7 +134,18 @@ export function createBoardRenderServices(options: {
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
         if (node.kind === 'stroke') {
-            const ink = await buildStrokeCoverage(node, options.samples, { deviceScale: options.deviceScale ?? 3, cooperate: options.cooperate, signal });
+            const revision = doc.rev, sampleRef = node.samples;
+            const identity = { session: JSON.stringify([options.token.vaultEpoch, options.token.documentId,
+                options.token.bytesGeneration, options.token.session]), epoch: options.token.vaultEpoch, revision };
+            const ink = await buildStrokeCoverage(node, options.samples, {
+                deviceScale: options.deviceScale ?? 3, cooperate: options.cooperate, signal,
+                worker: (points, parameters, style, range, coverage) => prepareInkCoverageInWorker(
+                    points, parameters, style, range, coverage, identity, signal, () => {
+                        const current = doc.nodes.get(node.id);
+                        return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'
+                            && current.samples === sampleRef && sameGeometrySignature(signature(current, doc), before);
+                    }),
+            });
             result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
             // Capture every dependency before awaiting fonts/geometry. An export

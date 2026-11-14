@@ -8,6 +8,7 @@ import type { BoardPayload } from '../clipboard/snapshot';
 import type { NodeId, SheetId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
 import { SECURITY_LIMITS } from '../security/limits';
+import { htmlPreflight } from './htmlPreflight';
 
 // Provenance: private clipboard envelope, SEC-W1/W4, native limits and C5
 // transport contracts; independent bounded worker decoder, no third-party source.
@@ -151,8 +152,13 @@ async function inlineBlob(encoded: string, context: WorkerContext): Promise<Blob
     }
     return new Blob(parts);
 }
-export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard | number> {
-    const request = payload as { encoded?: unknown; measure?: unknown } | null, blob = request?.encoded;
+export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard | number | true> {
+    const request = payload as { encoded?: unknown; measure?: unknown; htmlPreflight?: unknown } | null;
+    if (request?.htmlPreflight !== undefined) {
+        if (!(request.htmlPreflight instanceof Blob) || request.encoded !== undefined || request.measure !== undefined) throw new TypeError('Invalid HTML preflight request');
+        return htmlPreflight(request.htmlPreflight, context);
+    }
+    const blob = request?.encoded;
     if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)
         || request?.measure !== undefined && request.measure !== true) throw new TypeError('Clipboard decoder requires copied Blob');
     const decoded = await decodeOuter(blob, context);

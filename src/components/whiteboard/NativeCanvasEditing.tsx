@@ -43,13 +43,15 @@ export interface NativeEditingRenderContext {
 
 /** This mounts actual editing input and chrome against the acquired document. The temporary
  * admission seal remains until the complete per-embed presentation service is connected. */
-export function NativeCanvasEditing({ props, board, adapter, factory, createLease, renderView, onError, onUnavailable }: {
+export function NativeCanvasEditing({ props, board, adapter, factory, createLease, renderView, inversion, onError, onUnavailable }: {
     readonly props: NativeEditingViewProps;
     readonly board: ComposedBoardSession;
     readonly adapter: HostedBoardAdapter<BoardSessionPort>;
     readonly factory: NativeEditingCapabilityFactory;
     readonly createLease: (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => Promise<NativeViewLease>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
+    /** PDF keeps its existing view preference outside the retokened shell. */
+    readonly inversion?: { readonly value: boolean; readonly set: (value: boolean) => void };
     readonly onError: (error: unknown) => void;
     readonly onUnavailable: (error: unknown) => void;
 }) {
@@ -59,7 +61,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
     const language = useNativeBoardLanguage(onUnavailable);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
-    const [notice, setNotice] = useState<string | null>(null), [inverted, setInverted] = useState(false);
+    const [notice, setNotice] = useState<string | null>(null), [localInverted, setLocalInverted] = useState(false);
+    const inverted = inversion?.value ?? localInverted, setInverted = inversion?.set ?? setLocalInverted;
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
     const commandRef = useRef<((id: string, event: KeyboardEvent) => boolean) | null>(null), linksRef = useRef<Links | null>(null);

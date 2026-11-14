@@ -369,13 +369,12 @@ export class MemoryGovernor {
         count(ownedBytes);
         const previous = this.workerHeaps.get(worker) ?? 0;
         const total = this.workerHeapBytes - previous + ownedBytes;
-        const charged = this.charged.cpu - previous + ownedBytes;
         count(total);
-        count(charged);
         if (ownedBytes) this.workerHeaps.set(worker, ownedBytes);
         else this.workerHeaps.delete(worker);
+        // C bounds decoded raster, not PDFium's nonshrinking WASM heap (§6.2).
+        // A 64 MiB worker otherwise exhausts a small pane's 32 MiB C before its first tile.
         this.workerHeapBytes = total;
-        this.charged.cpu = charged;
         if (previous !== ownedBytes) this.onPressureChange?.();
     }
 
@@ -458,7 +457,7 @@ export class MemoryGovernor {
     }
 
     private poolReadout(pool: MemoryPool): PoolMemoryReadout {
-        let workingBytes = pool === 'cpu' ? this.workerHeapBytes : 0;
+        let workingBytes = 0;
         let retiringBytes = 0;
         let attributed = workingBytes;
         let contextReserveBytes = 0;

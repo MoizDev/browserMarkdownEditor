@@ -3242,11 +3242,22 @@ export default function App() {
     const handle = tab?.file.handle as FileSystemFileHandle | undefined;
     const preview = tab ? takePdfRotation(tab.id) : undefined;
     if (!tab || !handle) return;
+    const rootAtCall = rootHandleRef.current, vaultAtCall = currentVaultIdRef.current;
+    const activationAtCall = getVaultActivation(), readerEpochAtCall = readerEpochRef.current.epoch;
+    const sessionAtCall = documentSessions.get(tab.id), generationAtCall = sessionAtCall?.bytesGeneration;
+    const revisionAtCall = documentBuffers.revisionForDocument(tab.id)?.revision;
+    const routeAtCall = sessionAtCall ? readPdfSessionRoute(sessionAtCall) : undefined;
+    if (!routeAtCall || !sessionAtCall || generationAtCall === undefined || !rootAtCall || !vaultAtCall) {
+      notifyRef.current('This PDF is not ready to rotate. Try again in a moment.'); return;
+    }
     // Do this before taking the per-tab write chain: a canvas checkpoint itself
     // uses that chain and would deadlock if awaited from inside a rotation.
     try { await getView(path)?.flushPending?.(); }
     catch { notifyRef.current('The PDF annotations could not be saved. Keep the file open and retry before rotating.'); return; }
-    if (!tabsRef.current.some(current => current.id === tab.id && current.file.path === path && current.file.handle === handle)) return;
+    if (rootHandleRef.current !== rootAtCall || currentVaultIdRef.current !== vaultAtCall || getVaultActivation() !== activationAtCall ||
+      readerEpochRef.current.epoch !== readerEpochAtCall || documentSessions.get(tab.id) !== sessionAtCall ||
+      sessionAtCall.bytesGeneration !== generationAtCall || documentBuffers.revisionForDocument(tab.id)?.revision !== revisionAtCall ||
+      !tabsRef.current.some(current => current.id === tab.id && current.file.path === path && current.file.handle === handle)) return;
     if (diskStateRef.current.get(tab.id)) {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
       return;
@@ -3258,32 +3269,82 @@ export default function App() {
 
     const { id } = tab;
     const rotationRevision = documentBuffers.revisionForDocument(id)?.revision;
-    const rotationSession = documentSessions.get(id);
+    const rotationSession = sessionAtCall;
     const annotationsChanged = () => documentBuffers.revisionForDocument(id)?.revision !== rotationRevision
       || documentSessions.get(id) !== rotationSession || !!rotationSession?.adapter.hasPendingEdits();
+    const nativeCurrent = () => rootHandleRef.current === rootAtCall && currentVaultIdRef.current === vaultAtCall &&
+      getVaultActivation() === activationAtCall && readerEpochRef.current.epoch === readerEpochAtCall &&
+      documentSessions.get(id) === rotationSession && rotationSession.bytesGeneration === generationAtCall &&
+      readPdfSessionRoute(rotationSession) === 'tiled' && !diskStateRef.current.has(id) && !annotationsChanged() &&
+      !documentSessions.hasPendingEdits(id) && !getView(path)?.hasPendingEdits?.() &&
+      tabsRef.current.some(current => current.id === id && current.file.path === path && current.file.handle === handle && !current.dirty);
     const run = async (): Promise<void> => {
       try {
-        const bytes = await readFileBytes(handle);
-        const { readPdfRole } = await import('./utils/pdfAnnotation');
-        const role = await readPdfRole(bytes);
-        if (!canRotatePdfRole(role)) {
-          notifyRef.current(role.kind === 'annotated'
-            ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
-            : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
-          return;
+        let rotated: Uint8Array;
+        let expected: import('./utils/diskVersion').DiskVersion | null = null;
+        if (routeAtCall === 'tiled') {
+          const controller = new AbortController();
+          const check = () => {
+            const baseline = getBaseline(id);
+            if (!nativeCurrent() || (expected && baseline && baseline.hash !== expected.hash)) {
+              throw new DOMException('The PDF rotation source changed', 'AbortError');
+            }
+          };
+          let snapshot: Awaited<ReturnType<typeof readFileSnapshot>> | undefined;
+          let acquisition: Awaited<ReturnType<typeof import('./pdf/session/inkAcquisition').acquirePdfInkSource>> | undefined;
+          try {
+            check();
+            const seed = pdfSeedForRef.current(id);
+            const seeded = seed ? await seed : null;
+            check();
+            expected = getBaseline(id) ?? seeded ?? null;
+            if (!expected) throw new Error('The PDF disk baseline is unavailable.');
+            snapshot = await readFileSnapshot(handle, controller.signal);
+            check();
+            const version = await snapshot.fingerprint(controller.signal);
+            check();
+            if (version.hash !== expected.hash) { setDiskState(id, 'conflict'); return; }
+            const outer = snapshot.blob.slice(0, snapshot.blob.size, snapshot.blob.type);
+            const { acquirePdfInkSource } = await import('./pdf/session/inkAcquisition');
+            check();
+            acquisition = await acquirePdfInkSource({ outer, signal: controller.signal, isCurrent: nativeCurrent,
+              token: { vaultEpoch: readerEpochAtCall, documentId: id, session: rotationSession.serial, bytesGeneration: generationAtCall } });
+            check();
+            if (acquisition.kind === 'read-only') {
+              notifyRef.current(`This PDF cannot be rotated safely. ${acquisition.reason}`); return;
+            }
+            if (!acquisition.isCurrent() || acquisition.source.outerFingerprint !== expected.hash) throw new Error('The PDF source does not match its disk baseline.');
+            if (acquisition.kind !== 'plain') {
+              notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'); return;
+            }
+            const { rotateNativePdfSource } = await import('./pdf/writing/rotationClient');
+            check();
+            if (!acquisition.isCurrent()) throw new DOMException('The PDF rotation source changed', 'AbortError');
+            rotated = await rotateNativePdfSource({ acquisition, delta, ...(pageIndex === undefined ? {} : { pageIndices: [pageIndex] }), signal: controller.signal });
+            check();
+            if (!acquisition.isCurrent()) throw new DOMException('The PDF rotation source changed', 'AbortError');
+          } finally {
+            try { if (acquisition) await acquisition.release(); }
+            finally { snapshot?.dispose(); controller.abort(); }
+          }
+          check();
+        } else {
+          const bytes = await readFileBytes(handle);
+          const { readPdfRole } = await import('./utils/pdfAnnotation');
+          const role = await readPdfRole(bytes);
+          if (!canRotatePdfRole(role)) {
+            notifyRef.current(role.kind === 'annotated'
+              ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
+              : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
+            return;
+          }
+          // The classic worker owns this transferred byte array after the role read.
+          const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
+          rotated = await rotatePdfAsync(bytes, delta, pageIndex);
+          const seed = pdfSeedForRef.current(id);
+          const seeded = seed ? await seed : null;
+          expected = getBaseline(id) ?? seeded ?? null;
         }
-        // In the build worker, not here: pdf-lib pauses on a zero-delay timer
-        // every 50-100 objects, and a hidden window runs those once a second —
-        // a 1,105-page book took 1.3s focused and never finished minimized.
-        // `bytes` is transferred (detached) — readPdfRole is done with it.
-        const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
-        const rotated = await rotatePdfAsync(bytes, delta, pageIndex);
-
-        // Same baseline resolution as flushTab's write: a PDF's is hashed in
-        // the background at open, so wait the seed out rather than write blind.
-        const seed = pdfSeedForRef.current(id);
-        const seeded = seed ? await seed : null;
-        const expected = getBaseline(id) ?? seeded ?? null;
         if (annotationsChanged() || documentSessions.hasPendingEdits(id) || getView(path)?.hasPendingEdits?.()) {
           notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
           return;
@@ -3354,7 +3415,7 @@ export default function App() {
       if (chains.get(id) === chained) chains.delete(id);
       endPdfRotation(path);
     }
-  }, [readFileBytes, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers]);
+  }, [readFileBytes, readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers, getVaultActivation]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {

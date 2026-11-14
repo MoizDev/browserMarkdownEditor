@@ -6,6 +6,7 @@ import type { CompositorCaptureOptions } from '../../platform/render/compositor.
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
@@ -93,6 +94,11 @@ export function createNativeViewLease(options: {
         limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 },
         invalidate, onError: options.onError });
     const camera = cameraOwner.camera;
+    const markUserNavigation = () => {
+        if (board.doc.kind !== 'pdf-ink' || !parameters.visible || !current()) return;
+        const path = host.identity(identity.documentId)?.path;
+        if (path) recordPdfNavigation(path, 'annotation');
+    };
     let viewportKey = '';
     const refreshViewport = () => {
         const viewport = camera.viewport, key = `${viewport.width}:${viewport.height}:${viewport.dpr}`;
@@ -148,7 +154,7 @@ export function createNativeViewLease(options: {
     if (editing && edit) edit.onAttachment(editing.isAttached());
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
-        changed: () => cameraOwner.changed(), invalidate, onError: options.onError,
+        changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform) });
     const paneId = `native-${identity.documentId}-${viewLease}`;
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
@@ -288,10 +294,11 @@ export function createNativeViewLease(options: {
             const stack = boardPageStack(board.doc.host);
             if (!stack || !Number.isInteger(page) || page < 0 || page >= stack.rects.length) return;
             const next = cameraForPagedPosition({ page, offset: 0, zoom: getNavigationSnapshot().zoom }, camera.viewport, stack, insets, limits);
-            if (next) { platformPane?.cancelMotion(); camera.setCamera(next); cameraOwner.changed(); }
+            if (next) { markUserNavigation(); platformPane?.cancelMotion(); camera.setCamera(next); cameraOwner.changed(); }
         },
         zoomBy(factor) {
             if (!Number.isFinite(factor) || factor <= 0) throw new Error('Invalid zoom factor');
+            markUserNavigation();
             if (platformPane) platformPane.animateZoom(camera.camera.z * factor);
             else { camera.zoomTo(camera.camera.z * factor, { x: camera.viewport.width / 2, y: camera.viewport.height / 2 }); cameraOwner.changed(); }
         },

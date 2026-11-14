@@ -205,7 +205,12 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         if (owned.status !== 'editable' || !owned.report.complete || owned.report.format !== 'native'
             || owned.report.repaired?.repairs.length) {
             const report = owned.report;
-            throw new Error(`Final legacy PDF HOST C5 admission failed (status: ${owned.status}, format: ${report.format}, complete: ${report.complete}, repairs: ${report.repaired?.repairs.length ?? 0}, issues: ${report.issueCount}). The original is unchanged.`);
+            const known = new Set(['duplicate-sheet-id', 'sheet-order', 'duplicate-id', 'cycle', 'missing-parent', 'page', 'order',
+                'dissolved-group-child', 'dissolved-group', 'detached-attachment', 'detached-attachment-cycle',
+                'numeric', 'missing-media', 'rich-text', 'rich-text-replaced-controls']);
+            const repairs = (report.repaired?.repairs ?? []).slice(0, 8).map(item => known.has(item.code) ? item.code : 'other');
+            const issues = report.issues.slice(0, 1).map(issue => issue.code);
+            throw new Error(`Final legacy PDF HOST C5 admission failed (status: ${owned.status}, format: ${report.format}, complete: ${report.complete}, repairs: ${report.repaired?.repairs.length ?? 0} [${repairs.join(', ')}], issues: ${report.issueCount} [${issues.join(', ')}]). The original is unchanged.`);
         }
         const native = owned; owned = undefined;
         return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,

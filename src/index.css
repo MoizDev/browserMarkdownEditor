@@ -3585,6 +3585,13 @@ body.is-resizing-panes * {
 }
 
 /* ── Bottom-right controls: page number, then zoom ── */
+.pdf-pane-print {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 12px;
+}
+
 .pdf-viewer-controls {
   position: absolute;
   right: 16px;

@@ -1,11 +1,20 @@
 import type { Transaction } from '../../change/ops';
 import type { TextNode } from '../../model/nodes';
-import type { NodeId } from '../../model/ids';
+import type { NodeId, ParentId } from '../../model/ids';
+import type { BoardDoc } from '../../model/doc';
+import type { Op } from '../../change/ops';
 import type { EditSelection } from './host';
 import type { EditableSessionPort, TextEditBinding, TextEditBindingOptions } from './bindingTypes';
 import type { Modifiers, RealSample } from '../../input/tool';
 import type { PointerRoute } from '../../input/pointerRouter';
 
+export interface TextCreationPorts {
+    readonly doc: BoardDoc;
+    /** Converts board-world coordinates into the active parent's local/page coordinates. */
+    place(x: number, y: number): { readonly parent: ParentId; readonly page: number; readonly x: number; readonly y: number; readonly before?: readonly Op[] };
+    zoom(): number;
+    dynamicSize(): boolean;
+}
 export interface TextEditingManagerPorts {
     readonly session: EditableSessionPort;
     /** Produce a normal create transaction, including host page growth/anchoring if needed. */

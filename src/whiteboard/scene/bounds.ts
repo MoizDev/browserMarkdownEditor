@@ -55,7 +55,8 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             if (node.widthModel.id === 'pressure-linear-v1') {
                 const pressure = s.maxPressure ?? 16; // Domain enclosure, never a guessed pen signal.
                 if (!Number.isFinite(pressure) || pressure < 0 || pressure > 16) throw new RangeError('Invalid inspected pressure maximum');
-                radius = node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
+                const atMaximum = node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
+                radius = Math.max(node.widthModel.rMin, atMaximum);
             }
             if (ax === bx && ay === by) radius = dotMetric.radius(node.width, radius, node.widthModel);
             const outset = radius + node.fairTol;
@@ -64,11 +65,15 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             return BoundsQuality.Conservative;
         }
         case 'figure': {
+            // Labels are layout-owned and may overhang the figure. Without that layout, using the
+            // body alone as the whole ink envelope could cull a visible label outside the shape.
+            if (node.label) return BoundsQuality.ColdLayout;
             const r = node.width / 2;
             writeBox(out, 0, -r, -r, node.w + r, node.h + node.growY + r);
             return BoundsQuality.Conservative;
         }
-        case 'frame': case 'picture': case 'clip': case 'linkcard': case 'embed':
+        case 'frame': return BoundsQuality.ColdLayout; // Its title lies outside the frame body.
+        case 'picture': case 'clip': case 'linkcard': case 'embed':
             writeBox(out, 0, 0, 0, node.w, node.h);
             return BoundsQuality.Conservative;
         case 'polyline': {

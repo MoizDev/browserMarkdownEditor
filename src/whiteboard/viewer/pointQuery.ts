@@ -4,9 +4,9 @@ import { worldPose, worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
-import { pointPath } from '../geom/pick';
 import { createFillPointJob } from '../geom/fillPoint';
 import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
+import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
 import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
 import { exactAffinePoint } from '../geom/exactAffine';
@@ -46,8 +46,6 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
     return [{ op: 'M', p: { x: rect.x, y: rect.y } }, { op: 'L', p: { x: rect.x + rect.width, y: rect.y } },
         { op: 'L', p: { x: rect.x + rect.width, y: rect.y + rect.height } }, { op: 'L', p: { x: rect.x, y: rect.y + rect.height } }, { op: 'Z' }];
 }
-const interior = (path: readonly PathOp[], query: PointQuery) => pointPath([], query,
-    { interiorPaths: [path], strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 }).hit;
 function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): boolean {
     const mapped = (p: Vec2): ExactPoint => exactAffinePoint(query.localToSurface, p);
     const point = exactPoint(query.point);
@@ -74,7 +72,7 @@ function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): bo
     return false;
 }
 async function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
-    point: Vec2, input: InputKind, tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
+    point: Vec2, input: InputKind, frames: readonly PointClipContour[], tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
     const run = async (paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): Promise<PointPathJobResult> => {
         const job = createPointPathJob(paths, query, options);
         try {
@@ -107,18 +105,21 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
     if (hit.status === 'miss') return uncertainHead
         ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
     if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'body' }, uncertain: true };
-    let excluded = false, nearBoundary = false;
-    for (const clip of geometry.bodyExclusions) {
-        const local = { point, input, localToSurface: compose(worldToSurface, clip.localToWorld) };
-        const inside = await run([], local, { ...base, interiorPaths: [clip.outline] });
-        if (inside.status === 'uncertain') nearBoundary = true;
-        else if (inside.status === 'hit') excluded = !excluded;
-        const radius = (input === 'touch' ? 8 : 4) + node.width * Math.hypot(worldToSurface[0], worldToSurface[1]) / 2;
-        const boundary = await run([clip.outline], local, { ...base, marginCss: radius });
-        if (boundary.status !== 'miss') nearBoundary = true;
+    if (frames.length || geometry.bodyExclusions.length) {
+        const exclusions = geometry.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToSurface, clip.localToWorld) }));
+        const job = createClippedPointPathJob([geometry.body], query, { strokeRadiusLocal: node.width / 2, marginCss: 4, frames, exclusions });
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status === 'pending') { await tick(); continue; }
+                if (value.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: false };
+                if (value.status === 'miss') return uncertainHead
+                    ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+                return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: true };
+            }
+        } finally { job.cancel(); }
     }
-    // An uncut witness near an exclusion might be hidden; retain uncertainty.
-    return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: excluded || nearBoundary };
+    return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: false };
 }
 
 /** Queries one published Scene revision, not a second index or live paint cache. */
@@ -186,10 +187,12 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
+                    const frameClips: PointClipContour[] = [];
                     for (let depth = 0; parent && depth < 64; depth++) {
                         if (parent.kind === 'frame') {
                             const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
                             const frame: Affine = [c, s, -s, c, pose.x, pose.y];
+                            frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
                             if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) { clipped = true; break; }
                             const local = worldToLocal(doc, parent, point);
                             // A halo witness near the clip edge can belong entirely to hidden geometry.
@@ -221,7 +224,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         if (targetMode && result.hit) ambiguous = true;
                     } else if (node.kind === 'connector') {
                         if (!prepared.connector) throw new Error('Connector picking geometry is unavailable');
-                        ({ result, uncertain: ambiguous } = await connectorPoint(node, prepared.connector, matrix, surface, input, tick));
+                        ({ result, uncertain: ambiguous } = await connectorPoint(node, prepared.connector, matrix, surface, input, frameClips, tick));
+                        if (result.part === 'body' && !ambiguous) clipUncertain = false;
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
                         let vector = prepared.vector;

@@ -44,12 +44,12 @@ export function splitCertifiedCurve(curve: Curve): readonly [Curve, Curve] {
     return [{ points: [p[0], a, d, m], depth }, { points: [m, e, c, p[3]], depth }];
 }
 function square(value: number): Interval { return multiply(interval(value), interval(value)); }
-function upperDistance(point: Vec2, target: BoundsPoint): number {
+export function upperPointIntervalDistance(point: Vec2, target: BoundsPoint): number {
     const dx = subtract(target.x, interval(point.x)), dy = subtract(target.y, interval(point.y));
     const x = Math.max(Math.abs(dx.lo), Math.abs(dx.hi)), y = Math.max(Math.abs(dy.lo), Math.abs(dy.hi));
     const sum = add(square(x), square(y)); return sqrtInterval({ lo: Math.max(0, sum.lo), hi: sum.hi }).hi;
 }
-function lowerDistance(point: Vec2, points: Curve['points']): number {
+export function lowerPointHullDistance(point: Vec2, points: Curve['points']): number {
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     for (const p of points) { left = Math.min(left, p.x.lo); top = Math.min(top, p.y.lo); right = Math.max(right, p.x.hi); bottom = Math.max(bottom, p.y.hi); }
     const x = point.x < left ? Math.max(0, subtract(interval(left), interval(point.x)).lo)
@@ -105,10 +105,10 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                 }
                 const curve = stack.pop();
                 if (curve) {
-                    const lower = lowerDistance(query.point, curve.points);
+                    const lower = lowerPointHullDistance(query.point, curve.points);
                     if (!Number.isFinite(lower)) return finish({ status: 'uncertain', reason: 'Point path distance overflows' });
                     if (lower > radius.hi) continue;
-                    const upper = Math.min(upperDistance(query.point, curve.points[0]), upperDistance(query.point, curve.points[curve.points.length - 1]));
+                    const upper = Math.min(upperPointIntervalDistance(query.point, curve.points[0]), upperPointIntervalDistance(query.point, curve.points[curve.points.length - 1]));
                     bestUpper = Math.min(bestUpper, upper);
                     if (upper <= radius.lo) return finish({ status: 'hit', distanceCss: upper });
                     if (curve.depth >= maxDepth) { curveUncertain = true; continue; }

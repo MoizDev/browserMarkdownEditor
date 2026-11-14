@@ -33,6 +33,7 @@ import { BoardSaveBaselines, RetirementBacklog, boardMediaDiff, decideAssetRetir
 import { boardMediaRefs } from './utils/boardMediaRefs';
 import { setTerminalStartSource } from './utils/terminalStart';
 import { collectFiles } from './utils/tree';
+import { mapPool } from './utils/pool';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
@@ -527,9 +528,29 @@ export default function App() {
     stampIndexedFileTimes(changes);
     if (complete) markIndexTimesReady();
   }, []);
+  const indexMediaAssets = useCallback(async (tree: FileTreeNode[]): Promise<[string, string[]][]> => {
+    const folders = new Map<string, FileSystemDirectoryHandle>();
+    for (const file of collectFiles(tree)) if (isCanvasFile(file.name) && file.parentHandle) folders.set(parentVaultPath(file.path), file.parentHandle);
+    const listings = await mapPool([...folders], async ([folder, parent]): Promise<[string, string[]] | undefined> => {
+      try {
+        const names: string[] = [];
+        const assets = await handleIO.dirIn(parent, ASSETS_DIR).catch(error => {
+          if (error instanceof DOMException && error.name === 'NotFoundError') return null;
+          throw error;
+        });
+        if (assets) for await (const [name, handle] of handleIO.entries(assets)) if (handle.kind === 'file') names.push(name);
+        return [folder, names];
+      } catch { return undefined; } // An omitted listing cannot authorize retirement.
+    }, 2);
+    return listings.filter((entry): entry is [string, string[]] => entry !== undefined);
+  }, [handleIO]);
+  const indexMediaChanged = useCallback(() => {
+    for (const folder of assetBacklogRef.current.all()) requeueAssetFolderRef.current(folder);
+  }, []);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
     getActivation: getVaultActivation, autoStart: indexStartupActivation === searchActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
-    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes });
+    publish: publishIndexGraph, onSnapshot: reportGraphFreshness, onStatus: reportIndexProgress, onProblem: reportIndexProblem, onTimes: reportIndexTimes,
+    mediaAssets: indexMediaAssets, onMediaChanged: indexMediaChanged });
   const retryIndex = useCallback(async () => {
     const owner = indexGraphRef.current;
     if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;

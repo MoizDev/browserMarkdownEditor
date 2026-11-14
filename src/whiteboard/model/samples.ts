@@ -38,6 +38,12 @@ export interface SampleStoreReader {
     has(ref: SampleRef): boolean;
     count(ref: SampleRef): number;
     pressureMode(ref: SampleRef): 'real' | 'none'; // Sealed metadata; no view allocation or decode.
+    byteSize(ref: SampleRef): number; // Owned decoded typed payload + conservative UTF-16 native backing, no decode.
     read(ref: SampleRef, first: number, count: number): SampleBlockView;
     retain(ref: SampleRef): SampleLease;
+}
+
+/** History accounts both lazy encoded and decoded bytes without forcing a decode. */
+export interface SampleFootprintReader extends SampleStoreReader {
+    byteSize(ref: SampleRef): number;
 }

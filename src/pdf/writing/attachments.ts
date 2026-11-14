@@ -55,6 +55,7 @@ export async function validateBoardAttachments(attachments: readonly AttachmentI
                 break;
             case 'pristine': throw new Error('Pristine bytes are supplied by the writer source');
             case 'notebook-source': throw new Error('Notebook pointers do not belong to annotated boards');
+            case 'write-mark': throw new Error('The write mark is owned by the PDF writer');
             case 'unknown': break;
             default: throw new Error('Unknown attachment role');
         }

@@ -1,5 +1,4 @@
 import type { BoardRuntime } from '../host/runtime';
-import type { CopySnapshot } from './snapshot';
 import { pngCrc32 } from './pngDensity';
 
 // Provenance: clipboard §2.4 capture formats and PNG density convention;
@@ -53,8 +52,4 @@ export async function copyBoardPng(runtime: BoardRuntime, capture: (signal: Abor
 }
 /** The caller supplies the real escaped/exported SVG; the clipboard holds plain text only. */
 export function copyBoardSvg(svg: string): Promise<void> { return navigator.clipboard.writeText(svg); }
-/** Copy-as-JSON is an array of the native record-line strings, not an array of parsed objects. */
-export function copyBoardJson(snapshot: CopySnapshot, current: () => boolean): Promise<void> {
-    if (!current()) return Promise.reject(new DOMException('Clipboard capture became stale', 'AbortError'));
-    return navigator.clipboard.writeText(JSON.stringify(snapshot.payload.records));
-}
+export { copyBoardJsonFresh as copyBoardJson } from './copyJson';

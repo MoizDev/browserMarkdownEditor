@@ -332,9 +332,11 @@ The download icon in the top bar writes a PDF beside the notebook — \`Assignme
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open.
 
-The notebook stays the original you keep writing in. Exporting again overwrites
-the same PDF rather than leaving a pile of copies, and asks first if a PDF of
-that name is there that this notebook did not put there.
+The notebook stays the original you keep writing in. Exporting again uses the
+same PDF name rather than leaving a pile of copies. An existing PDF is kept in
+the folder's Trash before replacement. The app asks first unless it is this
+notebook's unchanged last export; if the target changes during export, export
+again to review it.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone

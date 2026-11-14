@@ -13,15 +13,17 @@ import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
+import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
 import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
-// Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
-// is actually opened.
-const PdfPane = lazy(() => import('./PdfPane'));
+// Read the same resolved component idle prefetch filled, not a second lazy payload.
+import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
+import type { PdfPaneComponent } from './pdfPaneModule';
+import { useActivated } from './floatingSlot';
 
 /**
  * One PDF tab's reading binding, built once per document rather than once per
@@ -41,7 +43,7 @@ const PdfPane = lazy(() => import('./PdfPane'));
 const PdfPaneHost = React.memo(function PdfPaneHost({
     reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
     registerKeyboardTarget, ...rest
-}: Omit<React.ComponentProps<typeof PdfPane>, 'reading'> & {
+}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading'> & {
     reading: ReaderIntegration;
     tab: OpenTab;
     emphasisEnabled: boolean;
@@ -50,6 +52,18 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     onTypographyChange: PdfReadingBinding['onTypographyChange'];
     registerKeyboardTarget: PdfReadingBinding['registerKeyboardTarget'];
 }) {
+    const activated = useActivated(rest.isVisible);
+    const module = useSyncExternalStore(subscribePdfPaneModule, getPdfPaneModuleSnapshot);
+    // A float must stay in its column during a cold restore (and divider drag),
+    // not cover the note beside it. Keep this off props so host memo still holds.
+    const loadingStyle = React.useMemo<React.CSSProperties | undefined>(() => rest.isVisible ? {
+        left: `calc(var(--pane-x-${rest.slotIndex ?? 0}) * 1%)`,
+        width: `calc(var(--pane-w-${rest.slotIndex ?? 0}) * 1%)`,
+        right: 'auto',
+    } : undefined, [rest.isVisible, rest.slotIndex]);
+    useEffect(() => {
+        if (activated && module.status === 'unloaded') void loadPdfPane().catch(() => {});
+    }, [activated, module.status]);
     const identity = reading.identityForTab(tab);
     const path = tab.file.path;
     const binding = React.useMemo<PdfReadingBinding>(() => ({
@@ -61,7 +75,23 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
-    return <PdfPane reading={binding} {...rest} />;
+    if (!activated) return null;
+    if (module.status !== 'ready') return (
+        <div
+            className={`pdf-pane pdf-pane-message${rest.isVisible ? '' : ' pdf-pane-hidden'}`}
+            style={loadingStyle}
+            role={module.status === 'error' ? 'alert' : 'status'}
+            onPointerDownCapture={() => { if (rest.isVisible) rest.onFocusPane(rest.file.path); }}
+        >
+            {module.status === 'error' ? <>
+                <span>The PDF reader could not be loaded.</span>
+                {module.reloadRequired && <span>Reload the app to try loading it again.</span>}
+                <button className="pdf-pane-action" onClick={() => { void loadPdfPane({ retry: true }).catch(() => {}); }}>Retry</button>
+            </> : 'Loading PDF…'}
+        </div>
+    );
+    const LoadedPdfPane = module.Component;
+    return <LoadedPdfPane reading={binding} {...rest} />;
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
@@ -550,13 +580,6 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
 
     // ── The status bar's word and character counts ─────────────────────────
     //
-    // Counted over a DEBOUNCED copy of the text, never over `focusedTab.content`
-    // directly: that string is new on every keystroke, so a plain useMemo would
-    // walk the whole document — split included — on every character, on the same
-    // frames the decoration pass already owns (see the live-preview skill for
-    // what that pass costs on a long note). Nobody reads a word count tick per
-    // character; a quarter of a second after typing stops is soon enough.
-    //
     // A canvas has no words and an unreadable tab holds no text, so neither is
     // counted at all — and neither is the count shown for them.
     // Code is not counted: "412 words" of Python measures nothing anybody wants
@@ -572,24 +595,22 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
         && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
-    const liveText = countable ? focusedTab?.content ?? '' : '';
-    const [counted, setCounted] = useState<{ path: string | null; text: string }>(
-        { path: countPath, text: liveText });
-    // A SWITCH is not typing: showing the previous note's numbers for a quarter
-    // of a second beside the new note's name reads as a bug, so a change of
-    // document lands at once. Adjusted during render, React's pattern for state
-    // that follows a prop — the same one `showBacklinks` above uses.
-    if (counted.path !== countPath) setCounted({ path: countPath, text: liveText });
-    useEffect(() => {
-        const timer = setTimeout(() => setCounted(prev => (
-            prev.path === countPath && prev.text === liveText ? prev : { path: countPath, text: liveText }
-        )), 250);
-        return () => clearTimeout(timer);
-    }, [countPath, liveText]);
-    const counts = useMemo(() => {
-        const trimmed = counted.text.trim();
-        return { words: trimmed ? trimmed.split(/\s+/).length : 0, chars: counted.text.length };
-    }, [counted.text]);
+    const countTextRef = useRef('');
+    countTextRef.current = countable ? focusedTab?.content ?? '' : '';
+    const wordCountRef = useRef<HTMLSpanElement>(null);
+    const charCountRef = useRef<HTMLSpanElement>(null);
+    useLayoutEffect(() => {
+        const write = ({ words, chars }: WordCounts) => {
+            if (wordCountRef.current) wordCountRef.current.textContent = `${words} ${words === 1 ? 'word' : 'words'}`;
+            if (charCountRef.current) charCountRef.current.textContent = `${chars} ${chars === 1 ? 'character' : 'characters'}`;
+        };
+        focusWordCounts(countPath);
+        const unsubscribe = subscribeWordCounts(write);
+        const text = countTextRef.current;
+        const trimmed = text.trim();
+        write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
+        return () => { unsubscribe(); focusWordCounts(null); };
+    }, [countPath]);
 
     // ── Embedded images ────────────────────────────────────────────────────
     // Deleting one is the editor's only action that needs the app: it has to be
@@ -1059,22 +1080,8 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                 // means "this document is some column's showing tab".
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
-                // The placeholder has to stand in the SAME column as the pane it
-                // is standing in for: bare `.pdf-pane` is full width and sits
-                // above the pane headers, so on the restore path — the one that
-                // can put a PDF straight into a column beside another — it
-                // covered the notes beside it until the lazy chunk arrived.
-                // Through the same variables as the pane itself, so it lines up
-                // even mid-drag.
-                const fallbackStyle = visible
-                    ? {
-                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
-                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
-                        right: 'auto' as const,
-                    }
-                    : undefined;
                 return (
-                    <Suspense
+                    <React.Fragment
                         // Same key as a pane (see paneKey): matched by path
                         // alone, the pane of an overwritten PDF was handed to
                         // the file that replaced it and went on showing the old
@@ -1083,11 +1090,6 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                         // diskRev: a reload from disk remounts it on the new
                         // file (App.reloadFromDisk).
                         key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
-                        fallback={visible ? (
-                            <div className="pdf-pane pdf-pane-message" style={fallbackStyle}>
-                                Loading PDF…
-                            </div>
-                        ) : null}
                     >
                         <PdfPaneHost
                             reading={reading}
@@ -1114,7 +1116,7 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />
-                    </Suspense>
+                    </React.Fragment>
                 );
             })}
 
@@ -1200,8 +1202,8 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                     )}
                     {countable && (
                         <>
-                            <span className="status-bar-item">{counts.words} {counts.words === 1 ? 'word' : 'words'}</span>
-                            <span className="status-bar-item">{counts.chars} {counts.chars === 1 ? 'character' : 'characters'}</span>
+                            <span className="status-bar-item" ref={wordCountRef} />
+                            <span className="status-bar-item" ref={charCountRef} />
                         </>
                     )}
                     {/* Always mounted, never conditional: it is written after

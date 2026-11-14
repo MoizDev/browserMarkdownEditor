@@ -20,6 +20,7 @@ interface MirrorJob {
     readonly view: MirrorView;
     readonly entries: readonly Entry[];
     readonly ids: string[];
+    readonly lowIds: Set<string>;
     index: number;
     pending: boolean;
 }
@@ -299,13 +300,24 @@ export class PdfTileLayer implements Layer {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
             const entries = exact.map(request => this.entries.get(tileKeyString(request.key)));
             if (!entries.length || entries.some(entry => !entry?.bitmap)) { this.mirrorJob = null; return; }
-            this.mirrorJob = { key, view: snapshot, entries: entries as Entry[], ids: [], index: 0, pending: false };
+            const low = requests.filter(request => request.level === 'low' && intersects(rect(request), input.viewport))
+                .map(request => this.entries.get(tileKeyString(request.key)))
+                .filter((entry): entry is Entry => !!entry?.bitmap);
+            this.mirrorJob = { key, view: snapshot, entries: [...low, ...entries as Entry[]], ids: [],
+                lowIds: new Set(), index: 0, pending: false };
         }
         const job = this.mirrorJob;
         if (!job || job.pending || budget.shouldYield()) return;
         if (job.index === job.entries.length) {
-            mirror.store.mirrors.commitFrame(job.view, job.ids, true, new Set());
-            this.mirrorKey = job.key;
+            const mirrors = mirror.store.mirrors;
+            mirrors.commitFrame(job.view, job.ids, true, job.lowIds);
+            const borrow = mirrors.borrow(job.view, performance.now());
+            const sharp = borrow.sharpEligible(job.view);
+            borrow.release();
+            if (sharp) {
+                mirrors.retainViewport(new Set(job.ids));
+                this.mirrorKey = job.key;
+            }
             this.mirrorJob = null;
             return;
         }
@@ -331,19 +343,21 @@ export class PdfTileLayer implements Layer {
             if (this.mirrorJob !== job || this.disposed || !this.isCurrent()) {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
-            const world = { x: edges.left + (sx - 1) / scale, y: edges.top + (sy - 1) / scale,
-                width: width / scale, height: height / scale };
+            const world = { x: left, y: top, width: right - left, height: bottom - top };
+            const source = { x: 1 + (left - edges.left) * scale - sx, y: 1 + (top - edges.top) * scale - sy,
+                width: world.width * scale, height: world.height * scale };
             let id: string | null;
             try {
                 id = mirror.store.publish({ token: job.view.token, key: entry.request.key,
-                    geometryDigest: job.view.geometryDigest, tier: 'exact', neededByCurrentFrame: true,
-                    pixels: { bitmap: copy, world }, lease });
+                    geometryDigest: job.view.geometryDigest, tier: entry.request.level === 'low' ? 'low' : 'exact', neededByCurrentFrame: true,
+                    pixels: { bitmap: copy, world, source }, lease });
             } catch (error) {
                 copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null;
                 this.onError(error, entry.request); return;
             }
             if (!id) { copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null; return; }
             job.ids.push(id);
+            if (entry.request.level === 'low') job.lowIds.add(id);
             job.index++;
             job.pending = false;
             this.host.invalidate('pdf-mirror-arrived');

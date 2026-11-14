@@ -1052,11 +1052,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      */
     const pickDirectory = useCallback(async (): Promise<VaultOpenResult> => {
         if (!window.showDirectoryPicker) {
-            alert(
-                "Your browser doesn't support the local File System Access API.\n\n" +
-                "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop."
-            );
-            return 'error';
+            return {
+                status: 'error',
+                message: "Your browser doesn't support the local File System Access API.\n\n" +
+                    "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop.",
+            };
         }
         // One picker at a time: browsing for a vault is a DOUBLE-click on the
         // sidebar's vault switcher, and with nothing in the recent list the first

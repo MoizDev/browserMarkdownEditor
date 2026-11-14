@@ -159,8 +159,8 @@ third-party code included (normally "none") · date.
 | `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
 | `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
-| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; bounded media admission, inert retention and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
-| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | In-memory source/metadata retention and typed failures, shared paper normalization API (`utils/paper.ts` read), orphan page retention and injected repair/admission seam | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-4/7 | import §§1–3,6 | Documented record families; media admission/orphan retention, inert records and paper-aware duplicate/orphan page bounds | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | Source/metadata retention, model raw-media indexing, shared paper normalization API (`utils/paper.ts` read), orphan pages and injected admission | none | 2026-11-13 |
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces and own cubic world bounds; connectors delegated to their provider | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; outgoing runs and pressure retained for host re-admission | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |

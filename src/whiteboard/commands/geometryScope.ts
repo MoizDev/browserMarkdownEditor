@@ -184,12 +184,7 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
                 if (bounds) box = rectBox(bounds);
             } else {
                 if (!value.vector) throw new Error(`Vector geometry unavailable: ${node.id}`);
-                if (node.kind === 'figure') {
-                    const outline = value.vector.attachments?.outline;
-                    if (!outline) throw new Error(`Figure outline unavailable: ${node.id}`);
-                    const bounds = transformedPathBounds(outline, nodeToTarget);
-                    if (bounds) box = rectBox(bounds);
-                } else box = transformed(rectBox(value.vector.boxLocal), nodeToTarget);
+                box = transformed(rectBox(value.vector.boxLocal), nodeToTarget);
             }
             if (!box) throw new Error(`Logical geometry is empty: ${node.id}`);
             return box;

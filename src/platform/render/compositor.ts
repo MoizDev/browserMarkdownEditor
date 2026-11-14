@@ -2,6 +2,7 @@ import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
 } from './compositor.types';
+import { paintCanvasIsolation } from './canvas2dContext';
 import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
@@ -129,6 +130,7 @@ export class GpuCompositor implements PaneCompositor {
                 if (!this.#isolationPlan) throw new ArenaError('invalid-input');
                 this.#isolationPlan.declare(reservation);
             },
+            paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
     }
@@ -209,6 +211,7 @@ export class GpuCompositor implements PaneCompositor {
 
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.#check();
+        const view = frame.view;
         const snapshot = this.#snapshot;
         this.#isolationPlan = null;
         this.#isolationReadyFrame = -1;
@@ -303,8 +306,8 @@ export class GpuCompositor implements PaneCompositor {
                         this.#retryPending = false;
                         this.#shortfalls = [];
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
+                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
                             staleVersion: coverage.some(item => item.staleVersion),
-                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp),
                             qualityScale: snapshot.metrics!.qualityScale });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),

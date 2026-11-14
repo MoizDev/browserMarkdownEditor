@@ -27,7 +27,6 @@ import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
 import { isClassicPdfCancellation, pdfOpenFailure, recordClassicRenderFailure, classicPdfFailureIsFatal } from '../utils/pdfClassicHealth';
 import { Limiter } from '../utils/pool';
-import { composePdfCapture } from '../utils/pdfCapture';
 import PdfRenderNotice from './PdfRenderNotice';
 import { pageRenderRegion, satisfies, type PageRect, type RenderTarget } from '../utils/pdfRenderTarget';
 import PdfFindBar from './PdfFindBar';
@@ -1013,29 +1012,22 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const ds = docStateRef.current;
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
-            const gen = docGenRef.current, invert = getPdfInverted(), preference = emphasisRef.current;
+            const gen = docGenRef.current;
             const lease = await session.acquireRender(pageNumber - 1);
             let canvas: HTMLCanvasElement | undefined;
             let task: RenderTask | undefined;
-            let emphasis: ReturnType<typeof bindPdfNativeEmphasis> | undefined;
             try {
                 const page = lease.page;
                 const actual = page.getViewport({ scale: 1 });
                 if (![actual.width, actual.height, maxSide].every(Number.isFinite) || actual.width <= 0 || actual.height <= 0) return null;
-                const viewport = page.getViewport({ scale: Math.min(maxSide, 4096) / Math.max(actual.width, actual.height) });
+                const viewport = page.getViewport({ scale: Math.min(maxSide, 1568) / Math.max(actual.width, actual.height) });
                 canvas = document.createElement('canvas');
                 canvas.width = Math.max(1, Math.ceil(viewport.width));
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
                 session.markRendered(pageNumber - 1);
-                const key = classicEmphasisPageKey(session.emphasisIdentity.token, pageNumber - 1, page);
-                const verdict = session.emphasisVerdicts.getVerdict(key);
-                const useOn = preference && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
-                const plan = useOn ? getPdfEmphasisPlan(page, classicEmphasisPlanKey(key)) : undefined;
-                if (useOn && !plan) return null;
-                if (plan) emphasis = bindPdfNativeEmphasis(page, ctx, plan);
-                task = page.render({ canvas, canvasContext: ctx, viewport, operationsFilter: emphasis?.operationsFilter });
+                task = page.render({ canvas, canvasContext: ctx, viewport });
                 await session.health.guard(task.promise);
                 session.health.assertComplete(pageNumber - 1);
                 const output = canvas;
@@ -1043,12 +1035,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.width = 0;
                 canvas.height = 0;
                 session.health.assertComplete(pageNumber - 1);
-                if (!png || docGenRef.current !== gen || docStateRef.current?.gen !== ds.gen || getPdfInverted() !== invert || emphasisRef.current !== preference) return null;
-                const result = invert ? await composePdfCapture(png, true, '#000000') : png;
-                return docGenRef.current === gen && docStateRef.current?.gen === ds.gen && getPdfInverted() === invert && emphasisRef.current === preference ? result : null;
+                return docGenRef.current === gen && docStateRef.current?.gen === ds.gen ? png : null;
             } finally {
                 if (task) { task.cancel(); await task.promise.catch(() => {}); }
-                emphasis?.dispose();
                 if (canvas) { canvas.width = 0; canvas.height = 0; }
                 lease.release();
             }

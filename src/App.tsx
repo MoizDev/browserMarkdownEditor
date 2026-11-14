@@ -10,7 +10,7 @@ import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
 import { useIndexGraph } from './context/vaultIndex/useIndexGraph';
 import type { IndexProgress } from './context/vaultIndex/useIndexGraph';
-import { setIndexProgress } from './utils/indexProgress';
+import { setIndexProgress, setIndexUnavailable } from './utils/indexProgress';
 import { getNoteResolver } from './utils/noteResolver';
 import { setRecordScope, subscribeRestoreNotice, takeRestoreNotice, writeStoredValue } from './utils/storage';
 import { subscribeRenderStatus } from './utils/renderStatus';
@@ -480,7 +480,7 @@ export default function App() {
   const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
   const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
   const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
-  useLayoutEffect(() => { setIndexProgress(null); }, [searchActivation]);
+  useLayoutEffect(() => { setIndexProgress(null); setIndexUnavailable(false); }, [searchActivation]);
   const reportGraphFreshness = useCallback((stale: boolean) => {
     if (getVaultActivation() === searchActivation) setGraphFreshness({ activation: searchActivation, stale });
   }, [getVaultActivation, searchActivation]);
@@ -498,7 +498,9 @@ export default function App() {
   const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
-    setIndexProblem({ activation: getVaultActivation(), kind: problem?.kind ?? 'unavailable' });
+    const kind = problem?.kind ?? 'unavailable';
+    if (kind === 'unavailable') setIndexUnavailable(true);
+    setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);
   const reportIndexTimes = useCallback((changes: [string, number, number][], complete: boolean) => {
     stampIndexedFileTimes(changes);
@@ -513,7 +515,7 @@ export default function App() {
     if (indexProblem.kind === 'permission' && !await requestIndexPermission(owner.root, owner.activation)) return;
     try {
       await owner.regrant();
-      if (indexGraphRef.current === owner) setIndexProblem(null);
+      if (indexGraphRef.current === owner) { setIndexProblem(null); setIndexUnavailable(false); }
     } catch { /* Keep Retry available. */ }
   }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
@@ -3231,7 +3233,13 @@ export default function App() {
       if (owner.activation !== activation || activation !== getVaultActivation()) throw new DOMException('Vault changed', 'AbortError');
       return owner.client.searchSidebar(query, searchBuffers(), onBatch, signal);
     },
-    retry() { indexGraphRef.current?.client.retry(); },
+    retry() {
+      const owner = indexGraphRef.current;
+      if (!owner || owner.activation !== getVaultActivation()) return;
+      setIndexUnavailable(false);
+      setIndexProblem(previous => previous?.kind === 'unavailable' ? null : previous);
+      owner.client.retry();
+    },
   }), [getVaultActivation, indexGraphRef, searchBuffers]);
   const searchAgent = useCallback(async (config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal) => {
     const activation = getVaultActivation();

@@ -27,6 +27,7 @@ import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
 import { createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import { composePdfCapture } from '../utils/pdfCapture';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import './PdfNativeEmphasis.css';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
@@ -38,7 +39,7 @@ import {
 
 interface PdfAnnotateCanvasProps {
     /** OpenTab.id from reading.identity, never the mutable file path. */
-    documentId?: string;
+    documentId: string;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     onRenderHealth?(health: ClassicPdfHealth): void;
@@ -742,7 +743,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         const hasPendingEdits = () => hasUnsavedRef.current || pendingFlush !== null;
         const reportPending = () => {
             if (hasPendingEdits()) {
-                if (documentId && !unregisterPending) {
+                if (!unregisterPending) {
                     unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
                 }
             } else {
@@ -768,8 +769,8 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         };
         const flushPending = async () => {
             if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
-            if (pendingFlush) await pendingFlush;
-            while (hasUnsavedRef.current) await runFlush();
+            // Ink may arrive while an earlier overlay export is awaiting the renderer.
+            while (hasPendingEdits()) await runFlush();
         };
         const flushInBackground = (immediate = true) => {
             // Coordinator callers get the rejection; timers/unmount have no
@@ -819,20 +820,26 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
                     selectedShapeIds: selectedAgentShapeIds(editor, model),
                 };
             },
-            // Pages and ink as on screen (uninverted), at no more than twice
-            // the on-screen size.
+            // The editor exports unfiltered shapes; compose the display filter
+            // once, without inverting the surrounding canvas.
             capture: async (maxSide) => {
                 const view = editor.getViewportPageBounds();
+                const capturedRevision = revision, invert = getPdfInverted(), zoom = editor.getZoomLevel();
                 const visible = pagesInView(boxes, view);
                 const source = sourceRef.current;
                 if (!source || visible.some(page => !pageImagesRef.current[page - 1]?.url)) return null;
                 const health = source.health;
                 for (const page of visible) health.assertComplete(page - 1);
-                const capture = await captureRegion(editor, view, maxSide, editor.getZoomLevel() * 2);
-                // An image failure can arrive while tldraw is composing: never
-                // hand the agent a successful raster with a missing backdrop.
+                const capture = await captureRegion(editor, view, maxSide, zoom * 2, true);
+                if (!capture) return null;
+                const background = canvasWrapRef.current?.querySelector('.tl-background');
+                const colour = background ? getComputedStyle(background).backgroundColor : '#808080';
+                const result = await composePdfCapture(capture, invert, colour);
+                // An image failure or another edit can arrive while composing.
                 for (const page of visible) health.assertComplete(page - 1);
-                return capture;
+                const now = editor.getViewportPageBounds();
+                return sourceRef.current === source && revision === capturedRevision && getPdfInverted() === invert &&
+                    editor.getZoomLevel() === zoom && now.x === view.x && now.y === view.y && now.w === view.w && now.h === view.h ? result : null;
             },
             // The page rendered fresh from the ORIGINAL, with this canvas's ink
             // over it — not the backdrop, which may not be rasterized yet (only
@@ -840,8 +847,9 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
             renderPage: async (page, maxSide) => {
                 const source = sourceRef.current;
                 const box = boxes[page - 1];
-                if (!source || !box || !(maxSide > 0)) return null;
-                const scale = maxSide / Math.max(box.width, box.height);
+                if (!source || !box || !(maxSide > 0) || !Number.isFinite(maxSide)) return null;
+                const capturedRevision = revision;
+                const scale = Math.min(maxSide, 1568) / Math.max(box.width, box.height);
                 const w = Math.max(1, Math.round(box.width * scale));
                 const h = Math.max(1, Math.round(box.height * scale));
                 const canvas = document.createElement('canvas');
@@ -849,6 +857,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
                 canvas.height = h;
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
+                try {
                 const url = await source.renderPage(page - 1, scale);
                 try {
                     await drawBlob(ctx, await (await fetch(url)).blob(), w, h);
@@ -856,11 +865,10 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
                     URL.revokeObjectURL(url);
                 }
                 const bounds = new Box(box.x, box.y, box.width, box.height);
-                const ink = editor.getCurrentPageShapes()
-                    .filter(s => !pageShapeIdsRef.current.has(s.id))
-                    .filter(s => { const b = editor.getShapePageBounds(s.id); return !!b && Box.Collides(b, bounds); })
-                    .map(s => s.id);
-                if (ink.length) {
+                const sheets = bucketSheetsByPage(editor, shapesBySheet(editor, shape => shape.meta?.pdfPage !== undefined), boxes)[page - 1];
+                for (const shapes of sheets) {
+                    const ink = shapes.filter(s => { const b = editor.getShapePageBounds(s.id); return !!b && Box.Collides(b, bounds); }).map(s => s.id);
+                    if (!ink.length) continue;
                     const { blob } = await editor.toImage(ink, {
                         bounds, scale, pixelRatio: 1, padding: 0, background: false, darkMode: false, format: 'png',
                     });
@@ -870,7 +878,8 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
                 canvas.width = 0;
                 canvas.height = 0;
                 source.health.assertComplete(page - 1);
-                return png;
+                return sourceRef.current === source && revision === capturedRevision ? png : null;
+                } finally { canvas.width = canvas.height = 0; }
             },
             pdfText: async (pageNumbers) => {
                 const doc = await session.acquire();

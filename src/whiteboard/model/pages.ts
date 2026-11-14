@@ -3,18 +3,19 @@ import type { Affine, Rect } from '../../platform/types';
 import { paperPageSize } from '../../utils/paper';
 import type { HostBlock } from './doc';
 
-const stacks = new WeakMap<HostBlock, PageStack>();
+const stacks = new WeakMap<object, PageStack>();
 
-// Host records are immutable and replaced by apply on each paper change.
+// Apply replaces paper or PDF page arrays on geometry changes; host metadata changes need no relayout.
 export function boardPageStack(host: HostBlock): Readonly<PageStack> | undefined {
     if (host.kind === 'whiteboard') return undefined;
-    const cached = stacks.get(host);
+    const key = host.kind === 'notebook' ? host.paper : host.pages;
+    const cached = stacks.get(key);
     if (cached) return cached;
     const dimensions = host.kind === 'notebook'
         ? Array.from({ length: host.paper.pageCount }, () => paperPageSize(host.paper))
         : host.pages.map(([width, height]) => ({ width, height }));
     const result = pageStack(dimensions);
-    stacks.set(host, result);
+    stacks.set(key, result);
     return result;
 }
 

@@ -14,7 +14,9 @@ export interface PaintResources2d {
     image(key: string): CanvasImageSource;
 }
 
-function applyLocal(ctx: CanvasRenderingContext2D, base: DOMMatrix, matrix: Affine, origin?: PathOrigin2d): void {
+export type PaintContext2d = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+function applyLocal(ctx: PaintContext2d, base: DOMMatrix, matrix: Affine, origin?: PathOrigin2d): void {
     ctx.setTransform(base);
     ctx.transform(...matrix);
     if (origin) ctx.translate(origin[0], origin[1]);
@@ -23,7 +25,7 @@ function applyLocal(ctx: CanvasRenderingContext2D, base: DOMMatrix, matrix: Affi
 /** The caller has installed the host's world/page projection. Clip paths have their own
  * absolute local-to-world transforms, independent of the item's local transform.
  */
-export function paintItem2d(ctx: CanvasRenderingContext2D, item: PaintItem, resources: PaintResources2d): void {
+export function paintItem2d(ctx: PaintContext2d, item: PaintItem, resources: PaintResources2d): void {
     ctx.save();
     try {
         const base = ctx.getTransform();

@@ -23,13 +23,13 @@ export class ToolState {
   private readonly listeners = new Set<() => void>()
   private snapshot: ToolStateSnapshot
 
-  constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure') {
+  constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure', initialLocked = false) {
     for (const registration of registrations) {
       if (!registration.id || this.registry.has(registration.id)) throw new Error(`Duplicate or empty tool id: ${registration.id}`)
       this.registry.set(registration.id, { ...registration })
     }
     if (!this.registry.has(selectId)) throw new Error('Select tool must be registered')
-    this.snapshot = { active: { id: selectId }, locked: false, selectionEpoch: 0 }
+    this.snapshot = { active: { id: selectId }, locked: initialLocked, selectionEpoch: 0 }
   }
 
   getSnapshot = (): ToolStateSnapshot => this.snapshot

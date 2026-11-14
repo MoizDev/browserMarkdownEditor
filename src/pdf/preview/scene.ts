@@ -1,7 +1,7 @@
 import type { ViewState } from '../../platform/render';
 import { PreviewBitmapLayer } from './bitmapLayer';
 import type { PreviewExpectedPage } from './bitmapLayer';
-import type { PreviewRect, PreviewSnapshot } from './contracts';
+import type { PreviewRect, PreviewSnapshot } from '../../utils/pdfPreviewTypes';
 
 interface Request {
     readonly key: string;

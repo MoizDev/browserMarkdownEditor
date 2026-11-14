@@ -149,11 +149,11 @@ function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, resto
         setPages(old => new Map([...old].filter(([index]) => indices.includes(index))));
         // Queue visible demand first. Cancellation removes queued work and cancels
         // the active text stream; unrelated PDF consumers retain their leases.
-        for (const index of indices) void controller.getPage(index, cancel.signal).then(page => {
+        for (const index of indices) void controller.getPage(index, cancel.signal, index === current ? (isFocused ? 0 : 1) : 2).then(page => {
             if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { page }));
         }).catch(error => { if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { error: String(error) })); });
         return () => cancel.abort();
-    }, [controller, current, count, retry, isVisible]);
+    }, [controller, current, count, retry, isVisible, isFocused]);
     const navigate = useCallback(async (value: PdfTextAnchor, cause: LocationCause) => {
         navigation.current?.cancel.abort();
         const active = { cancel: new AbortController(), cause }; navigation.current = active;

@@ -168,7 +168,8 @@ class Client implements WorkerClient {
                             }
                         }
                         if (!job.admitted || job.paused) continue;
-                        assertPayload(job.args);
+                        const allowHandles = !connection.alive && !!this.spec.fileHandleOps?.includes(job.op);
+                        assertPayload(job.args, new Set(), allowHandles);
                         if (!this.pending.has(job.id) || this.connection !== connection) continue;
                         job.phase = 'sent';
                         connection.sent.set(job.id, job);
@@ -208,8 +209,12 @@ class Client implements WorkerClient {
 
     private cancel(job: Job, name: 'Cancelled' | 'Deadline', message: string): void {
         if (job.phase === 'settled') return;
+        const terminate = name === 'Deadline' && job.phase !== 'queued' && job.options.terminateOnDeadline === true && !!this.connection;
         if (job.phase !== 'queued') this.control({ v: 1, cancel: job.id });
+        // Do not pump a newly admitted job onto the incarnation we are about to terminate.
+        if (terminate) this.state = 'recycling';
         this.settle(job, this.error(name, message));
+        if (terminate) void this.recycle('posted request deadline', { lazy: true }).catch(() => {});
     }
 
     // The only promise-settling site. Sent cancelled jobs stay in connection.sent until their one

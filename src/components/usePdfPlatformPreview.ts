@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import type { RefObject } from 'react';
 import { routeEngines } from '../utils/engineRouting';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import type { PdfPreview, PreviewSnapshot } from '../pdf/preview/contracts';
+import type { PdfPreview, PreviewSnapshot } from '../utils/pdfPreviewTypes';
 
 interface ReaderIdentity {
     readonly vaultEpoch: number;

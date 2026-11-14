@@ -4,7 +4,7 @@ import type { EmbedContainment } from '../embedContainment.types';
 import type { ByteLease } from './gfx/api';
 import type { FrameBudget, FrameToken, Layer } from './types';
 import { createEmbedClipJob, type EmbedClipDom } from './embedClipDom';
-import type { EmbedCoveragePath, EmbedHostingLease, EmbedHostingSnapshot, EmbedPresentationFrame,
+import type { EmbedCoveragePath, EmbedDrawnPaint, EmbedHostingLease, EmbedHostingSnapshot, EmbedPresentationFrame,
     EmbedPresentationOptions, EmbedPresentationPort, EmbedPresentedNode } from './embedPresentation.types';
 import type { LayerHost } from './compositor.types';
 
@@ -15,6 +15,27 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
 }
 function sameDocument(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+}
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+    return a === b || a.length === b.length && a.every((value, i) => value === b[i]);
+}
+function samePath(a: EmbedCoveragePath, b: EmbedCoveragePath): boolean {
+    return a === b || a.d === b.d && a.fillRule === b.fillRule && sameNumbers(a.toPane, b.toPane);
+}
+function samePaths(a: readonly EmbedCoveragePath[], b: readonly EmbedCoveragePath[]): boolean {
+    return a === b || a.length === b.length && a.every((path, i) => samePath(path, b[i]));
+}
+function sameGeometry(a: EmbedPresentedNode, b: EmbedPresentedNode): boolean {
+    const x = a.rect, y = b.rect;
+    if (a.source !== b.source || x.x !== y.x || x.y !== y.y || x.width !== y.width || x.height !== y.height ||
+        !sameNumbers(a.toPane, b.toPane) || !samePaths(a.clips, b.clips)) return false;
+    if (a.laterPaint === b.laterPaint) return true;
+    return a.laterPaint.length === b.laterPaint.length && a.laterPaint.every((item, i) => {
+        const other = b.laterPaint[i];
+        if (item.opacity !== other.opacity) return false;
+        if (item.opacity === 'translucent' || other.opacity === 'translucent') return true;
+        return samePath(item.coverage.path, other.coverage.path) && samePaths(item.coverage.clips, other.coverage.clips);
+    });
 }
 function* estimates(node: EmbedPresentedNode): Generator<number> {
     const path = (value: EmbedCoveragePath) => 4096 + value.d.length * 640;
@@ -39,7 +60,9 @@ type Slot = {
 /** Owns only DOM overlay resources; accepted presentation packets remain the geometry authority. */
 export function createEmbedPresentationPort(options: EmbedPresentationOptions): EmbedPresentationPort {
     let host: LayerHost | null = null, layer: Layer | null = null, packet: EmbedPresentationFrame | null = null;
-    let visible = true, disposed = false, requestBlocked = false, revision = 0, prepared: { token: FrameToken; epoch: number } | null = null;
+    let visible = true, disposed = false, requestBlocked = false, revision = 0;
+    let prepared: { token: FrameToken; epoch: number; cameraEpoch: number; frameId: number } | null = null;
+    let witness: EmbedDrawnPaint | null = null;
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
@@ -110,7 +133,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     const prepare = (view: ViewState, budget: FrameBudget) => {
         prepared = null;
         if (!host || !validFrame(view, budget.token)) { for (const slot of slots.values()) hide(slot); return; }
-        prepared = { token: { ...budget.token }, epoch: view.epoch }; requestBlocked = false;
+        prepared = { token: { ...budget.token }, epoch: view.epoch, cameraEpoch: budget.cameraEpoch, frameId: budget.frameId }; requestBlocked = false;
         for (const request of requests) {
             if (budget.shouldYield()) break;
             const node = packet!.nodes.find(item => item.nodeId === request.id);
@@ -151,12 +174,15 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         }
     };
     const draw = (view: ViewState) => {
-        if (!prepared || !validFrame(view, prepared.token) || prepared.epoch !== view.epoch) { for (const slot of slots.values()) hide(slot); return; }
+        if (!prepared || !validFrame(view, prepared.token) || prepared.epoch !== view.epoch || !witness ||
+            !sameToken(witness.token, prepared.token) || witness.frameId !== prepared.frameId || witness.cameraEpoch !== prepared.cameraEpoch ||
+            witness.sceneRevision !== packet!.sceneRevision) { for (const slot of slots.values()) hide(slot); return; }
         for (const slot of slots.values()) {
             const node = slot.node, cap = slot.containment;
             if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { hide(slot); continue; }
             const interaction = node.laterPaint.some(item => item.opacity === 'translucent');
-            const shown = interaction ? node.poster === 'painted' && !!slot.interaction : node.poster === 'omitted';
+            const omitted = witness.omittedNodeIds?.has(slot.id) ?? false;
+            const shown = interaction ? node.poster === 'painted' && !omitted && !!slot.interaction : node.poster === 'omitted' && omitted;
             if (!shown) { hide(slot); continue; }
             slot.root.style.zIndex = String(node.order);
             slot.plane.style.clipPath = interaction ? '' : slot.clips.clipUrl ?? '';
@@ -209,10 +235,19 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             for (const slot of [...slots.values()]) {
                 const node = frame.nodes.find(item => item.nodeId === slot.id);
                 if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); continue; }
-                clearClip(slot); slot.node = node; hide(slot); if (slot.containment) slot.estimate = estimates(node);
+                const equivalent = !!slot.node && sameGeometry(slot.node, node) && old?.viewport.width === frame.viewport.width && old.viewport.height === frame.viewport.height;
+                const preserve = equivalent && !!slot.clips;
+                const oldPoster = slot.node?.poster;
+                if (!preserve) clearClip(slot);
+                slot.node = node;
+                if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) ||
+                    old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) hide(slot);
+                else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
+                if (!preserve && slot.containment) slot.estimate = estimates(node);
             }
             releasePacket(old); wake();
         },
+        drawn(paint) { witness = paint; },
         acquire(id, signal) {
             if (disposed || !visible) return Promise.reject(new Error('Embed presentation unavailable'));
             if (signal?.aborted) return Promise.reject(signal.reason);
@@ -222,15 +257,16 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 requests.add(request); signal?.addEventListener('abort', request.abort, { once: true }); wake();
             });
         },
-        inlineNodeIds() {
+        inlineNodeIds(sceneRevision) {
             const ids = new Set<string>();
-            for (const slot of slots.values()) if (slot.node && slot.containment && isEmbedContainmentApproved(slot.containment) &&
+            if (!packet || (sceneRevision !== undefined && packet.sceneRevision !== sceneRevision)) return ids;
+            for (const slot of slots.values()) if (slot.node && slot.clips && slot.containment && isEmbedContainmentApproved(slot.containment) &&
                 !slot.node.laterPaint.some(item => item.opacity === 'translucent')) ids.add(slot.id);
             return ids;
         },
         setVisible(value) {
             if (disposed || visible === value) return;
-            visible = value; prepared = null;
+            visible = value; prepared = null; witness = null;
             if (!value) {
                 for (const slot of [...slots.values()]) close(slot);
                 for (const request of requests) { request.signal?.removeEventListener('abort', request.abort); request.reject(new Error('Embed hidden')); }
@@ -240,7 +276,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         },
         async dispose() {
             if (!disposed) {
-                disposed = true; prepared = null;
+                disposed = true; prepared = null; witness = null;
                 for (const slot of [...slots.values()]) close(slot);
                 for (const request of requests) { request.signal?.removeEventListener('abort', request.abort); request.reject(new Error('Embed presentation disposed')); }
                 requests.clear(); releasePacket(packet); packet = null;

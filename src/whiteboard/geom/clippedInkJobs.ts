@@ -59,7 +59,7 @@ function splitPrimitive(source: Primitive, matrix: Affine): readonly [Primitive,
     const x = ax / 2 + bx / 2, y = ay / 2 + by / 2, radius = r0 / 2 + r1 / 2;
     const roundoff = 16 * Number.EPSILON * Math.max(1, Math.abs(ax), Math.abs(ay), Math.abs(bx), Math.abs(by), r0, r1);
     if (![x, y, radius, roundoff].every(Number.isFinite)) return null;
-    const left = data.slice(), right = data.slice();
+    const left = Float64Array.from(data) as typeof data, right = Float64Array.from(data) as typeof data;
     if (segment) { left[3] = x; left[4] = y; left[5] = radius; right[0] = x; right[1] = y; right[2] = radius; }
     else { left[2] = x; left[3] = y; right[0] = x; right[1] = y; }
     const centreErrorWorld = add(interval(coverage.centreErrorWorld), interval(roundoff)).hi;

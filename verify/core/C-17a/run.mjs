@@ -10,6 +10,7 @@ const url = option('--url', 'http://localhost:6302/');
 const out = option('--out', '/Users/adham/Developer/bme-impl/scratch/c-b/C-17a/run');
 const theme = option('--theme', 'light');
 const candidate = args.includes('--mirror');
+const consoleOnly = args.includes('--console-only');
 const { browser, context, identity } = await openBrowser({ contextOptions: { viewport: { width: 1440, height: 900 } } });
 await installVault(context, { name: 'lm-vault' });
 const page = await context.newPage();
@@ -75,21 +76,21 @@ try {
     assert.equal(result.before.theme, theme);
     assert.equal(result.before.editorFontSize, '22');
     assert.equal(result.before.tabSize, '7');
-    await page.screenshot({ path: path.join(out, 'before.png'), fullPage: true });
+    if (!consoleOnly) await page.screenshot({ path: path.join(out, 'before.png'), fullPage: true });
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await page.locator('.vault-switcher').waitFor();
+    if (candidate) await page.getByText('Settings restored after another tab reset them', { exact: true }).waitFor();
     result.after = await page.evaluate(keys => Object.fromEntries(keys.map(key => [key, localStorage.getItem(key)])), keys);
     await page.screenshot({ path: path.join(out, 'after.png'), fullPage: true });
     assert.deepEqual(result.after, result.before, 'settings, sessions and scroll records must survive the clear');
     if (args.includes('--notice-api')) {
-        // Explicit notice-seam witness requested by c-lead until App owns its
-        // notifier call. Recovery itself was entered only by clear + reload.
+        // App already consumed the notice; an additional take must be empty.
         result.notice = await page.evaluate(async () => {
             const storage = await import('/src/utils/storage.ts');
             return { first: storage.takeRestoreNotice(), second: storage.takeRestoreNotice() };
         });
-        assert.deepEqual(result.notice, { first: 'Settings restored after another tab reset them', second: null });
+        assert.deepEqual(result.notice, { first: null, second: null });
     }
     if (candidate) {
         const resetter = await context.newPage();
@@ -136,7 +137,7 @@ try {
     console.error(`FAIL storage-restore ${error.message.replace(/\s+/g, ' ')}`);
     process.exitCode = 1;
 } finally {
-    await writeFile(path.join(out, 'report.json'), JSON.stringify(result, null, 2) + '\n');
+    if (!consoleOnly) await writeFile(path.join(out, 'report.json'), JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result));
     await browser.close();
 }

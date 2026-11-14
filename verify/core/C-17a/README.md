@@ -1,8 +1,9 @@
 # C-17a — browser-storage recovery sanity
 
-`run.mjs URL OUTPUT [--mirror] [--theme dark] [--notice-api]` drives the actual app
-using `verify/lib` and an OPFS vault. `--notice-api` is a dev-server-only witness
-of the already-loaded storage module's pending notice; it does not initiate recovery.
+`node run.mjs --url URL --out OUTPUT --mirror --console-only [--theme dark]`
+drives the actual app using `verify/lib` and an OPFS vault. `--console-only` skips
+JSON reports and the before screenshot; workspace screenshots remain for inspection.
+`--notice-api` is dev-only and checks that App has already consumed the notice.
 
 ## Observed
 
@@ -30,8 +31,12 @@ or shutdown durability. All scoped servers stop in the controller's `finally`.
 
 ## Deliberate seams / limits
 
-App's notification subscription/show call is pending the App-owned seam; c-lead
-accepted the consuming API witness for this package. No App or ESLint edits here.
+App now subscribes and consumes the one-shot notice through its existing status-line
+announcement. Ordinary startup retains static imports and renders immediately; only
+a startup that actually restores values reloads once so module-scope stores reread them.
+A tab-local sessionStorage flag preserves that notice across the recovery reload.
+The earlier reports above predate this static-import correction; the current runner
+also waits for the real App-rendered notice. ESLint enforcement is a later package.
 Legacy raw writers are reconciled once per load after first paint and on hide /
 pagehide. A raw write followed by another window's clear *before* that checkpoint
 can still be lost until C-17b migrates the writer. Mirrored helper writes queue

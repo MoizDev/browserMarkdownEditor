@@ -321,7 +321,11 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const source = loadedSource && loadedSource.entry === annotateEntry && loadedSource.handle === file.handle && loadedSource.path === file.path ? loadedSource.role : null;
     const foreignHeld = source?.kind === 'annotated' && source.writeMark.kind === 'foreign' &&
         (!source.generation || pdfRebuildApproval?.generation !== source.generation || !canRebuildAnnotatedPdf(source.original));
-    const editableSource = source && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
+    const inspectedWriteRefused = !!(tiled && currentTiledSource && tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).write === false);
+    const editableSource = source && !inspectedWriteRefused && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
+    useLayoutEffect(() => {
+        if (inspectedWriteRefused && source) revokePdfRole(source);
+    }, [inspectedWriteRefused, source]);
     // The outer pages remain readable on refusal. DiskBar owns the choice;
     // don't put a competing action over the page.
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
@@ -330,8 +334,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
         source?.kind === 'newer' && source.attachments.includes('board.json')) &&
         pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
-    const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined);
-    const readOnly = mode === 'edit' && (nativeCandidate || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
+    const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined)
+        || (inspectedWriteRefused ? 'This PDF’s inspected permissions require read-only annotation. The original has not been changed.' : undefined);
+    const readOnly = mode === 'edit' && (nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const sessionVersion = useRef<string | undefined>(undefined);

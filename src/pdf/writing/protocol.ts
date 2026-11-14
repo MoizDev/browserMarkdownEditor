@@ -13,6 +13,9 @@ export interface WriterSource {
     outerFingerprint: string;
     /** Stable id supplied by the board format owner. */
     formatId: string;
+    /** Issued only by the exhaustive attachment reader after validating both
+     * snapshots. Missing proof takes the preservation converter, never a guess. */
+    attachmentProof?: { pristineFingerprint: string; outerFingerprint: string; canonical: true; unknownCount: 0 };
     geometryEngine: { id: string; build: string; generation: number };
 }
 export type WriterFailureCode = 'encrypted' | 'signed' | 'newer-format' | 'unrecoverable-attachments' | 'resource-limit' | 'cancelled' | 'failure';

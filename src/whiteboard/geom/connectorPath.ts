@@ -6,6 +6,7 @@ import { connectorBodyPoint, connectorBodyTangent } from './connectors';
 import { arcToCubics, type PathOp, type Vec2 } from './path';
 import { areSimpleConnectorPolygons, exactConnectorLineCrossings } from './connectorExactClip';
 import { curvedConnectorLineCrossings } from './connectorCurveClip';
+import { connectorCircleBoundaryDisjoint } from './connectorCirclePreflight';
 
 export function bodyLength(body: ConnectorBody): number {
     if (!Number.isFinite(body.length) || body.length < 0) throw new RangeError('Invalid connector body length');
@@ -88,6 +89,7 @@ export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurfa
     }
     const radius = body.arc.radius, sweep = Math.abs(body.arc.sweep);
     if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(sweep) || !sweep) throw new RangeError('Invalid connector arc');
+    if (yield* connectorCircleBoundaryDisjoint(body.arc.centre, radius, [surface, ...surface.clips], error, maxPieces)) return Object.freeze([]);
     // 2r sin²(theta/4) bounds sagitta without subtracting nearly equal values.
     const angle = Math.min(Math.PI / 2, 4 * Math.asin(Math.sqrt(Math.min(1, error / radius / 2))));
     const pieces = Math.ceil(sweep / angle);

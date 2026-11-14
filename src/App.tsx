@@ -1002,6 +1002,8 @@ export default function App() {
     prepareBytesChange(id, generation);
     bytesGenerationsRef.current.set(id, generation);
     const session = documentSessions.get(id);
+    const policy = nativePoliciesRef.current.get(id);
+    if (policy && session && policy.session === session.serial) policy.generation = generation;
     if (session) session.bytesGeneration = generation;
   }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
@@ -2431,7 +2433,12 @@ export default function App() {
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
     const bufferedSource = documentBuffers.get(tab.id)?.source;
     const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string';
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && (getPdfRenderData(path) || nativeSource)))) return 'skipped';
+    const policy = nativePoliciesRef.current.get(tab.id);
+    const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
+      && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
+      && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation.status === 'ready'
+      && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
@@ -2673,7 +2680,13 @@ export default function App() {
   const agentContentReportRef = useRef(false);
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
-    const accepted = !!target && canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
+    const policy = target && nativePoliciesRef.current.get(target.id);
+    const ownedNative = !!target && typeof content !== 'string' && !!policy && !policy.emergencyReadOnly
+      && policy.session === content.owner.session && policy.activation === getVaultActivation()
+      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && documentSessions.isLiveOwner(target.id, content.owner);
+    const accepted = !!target && (canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
+      || ownedNative && !target.readError && target.representation.status === 'ready')
       && (typeof content === 'string' || documentSessions.isLiveOwner(target.id, content.owner));
     if (__BME_BENCH__) {
       try {
@@ -2724,7 +2737,7 @@ export default function App() {
     notifySearchChanges();
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     scheduleSave(path);
-  }, [documentBuffers, documentSessions, recoveryEvent, reportRevision, scheduleSave]);
+  }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, reportRevision, scheduleSave]);
   sessionReportRef.current = (id, source) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source);

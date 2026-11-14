@@ -1,5 +1,5 @@
 import { runReaderHostCommand } from './utils/documentReading';
-import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
+import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -1066,7 +1066,7 @@ export default function App() {
     const session = documentSessions.get(id);
     const policy = nativePoliciesRef.current.get(id);
     if (policy && session && policy.session === session.serial) policy.generation = generation;
-    if (session) session.bytesGeneration = generation;
+    if (session) documentSessions.setBytesGeneration(id, generation);
   }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
@@ -1163,12 +1163,17 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration ? tab : undefined;
     };
-    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal) => {
+    const writable = (identity: NativeCanvasIdentity) => {
+      const policy = nativePoliciesRef.current.get(identity.documentId);
+      return !!policy && !policy.emergencyReadOnly && policy.session === identity.session
+        && policy.activation === identity.vaultActivation && policy.generation === identity.bytesGeneration;
+    };
+    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
-      if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+      if (!tab?.file.handle || !tab.file.parentHandle || !root || write && !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
       return { root, parent: tab.file.parentHandle, owner: tab.file.handle as FileSystemFileHandle,
-        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) };
+        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) && (!write || writable(identity)) };
     };
     return {
       identity(id) {
@@ -1209,9 +1214,9 @@ export default function App() {
         return { name: found.name, blob };
       },
       async putMedia(identity, media, blob, signal) {
-        const name = await putBoardAsset({ ...request(identity, media, signal), extension: media.extension, blob });
+        const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
-        if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        if (!current(identity) || !writable(identity)) throw new DOMException('Canvas session ended or read-only', 'AbortError');
         return name;
       },
     };
@@ -2555,7 +2560,7 @@ export default function App() {
       const source = documentSessions.checkpoint(tab.id);
       const prior = documentBuffers.get(tab.id)?.source;
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
-        && (typeof prior === 'string' || !prior || prior.owner.session !== source.owner.session || source.revision > prior.revision)) {
+        && sourceIsNewer(source, prior)) {
         sessionReportRef.current(tab.id, source);
         clearSaveTimer(path);
       }
@@ -2821,13 +2826,16 @@ export default function App() {
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
+    const liveNativePolicy = !!target && !!policy && policy.activation === getVaultActivation()
+      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && documentSessions.isLiveOwner(target.id, { documentId: target.id, session: policy.session });
     const ownedNative = !!target && typeof content !== 'string' && !!policy && !policy.emergencyReadOnly
       && policy.session === content.owner.session && policy.activation === getVaultActivation()
       && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
       && documentSessions.isLiveOwner(target.id, content.owner);
     const accepted = !!target && (canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
       || ownedNative && !target.readError && target.representation.status === 'ready')
-      && (typeof content === 'string' || documentSessions.isLiveOwner(target.id, content.owner));
+      && (typeof content === 'string' ? !!options?.fromDisk || !liveNativePolicy : documentSessions.isLiveOwner(target.id, content.owner));
     if (__BME_BENCH__) {
       try {
         const kind = target?.representation.loadedKind ?? 'unknown';
@@ -2931,8 +2939,7 @@ export default function App() {
     const pagehide = () => {
       checkpointSessions((id, source) => {
         const prior = documentBuffers.get(id)?.source;
-        if (source === prior || typeof source !== 'string' && prior && typeof prior !== 'string'
-          && source.owner.session === prior.owner.session && source.revision <= prior.revision) return;
+        if (!sourceIsNewer(source, prior)) return;
         sessionReportRef.current(id, source);
       });
       void recoveryEvent({ type: 'checkpoint' });
@@ -4900,7 +4907,7 @@ export default function App() {
         const sessionSource = documentSessions.checkpoint(doc.id);
         const buffered = documentBuffers.get(doc.id)?.source;
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
-          && (typeof buffered === 'string' || !buffered || buffered.owner.session !== sessionSource.owner.session || sessionSource.revision > buffered.revision)) {
+          && sourceIsNewer(sessionSource, buffered)) {
           documentBuffers.report(doc.id, sessionSource);
           syncExitGuard();
         }
@@ -5498,13 +5505,12 @@ export default function App() {
       const prior = documentBuffers.get(id)?.source;
       if (checkpoint && typeof checkpoint !== 'string') {
         if (!documentSessions.isLiveOwner(id, checkpoint.owner)) throw new Error('The document session changed.');
-        if (typeof prior === 'string' || !prior || prior.owner.session !== checkpoint.owner.session || checkpoint.revision > prior.revision) {
+        if (sourceIsNewer(checkpoint, prior)) {
           sessionReportRef.current(id, checkpoint);
         }
       }
       const source = documentBuffers.get(id)?.source;
-      if (checkpoint && typeof checkpoint !== 'string' && (typeof source === 'string' || !source
-        || source.owner.session !== checkpoint.owner.session || source.revision < checkpoint.revision)) {
+      if (checkpoint && typeof checkpoint !== 'string' && sourceIsNewer(checkpoint, source)) {
         throw new Error('The current document revision could not be captured.');
       }
       const snapshot = documentBuffers.snapshotForDocument(id);

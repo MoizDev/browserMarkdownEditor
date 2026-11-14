@@ -33,6 +33,7 @@ export interface SessionSceneOptions {
     onError(error: unknown): void;
     cooperate?(): Promise<void>;
     readonly signal?: AbortSignal;
+    subscribeInvalidation?(listener: (ids: ReadonlySet<NodeId>) => void): () => void;
 }
 function yieldToHost(): Promise<void> {
     const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield(): Promise<void> } }).scheduler;
@@ -56,6 +57,7 @@ export class SessionScene implements SceneSpatial {
     private readonly live: LiveSceneView;
     private readonly rebuild: ScenePackedRebuild;
     private readonly controller = new AbortController();
+    private readonly stopInvalidation: (() => void) | undefined;
     private constructor(private readonly options: SessionSceneOptions, private state: BootstrappedScene,
         private readonly records: SceneRecordStore, private readonly metadata: SceneMetadataStore) {
         this.live = new LiveSceneView(options.doc, state);
@@ -65,6 +67,14 @@ export class SessionScene implements SceneSpatial {
             stroke: node => options.bounds.stroke(node),
         };
         this.provider = provider;
+        this.stopInvalidation = options.subscribeInvalidation?.(ids => {
+            if (this.disposed) return;
+            for (const id of ids) {
+                this.invalidateGeometry(id);
+                this.pendingNodes.set(id, (this.pendingNodes.get(id) ?? 0) | Flag.Geometry | Flag.Bounds | Flag.Paint);
+            }
+            this.serial++; options.invalidate();
+        });
         this.rebuild = new ScenePackedRebuild(state.index, state.columns, state.unbounded,
             { session: `scene-${options.token.documentId}-${options.token.session}`, epoch: options.token.vaultEpoch }, options.onError, options.invalidate);
     }
@@ -216,7 +226,7 @@ export class SessionScene implements SceneSpatial {
     }
     dispose(): void {
         if (this.disposed) return;
-        this.disposed = true; this.controller.abort(); this.rebuild.dispose(); this.cache.dispose(); this.records.dispose();
+        this.disposed = true; this.controller.abort(); this.stopInvalidation?.(); this.rebuild.dispose(); this.cache.dispose(); this.records.dispose();
         this.active = undefined; this.pendingNodes.clear(); this.pendingSheets.clear(); this.listeners.clear();
     }
 }

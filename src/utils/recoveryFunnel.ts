@@ -25,15 +25,30 @@ export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJo
     const checkpoint = () => {
         if (timer !== undefined) clearTimeout(timer);
         timer = undefined;
-        for (const session of sessions.values()) {
-            const change = session.change;
-            if (!change || change.revision <= session.saved) continue;
-            try {
-                const data = change.capture();
-                journal.record({ vaultId: change.vaultId, journalId: session.journalId, path: change.path,
-                    fingerprint: change.fingerprint, kind: change.kind, revision: change.revision,
-                    updatedAt: Date.now(), ...data });
-            } catch (error) { failed(error); }
+        for (const [documentId, session] of [...sessions]) {
+            let settled = false;
+            for (let attempt = 0; attempt < 8; attempt++) {
+                const change = session.change;
+                if (sessions.get(documentId) !== session || !change || change.revision <= session.saved) { settled = true; break; }
+                let data: JournalCapture;
+                try { data = change.capture(); }
+                catch (error) {
+                    if (sessions.get(documentId) !== session || session.change !== change) continue;
+                    failed(error); settled = true; break;
+                }
+                if (sessions.get(documentId) !== session || session.change !== change) continue;
+                if (change.revision <= session.saved) { settled = true; break; }
+                try {
+                    journal.record({ vaultId: change.vaultId, journalId: session.journalId, path: change.path,
+                        fingerprint: change.fingerprint, kind: change.kind, revision: change.revision,
+                        updatedAt: Date.now(), ...data });
+                } catch (error) { failed(error); }
+                settled = true; break;
+            }
+            if (!settled && sessions.get(documentId) === session && session.change && session.change.revision > session.saved) {
+                failed(new Error(`Recovery checkpoint kept changing for ${documentId}`));
+                if (timer === undefined) timer = setTimeout(checkpoint, 500);
+            }
         }
         void journal.flush().catch(() => {});
     };

@@ -18,24 +18,22 @@ function required<T>(value: T | undefined): T {
     return value;
 }
 
-export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: {
-    text: BoardTextGeometry; revision: string; zoom: number; signal: AbortSignal; cooperate?: () => Promise<void>;
-}): Promise<BoardVectorGeometry> {
-    const { signal } = options;
-    check(signal);
-    if (!Number.isFinite(options.zoom) || options.zoom <= 0) throw new RangeError('Invalid geometry zoom');
+type VectorNode = Exclude<Node, { kind: 'group' | 'stroke' | 'connector' | 'opaque' }>;
+interface VectorOptions { readonly text: BoardTextGeometry; readonly revision: string; readonly zoom: number }
+function requireVector(node: Readonly<Node>, zoom: number): asserts node is Readonly<VectorNode> {
+    if (!Number.isFinite(zoom) || zoom <= 0) throw new RangeError('Invalid geometry zoom');
     if (node.kind === 'group' || node.kind === 'stroke' || node.kind === 'connector' || node.kind === 'opaque') {
         throw new TypeError(`Vector geometry does not own ${node.kind}`);
     }
-    let label: PositionedFigureText | null = null;
-    if (node.kind === 'text' || node.kind === 'sticky' || node.kind === 'frame' || (node.kind === 'figure' && node.label)) {
-        const prepared = await options.text.prepare(node, { revision: options.revision, zoom: options.zoom }, signal);
-        check(signal);
-        if (!prepared) throw new Error('Text-bearing node has no prepared text');
-        label = { paint: prepared.paint, x: prepared.placement.x, y: prepared.placement.y, scale: prepared.placement.scale };
-    }
-    await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
-    check(signal);
+}
+function needsText(node: Readonly<VectorNode>): boolean {
+    return node.kind === 'text' || node.kind === 'sticky' || node.kind === 'frame' || (node.kind === 'figure' && !!node.label);
+}
+function positioned(prepared: ReturnType<BoardTextGeometry['prepareNow']>): PositionedFigureText {
+    if (!prepared) throw new Error('Text-bearing node has no prepared text');
+    return { paint: prepared.paint, x: prepared.placement.x, y: prepared.placement.y, scale: prepared.placement.scale };
+}
+function vectorGeometry(node: Readonly<VectorNode>, options: VectorOptions, label: PositionedFigureText | null): BoardVectorGeometry {
     const fontEpoch = label?.paint.fontEpoch ?? 0;
     const key = JSON.stringify([node.id, options.revision, options.zoom, fontEpoch]);
     const common = { key, fontEpoch, pathError: BUDGET.pathError, maxPieces: BUDGET.maxPieces,
@@ -49,6 +47,28 @@ export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: 
         case 'picture': case 'clip': case 'linkcard': case 'embed': return required(prepareMediaBoxGeometry(node, common));
         case 'polyline': return preparePolylineGeometry(node, { ...BUDGET, key });
     }
+}
+
+/** Current actual faces, including browser fallback; this does not start font loading. */
+export function prepareBoardVectorGeometryNow(node: Readonly<Node>, options: VectorOptions): BoardVectorGeometry {
+    requireVector(node, options.zoom);
+    const label = needsText(node) ? positioned(options.text.prepareNow(node, { revision: options.revision, zoom: options.zoom })) : null;
+    return vectorGeometry(node, options, label);
+}
+
+export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: VectorOptions & {
+    signal: AbortSignal; cooperate?: () => Promise<void>;
+}): Promise<BoardVectorGeometry> {
+    const { signal } = options;
+    check(signal); requireVector(node, options.zoom);
+    let label: PositionedFigureText | null = null;
+    if (needsText(node)) {
+        label = positioned(await options.text.prepare(node, { revision: options.revision, zoom: options.zoom }, signal));
+        check(signal);
+    }
+    await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+    check(signal);
+    return vectorGeometry(node, options, label);
 }
 
 /** The preserved source stays inert; unreadable dimensions use the opaque placeholder default. */

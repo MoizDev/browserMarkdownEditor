@@ -8,6 +8,7 @@ import type { NoticeDispatcher } from '../change/notices';
 import type { EncoderContext } from '../format/encode';
 import type { RecordChanges } from '../format/recordChanges';
 import type { SerializerCheckpoint, SerializerSession } from '../format/serializerClient';
+import type { SerializerPrime } from '../format/serializerProtocol';
 import type { MediaStore } from '../media/store';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -24,7 +25,7 @@ export interface BoardJournalPort {
     capture(): () => void | Promise<void>;
     delta(): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
-    acknowledge(revision: number): void;
+    acknowledge(revision: number, baseline?: SerializerPrime): void;
     drain(): Promise<void>;
     dispose(): void;
 }

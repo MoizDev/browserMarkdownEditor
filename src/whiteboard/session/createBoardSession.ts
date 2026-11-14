@@ -214,7 +214,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             const checkpoint = checkpoints.get(revision);
             if (!checkpoint?.product()) return;
             savedRevision = revision;
-            journal.acknowledge(revision);
+            journal.acknowledge(revision, checkpoint.baseline());
             scheduler.setJournalPending(savedRevision < contentRevision);
             void track(checkpoint.written()).catch(reportPendingError);
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);

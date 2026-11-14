@@ -12,6 +12,7 @@ import { boardPageStack } from '../model/pages';
 import { createBoardRenderServices } from '../render/services';
 import { acquireNativeBoard, type NativeBoardAcquisition } from './nativeAcquisition';
 import { pinPdfInkAssembly } from './pdfInkAssembly';
+import { inspectPdfVisualModel } from './pdfVisualPreflight';
 
 /** Pure journal data: neither the original PDF tab nor its worker survives in the recipe. */
 export interface PdfRecoveryRecipe {
@@ -87,6 +88,8 @@ export async function materializePdfRecoveryRecipe(payload: unknown, signal: Abo
         if (acquisition.status !== 'editable' || acquisition.report.repaired?.repairs.length || acquisition.load.unmapped.length) {
             throw new Error('Recovered PDF board cannot be rendered without repair or data loss');
         }
+        const visual = await inspectPdfVisualModel(acquisition.load, { signal });
+        if (visual.status !== 'known') throw new Error('Recovered PDF contains uninterpreted visual content; flattening would lose it');
         const doc: BoardDoc = Object.freeze({ ...acquisition.load.doc, rev: recipe.revision });
         if (doc.kind !== 'pdf-ink' || doc.host.kind !== 'pdf-ink') throw new Error('Recovered board is not PDF ink');
         const stack = boardPageStack(doc.host);

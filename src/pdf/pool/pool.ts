@@ -3,7 +3,7 @@ import type { ContainedPort, Priority, WorkerClient } from '../../platform/worke
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
 import type { PageGeometry } from '../../platform/types';
-import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey } from '../worker/protocol';
+import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey, parsePdfDocKey } from '../worker/protocol';
 import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
@@ -18,7 +18,7 @@ import { beginPdfPageWork, failPdfPage, clearPdfPageFailure, releasePdfPageStatu
 import { canSteal, homeWorker, maximumWorkers, poolBudget, recycleCeiling } from './routing';
 import { renderPdfPageBitmap } from './bitmap';
 import { createPdfReplyValidators } from './validation';
-import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe, validatePdfInkInspection, validatePdfInkMedia } from './validateControl';
+import { validatePdfEngineInit, validatePdfWorkerStats, validatePdfProbe, validatePdfInkInspection, validatePdfInkMedia, validatePdfLegacyInspection } from './validateControl';
 import { planEmphasisProbeGeometry } from '../emphasis/profile';
 import { PDF_FONT_CATALOGUE } from '../fonts/catalogue';
 import type { PdfFontId } from '../fonts/catalogue';
@@ -34,6 +34,8 @@ import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/w
 const validators = createPdfReplyValidators();
 const workerOwners = new WeakMap<WorkerClient, BootstrapPort>();
 const workerExtraBytes = new WeakMap<WorkerClient, number>();
+const metadataPermits = new WeakMap<WorkerClient, number>();
+const metadataOps = new Set<PdfEngineOp>(['doc.inspectInk', 'doc.inspectLegacyInk', 'doc.inspectNotebook', 'doc.inkMedia']);
 function reportMemory(client: WorkerClient, bytes: number): void {
     const owner = workerOwners.get(client);
     if (owner) reportWorkerMemory(owner, bytes + (workerExtraBytes.get(client) ?? 0));
@@ -55,6 +57,12 @@ type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unkn
 const abortError = () => new DOMException('PDF request cancelled', 'AbortError');
 const deadlineError = () => new DOMException('PDF request deadline expired', 'TimeoutError');
 const pageKey = (key: string, page: number) => `${key}\0${page}`;
+function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boolean {
+    return !!a && !!b && a.index === b.index && a.width === b.width && a.height === b.height &&
+        a.rotate === b.rotate && a.userUnit === b.userUnit && Array.isArray(a.toUserSpace) && Array.isArray(b.toUserSpace) &&
+        a.toUserSpace.length === 6 && b.toUserSpace.length === 6 &&
+        [0, 1, 2, 3, 4, 5].every(index => Number.isFinite(a.toUserSpace[index]) && a.toUserSpace[index] === b.toUserSpace[index]);
+}
 let poolSerial = 0;
 
 type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled(): Promise<void> };
@@ -62,6 +70,8 @@ type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled
 /** The broker supplies a direct worker port and trusted init metadata, never a same-origin fallback (C5.4). */
 function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writer', id: number, onHeap?: (bytes: number) => void): WorkerClient {
     let port: BootstrapPort | null = null;
+    let bootstrap: WorkerClient | undefined;
+    let provision: { generation: number; promise: Promise<void> } | undefined;
     const client = createWorkerClient({ name, protocol: PDF_ENGINE_PROTOCOL,
         spawn: async () => {
             const spawned = await options.broker.spawn(role, id);
@@ -78,20 +88,43 @@ function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writ
             workerOwners.set(client, owner); workerExtraBytes.delete(client);
             return port;
         },
-        onStart: async client => {
-            const current = port;
-            if (!current) throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
-            const value = await client.request<unknown>('engine.init', current.engine,
-                { priority: 0, cpu: 'light', deadlineMs: 10_000, terminateOnDeadline: true });
-            const info = validatePdfEngineInit(value, current.engine);
-            reportMemory(client, info.heapBytes);
-            await current.compiled();
+        onStart: async initializing => {
+            bootstrap = initializing;
+            try {
+                const current = port;
+                if (!current) throw new PdfEngineError('EngineBroken', 'The contained PDF engine could not initialise');
+                const value = await initializing.request<unknown>('engine.init', current.engine,
+                    { priority: 0, cpu: 'light', deadlineMs: 10_000, terminateOnDeadline: true });
+                const info = validatePdfEngineInit(value, current.engine);
+                reportMemory(client, info.heapBytes);
+                await current.compiled();
+            } finally { if (bootstrap === initializing) bootstrap = undefined; }
         },
         absoluteMs: role === 'writer' ? 120_000 : 60_000,
         silenceMs: { 0: 20_000, 1: 20_000, 2: 60_000, 3: 60_000 },
         restartPolicy: role === 'writer' ? { delaysMs: [0], maxFailures: 1, windowMs: 60_000 } :
             { delaysMs: [0, 250, 1000, 5000], maxFailures: 4, windowMs: 60_000 },
-        events: role === 'render' ? ['font.needed', 'page.geometry', 'dying', 'worker.memory'] : ['worker.memory'],
+        events: role === 'render' ? ['font.needed', 'font.profile', 'page.geometry', 'dying', 'worker.memory', 'code.needed'] : ['worker.memory', 'code.needed'],
+    });
+    client.on('code.needed', value => {
+        try {
+            const request = record(value, ['id']);
+            if (request.id !== 'metadata' || role === 'render' && metadataPermits.get(client) !== client.generation) invalidPdfReply();
+            const generation = client.generation;
+            if (provision?.generation === generation) return;
+            const promise = (async () => {
+                const asset = await import('virtual:pdf-engine-metadata');
+                if (client.generation !== generation || client.state === 'disposed') return;
+                if (typeof asset.source !== 'string' || !asset.source.length || asset.source.length > 8 * 1024 * 1024 ||
+                    typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256)) invalidPdfReply();
+                const endpoint = bootstrap ?? client;
+                const result = await endpoint.request('code.provide', { id: 'metadata', source: asset.source, sha256: asset.sha256 },
+                    { priority: 0, cpu: 'light', deadlineMs: 60_000 });
+                record(result, []);
+            })();
+            provision = { generation, promise };
+            void promise.catch(() => { if (client.generation === generation && client.state !== 'disposed') void client.recycle('PDF metadata delivery failed').catch(() => {}); });
+        } catch { void client.recycle('Invalid PDF metadata request').catch(() => {}); }
     });
     client.on('worker.memory', value => {
         try {
@@ -215,6 +248,21 @@ class Pool implements PdfPool {
                 if (data.page !== undefined) integer(data.page, 0, this.docs.get(data.docKey)!.info!.pageCount - 1);
                 slot.needed.set(data.docKey, [...new Set(data.ids as PdfFontId[])]);
             } catch { slot.openRequests.clear(); void client.recycle('Invalid PDF font request').catch(() => {}); }
+        });
+        client.on('font.profile', value => {
+            try {
+                const data = record(value, ['docKey', 'ids']);
+                if (typeof data.docKey !== 'string') invalidPdfReply();
+                parsePdfDocKey(data.docKey);
+                if (!Array.isArray(data.ids) || data.ids.length > 14 ||
+                    data.ids.some(id => typeof id !== 'string' || !Object.hasOwn(PDF_FONT_CATALOGUE, id)) ||
+                    new Set(data.ids).size !== data.ids.length) invalidPdfReply();
+                const doc = this.docs.get(data.docKey);
+                if (!doc || doc.closing) return;
+                if (!slot.opens.has(data.docKey)) invalidPdfReply();
+                for (const id of data.ids as PdfFontId[]) doc.fonts.add(id);
+                for (const id of data.ids as PdfFontId[]) notePdfFontProvided(doc.key, id);
+            } catch { slot.openRequests.clear(); void client.recycle('Invalid PDF font profile').catch(() => {}); }
         });
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
@@ -474,6 +522,7 @@ class Pool implements PdfPool {
                         job.posted = geometryRequest;
                         rememberGeometry(job.doc, await geometryRequest, page as number);
                     }
+                    if (metadataOps.has(job.op)) metadataPermits.set(slot.client, slot.client.generation);
                     const posted = slot.client.request<unknown>(job.op, payload, { priority: job.priority, signal, deadlineMs: remaining,
                         terminateOnDeadline: true, cpu: 'governed', key: Number.isSafeInteger(page) ? pageKey(job.doc.key, page as number) : job.doc.key });
                     job.posted = posted;
@@ -590,6 +639,7 @@ class Pool implements PdfPool {
             }
             case 'doc.outline': return validators.outline(value, job.doc.info!.pageCount);
             case 'doc.inspectInk': return validatePdfInkInspection(value);
+            case 'doc.inspectLegacyInk': return validatePdfLegacyInspection(value);
             case 'doc.inkMedia': return validatePdfInkMedia(value);
             case 'doc.attachment': return validators.attachmentBytes(value, job.args.maxBytes as number);
             case 'page.release': return record(value, []);
@@ -724,7 +774,8 @@ class Pool implements PdfPool {
                 const notebookInput = op === 'writer.buildNotebook' ? args as WriterOperations['writer.buildNotebook']['args'] : undefined;
                 const notebookSpec = notebookInput ? notebookOutputSpec(notebookInput) : undefined;
                 const notebookIdentity = notebookInput ? { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: [...notebookInput.pages] } : undefined;
-                const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] : undefined;
+                const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] :
+                    op === 'writer.verifyUnsignedCopy' ? args as WriterOperations['writer.verifyUnsignedCopy']['args'] : undefined;
                 if (verifyInput && (!(verifyInput.bytes instanceof ArrayBuffer) || !verifyInput.bytes.byteLength)) throw new Error('Invalid notebook verification bytes');
                 const verifyLength = verifyInput?.bytes.byteLength;
                 const value = await client.request<unknown>(op, args, { ...requestOptions, signal, cpu: 'governed',
@@ -740,9 +791,11 @@ class Pool implements PdfPool {
                     const input = args as WriterOperations['writer.stageAnnotated']['args'];
                     const output = result as WriterOperations['writer.stageAnnotated']['result'];
                     const prepared = sources.get(input.writerSession);
-                    if (!prepared || output.sourceFingerprint !== prepared.sourceFingerprint ||
-                        JSON.stringify(output.geometryEngine) !== JSON.stringify(prepared.source.geometryEngine) ||
-                        JSON.stringify(input.geometries) !== JSON.stringify(prepared.inspection.geometries)) invalidPdfReply();
+                    const engine = prepared?.source.geometryEngine, actual = output.geometryEngine;
+                    if (!prepared || !engine || output.sourceFingerprint !== prepared.sourceFingerprint ||
+                        actual.id !== engine.id || actual.build !== engine.build || actual.generation !== engine.generation ||
+                        !Array.isArray(input.geometries) || input.geometries.length !== prepared.inspection.geometries.length ||
+                        !prepared.inspection.geometries.every((page, index) => sameGeometry(input.geometries[index], page))) invalidPdfReply();
                     stages.set(output.stageId, { sourceFingerprint: prepared.sourceFingerprint, pageCount: prepared.inspection.pageCount, revision: input.revision, formatId: prepared.source.formatId });
                 } else if (op === 'writer.finishAnnotated') {
                     const input = args as WriterOperations['writer.finishAnnotated']['args'];
@@ -750,8 +803,8 @@ class Pool implements PdfPool {
                     const staged = stages.get(input.stageId); stages.delete(input.stageId);
                     if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision ||
                         input.attachments.some(entry => entry.role === 'editable' && entry.format !== staged.formatId)) invalidPdfReply();
-                } else if (op === 'writer.verifyNotebookOutput') {
-                    if ((result as WriterOperations['writer.verifyNotebookOutput']['result']).bytes.byteLength !== verifyLength) invalidPdfReply();
+                } else if (op === 'writer.verifyNotebookOutput' || op === 'writer.verifyUnsignedCopy') {
+                    if ((result as WriterOperations['writer.verifyNotebookOutput']['result'] | WriterOperations['writer.verifyUnsignedCopy']['result']).bytes.byteLength !== verifyLength) invalidPdfReply();
                 } else if (op === 'writer.release') sources.delete((args as WriterOperations['writer.release']['args']).writerSession);
                 if (op === 'writer.finishAnnotated') await verifyPdfWriterOutput(op,
                     args as WriterOperations['writer.finishAnnotated']['args'], result as WriterOperations['writer.finishAnnotated']['result'], signal);

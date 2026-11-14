@@ -35,7 +35,7 @@ export function installPdfiumFontBridge(runtime: PdfiumRuntime, provider: FontPr
     const layout = runtime.abi.structs.systemFontInfo, pointer = runtime.malloc(layout.size);
     const callbacks: number[] = [], fonts = new Map<number, FontHandle>();
     let next = 1, totalBytes = 0, closed = false, active = false;
-    let failure: Error | undefined;
+    let failure: Error | undefined, language: string | undefined;
     const missing = new Map<string, FontSpec>();
     const fail = (error: unknown) => { if (active && !failure) failure = error instanceof Error ? error : new PdfEngineError('EngineBroken', 'PDF font callback failed'); };
     const readName = (rawPointer: number): string => {
@@ -66,7 +66,8 @@ export function installPdfiumFontBridge(runtime: PdfiumRuntime, provider: FontPr
                 if (!family || [...family].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || charset < 0 || charset > 255) throw new PdfEngineError('InvalidPdf', 'Invalid PDF font request');
                 // A Base-14 face requested for CJK still needs the regional fallback.
                 if (BASE14.test(family) && (charset === 0 || charset === 1 || charset === 2)) return 0;
-                const spec: FontSpec = { family, weight: Math.max(1, Math.min(1000, weight | 0)), italic: !!italic, charset: charset | 0 };
+                const spec: FontSpec = { family, weight: Math.max(1, Math.min(1000, weight | 0)), italic: !!italic, charset: charset | 0,
+                    ...(language ? { language } : {}) };
                 const bytes = provider.request(spec);
                 if (bytes === undefined) {
                     if (active) {
@@ -116,13 +117,13 @@ export function installPdfiumFontBridge(runtime: PdfiumRuntime, provider: FontPr
         throw error;
     }
     return {
-        begin() {
+        begin(hint) {
             if (closed || active) throw new PdfEngineError('EngineBroken', 'Invalid PDF font operation scope');
-            active = true; missing.clear(); failure = undefined;
+            language = hint; active = true; missing.clear(); failure = undefined;
         },
         end() {
             if (!active) throw new PdfEngineError('EngineBroken', 'Invalid PDF font operation scope');
-            active = false;
+            active = false; language = undefined;
             return { missing: [...missing.values()], failure };
         },
         close() {

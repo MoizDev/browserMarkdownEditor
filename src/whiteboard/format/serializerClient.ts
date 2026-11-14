@@ -5,7 +5,7 @@ import type { PinnedBoardBuild } from '../session/contentSource';
 import type { RecordIntegrity } from './lineTable';
 import { boardEnvelope, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from '../workers/protocol';
-import type { SerializerBuild, SerializerChange, SerializerDelta, SerializerPrime, SerializerProduct, SerializerReply } from './serializerProtocol';
+import type { SerializerBuild, SerializerChange, SerializerDelta, SerializerPrime, SerializerProduct, SerializerRecordOverride, SerializerReply } from './serializerProtocol';
 
 interface Root { readonly prime: SerializerPrime; readonly header: string; }
 interface Revision {
@@ -24,7 +24,7 @@ export interface SerializerCheckpoint extends PinnedBoardBuild {
 export interface SerializerSession {
     /** O(changed): records are already encoded from a pinned revision on the calling thread. */
     update(delta: SerializerDelta): void;
-    checkpoint(expected: RecordIntegrity, end: ExtBag | null): SerializerCheckpoint;
+    checkpoint(expected: RecordIntegrity, end: ExtBag | null, overrides?: readonly SerializerRecordOverride[]): SerializerCheckpoint;
     dispose(): void;
 }
 let nextSerializer = 0;
@@ -113,12 +113,13 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             loadedGeneration = client.generation;
         }
     }
-    async function assemble(target: Revision, expected: RecordIntegrity, endFields: SerializerBuild['endFields'], signal: AbortSignal): Promise<SerializerProduct> {
+    async function assemble(target: Revision, expected: RecordIntegrity, endFields: SerializerBuild['endFields'],
+        overrides: readonly SerializerRecordOverride[], signal: AbortSignal): Promise<SerializerProduct> {
         let retried = false;
         for (; ;) {
             try {
                 await sync(target, signal, 0);
-                const product = await request<SerializerProduct>('build', { revision: target.revision, expected, endFields }, target.revision, 0, signal);
+                const product = await request<SerializerProduct>('build', { revision: target.revision, expected, endFields, overrides }, target.revision, 0, signal);
                 if (product.revision !== target.revision || !(product.blob instanceof Blob) || !(product.index instanceof Blob)
                     || !/^[0-9a-f]{64}$/u.test(product.sha256)) throw new WorkerHostError('Protocol', 'Invalid serializer product');
                 return product;
@@ -165,8 +166,13 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             // last durable baseline. A crash before the reply never causes an empty re-prime.
             void serial(() => sync(next)).catch(onFailure);
         },
-        checkpoint(expected, end) {
+        checkpoint(expected, end, overrides = []) {
+            if (disposed) throw new WorkerHostError('Cancelled', 'Board serializer is disposed');
             const target = current;
+            const frozenOverrides: readonly SerializerRecordOverride[] = Object.freeze(overrides.map(override => {
+                if (!(override.bytes instanceof Uint8Array)) throw new TypeError('Invalid checkpoint override bytes');
+                return Object.freeze({ identity: Object.freeze({ ...override.identity }), bytes: override.bytes.slice() });
+            }));
             const integrity = { count: expected.count, digest: expected.digest };
             const endFields = [...(end?.fields ?? [])].map(([key, value]) => [key, value] as const);
             if (end?.raw.size) throw new Error('A preserved footer cannot override its derived count');
@@ -174,7 +180,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             return Object.freeze({
                 revision: target.revision,
                 async build(signal: AbortSignal) {
-                    const product = await serial(() => assemble(target, integrity, endFields, signal));
+                    const product = await serial(() => assemble(target, integrity, endFields, frozenOverrides, signal));
                     built = product;
                     return product.blob;
                 },

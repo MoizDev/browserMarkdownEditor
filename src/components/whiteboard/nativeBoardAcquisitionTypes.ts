@@ -8,9 +8,9 @@ export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly legacyOriginalSha256: string | null;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
-        dispose(): void;
+        dispose(): void | Promise<void>;
     };
-    dispose(): void;
+    dispose(): void | Promise<void>;
 }
 export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     readonly documentId: string;

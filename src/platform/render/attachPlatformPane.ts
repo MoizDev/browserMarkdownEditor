@@ -124,8 +124,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
-            // Candidate uploads must not gate the source tiles needed for the first CPU picture.
-            gpuResources: () => gpu && cpuPresented ? gpu.bundle.compositor.resources : null, compositor: drawCompositor,
+            // GPU uploads cannot gate CPU source acquisition, including the resize bridge.
+            gpuResources: () => {
+                if (!gpu || !cpuPresented) return null;
+                const preparing = drawCompositor()?.resources;
+                return preparing?.device ? preparing : null;
+            }, compositor: drawCompositor,
             preparationCompositor: drawCompositor,
             invalidate: (reason, damage) => lifecycle?.invalidate(reason, damage),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
@@ -529,6 +533,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const selected = surfaceHost.current;
             if (!selected?.captureRegion) return Promise.reject(new Error('Pane capture is unavailable'));
             return selected.captureRegion(worldRect, maxSidePx, captureOptions);
+        },
+        captureBlob(worldRect, maxSidePx, captureOptions) {
+            if (disposed || !options.session.captureBlob) return Promise.reject(new Error('Pane capture is unavailable'));
+            return options.session.captureBlob(worldRect, maxSidePx, captureOptions);
         },
         dispose() {
             if (disposed) return;

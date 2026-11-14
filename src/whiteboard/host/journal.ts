@@ -51,16 +51,19 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             // cumulative delta; only the transport waits until replay returns.
             capture.record(applied, revision);
         },
-        capture(source) {
+        capture(source, context) {
             if (disposed) throw new Error('Board journal disposed');
-            const snapshot = capture.capture(), barrier = replay;
-            let pending: Promise<void> | undefined;
-            return () => {
-                if (!snapshot) return;
-                return pending ??= enqueue(snapshot, source, barrier);
+            const snapshot = capture.capture(context), barrier = replay;
+            const lease = snapshot ? source.retain?.() : undefined;
+            let pending: Promise<void> | undefined, cancelled = false;
+            const append = () => {
+                if (!snapshot || cancelled) return;
+                return pending ??= enqueue(snapshot, source, barrier).finally(() => lease?.release());
             };
+            append.cancel = () => { if (!pending && !cancelled) { cancelled = true; lease?.release(); } };
+            return append;
         },
-        delta() { return disposed ? undefined : capture.capture(); },
+        delta(context) { return disposed ? undefined : capture.capture(context); },
         async recover(payload, apply) {
             if (disposed) throw new Error('Board journal disposed');
             if (replay) throw new Error('Board recovery is already in progress');

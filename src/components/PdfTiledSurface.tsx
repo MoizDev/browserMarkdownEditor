@@ -1,5 +1,5 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { PdfReadingBinding } from '../types/reading';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
@@ -21,6 +21,7 @@ interface Props {
     openText(page?: number): void;
     openClassic(): void;
     onSource(source: PdfTiledSource): void;
+    onCapabilities(source: PdfTiledSource, capabilities: ReaderCapabilities): void;
     notify(message: string): void;
 }
 
@@ -36,6 +37,10 @@ export default function PdfTiledSurface(props: Props) {
     const [passwords, setPasswords] = useState<typeof import('../pdf/session/passwords') | null>(null);
     const key = identity ? `${reading.identity.vaultEpoch}:${reading.identity.documentId}:${identity.serial}:${identity.bytesGeneration}` : '';
     const source = loaded?.key === key ? loaded.source : null;
+    const onCapabilities = props.onCapabilities;
+    const reportCapabilities = useCallback((capabilities: ReaderCapabilities) => {
+        if (source?.session.isCurrent()) onCapabilities(source, capabilities);
+    }, [source, onCapabilities]);
     useEffect(() => {
         if (!key) return;
         const controller = new AbortController();
@@ -79,8 +84,9 @@ export default function PdfTiledSurface(props: Props) {
     if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
-        mirror={source.mirror} capturer={source.capturer} selectionState={source.selection}
+        mirror={source.mirror} capturer={source.capturer} selectionState={source.selection} transition={source.transition} bridge={source.bridge}
         filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={props.sourceHash}
         findMemory={props.findMemory} onSearchVault={props.searchVault} onRotate={props.rotate}
+        onCapabilities={reportCapabilities}
         onOpenTextView={props.openText} onNotice={props.notify} onOpenClassic={props.openClassic} />;
 }

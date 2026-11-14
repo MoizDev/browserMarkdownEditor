@@ -36,6 +36,7 @@ export function createSceneSnapshot(options: {
     records: SceneRecordPin;
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
+    renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) => Promise<PaintNodeSource>;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
@@ -96,7 +97,7 @@ export function createSceneSnapshot(options: {
             if (released) return;
             released = true;
             controller.abort(cancelled());
-            records.release();
+            try { records.release(); } finally { options.renderer?.release(); }
         },
     };
     return snapshot;

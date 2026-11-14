@@ -164,7 +164,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                 onError: options.onError });
                 try {
                     const pinMedia = createNativeMediaRestore(store, host, identity, () => owned?.board, store);
-                    owned = createOwnedBoardRuntime({ runtime: { owner, doc, samples, media: store,
+                    owned = createOwnedBoardRuntime({ runtime: { owner, doc, samples, media: store, render,
                         serializer: preparedSerializer, records, encoder, journal,
                         geometry: render.changeGeometry,
                         isCurrent: candidate => candidate.documentId === identity.documentId && candidate.session === identity.session

@@ -1,6 +1,7 @@
 import type { SessionAdapter } from '../utils/documentSessions';
 import type { ContentSource } from '../utils/documentBuffers';
 import type { JournalCapture } from '../utils/recoveryFunnel';
+import type { TrashItem } from './index';
 
 export interface NativeCanvasIdentity {
     readonly documentId: string;
@@ -19,9 +20,12 @@ export interface NativeCanvasMedia {
 
 export interface NativeCanvasHost {
     identity(documentId: string): NativeCanvasIdentity | undefined;
+    /** The current outer-file generation, even when a native session retains its source generation. */
+    outerIdentity(documentId: string): NativeCanvasIdentity | undefined;
     session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
+    keepConversionBackup(identity: NativeCanvasIdentity, original: Blob, digest: string, signal: AbortSignal): Promise<TrashItem>;
     appendJournal(identity: NativeCanvasIdentity, source: ContentSource, capture: JournalCapture): Promise<void>;
     readMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia, signal: AbortSignal): Promise<{ name: string; blob: Blob } | null>;
     putMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia & { extension: string }, blob: Blob, signal: AbortSignal): Promise<string>;

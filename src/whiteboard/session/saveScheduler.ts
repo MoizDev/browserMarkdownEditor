@@ -6,7 +6,7 @@ export interface SaveSchedulerCallbacks {
     readonly finishGesture: () => void;
     readonly finishComposition: () => void;
     /** Synchronously pin changed encoded lines, returning the serialized append. */
-    readonly captureJournal: () => () => void | Promise<void>;
+    readonly captureJournal: () => (() => void | Promise<void>) & { cancel?: () => void };
     readonly journalError: (error: unknown) => void;
 }
 
@@ -37,7 +37,7 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
     let composition = false;
     let disposed = false;
     let flushing = false;
-    let queuedJournal: (() => void | Promise<void>) | undefined;
+    let queuedJournal: ((() => void | Promise<void>) & { cancel?: () => void }) | undefined;
     let journalWork: Promise<void> | undefined;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let journalTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,8 +72,11 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
     }
     function journal(): void {
         if (disposed || !journalPending) return;
-        try { queuedJournal = callbacks.captureJournal(); }
-        catch (error) { callbacks.journalError(error); return; }
+        try {
+            const next = callbacks.captureJournal();
+            queuedJournal?.cancel?.();
+            queuedJournal = next;
+        } catch (error) { callbacks.journalError(error); return; }
         drainJournal();
     }
     function flush(): void {

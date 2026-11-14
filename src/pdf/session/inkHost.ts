@@ -6,18 +6,23 @@ import type { RawJson } from '../../whiteboard/model/json';
 import { newPdfWriteId } from '../writing/writeIdentity';
 import { acquirePdfInkSource } from './inkAcquisition';
 import type { PdfEditableInkSource, PdfInkAcquisition, PdfInkAcquisitionOptions } from './inkAcquisition.types';
+import type { PdfLegacyConversionReady } from './legacyInkAcquisition.types';
+import { isPreparedPdfLegacyConversion } from './legacyInkAcquisition';
 
 type PdfHost = Extract<HostBlock, { kind: 'pdf-ink' }>;
 const HASH = /^[0-9a-f]{64}$/;
 const WRITE_ID = /^[0-9a-f]{32}$/;
+type SourceBasis = (Pick<PdfEditableInkSource, 'source' | 'pages' | 'isCurrent'> &
+    ({ kind: 'plain' } | { kind: 'native'; writeId: string })) | PdfLegacyConversionReady;
+type Migration = { version: 1; legacyOuterFingerprint: string; previousFrames: Array<{ width: number; height: number }> };
 
-function fields(span: JsonSpan, names: readonly string[]): ReadonlyMap<string, JsonSpan> {
+function fields(span: JsonSpan, names: readonly string[], optional: readonly string[] = []): ReadonlyMap<string, JsonSpan> {
     const result = new Map<string, JsonSpan>();
     for (const [name, value] of span.fields()) {
-        if (!names.includes(name) || result.has(name)) throw new Error('Unsupported PDF ink metadata');
+        if ((!names.includes(name) && !optional.includes(name)) || result.has(name)) throw new Error('Unsupported PDF ink metadata');
         result.set(name, value);
     }
-    if (result.size !== names.length) throw new Error('Unsupported PDF ink metadata');
+    if (names.some(name => !result.has(name))) throw new Error('Unsupported PDF ink metadata');
     return result;
 }
 function items(span: JsonSpan, count: number): JsonSpan[] {
@@ -37,12 +42,28 @@ function pageMatches(span: JsonSpan, page: Readonly<PageGeometry>, index: number
         f.get('userUnit')!.number() === page.userUnit && page.toUserSpace.length === 6 &&
         affine.every((value, i) => value.number() === page.toUserSpace[i]);
 }
-function validHost(acq: PdfEditableInkSource, host: HostBlock, loaded: boolean): host is PdfHost {
+function migrationValue(span: JsonSpan, pages: readonly Readonly<PageGeometry>[]): Migration {
+    const value = fields(span, ['version', 'legacyOuterFingerprint', 'previousFrames']);
+    const fingerprint = value.get('legacyOuterFingerprint')!.string(64);
+    if (value.get('version')!.number() !== 1 || !HASH.test(fingerprint)) throw new Error('Invalid PDF migration metadata');
+    const previousFrames = items(value.get('previousFrames')!, pages.length).map((frame, index) => {
+        const pair = fields(frame, ['width', 'height']), width = pair.get('width')!.number(), height = pair.get('height')!.number();
+        const page = pages[index];
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 ||
+            !Number.isFinite(page.width) || !Number.isFinite(page.height) || page.width <= 0 || page.height <= 0 ||
+            Math.abs((width / height) / (page.width / page.height) - 1) > 0.005) throw new Error('PDF migration frames do not match');
+        return { width, height };
+    });
+    return { version: 1, legacyOuterFingerprint: fingerprint, previousFrames };
+}
+function validHost(acq: SourceBasis, host: HostBlock, loaded: boolean): host is PdfHost {
     try {
-        if (!acq.isCurrent() || host.kind !== 'pdf-ink' || !HASH.test(acq.source.pristineFingerprint) ||
+        if (!acq.isCurrent() || (acq.kind === 'legacy-conversion' && !isPreparedPdfLegacyConversion(acq)) ||
+            host.kind !== 'pdf-ink' || !HASH.test(acq.source.pristineFingerprint) ||
             !acq.pages.length || acq.pages.length > 65_536 || host.pages.length !== acq.pages.length ||
             host.ext?.raw.has('pdf') || host.ext?.raw.has('pages')) return false;
-        const metadata = fields(parseJson(host.pdf), ['schema', 'sourceFingerprint', 'geometryEngine', 'pages', 'writeId']);
+        const metadata = fields(parseJson(host.pdf), ['schema', 'sourceFingerprint', 'geometryEngine', 'pages', 'writeId'], ['migration']);
+        if (metadata.has('migration')) migrationValue(metadata.get('migration')!, acq.pages);
         if (metadata.get('schema')!.number() !== 1 || metadata.get('sourceFingerprint')!.string(64) !== acq.source.pristineFingerprint) return false;
         const engine = fields(metadata.get('geometryEngine')!, ['id', 'build', 'generation']), expected = acq.source.geometryEngine;
         if (engine.get('id')!.string(128) !== expected.id || engine.get('build')!.string(256) !== expected.build ||
@@ -58,12 +79,12 @@ function validHost(acq: PdfEditableInkSource, host: HostBlock, loaded: boolean):
         });
     } catch { return false; }
 }
-function metadata(acq: PdfEditableInkSource, writeId: string): RawJson {
+function metadata(acq: SourceBasis, writeId: string, migration?: Migration): RawJson {
     const engine = acq.source.geometryEngine;
     const json = JSON.stringify({ schema: 1, sourceFingerprint: acq.source.pristineFingerprint,
         geometryEngine: { id: engine.id, build: engine.build, generation: engine.generation },
         pages: acq.pages.map(page => ({ index: page.index, width: page.width, height: page.height, rotate: page.rotate,
-            userUnit: page.userUnit, toUserSpace: [...page.toUserSpace] })), writeId });
+            userUnit: page.userUnit, toUserSpace: [...page.toUserSpace] })), writeId, ...(migration ? { migration } : {}) });
     return parseJson(json).raw();
 }
 
@@ -76,16 +97,28 @@ export function createPdfInkHost(acq: PdfEditableInkSource): PdfHost {
     return host;
 }
 
+export function createPdfInkConversionHost(acq: PdfLegacyConversionReady, previousFrames: readonly { width: number; height: number }[]): PdfHost {
+    if (acq.kind !== 'legacy-conversion' || !isPreparedPdfLegacyConversion(acq) || !acq.isCurrent() || !HASH.test(acq.legacyOriginalSha256) ||
+        acq.source.outerFingerprint !== acq.legacyOriginalSha256 ||
+        !Array.isArray(previousFrames) || previousFrames.length !== acq.pages.length) throw new Error('A prepared legacy PDF conversion is required');
+    const migration = migrationValue(parseJson(JSON.stringify({ version: 1, legacyOuterFingerprint: acq.legacyOriginalSha256, previousFrames })), acq.pages);
+    const host: PdfHost = { kind: 'pdf-ink', pdf: metadata(acq, newPdfWriteId(), migration),
+        pages: acq.pages.map(page => [page.width, page.height] as const), ext: null };
+    if (!validHost(acq, host, false)) throw new Error('Invalid PDF conversion geometry');
+    return host;
+}
+
 /** Unknown PDF-owned schema or fields cannot be preserved by this writer. */
 export function validateLoadedPdfInkHost(acq: PdfEditableInkSource, host: HostBlock): boolean {
     return validHost(acq, host, true);
 }
 
 /** Pin once per frozen build job; neither the live host nor opaque extensions are modified. */
-export function pinPdfInkHostForSave(acq: PdfEditableInkSource, host: HostBlock): { host: PdfHost; writeId: string } {
+export function pinPdfInkHostForSave(acq: SourceBasis, host: HostBlock): { host: PdfHost; writeId: string } {
     if (!validHost(acq, host, false)) throw new Error('PDF ink host no longer matches its source');
-    const writeId = newPdfWriteId();
-    return { host: { ...host, pdf: metadata(acq, writeId) }, writeId };
+    const writeId = newPdfWriteId(), span = parseJson(host.pdf).fieldMap().get('migration');
+    const migration = span ? migrationValue(span, acq.pages) : undefined;
+    return { host: { ...host, pdf: metadata(acq, writeId, migration) }, writeId };
 }
 
 /** A committed version becomes editable only after the new outer is independently inspected. */

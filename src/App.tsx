@@ -1,6 +1,6 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, sourceIsNewer, type ContentSource } from './utils/documentBuffers';
-import { createDocumentSessions } from './utils/documentSessions';
+import { createDocumentSessions, type SessionEntry } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession, CanvasSessionBridge } from './utils/canvasSessionBridge';
@@ -367,6 +367,15 @@ function foldersWithStyleFile(
 
 const RECOVERY_SESSION_BINDING = Symbol('recovery-session-binding');
 
+function hasHostedNativeOwner(entry: SessionEntry | undefined, documentId: string): boolean {
+  if (!entry || !('peek' in entry.adapter) || typeof entry.adapter.peek !== 'function') return false;
+  const hosted: unknown = entry.adapter.peek();
+  if (!hosted || typeof hosted !== 'object' || !('owner' in hosted)) return false;
+  const owner = hosted.owner;
+  return !!owner && typeof owner === 'object' && 'documentId' in owner && 'session' in owner
+    && owner.documentId === documentId && owner.session === entry.serial;
+}
+
 interface PdfRebuildEntry {
   identity: ReaderIdentity;
   root: FileSystemDirectoryHandle;
@@ -433,6 +442,7 @@ export default function App() {
     requestIndexPermission,
     moveToTrash,
     keepCopyInGarbage,
+    keepConversionBackup,
     listTrash,
     restoreFromTrash,
     restoreConversionCopy,
@@ -1062,15 +1072,20 @@ export default function App() {
       },
     };
   }, [documentBuffers, documentSessions, getVaultActivation]);
-  const bumpBytesGeneration = useCallback((id: string) => {
-    const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
+  const bumpBytesGeneration = useCallback((id: string, preserveNative = false) => {
+    const previous = bytesGenerationsRef.current.get(id) ?? 0;
+    const generation = previous + 1;
     prepareBytesChange(id, generation);
     bytesGenerationsRef.current.set(id, generation);
     const session = documentSessions.get(id);
     const policy = nativePoliciesRef.current.get(id);
-    if (policy && session && policy.session === session.serial) policy.generation = generation;
+    const tab = tabsRef.current.find(candidate => candidate.id === id);
+    const kind = tab?.representation.loadedKind === 'pdf' ? 'pdfInk' : tab?.representation.loadedKind;
+    if (preserveNative && policy && session && policy.session === session.serial && policy.kind === kind
+      && session.bytesGeneration === previous && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === previous
+      && hasHostedNativeOwner(session, id)) policy.retainedThroughGeneration = generation;
     if (session) documentSessions.setBytesGeneration(id, generation);
-  }, [documentSessions]);
+  }, [documentSessions, getVaultActivation]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
@@ -1134,12 +1149,16 @@ export default function App() {
   }, [tabs, layout, documentBuffers, documentSessions]);
   const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
     (documentId, create) => attachCanvasSession(documentSessions, documentId, create), [documentSessions]);
-  const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
+  const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean }>());
   const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
     const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
     const live = () => {
       const identity = getSessionIdentity(owner.documentId);
-      return getVaultActivation() === vaultActivation && identity?.serial === owner.session && identity.bytesGeneration === bytesGeneration;
+      const policy = nativePoliciesRef.current.get(owner.documentId), session = documentSessions.get(owner.documentId);
+      return getVaultActivation() === vaultActivation && identity?.serial === owner.session && (identity.bytesGeneration === bytesGeneration
+        || !!policy && policy.session === owner.session && policy.activation === vaultActivation && policy.kind === kind
+          && policy.sourceGeneration === bytesGeneration && policy.retainedThroughGeneration === identity.bytesGeneration
+          && hasHostedNativeOwner(session, owner.documentId));
     };
     const tab = tabsRef.current.find(t => t.id === owner.documentId);
     if (!live() || !tab || tab.readError || tab.representation.status !== 'ready') return null;
@@ -1147,29 +1166,37 @@ export default function App() {
       : kind === 'notebook' ? !isNotebookFile(tab.file.name)
         : !isCanvasFile(tab.file.name) || isNotebookFile(tab.file.name)) return null;
     const prior = nativePoliciesRef.current.get(owner.documentId);
-    const emergencyReadOnly = prior && prior.session === owner.session && prior.generation === bytesGeneration && prior.activation === vaultActivation
-      ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
-    nativePoliciesRef.current.set(owner.documentId, { session: owner.session, generation: bytesGeneration, activation: vaultActivation, emergencyReadOnly });
+    const same = prior && prior.session === owner.session && prior.sourceGeneration === bytesGeneration && prior.activation === vaultActivation && prior.kind === kind;
+    const emergencyReadOnly = same ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
+    if (!same) nativePoliciesRef.current.set(owner.documentId, { session: owner.session, sourceGeneration: bytesGeneration,
+      retainedThroughGeneration: bytesGeneration, activation: vaultActivation, kind, emergencyReadOnly });
     const digest = acquisition.legacyOriginalSha256;
     const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
     setTabs(previous => previous.map(current => current.id === owner.documentId && live()
       ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
       : current));
     return { emergencyReadOnly };
-  }, [getVaultActivation]);
+  }, [documentSessions, getVaultActivation]);
   const nativeCanvasHost = useMemo<NativeCanvasHost>(() => {
     const current = (identity: NativeCanvasIdentity) => {
       if (identity.vaultActivation !== getVaultActivation()) return undefined;
       const tab = tabsRef.current.find(tab => tab.id === identity.documentId);
       const entry = documentSessions.get(identity.documentId);
       const loaded = identity.kind === 'pdfInk' ? 'pdf' : identity.kind;
+      const policy = nativePoliciesRef.current.get(identity.documentId);
+      const retained = entry && policy && policy.session === identity.session && policy.activation === identity.vaultActivation
+        && policy.kind === identity.kind && policy.sourceGeneration === identity.bytesGeneration
+        && policy.retainedThroughGeneration === entry.bytesGeneration && hasHostedNativeOwner(entry, identity.documentId);
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
-        && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration ? tab : undefined;
+        && entry?.serial === identity.session && (entry.bytesGeneration === identity.bytesGeneration || retained) ? tab : undefined;
     };
     const writable = (identity: NativeCanvasIdentity) => {
       const policy = nativePoliciesRef.current.get(identity.documentId);
-      return !!policy && !policy.emergencyReadOnly && policy.session === identity.session
-        && policy.activation === identity.vaultActivation && policy.generation === identity.bytesGeneration;
+      const entry = documentSessions.get(identity.documentId);
+      return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
+        && policy.activation === identity.vaultActivation && policy.kind === identity.kind
+        && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
+        && hasHostedNativeOwner(entry, identity.documentId);
     };
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
@@ -1180,6 +1207,18 @@ export default function App() {
     };
     return {
       identity(id) {
+        const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
+        if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
+        const loaded = tab.representation.loadedKind;
+        if (loaded !== 'pdf' && loaded !== 'drawing' && loaded !== 'notebook') return undefined;
+        const kind = loaded === 'pdf' ? 'pdfInk' : loaded;
+        const activation = getVaultActivation(), policy = nativePoliciesRef.current.get(id);
+        const retained = policy && policy.session === entry.serial && policy.activation === activation && policy.kind === kind
+          && policy.retainedThroughGeneration === entry.bytesGeneration && hasHostedNativeOwner(entry, id);
+        return { documentId: id, session: entry.serial, bytesGeneration: retained ? policy.sourceGeneration : entry.bytesGeneration,
+          vaultActivation: activation, kind, path: tab.file.path, name: tab.file.name };
+      },
+      outerIdentity(id) {
         const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
         if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
         const loaded = tab.representation.loadedKind;
@@ -1207,6 +1246,22 @@ export default function App() {
           if (baseline && baseline.hash !== version.hash) throw new Error('The canvas changed on disk. Reload it before editing.');
           return bytes;
         } finally { snapshot.dispose(); }
+      },
+      async keepConversionBackup(identity, original, digest, signal) {
+        const tab = current(identity);
+        if (!tab) throw new DOMException('Canvas session ended', 'AbortError');
+        const path = tab.file.path, handle = tab.file.handle;
+        const access = request(identity, { hash: digest }, signal);
+        const result = await keepConversionBackup({ ...access, blob: original, isCurrent: () => {
+          const latest = current(identity);
+          return !!latest && latest.file.path === path && latest.file.handle === handle && getBaseline(identity.documentId)?.hash === digest;
+        } });
+        signal.throwIfAborted();
+        if (!access.isCurrent() || getBaseline(identity.documentId)?.hash !== digest
+          || current(identity)?.file.path !== path || current(identity)?.file.handle !== handle) {
+          throw new DOMException('Canvas session ended', 'AbortError');
+        }
+        return result;
       },
       async appendJournal(identity, source, capture) {
         if (!current(identity) || !writable(identity) || typeof source === 'string' || source.kind !== 'deferred'
@@ -1243,7 +1298,7 @@ export default function App() {
         return name;
       },
     };
-  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, recoveryEvent, recoveryJournal]);
+  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
@@ -2320,27 +2375,37 @@ export default function App() {
     const source = tabsRef.current.find(tab => tab.file.path === file.path);
     const exporter = getNotebookExporter(file.path);
     if (!vault || !root || !source || !exporter) { notify(`Open "${file.name}" before exporting it.`); return; }
-    const epoch = readerEpochRef.current.epoch, generation = source.representation.generation, diskRev = source.diskRev;
+    const epoch = readerEpochRef.current.epoch, activation = getVaultActivation(), generation = source.representation.generation, diskRev = source.diskRev;
+    let nativeJob: import('./utils/notebookRenderCache').NativeNotebookExportJob | undefined;
     const isCurrent = () => rootHandleRef.current === root && currentVaultIdRef.current === vault && readerEpochRef.current.epoch === epoch &&
-      tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path && tab.representation.generation === generation && tab.diskRev === diskRev);
+      getVaultActivation() === activation && tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path &&
+        (nativeJob ? nativeJob.isCurrent() : tab.representation.generation === generation && tab.diskRev === diskRev));
     notebookExportInFlightRef.current = true;
     try {
-      const exported = await exporter();
-      if (!exported || !isCurrent()) return;
-      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      let paper: import('./utils/paper').NotebookPaper, bytes: Uint8Array;
+      if (typeof exporter === 'function') {
+        const exported = await exporter();
+        if (!exported || !isCurrent()) return;
+        const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
+        paper = exported.paper;
+        bytes = await buildNotebookPdfAsync(paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      } else {
+        nativeJob = exporter.prepare();
+        if (nativeJob.sourcePath !== file.path || !isCurrent()) return;
+        ({ paper, bytes } = await nativeJob.run(new AbortController().signal));
+      }
       if (!isCurrent() || !await commitNotebookPdf(file, bytes, source.id, isCurrent)) return;
       void tell({
         title: 'Exported to PDF', confirmLabel: 'OK',
-        body: `"${notebookPdfName(file.name)}" is in the same folder — ${exported.paper.pageCount} `
-          + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
+        body: `"${notebookPdfName(file.name)}" is in the same folder — ${paper.pageCount} `
+          + `${paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
       console.error('Could not export the notebook:', err);
       notify(err instanceof DOMException && err.name === 'TypeMismatchError'
         ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
-    } finally { notebookExportInFlightRef.current = false; }
-  }, [commitNotebookPdf, notify, tell]);
+    } finally { try { nativeJob?.release(); } finally { notebookExportInFlightRef.current = false; } }
+  }, [commitNotebookPdf, getVaultActivation, notify, tell]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -2594,8 +2659,9 @@ export default function App() {
     const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string' && documentSessions.get(tab.id)?.kind !== 'markdown';
     const policy = nativePoliciesRef.current.get(tab.id);
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
-      && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
-      && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
+      && policy.kind === (tab.representation.loadedKind === 'pdf' ? 'pdfInk' : tab.representation.loadedKind)
+      && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
+      && hasHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
     if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
@@ -2603,8 +2669,9 @@ export default function App() {
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
     let captured;
-    try { captured = documentBuffers.snapshotOf(path); }
+    try { captured = documentBuffers.retainSnapshotOf(path); }
     catch (error) { console.error('Could not capture document:', error); return 'failed'; }
+    try {
     if (!captured || (!nativeSource && typeof captured.data !== 'string')) {
       console.error('Could not capture document: its buffer is unavailable.');
       return 'failed';
@@ -2614,6 +2681,8 @@ export default function App() {
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
+    const conversionDigest = nativeSource ? tab.representation.legacyOriginalSha256 : undefined;
+    const conversionIdentity = conversionDigest ? nativeCanvasHost.identity(tab.id) : undefined;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
     if (__BME_BENCH__) {
@@ -2700,6 +2769,32 @@ export default function App() {
         if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal) || !closing && diskStateRef.current.has(id))) return 'skipped';
         if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'skipped';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'skipped';
+        if (conversionDigest) {
+          if (!expected) throw new Error('The conversion baseline is unavailable.');
+          if (expected.hash === conversionDigest) {
+            if (!conversionIdentity || conversionIdentity.session !== sessionAtCall?.serial) throw new Error('The conversion session is unavailable.');
+            if (trashInFlightRef.current && !trashOwned) throw new Error('Trash is busy; retry the conversion save.');
+            if (!trashOwned) trashInFlightRef.current = true;
+            try {
+              await reconcileQueueRef.current;
+              const stillCurrent = () => {
+                if (!nativeCanvasHost.isCurrent(conversionIdentity) || rootHandleRef.current !== rootAtCall
+                  || documentSessions.get(id) !== sessionAtCall
+                  || !tabsRef.current.some(t => t.id === id && t.file.path === path && t.file.handle === handle)
+                  || getBaseline(id)?.hash !== expected.hash || diskStateRef.current.has(id)
+                  || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
+                const latest = sessionAtCall.adapter.checkpoint();
+                return !sourceIsNewer(latest, bufferedSource);
+              };
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              const signal = new AbortController().signal;
+              const original = await nativeCanvasHost.acquireBytes(conversionIdentity, signal);
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              await nativeCanvasHost.keepConversionBackup(conversionIdentity, original, conversionDigest, signal);
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+            } finally { if (!trashOwned) trashInFlightRef.current = false; }
+          }
+        }
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
@@ -2713,7 +2808,8 @@ export default function App() {
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) {
           setBaseline(id, result.version);
-          if (isPdf) bumpBytesGeneration(id);
+          if (isPdf) bumpBytesGeneration(id, nativeSource && !!sessionAtCall && documentSessions.get(id) === sessionAtCall
+            && typeof bufferedSource !== 'string' && bufferedSource?.owner.session === sessionAtCall.serial);
         }
         if (isPdf && data instanceof Uint8Array) {
           const aliases = (await import('./utils/pdfBuildClient')).pdfBuildAliases(data);
@@ -2826,9 +2922,10 @@ export default function App() {
       if (pendingWritesRef.current.get(id) === pendingWrite) pendingWritesRef.current.delete(id);
       syncExitGuard();
     }
+    } finally { captured?.release(); }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2849,13 +2946,16 @@ export default function App() {
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
-    const liveNativePolicy = !!target && !!policy && policy.activation === getVaultActivation()
-      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
+    const liveNativePolicy = !!target && !!policy && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
+      && policy.activation === getVaultActivation()
+      && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && hasHostedNativeOwner(documentSessions.get(target.id), target.id)
       && documentSessions.isLiveOwner(target.id, { documentId: target.id, session: policy.session });
     const ownedNative = !!target && typeof content !== 'string' && !!policy && !policy.emergencyReadOnly
+      && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
       && policy.session === content.owner.session && policy.activation === getVaultActivation()
-      && policy.generation === (bytesGenerationsRef.current.get(target.id) ?? 0)
-      && documentSessions.isLiveOwner(target.id, content.owner);
+      && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(target.id) ?? 0)
+      && hasHostedNativeOwner(documentSessions.get(target.id), target.id) && documentSessions.isLiveOwner(target.id, content.owner);
     const accepted = !!target && (canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')
       || ownedNative && !target.readError && target.representation.status === 'ready')
       && (typeof content === 'string' ? !!options?.fromDisk || !liveNativePolicy : documentSessions.isLiveOwner(target.id, content.owner));
@@ -3065,12 +3165,16 @@ export default function App() {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
       return;
     }
-    if (tabsRef.current.find(current => current.id === tab.id)?.dirty || flushingRef.current.has(tab.id) || getView(path)?.hasPendingEdits?.()) {
+    if (tabsRef.current.find(current => current.id === tab.id)?.dirty || documentSessions.hasPendingEdits(tab.id) || flushingRef.current.has(tab.id) || getView(path)?.hasPendingEdits?.()) {
       notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
       return;
     }
 
     const { id } = tab;
+    const rotationRevision = documentBuffers.revisionForDocument(id)?.revision;
+    const rotationSession = documentSessions.get(id);
+    const annotationsChanged = () => documentBuffers.revisionForDocument(id)?.revision !== rotationRevision
+      || documentSessions.get(id) !== rotationSession || !!rotationSession?.adapter.hasPendingEdits();
     const run = async (): Promise<void> => {
       try {
         const bytes = await readFileBytes(handle);
@@ -3094,6 +3198,10 @@ export default function App() {
         const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
+        if (annotationsChanged() || documentSessions.hasPendingEdits(id) || getView(path)?.hasPendingEdits?.()) {
+          notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
+          return;
+        }
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'rotate' }); } catch { /* Measurement must not interrupt a write. */ }
         }
@@ -3102,7 +3210,33 @@ export default function App() {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return;
         }
-        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) { setBaseline(id, result.version); bumpBytesGeneration(id); }
+        if (annotationsChanged() || getView(path)?.hasPendingEdits?.()) {
+          // The rotated bytes landed, but the newer ink still belongs to the
+          // original geometry. Keep its owner and baseline for conflict handling.
+          bumpBytesGeneration(id, documentSessions.get(id) === rotationSession);
+          setDiskState(id, 'conflict');
+          recordFileWritten(path, result.version.lastModified);
+          notifyRef.current('The PDF rotation was saved, but newer annotations are held in conflict. Resolve the conflict to preserve your edits.');
+          return;
+        }
+        let replacedNative = false;
+        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) {
+          setBaseline(id, result.version);
+          const existing = documentSessions.get(id);
+          const replaceNative = existing?.kind === 'pdf' && hasHostedNativeOwner(existing, id);
+          const route = replaceNative ? readPdfSessionRoute(existing) : undefined;
+          bumpBytesGeneration(id);
+          if (replaceNative) {
+            nativePoliciesRef.current.delete(id);
+            documentBuffers.report(id, '', true);
+            const next = documentSessions.replace(id, 'pdf', bytesGenerationsRef.current.get(id) ?? 0,
+              owner => createCanvasSessionBridge(owner, () => documentBuffers.get(id)?.source ?? ''));
+            ensurePdfSessionRoute(next, route);
+            documentBuffers.setOwner(id, { documentId: id, session: next.serial });
+            next.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(id, next.adapter), dispose => dispose());
+            replacedNative = true;
+          }
+        }
         if (tabsRef.current.some(t => t.id === id)) publishPdfRotation(id, preview, expected?.hash, result.version.hash);
         recordFileWritten(path, result.version.lastModified);
         // The parked original predates the rotation, and the next annotation
@@ -3112,7 +3246,8 @@ export default function App() {
         // more: it remounts on the new file, exactly as a reload from disk
         // does, and comes back on the page that was being read.
         setTabs(prev => prev.map(t => (t.id === id
-          ? { ...t, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1 }
+          ? { ...t, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1,
+              representation: replacedNative ? { ...t.representation, nativeCanvasKind: undefined, nativeCanvasSession: undefined, emergencyReadOnly: undefined } : t.representation }
           : t)));
         bumpSaveEpoch();
       } catch (err) {
@@ -3133,7 +3268,7 @@ export default function App() {
       if (chains.get(id) === chained) chains.delete(id);
       endPdfRotation(path);
     }
-  }, [readFileBytes, setDiskState, bumpBytesGeneration]);
+  }, [readFileBytes, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
@@ -3145,14 +3280,15 @@ export default function App() {
       try {
         await drain(tab.id);
         const revision = documentBuffers.revisionForDocument(tab.id)?.revision;
-        const snapshot = documentBuffers.snapshotForDocument(tab.id)?.data;
+        const data = documentBuffers.snapshotForDocument(tab.id)?.data;
+        const refusal = typeof data === 'string' ? pdfSnapshotRefusal(data) : undefined;
         const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
         const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
         if (outcome === 'failed' || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || getView(path)?.hasPendingEdits?.() ||
             outcome === 'skipped' && (now.dirty || documentBuffers.isDirty(now.id))) {
-          if (outcome === 'skipped' && (typeof snapshot !== 'string' || !pdfSnapshotRefusal(snapshot))) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
+          if (outcome === 'skipped' && !refusal) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
           return false;
         }
       } catch (error) { notifyRef.current(`Could not finish PDF annotations: ${describeReadError(error)}`); return false; }
@@ -4964,7 +5100,8 @@ export default function App() {
           if (rootHandleRef.current !== rootHandle) return [];
           if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
           if (documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
-          const captured = documentBuffers.snapshotOf(from);
+          const captured = documentBuffers.retainSnapshotOf(from);
+          try {
           const textRevision = captured?.revision;
           const snapshot = captured?.data ?? contentOf(from);
           if (snapshot === undefined) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
@@ -4987,6 +5124,7 @@ export default function App() {
           if (!latest) break;
           if (documentBuffers.revisionForDocument(doc.id)?.revision === textRevision && !getView(from)?.hasPendingEdits?.()
             && !documentSessions.get(doc.id)?.adapter.hasPendingEdits()) break;
+          } finally { captured?.release(); }
         }
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
@@ -5543,11 +5681,13 @@ export default function App() {
       if (checkpoint && typeof checkpoint !== 'string' && sourceIsNewer(checkpoint, source)) {
         throw new Error('The current document revision could not be captured.');
       }
-      const snapshot = documentBuffers.snapshotForDocument(id);
+      const snapshot = documentBuffers.retainSnapshotForDocument(id);
       if (!snapshot) throw new Error('The document buffer is unavailable.');
       const sourceRevision = typeof source === 'string' ? undefined : source?.revision;
       const pdf = isPdf && typeof snapshot.data === 'string' ? getPdfRenderData(path) : undefined;
-      return { revision: snapshot.revision, sourceRevision, session, build: async (): Promise<string | Uint8Array | Blob | null> => {
+      const nativeOwned = !!session && session.kind !== 'markdown' && !!source && typeof source !== 'string'
+        && source.owner.documentId === id && source.owner.session === session.serial;
+      return { revision: snapshot.revision, sourceRevision, session, nativeOwned, release: snapshot.release, build: async (): Promise<string | Uint8Array | Blob | null> => {
         let content = snapshot.data;
         if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
           content = await content.run(new AbortController().signal);
@@ -5558,6 +5698,7 @@ export default function App() {
         return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
       } };
     };
+    let capturedMine: ReturnType<typeof captureMine> | undefined;
     try {
       if (action === 'close') {
         if (hasUnsaved(tab) && !await ask({
@@ -5572,7 +5713,7 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const captured = captureMine();
+        const captured = capturedMine = captureMine();
         const dataRevision = captured.revision;
         const data = await captured.build();
         if (data === null) {
@@ -5594,7 +5735,7 @@ export default function App() {
         let parentHandle = file.parentHandle;
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
-        if (isPdf) bumpBytesGeneration(id);
+        if (isPdf) bumpBytesGeneration(id, captured.nativeOwned && !!captured.session && documentSessions.get(id) === captured.session);
         diskStateRef.current.delete(id);
         documentBuffers.markSaved(id, dataRevision);
         if (captured.sourceRevision !== undefined && captured.session && documentSessions.get(id) === captured.session) {
@@ -5626,7 +5767,7 @@ export default function App() {
 
       if (action === 'reload') {
         await drain(id);
-        const captured = captureMine();
+        const captured = capturedMine = captureMine();
         const keep = await captured.build();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
@@ -5690,6 +5831,7 @@ export default function App() {
       console.error('Could not resolve a document’s disk state:', path, action, err);
       void tell({ title: 'That did not work', confirmLabel: 'OK', body: <>Could not finish for <strong>{file.name}</strong>: {describeReadError(err)}</> });
     } finally {
+      capturedMine?.release();
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
@@ -5822,7 +5964,7 @@ export default function App() {
       createFolder,
       nameTaken,
       contentOf,
-      snapshotOf: documentBuffers.snapshotOf,
+      snapshotOf: documentBuffers.retainSnapshotOf,
       afterWrite: (file, before, after, version) => {
         // The tail of flushTab, for a file written with no tab to flush.
         notifySearchChanges();

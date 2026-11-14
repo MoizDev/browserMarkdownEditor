@@ -181,7 +181,9 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
         aimWorld: terminal === 'start' ? a : b, boundaryWorld: point(distance), tipWorld: tip, tangentWorld: direction.vector,
         degenerate: direction.degenerate, target: node[terminal].attach?.target ?? null });
     return { status: 'ready', geometry: { key: request.key, start: resolved('start', startBoundary, startTip, startTangent),
-        end: resolved('end', endBoundary, endTip, endTangent), body, heads, label, bodyExclusions: exclusions, inkBoundsWorld: bounds } };
+        end: resolved('end', endBoundary, endTip, endTangent), body, heads, label,
+        editMetrics: { anchorWorld: point(from + (to - from) * node.labelAt), bodyLength: to - from },
+        bodyExclusions: exclusions, inkBoundsWorld: bounds } };
 }
 
 export function resolveConnectorGeometryNow(request: ConnectorGeometryRequest, options: {

@@ -68,7 +68,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
     try { plan = new ResizePlan(nodes, options.down, options.handle, {
         capture(node) { const value = snapshots.get(node.id); if (!value) throw new Error('Resize target disappeared'); return value; },
         isCurrent: current,
-        async planAllAsync(targets, _frame, request) {
+        async planAllAsync(targets, frame, request) {
             const turn = generation, leases: BoardLeafResizeResult[] = [], ops: NodeSetOp[] = [];
             const active = () => current() && turn === generation && !request.aborted;
             let candidate = doc, transferred = false;
@@ -77,8 +77,12 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                     check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
                     const node = candidate.nodes.get(target.snapshot.node.id);
                     if (!node || node.kind === 'opaque' || node.kind === 'group' || node.kind === 'connector') throw new Error('Resize target changed');
+                    const fx = target.factors.x < 0 || (target.factors.x === 0 && target.factors.zeroSignX < 0);
+                    const fy = target.factors.y < 0 || (target.factors.y === 0 && target.factors.zeroSignY < 0);
+                    // Default, calibration cut by owner: a single crossed axis reflects orientation without shear.
+                    const rotationWorld = fx !== fy ? 2 * frame.box.rotation - target.snapshot.worldRotation : target.snapshot.worldRotation;
                     const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors: target.factors,
-                        centreWorld: target.centre, signal: request, current: active, cooperate: options.cooperate });
+                        centreWorld: target.centre, rotationWorld, signal: request, current: active, cooperate: options.cooperate });
                     leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
                 }
                 check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');

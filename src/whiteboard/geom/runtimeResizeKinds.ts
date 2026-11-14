@@ -9,6 +9,7 @@ import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { PreparedBoardText } from '../render/textGeometry';
 import type { Vec2 } from './path';
 import { figureResizeDimensions, resizeFigureKind, resizeIntrinsicKind, type IntrinsicResizeNode } from './resizeKinds';
+import { reflectedTargetAnchors } from './attachments';
 import type { KindResizeFactors } from './resizeKinds.types';
 
 export interface BoardLeafResizeOptions {
@@ -133,6 +134,9 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         if (node.kind === 'sticky' && factors.scope === 'single') throw new Error('A single sticky has no resize handles');
         kindOps = asSets(resizeIntrinsicKind(node, factors));
     }
+    const flipX = factors.x < 0 || (factors.x === 0 && factors.zeroSignX < 0);
+    const flipY = factors.y < 0 || (factors.y === 0 && factors.zeroSignY < 0);
+    kindOps.push(...reflectedTargetAnchors(doc, node.id, flipX, flipY));
     check();
     const candidate = await project(kindOps); check();
     const staged = await scope(candidate);

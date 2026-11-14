@@ -1,3 +1,6 @@
+import type { NodeSetOp } from '../change/ops';
+import { boardPageStack } from './pages';
+import { copyProjectedValue } from '../geom/projectedNodes';
 import type { BoardDoc } from './doc';
 import { nodeMediaForApply } from './applyOnly';
 import type { NodeId, ParentId, SheetId } from './ids';
@@ -107,3 +110,135 @@ export function createAddedBoardDoc(base: BoardDoc, additions: readonly Node[], 
         children: new AddedMap(base.children, children), attachedTo: sets(base.attachedTo, attached), bySheet: sets(base.bySheet, sheetDeltas),
         byPage: sets(base.byPage, pageDeltas), mediaRefs: sets(base.mediaRefs, refs), preservedMediaRefs: new AddedMap(base.preservedMediaRefs, preserved, removed) };
 }
+
+class ChangedSet<T> implements ReadonlySet<T> {
+    readonly [Symbol.toStringTag] = 'ChangedSet';
+    constructor(private readonly base: ReadonlySet<T>, private readonly added: ReadonlySet<T>, private readonly removed: ReadonlySet<T>,
+        readonly size: number) {}
+    has(value: T): boolean { return this.added.has(value) || (!this.removed.has(value) && this.base.has(value)); }
+    *values(): SetIterator<T> { for (const value of this.base) if (!this.removed.has(value) || this.added.has(value)) yield value;
+        for (const value of this.added) if (!this.base.has(value)) yield value; }
+    keys(): SetIterator<T> { return this.values(); }
+    *entries(): SetIterator<[T, T]> { for (const value of this.values()) yield [value, value]; }
+    [Symbol.iterator](): SetIterator<T> { return this.values(); }
+    forEach(callback: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void {
+        for (const value of this.values()) callback.call(thisArg, value, value, this);
+    }
+}
+function replacedChildren(base: readonly Node[], replacements: ReadonlyMap<NodeId, Node>): readonly Node[] {
+    return new Proxy([] as Node[], {
+        get(target, key, receiver) {
+            if (key === 'length') return base.length;
+            if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) {
+                const node = base[Number(key)]; return node ? replacements.get(node.id) ?? node : undefined;
+            }
+            return Reflect.get(target, key, receiver);
+        },
+        has(target, key) {
+            if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) return Number(key) < base.length;
+            return Reflect.has(target, key);
+        },
+        set() { throw new TypeError('Candidate child arrays are immutable'); },
+        deleteProperty() { throw new TypeError('Candidate child arrays are immutable'); },
+        defineProperty() { throw new TypeError('Candidate child arrays are immutable'); },
+    });
+}
+type SetChanges<K> = { readonly added: Map<K, Set<NodeId>>; readonly removed: Map<K, Set<NodeId>> };
+async function changedSets<K>(base: ReadonlyMap<K, ReadonlySet<NodeId>>, changes: SetChanges<K>,
+    tick: () => Promise<void>, due: () => boolean): Promise<ReadonlyMap<K, ReadonlySet<NodeId>>> {
+    const keys = new Set<K>();
+    for (const key of changes.added.keys()) { keys.add(key); if (due()) await tick(); }
+    for (const key of changes.removed.keys()) { keys.add(key); if (due()) await tick(); }
+    const combined = new Map<K, ReadonlySet<NodeId>>(), removed = new Set<K>();
+    for (const key of keys) {
+        const previous = base.get(key) ?? new Set<NodeId>(), added = changes.added.get(key) ?? new Set<NodeId>(), deleted = changes.removed.get(key) ?? new Set<NodeId>();
+        let size = previous.size;
+        for (const value of deleted) { if (previous.has(value) && !added.has(value)) size--; if (due()) await tick(); }
+        for (const value of added) { if (!previous.has(value)) size++; if (due()) await tick(); }
+        if (size) combined.set(key, new ChangedSet(previous, added, deleted, size)); else removed.add(key);
+        if (due()) await tick();
+    }
+    return new AddedMap(base, combined, removed);
+}
+export interface BoardGeometryProjectionOptions {
+    readonly signal: AbortSignal;
+    /** Fences the base source's version and lifetime through construction and use. */
+    readonly current: () => boolean;
+    readonly cooperate?: () => Promise<void>;
+}
+
+/** Sparse replacement projection. Inputs and base are caller-owned immutable values
+ * while this builds; the resulting replacement records own their cloned geometry. */
+export async function projectBoardGeometrySets(base: BoardDoc, ops: readonly NodeSetOp[], options: BoardGeometryProjectionOptions): Promise<BoardDoc> {
+    if (typeof options.current !== 'function') throw new TypeError('Geometry projection requires a base lifetime fence');
+    const signal = options.signal, revision = base.rev, host = base.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const original = new Map<NodeId, Readonly<Node>>(), replacements = new Map<NodeId, Node>(), childSources = new Map<ParentId, readonly Node[] | undefined>();
+    const pageSources = new Map<number, ReadonlySet<NodeId> | undefined>(), attachmentSources = new Map<NodeId, ReadonlySet<NodeId> | undefined>();
+    let work = 0, started = performance.now();
+    const check = () => {
+        signal.throwIfAborted();
+        if (!options.current() || base.rev !== revision || base.host !== host) throw new DOMException('Geometry projection source changed', 'AbortError');
+    };
+    const tick = async () => { check(); await cooperate(); check(); work = 0; started = performance.now(); };
+    const due = () => ++work >= 256 || performance.now() - started >= 3;
+    check();
+    for (const op of ops) {
+        check();
+        if (!op || op.t !== 'set') throw new TypeError('Geometry projection accepts node set operations only');
+        const source = base.nodes.get(op.id);
+        if (!source || source.kind === 'opaque') throw new Error(`Projected node is missing or opaque: ${op.id}`);
+        const before = original.get(op.id);
+        if (before && before !== source) throw new DOMException('Geometry projection node changed', 'AbortError');
+        original.set(op.id, source);
+        const prior = replacements.get(op.id) ?? source;
+        if (!Object.hasOwn(prior, op.key)) throw new Error(`Node kind ${source.kind} has no ${op.key} property`);
+        const value = await copyProjectedValue(op, tick, due); check();
+        if (base.nodes.get(op.id) !== source) throw new DOMException('Geometry projection node changed', 'AbortError');
+        replacements.set(op.id, { ...prior, [op.key]: value } as Node);
+        if (due()) await tick();
+    }
+    const childChanges = new Map<ParentId, readonly Node[]>();
+    const pageChanges: SetChanges<number> = { added: new Map(), removed: new Map() };
+    const attachmentChanges: SetChanges<NodeId> = { added: new Map(), removed: new Map() };
+    const stack = boardPageStack(host);
+    for (const [id, value] of replacements) {
+        const old = original.get(id)!;
+        const node = Object.freeze(value); replacements.set(id, node);
+        if (!childSources.has(node.parent)) {
+            const children = base.children.get(node.parent); childSources.set(node.parent, children);
+            childChanges.set(node.parent, replacedChildren(children ?? [], replacements));
+        }
+        if (node.page !== old.page) {
+            const root = base.sheets.has(node.parent as SheetId);
+            if (base.kind === 'whiteboard' || !root) {
+                if (node.page !== -1) throw new RangeError('Projected node has invalid page ownership');
+            } else {
+                if (!stack || node.page < 0 || node.page >= stack.rects.length) throw new RangeError('Projected page is unavailable');
+                if (!pageSources.has(old.page)) pageSources.set(old.page, base.byPage.get(old.page));
+                if (!pageSources.has(node.page)) pageSources.set(node.page, base.byPage.get(node.page));
+                add(pageChanges.removed, old.page, id); add(pageChanges.added, node.page, id);
+            }
+        }
+        if (old.kind === 'connector' && node.kind === 'connector') {
+            const previous = new Set([old.start.attach?.target, old.end.attach?.target].filter((target): target is NodeId => target !== undefined));
+            const next = new Set([node.start.attach?.target, node.end.attach?.target].filter((target): target is NodeId => target !== undefined));
+            for (const target of previous) if (!next.has(target)) {
+                if (!attachmentSources.has(target)) attachmentSources.set(target, base.attachedTo.get(target)); add(attachmentChanges.removed, target, id);
+            }
+            for (const target of next) if (!previous.has(target)) {
+                if (!attachmentSources.has(target)) attachmentSources.set(target, base.attachedTo.get(target)); add(attachmentChanges.added, target, id);
+            }
+        }
+        if (due()) await tick();
+    }
+    for (const [id, node] of original) { if (base.nodes.get(id) !== node) throw new DOMException('Geometry projection node changed', 'AbortError'); if (due()) await tick(); }
+    for (const [id, children] of childSources) { if (base.children.get(id) !== children) throw new DOMException('Geometry projection children changed', 'AbortError'); if (due()) await tick(); }
+    for (const [page, values] of pageSources) { if (base.byPage.get(page) !== values) throw new DOMException('Geometry projection page index changed', 'AbortError'); if (due()) await tick(); }
+    for (const [id, values] of attachmentSources) { if (base.attachedTo.get(id) !== values) throw new DOMException('Geometry projection attachment index changed', 'AbortError'); if (due()) await tick(); }
+    check();
+    const byPage = await changedSets(base.byPage, pageChanges, tick, due); check();
+    const attachedTo = await changedSets(base.attachedTo, attachmentChanges, tick, due); check();
+    return { ...base, nodes: new AddedMap(base.nodes, replacements), children: new AddedMap(base.children, childChanges), byPage, attachedTo };
+}
+
+

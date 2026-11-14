@@ -40,6 +40,8 @@ export interface PaintInkItem extends PaintBase {
 export interface PaintImageItem extends PaintBase {
     readonly kind: 'image';
     readonly imageKey: string; // Hash/frame revision key; preparation acquires its decoded lease.
+    /** A borrowed 516×516 dense-tile bitmap, with a two-texel world-aligned apron. */
+    readonly retainedTile?: true;
     readonly rect: Readonly<Rect>;
     readonly sourceRect?: Readonly<Rect>; // Crop in SOURCE IMAGE PIXELS, not normalised UV.
     readonly opacity: number; // Final inherited alpha, once; source pixels retain their alpha.

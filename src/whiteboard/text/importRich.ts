@@ -12,7 +12,11 @@ function children(value: RecordValue): readonly unknown[] { return Array.isArray
 function raw(value: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RawJson {
     if (typeof value === 'object' && value !== null) {
         const original = originals?.get(value);
-        if (original !== undefined) return typeof original === 'string' ? original : original.raw();
+        if (original !== undefined) {
+            const encoded = typeof original === 'string' ? original : original.raw();
+            if (encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
+            return encoded;
+        }
     }
     const encoded = JSON.stringify(value);
     if (encoded === undefined || encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
@@ -43,7 +47,7 @@ function repairCharacters(text: string): { text: string; surrogates: number; con
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
 export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
-    let visited = 0, total = 0, replaced = 0, controls = 0;
+    let visited = 0, total = 0, replaced = 0, controls = 0, preservedFields = 0, preservedBytes = 0;
     const fail = (message: string): never => { throw new Error(message); };
     const account = (depth: number) => {
         if (++visited > 200_000 || depth > 64) fail('Rich text structure exceeds safe limits');
@@ -63,6 +67,57 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         if (blocks.length && ++total > MAX_TEXT_LENGTH) fail('Rich text exceeds 1000000 UTF-16 units');
         blocks.push(block);
     };
+    const accountOpaque = (value: RawJson): RawJson => {
+        preservedBytes += value.length;
+        if (preservedBytes > MAX_TEXT_LENGTH * 4) fail('Unsupported rich data exceeds preservation limit');
+        return value;
+    };
+    // A known legacy node can also carry fields from a newer schema. Keep those
+    // fields as an opaque zero-width mark, without copying its whole subtree.
+    const unknownFields = (object: RecordValue, keep: (key: string, value: unknown) => boolean): string | null => {
+        const original = originals?.get(object);
+        const fields: string[] = [];
+        let size = 2;
+        const add = (field: string) => {
+            size += field.length + (fields.length ? 1 : 0);
+            if (size > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich node fields exceed preservation limit');
+            fields.push(field);
+        };
+        if (original && typeof original !== 'string' && original.kind === 'object') {
+            let previous = original.start + 1;
+            for (const [key, span] of original.fields()) {
+                let start = previous;
+                while (start < span.start && /[\s,]/.test(original.source[start])) start++;
+                if (keep(key, object[key])) add(original.source.slice(start, span.start) + span.raw());
+                previous = span.end;
+            }
+        } else {
+            for (const key of Object.keys(object)) if (keep(key, object[key]))
+                add(`${JSON.stringify(key)}:${raw(object[key], originals)}`);
+        }
+        return fields.length ? `{${fields.join(',')}}` : null;
+    };
+    const extras = (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean): RawJson | undefined => {
+        const unknown = unknownFields(node, (key, value) => {
+            if (key === 'attrs') return value !== undefined && value !== null && !record(value);
+            if (key === 'content' && fields.includes(key)) return !Array.isArray(value);
+            return !fields.includes(key) && key !== 'attrs';
+        });
+        const attrs = record(node.attrs);
+        const unknownAttrs = attrs && unknownFields(attrs, (key, value) => !attributes(key, value));
+        if (!unknown && !unknownAttrs) return undefined;
+        const data = `[{"type":"legacy-node-fields","nodeType":${JSON.stringify(node.type ?? null)}${unknown ? `,"fields":${unknown}` : ''}${unknownAttrs ? `,"attrs":${unknownAttrs}` : ''}}]`;
+        if (data.length > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich node fields exceed preservation limit');
+        preservedFields++;
+        return accountOpaque(parseJson(data).raw());
+    };
+    const attach = (index: number, data: RawJson | undefined) => {
+        if (data === undefined) return;
+        const block = blocks[index];
+        blocks[index] = { ...block, runs: [{ text: '', marks: { x: data } }, ...block.runs] };
+    };
+    const directionAttribute = (key: string, value: unknown) => key === 'dir' && (value === 'auto' || value === 'ltr' || value === 'rtl');
+    const noAttributes = () => false;
     const marks = (value: unknown): Marks => {
         const result: { b?: true; i?: true; u?: true; s?: true; code?: true; hl?: true; link?: string; x?: RawJson } = {};
         const extra: unknown[] = [];
@@ -92,7 +147,15 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
             if (!known || preserve) extra.push(item);
         }
         if (extra.length) {
-            result.x = parseJson(`[${extra.map(item => raw(item, originals)).join(',')}]`).raw();
+            const values: RawJson[] = [];
+            let size = 2;
+            for (const item of extra) {
+                const encoded = raw(item, originals);
+                size += encoded.length + (values.length ? 1 : 0);
+                if (size > MAX_TEXT_LENGTH * 4 - preservedBytes) fail('Unsupported rich marks exceed preservation limit');
+                values.push(encoded);
+            }
+            result.x = accountOpaque(parseJson(`[${values.join(',')}]`).raw());
             repairs.push('Preserved unsupported inline marks');
         }
         return result;
@@ -123,10 +186,16 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         for (const item of source) {
             account(depth);
             const node = record(item);
-            if (node?.type === 'text' && typeof node.text === 'string') append(node.text, marks(node.marks));
-            else if (node?.type === 'hardBreak') append('\u2028', {});
-            else {
-                append(collect(item, depth + 1), { x: raw(item, originals) });
+            if (node?.type === 'text' && typeof node.text === 'string') {
+                const data = extras(node, ['type', 'text', 'marks'], noAttributes);
+                if (data !== undefined) runs.push({ text: '', marks: { x: data } });
+                append(node.text, marks(node.marks));
+            } else if (node?.type === 'hardBreak') {
+                const data = extras(node, ['type'], noAttributes);
+                if (data !== undefined) runs.push({ text: '', marks: { x: data } });
+                append('\u2028', {});
+            } else {
+                append(collect(item, depth + 1), { x: accountOpaque(raw(item, originals)) });
                 repairs.push('Preserved an unsupported inline node');
             }
         }
@@ -136,17 +205,30 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         const dir = record(node.attrs)?.dir;
         return dir === 'ltr' || dir === 'rtl' ? dir : 'auto';
     };
+    const withFields = (node: RecordValue, fields: readonly string[], attributes: (key: string, value: unknown) => boolean, emit: () => void) => {
+        const data = extras(node, fields, attributes), first = blocks.length;
+        emit();
+        if (data !== undefined && first === blocks.length) inline([], 'p', 0, 'auto', undefined, 0);
+        attach(first, data);
+    };
     const visit = (value: unknown, depth: number, list: 'ul' | 'ol' | null = null, level = 0, start?: number): void => {
         account(depth);
         const node = record(value);
         if (!node) { if (typeof value === 'string') inline([{ type: 'text', text: value }], 'p', 0, 'auto', undefined, depth + 1); else fail('Invalid rich text node'); return; }
         switch (node.type) {
-            case 'doc': for (const child of children(node)) visit(child, depth + 1); return;
-            case 'paragraph': inline(children(node), list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
+            case 'doc':
+                withFields(node, ['type', 'content'], noAttributes, () => { for (const child of children(node)) visit(child, depth + 1); });
+                return;
+            case 'paragraph':
+                withFields(node, ['type', 'content'], directionAttribute, () => inline(children(node), list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1));
+                return;
             case 'heading': {
                 const n = record(node.attrs)?.level;
-                if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 6) { repairs.push('Invalid heading level became a paragraph'); inline(children(node), 'p', 0, direction(node), undefined, depth + 1); }
-                else inline(children(node), `h${n}` as Block['kind'], 0, direction(node), undefined, depth + 1);
+                const valid = typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 6;
+                withFields(node, ['type', 'content'], (key, value) => directionAttribute(key, value) || (key === 'level' && valid), () => {
+                    if (!valid) { repairs.push('Invalid heading level became a paragraph'); inline(children(node), 'p', 0, direction(node), undefined, depth + 1); }
+                    else inline(children(node), `h${n}` as Block['kind'], 0, direction(node), undefined, depth + 1);
+                });
                 return;
             }
             case 'bulletList': case 'orderedList': {
@@ -154,17 +236,25 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
                 const nextLevel = list ? level + 1 : level;
                 if (nextLevel > 7) fail('List nesting exceeds eight levels');
                 const initial = record(node.attrs)?.start;
-                let first = true;
-                for (const child of children(node)) {
-                    const initialStart = kind === 'ol' && first && typeof initial === 'number' && Number.isFinite(initial) ? initial : undefined;
-                    visit(child, depth + 1, kind, nextLevel, initialStart); first = false;
-                }
+                const firstNode = record(children(node)[0]);
+                const firstItem = firstNode?.type === 'listItem' ? record(children(firstNode)[0]) : firstNode;
+                const hasMappedStart = !!firstNode && (firstNode.type === 'listItem' && !children(firstNode).length
+                    || firstItem?.type === 'paragraph' || firstItem?.type === 'text' || firstItem?.type === 'hardBreak');
+                withFields(node, ['type', 'content'], (key, value) => kind === 'ol' && key === 'start' && typeof value === 'number' && Number.isFinite(value) && hasMappedStart, () => {
+                    let first = true;
+                    for (const child of children(node)) {
+                        const initialStart = kind === 'ol' && first && typeof initial === 'number' && Number.isFinite(initial) ? initial : undefined;
+                        visit(child, depth + 1, kind, nextLevel, initialStart); first = false;
+                    }
+                });
                 return;
             }
             case 'listItem': {
-                let first = true;
-                for (const child of children(node)) { visit(child, depth + 1, list, level, first ? start : undefined); first = false; }
-                if (first) inline([], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1);
+                withFields(node, ['type', 'content'], (key, value) => !children(node).length && directionAttribute(key, value), () => {
+                    let first = true;
+                    for (const child of children(node)) { visit(child, depth + 1, list, level, first ? start : undefined); first = false; }
+                    if (first) inline([], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1);
+                });
                 return;
             }
             case 'text': case 'hardBreak': inline([node], list ?? 'p', list ? level : 0, direction(node), list === 'ol' ? start : undefined, depth + 1); return;
@@ -183,6 +273,7 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         if (!blocks.length) inline([], 'p', 0, 'auto', undefined, 0);
         if (replaced) repairs.push(`Replaced ${replaced} lone surrogate${replaced === 1 ? '' : 's'}`);
         if (controls) repairs.push(`Replaced ${controls} unsupported control character${controls === 1 ? '' : 's'}`);
+        if (preservedFields) repairs.push(`Preserved fields on ${preservedFields} legacy rich node${preservedFields === 1 ? '' : 's'}`);
         return { text: normalizeRichText({ blocks }), repairs, unrepresentable };
     } catch (error) {
         unrepresentable.push(error instanceof Error ? error.message : 'Rich text could not be represented');
@@ -193,17 +284,22 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
 
 /** Pass lexical spans when the legacy reader still has them; unknown carriers keep their original tokens. */
 export function convertLegacyRichSpan(root: JsonSpan): RichImportResult {
-    const originals = new WeakMap<object, RawJson | JsonSpan>(), pending: JsonSpan[] = [root];
-    let count = 0;
-    while (pending.length) {
-        const span = pending.pop()!;
-        if (++count > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
-        if (span.kind !== 'object' && span.kind !== 'array') continue;
-        const value = span.value();
-        if (typeof value !== 'object' || value === null) continue;
-        originals.set(value, span);
-        if (span.kind === 'array') for (const child of span.items()) pending.push(child);
-        else for (const child of span.fieldMap().values()) pending.push(child);
+    try {
+        const originals = new WeakMap<object, RawJson | JsonSpan>(), pending: JsonSpan[] = [root];
+        let count = 0;
+        while (pending.length) {
+            const span = pending.pop()!;
+            if (++count > 200_000) throw new RangeError('Rich text structure exceeds safe limits');
+            if (span.kind !== 'object' && span.kind !== 'array') continue;
+            const value = span.value();
+            if (typeof value !== 'object' || value === null) continue;
+            originals.set(value, span);
+            if (span.kind === 'array') for (const child of span.items()) pending.push(child);
+            else for (const child of span.fieldMap().values()) pending.push(child);
+        }
+        return convertLegacyRichText(root.value(), originals);
+    } catch (error) {
+        return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] },
+            repairs: [], unrepresentable: [error instanceof Error ? error.message : 'Rich text could not be represented'] };
     }
-    return convertLegacyRichText(root.value(), originals);
 }

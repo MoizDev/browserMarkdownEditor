@@ -4,7 +4,7 @@ import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
 import type { AttachCanvasSession } from './utils/canvasSessionBridge';
-import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
+import { awaitSessionDisposals, installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
 import { getSessionIdentity } from './utils/sessionIdentity';
@@ -45,6 +45,7 @@ import { notifySearchChanges, subscribeSearchChanges } from './utils/searchChang
 import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
+import type { NativeCanvasHost, NativeCanvasIdentity } from './types/nativeCanvas';
 import { materializeRecoveryCopy } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
@@ -439,6 +440,8 @@ export default function App() {
     renameFile,
     readFileVersioned,
     readFileSnapshot,
+    readBoardAsset,
+    putBoardAsset,
     readBytesVersioned,
     inspectExportTarget,
     writeNotebookExport,
@@ -1170,6 +1173,64 @@ export default function App() {
       : current));
     return { emergencyReadOnly };
   }, [getVaultActivation]);
+  const nativeCanvasHost = useMemo<NativeCanvasHost>(() => {
+    const current = (identity: NativeCanvasIdentity) => {
+      if (identity.vaultActivation !== getVaultActivation()) return undefined;
+      const tab = tabsRef.current.find(tab => tab.id === identity.documentId);
+      const entry = documentSessions.get(identity.documentId);
+      const loaded = identity.kind === 'pdfInk' ? 'pdf' : identity.kind;
+      return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
+        && entry?.serial === identity.session && entry.bytesGeneration === identity.bytesGeneration ? tab : undefined;
+    };
+    const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const tab = current(identity), root = rootHandleRef.current;
+      if (!tab?.file.handle || !tab.file.parentHandle || !root) throw new DOMException('Canvas session ended', 'AbortError');
+      return { root, parent: tab.file.parentHandle, owner: tab.file.handle as FileSystemFileHandle,
+        hash: media.hash, preferredName: media.preferredName, signal, isCurrent: () => !!current(identity) };
+    };
+    return {
+      identity(id) {
+        const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
+        if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
+        const loaded = tab.representation.loadedKind;
+        if (loaded !== 'pdf' && loaded !== 'drawing' && loaded !== 'notebook') return undefined;
+        return { documentId: id, session: entry.serial, bytesGeneration: entry.bytesGeneration,
+          vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
+      },
+      isCurrent: identity => !!current(identity),
+      async acquireBytes(identity, signal) {
+        await awaitSessionDisposals(identity.documentId);
+        signal.throwIfAborted();
+        const tab = current(identity);
+        if (!tab?.file.handle) throw new DOMException('Canvas session ended', 'AbortError');
+        const baseline = getBaseline(tab.id);
+        const snapshot = await readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal);
+        try {
+          const bytes = await new Response(snapshot.blob.stream()).blob();
+          const version = await snapshot.fingerprint(signal);
+          signal.throwIfAborted();
+          if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+          if (baseline && baseline.hash !== version.hash) throw new Error('The canvas changed on disk. Reload it before editing.');
+          return bytes;
+        } finally { snapshot.dispose(); }
+      },
+      async readMedia(identity, media, signal) {
+        const found = await readBoardAsset(request(identity, media, signal));
+        if (!found) return null;
+        const blob = await new Response(found.blob.stream()).blob();
+        signal.throwIfAborted();
+        if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        return { name: found.name, blob };
+      },
+      async putMedia(identity, media, blob, signal) {
+        const name = await putBoardAsset({ ...request(identity, media, signal), extension: media.extension, blob });
+        signal.throwIfAborted();
+        if (!current(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        return name;
+      },
+    };
+  }, [documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);

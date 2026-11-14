@@ -11,12 +11,14 @@ import type { PagedPrintStreamWriter } from './pagedPrintSnapshot';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
+import { isIncrementalPdfWriter, streamIncrementalPdf } from './incrementalPdf';
+import type { IncrementalPdfWriter } from './incrementalPdf';
 import { streamRasterPng } from './streamRaster';
 
 export interface NativeNotebookPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter | PagedPrintStreamWriter;
+    readonly writer: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
@@ -88,6 +90,13 @@ export function pinNativeNotebookPrint(options: NativeNotebookPrintOptions): Boa
                 const output: { width: number; height: number; displayList: PageDisplayList }[] = [];
                 for (let page = 0; page < total; page++) output.push(await render(page));
                 bytes = await writer({ schema: 1, pages: output }, { signal: combined });
+            } else if (isIncrementalPdfWriter(writer)) {
+                bytes = await streamIncrementalPdf({ revision: snapshot.revision, pageCount: total,
+                    async page(index, active) {
+                        const world = await worldAt(index, active);
+                        return { source: await sourceAt(index, world, active), world };
+                    },
+                }, 1, image, writer, combined);
             } else {
                 const stream = await writer.open({ revision: snapshot.revision, pageCount: total }, combined);
                 let finished = false;

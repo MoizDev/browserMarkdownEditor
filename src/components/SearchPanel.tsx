@@ -4,7 +4,7 @@ import { collectFiles } from '../utils/tree';
 import type { FileSearchResult, VaultSearchResults } from '../utils/vaultSearch';
 import type { SearchController, SearchRow } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
-import { getIndexProgress, subscribeIndexProgress } from '../utils/indexProgress';
+import { getIndexProgress, getIndexUnavailable, subscribeIndexProgress } from '../utils/indexProgress';
 
 interface SearchPanelProps {
     fileTree: FileTreeNode[];
@@ -42,6 +42,7 @@ function rowKeyHandler(activate: () => void) {
  */
 export default function SearchPanel({ fileTree, search, onOpenResult, onClose }: SearchPanelProps) {
     const progress = useSyncExternalStore(subscribeIndexProgress, getIndexProgress);
+    const unavailable = useSyncExternalStore(subscribeIndexProgress, getIndexUnavailable);
     const [query, setQuery] = useState('');
     const deferredQuery = useDeferredValue(query);
     const [ready, setReady] = useState(false);
@@ -147,18 +148,18 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
             )}
 
             <div className="search-results">
-                {progress?.phase === 'sweeping' ? <p className="search-hint" role="status">Indexing — {progress.done} of {progress.total}</p>
-                    : query && !ready && searchProgress && <p className="search-hint" role="status">Indexing — {searchProgress.done} of {searchProgress.total}</p>}
+                {!unavailable && (progress?.phase === 'sweeping' ? <p className="search-hint" role="status" data-tooltip="Checking vault files for the index">Indexing — {progress.done} of {progress.total}</p>
+                    : query && !ready && searchProgress && <p className="search-hint" role="status" data-tooltip="Loading searchable text from the vault">Indexing — {searchProgress.done} of {searchProgress.total}</p>)}
                 {!query && (
                     <p className="search-hint">Search file names and contents across the vault.</p>
                 )}
                 {query && !ready && (
                     <p className="search-hint">Searching vault…</p>
                 )}
-                {query && failed && (
-                    <p className="search-hint">Search unavailable. <button onClick={() => { search.retry(); setEpoch(value => value + 1); }}>Retry</button></p>
+                {(unavailable || (query && failed)) && (
+                    <p className="search-hint" role="status">{unavailable ? 'Search index unavailable — ' : 'Search unavailable. '}<button onClick={() => { search.retry(); setEpoch(value => value + 1); }}>Retry</button></p>
                 )}
-                {query && deferredQuery && ready && !failed && fileCount === 0 && (
+                {query && deferredQuery && ready && !failed && !unavailable && fileCount === 0 && (
                     <p className="search-hint">No results for “{deferredQuery}”.</p>
                 )}
                 {query && results.files.map(result => {

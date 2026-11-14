@@ -37,13 +37,29 @@ function documentMatches(frame: PaintFrame, token: FrameToken): boolean {
         t.bytesGeneration === token.bytesGeneration && t.session === token.session;
 }
 
+const identities = new WeakMap<object, number>();
+let nextIdentity = 1;
+function identity(value: object): number {
+    let id = identities.get(value);
+    if (id === undefined) {
+        if (!Number.isSafeInteger(nextIdentity)) throw new RangeError('Paint identity exhausted');
+        id = nextIdentity++; identities.set(value, id);
+    }
+    return id;
+}
 function contentKey(item: PaintItem): string {
     const common = [item.kind, item.key, item.geometryKey, item.localToWorld,
-        item.clips.map(clip => [clip.key, clip.fillRule, clip.localToWorld, clip.d])];
+        item.clips.map(clip => [clip.key, clip.fillRule, clip.localToWorld, identity(clip.d)])];
     if (item.kind === 'image') return JSON.stringify([common, item.imageKey, item.rect, item.sourceRect, item.opacity, item.blend, item.inverted]);
-    if (item.kind === 'text') return JSON.stringify([common, item.material, item.paint, item.faces]);
-    if (item.kind === 'path') return JSON.stringify([common, item.material, item.fillRule]);
-    return JSON.stringify([common, item.material]);
+    if (item.kind === 'text') return JSON.stringify([common, item.paint.key, item.paint.fontEpoch, identity(item.faces), item.material.blend,
+        identity(item.material.glyphs), identity(item.material.backgrounds), identity(item.material.decorations)]);
+    if (item.kind === 'path') {
+        const stroke = item.material.stroke;
+        return JSON.stringify([common, item.fillRule, item.material.blend, item.material.fill,
+            stroke && [stroke.color, stroke.width, stroke.cap, stroke.join, stroke.miterLimit,
+                stroke.dash && [identity(stroke.dash.array), stroke.dash.phase]]]);
+    }
+    return JSON.stringify([common, item.material.blend, item.material.color]);
 }
 
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. */

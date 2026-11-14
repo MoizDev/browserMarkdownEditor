@@ -226,6 +226,7 @@ third-party code included (normally "none") · date.
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssembly.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned pristine writer source, all-sheet ordered ink, exact legacy fence and verified revision/write mark; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkCacheTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5 | Revision/font/writer-keyed page list cache and dirty-session eviction contract; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 

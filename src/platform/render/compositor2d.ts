@@ -121,6 +121,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private readonly buffers = new Map<string, Buffer2D>();
     private readonly requests = new Map<string, { width: number; height: number; read: boolean }>();
     private readonly sources = new Map<CanvasImageSource, ImageSourceState>();
+    private retained = new Set<CanvasImageSource>();
+    private pendingSources = new Set<CanvasImageSource>();
+    private readonly encodedSources = new Set<Set<CanvasImageSource>>();
+    private retainedCrops = new Set<Crop>();
+    private pendingCrops = new Set<Crop>();
+    private readonly encodedCrops = new Set<Set<Crop>>();
+    private sourceKey = '';
     private readonly contexts = new WeakMap<CanvasRenderingContext2D, Buffer2D>();
     private isolationBounds: Rect | null = null;
     private isolationDepth = 0;
@@ -364,12 +371,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const snapshot = this.scene;
         const budget = this.budget;
         const back = this.buffers.get('back');
-        if (!snapshot?.metrics || snapshot.view !== frame.view || !back || !budget || budget.frameId !== frame.frameId ||
+        if (this.encodedSources.size || !snapshot?.metrics || snapshot.view !== frame.view || !back || !budget || budget.frameId !== frame.frameId ||
             !sameToken(this.options.currentToken(), frame.token)) return null;
-        const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-        if (availability.some(item => !item.complete)) return null;
         const key = this.key(snapshot, frame);
         this.activeKey = key;
+        this.beginSources(key);
+        const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
+        if (availability.some(item => !item.complete)) return null;
         this.missing = false;
         this.busy++;
         try {
@@ -386,8 +394,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             // Another pane's admission may trim caches between encode and submit. Pin this complete
             // detached frame until consumed; eviction must not turn it into a zero-size display copy.
             this.busy++;
+            const encodedSources = new Set(this.pendingSources), encodedCrops = new Set(this.pendingCrops);
+            this.encodedSources.add(encodedSources); this.encodedCrops.add(encodedCrops);
             let done = false;
-            const release = () => { done = true; this.busy--; };
+            const release = () => { done = true; this.busy--; this.encodedSources.delete(encodedSources);
+                this.encodedCrops.delete(encodedCrops); this.pruneSources(); };
             return {
                 submit: () => {
                     if (done) throw new Error('Canvas encoding already consumed');
@@ -395,6 +406,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token)) return null;
                     if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
                     this.presentedKey = key;
+                    this.retained = encodedSources; this.retainedCrops = encodedCrops;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
                         complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
@@ -438,7 +450,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             submit: () => {
                 if (done) throw new Error('Mirror preparation already consumed');
                 done = true;
-                if (!back || !job || this.mirrorJob !== job || this.disposed || this.generation !== generation ||
+                if (this.encodedSources.size || !back || !job || this.mirrorJob !== job || this.disposed || this.generation !== generation ||
                     !sameToken(this.options.currentToken(), frame.budget.token)) return noMirror;
                 this.busy++;
                 try {
@@ -464,7 +476,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                         job.stage = 'copy';
                     }
                     if (job.stage !== 'copy' || !this.metrics) return noMirror;
-                    this.activeKey = `mirror:${key}`; this.missing = false;
+                    this.activeKey = `mirror:${key}`; this.beginSources(this.activeKey); this.missing = false;
                     opaque(back.native, this.appearance);
                     const full = { x: 0, y: 0, width: back.canvas.width, height: back.canvas.height };
                     this.image(back, job.buffer.canvas, full, full);
@@ -478,6 +490,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     const actual = this.options.mirrorCoverage(frame.view, frame.entries);
                     if (!actual.complete || !this.publish(back, this.metrics)) return noMirror;
                     this.presentedKey = '';
+                    this.retained = new Set(this.pendingSources); this.retainedCrops = new Set(this.pendingCrops); this.pruneSources();
                     return { presented: true, complete: true, sharp: actual.sharp && !actual.staleVersion, staleVersion: actual.staleVersion, usedMirror: true };
                 } finally { this.busy--; }
             },
@@ -546,6 +559,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const result = (complete: boolean) => ({ width, height, generation: token?.deviceGeneration ?? 0, complete });
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0 ||
             width > POLICY.maxSurfaceAxisPixels || height > POLICY.maxSurfaceAxisPixels || width * height > POLICY.maxSurfacePixels) throw new RangeError('Invalid CPU backing');
+        if (this.encodedSources.size) return result(false);
         this.busy++;
         try {
             if (!this.init()) return result(false);
@@ -732,6 +746,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { ctx.restore(); }
     }
     private image(buffer: Buffer2D, source: CanvasImageSource, src: Rect, dst: Rect): void {
+        this.pendingSources.add(source);
         const extent = imageExtent(source);
         if (extent.width * extent.height <= maxImagePixels) {
             this.drawImage(buffer, source, src, dst);
@@ -762,11 +777,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     height: Math.min(extent.height, y + tileSize + gutter) - sy }, image: null, lease: null, pending: false };
                 state.crops.set(id, crop);
             }
+            this.pendingCrops.add(crop);
             if (!crop.image) { this.missing = true; continue; }
             this.drawImage(buffer, crop.image, { x: left - crop.rect.x, y: top - crop.rect.y, width: right - left, height: bottom - top }, dest);
         }
     }
     private drawImage(buffer: Buffer2D, source: CanvasImageSource, src: Rect, dst: Rect): void {
+        this.pendingSources.add(source);
         const version = source instanceof ImageBitmap ? '' : this.activeKey;
         let use = buffer.images.get(source);
         if (use && use.version !== version) { this.releaseGpuLease(use.lease); buffer.images.delete(source); use = undefined; }
@@ -786,7 +803,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { this.options.recordUpload(bytes, performance.now() - start); }
     }
     private prepareCrops(budget: FrameBudget): void {
-        for (const state of this.sources.values()) for (const crop of state.crops.values()) {
+        for (const state of this.sources.values()) for (const [id, crop] of state.crops) {
             if (budget.shouldYield() || this.cropsPending >= 2) return;
             if (crop.image || crop.pending || state.error) continue;
             const lease = this.reserveCpu(crop.rect.width * crop.rect.height * 4);
@@ -799,34 +816,65 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 const current = this.options.currentToken();
                 if (this.disposed || epoch !== this.asyncEpoch || this.sources.get(state.source) !== state || !current ||
                     current.vaultEpoch !== token.vaultEpoch || current.documentId !== token.documentId ||
-                    current.bytesGeneration !== token.bytesGeneration || current.session !== token.session) {
+                    current.bytesGeneration !== token.bytesGeneration || current.session !== token.session || state.crops.get(id) !== crop) {
                     image.close(); this.releaseCpuLease(lease); crop.lease = null; crop.pending = false; return;
                 }
                 crop.image = image; crop.pending = false;
                 this.options.invalidate('2d-image-crop-ready');
             }, error => {
                 this.releaseCpuLease(lease); crop.lease = null; crop.pending = false;
-                if (!this.disposed && epoch === this.asyncEpoch && this.sources.get(state.source) === state) { state.error = error; this.options.invalidate('2d-image-crop-failed'); }
+                if (!this.disposed && epoch === this.asyncEpoch && this.sources.get(state.source) === state && state.crops.get(id) === crop) { state.error = error; this.options.invalidate('2d-image-crop-failed'); }
             }).finally(() => { this.cropsPending--; });
         }
     }
-    private closeSource(state: ImageSourceState): void {
-        for (const crop of state.crops.values()) {
-            if (crop.image) {
-                for (const buffer of this.buffers.values()) {
-                    const use = buffer.images.get(crop.image);
-                    if (use) { this.releaseGpuLease(use.lease); buffer.images.delete(crop.image); }
-                }
-                crop.image.close();
+    // A retry may need crops discovered by earlier partial bands; the last complete frame and
+    // any unconsumed encoding stay pinned until its replacement is actually published.
+    private beginSources(key: string): void {
+        if (this.sourceKey === key) return;
+        this.sourceKey = key;
+        this.pendingSources = new Set(); this.pendingCrops = new Set();
+        this.pruneSources();
+    }
+    private pruneSources(): void {
+        const pinned = (source: CanvasImageSource) => {
+            if (this.retained.has(source) || this.pendingSources.has(source)) return true;
+            for (const sources of this.encodedSources) if (sources.has(source)) return true;
+            return false;
+        };
+        const cropPinned = (crop: Crop) => {
+            if (this.retainedCrops.has(crop) || this.pendingCrops.has(crop)) return true;
+            for (const crops of this.encodedCrops) if (crops.has(crop)) return true;
+            return false;
+        };
+        for (const [source, state] of this.sources) {
+            if (!pinned(source)) { this.sources.delete(source); this.closeSource(state); continue; }
+            for (const [id, crop] of state.crops) if (!cropPinned(crop)) {
+                state.crops.delete(id); this.closeCrop(crop);
             }
-            if (!crop.pending) this.releaseCpuLease(crop.lease);
         }
+        for (const buffer of this.buffers.values()) for (const [source, use] of buffer.images) if (!pinned(source)) {
+            this.releaseGpuLease(use.lease); buffer.images.delete(source);
+        }
+    }
+    private closeSource(state: ImageSourceState): void {
+        for (const crop of state.crops.values()) this.closeCrop(crop);
+    }
+    private closeCrop(crop: Crop): void {
+        if (crop.image) {
+            for (const buffer of this.buffers.values()) {
+                const use = buffer.images.get(crop.image);
+                if (use) { this.releaseGpuLease(use.lease); buffer.images.delete(crop.image); }
+            }
+            crop.image.close();
+        }
+        if (!crop.pending) this.releaseCpuLease(crop.lease);
     }
     private dropWork(): void {
         this.asyncEpoch++; this.cancelJob(); this.cancelMirror();
         for (const [key, buffer] of this.buffers) this.closeBuffer(key, buffer);
         for (const source of this.sources.values()) this.closeSource(source);
         this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = '';
+        this.retained.clear(); this.pendingSources.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.sourceKey = '';
     }
 }
 

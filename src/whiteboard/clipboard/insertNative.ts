@@ -197,6 +197,7 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 const applied = session.apply({ origin: 'paste', label: 'Paste', ops });
                 try {
                     for (const [id, file] of media.files) runtime.media.setFile(id, file);
+                    media.committed();
                     runtime.selection.setScope(parent, roots);
                 } finally { applied.release(); }
                 return Object.freeze([...roots]);

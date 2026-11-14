@@ -1,7 +1,7 @@
 import { inspectedMediaBytes } from './inspect';
 import { isSafeMediaFile, type MediaEntry } from '../model/media';
 import type { MediaLease } from './store';
-import type { MediaStorageDestination, MediaStorageReceipt, MediaStorageRequest } from './storage.types';
+import type { MediaStorageDestination, MediaStorageReceipt, MediaStorageRequest, MediaStorageResult } from './storage.types';
 
 interface ReceiptState {
     readonly request: MediaStorageRequest;
@@ -61,10 +61,11 @@ export function issueMediaStorageReceipt(request: MediaStorageRequest, destinati
             committed() {
                 const current = active(); check(current, false);
                 if (current.committedRevision !== null) return;
+                const { runtime, entry } = current.request, session = runtime.session, destination = current.destination;
                 const stored = session.doc.media.get(entry.id), cached = runtime.media.get(entry.id);
                 if (!stored || !matchingEntry(entry, stored) || stored.file !== (destination.kind === 'file' ? destination.file : null)
-                    || !session.doc.mediaRefs.get(entry.id)?.size || !cached || cached.size !== entry.bytes
-                    || session.doc.rev < revision || session.doc.rev === revision && !current.hadBytes) {
+                    || !(session.doc.mediaRefs.get(entry.id)?.size || session.doc.preservedMediaRefs.get(entry.id)) || !cached || cached.size !== entry.bytes
+                    || session.doc.rev < current.revision || session.doc.rev === current.revision && !current.hadBytes) {
                     throw new Error('Stored media was not handed to the actual media/node transaction');
                 }
                 current.committedRevision = session.doc.rev;
@@ -83,7 +84,7 @@ export function issueMediaStorageReceipt(request: MediaStorageRequest, destinati
                 async captureCurrentBytes(signal: AbortSignal) {
                     const current = active(); check(current); signal.throwIfAborted();
                     if (current.committedRevision === null || current.destination.kind !== 'embedded') throw new Error('Media must be committed before capturing its document');
-                    const capturedRevision = session.doc.rev;
+                    const { runtime, context } = current.request, capturedRevision = runtime.session.doc.rev;
                     const captured = await current.destination.captureCurrentBytes(AbortSignal.any([signal, context.signal]));
                     try {
                         signal.throwIfAborted(); context.signal.throwIfAborted(); check(current);
@@ -109,4 +110,21 @@ export function assertMediaStorageReceipt(receipt: MediaStorageReceipt, request:
         || state.request.blob !== request.blob || state.request.inspection !== request.inspection
         || !matchingEntry(state.request.entry, request.entry)) throw new TypeError('Foreign or fabricated media storage receipt');
     check(state);
+}
+
+export function resolveMediaStorage(result: MediaStorageResult, request: MediaStorageRequest): {
+    readonly file: string | null; readonly receipt: MediaStorageReceipt | null;
+} {
+    if (typeof result === 'string') {
+        if (request.runtime.session.doc.kind === 'pdf-ink' || !isSafeMediaFile(result)) throw new TypeError('Embedded media requires a genuine source-owned receipt');
+        return { file: result, receipt: null };
+    }
+    if (!result) throw new Error('Media bytes could not be stored');
+    try { assertMediaStorageReceipt(result, request); }
+    catch (error) {
+        const state = issued.get(result);
+        if (state?.request.runtime === request.runtime && state.request.context === request.context && state.request.blob === request.blob) result.release();
+        throw error;
+    }
+    return { file: result.file, receipt: result };
 }

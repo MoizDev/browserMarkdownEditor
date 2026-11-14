@@ -5,6 +5,7 @@ import { decodeLegacyClipboard, type LegacyClipboardDecodeLease } from '../host/
 import { readExcalidrawClipboard } from '../host/excalidrawClipboard';
 import { inspectMedia } from '../media/inspect';
 import type { MediaIngestor } from '../media/ingest';
+import type { StoreMedia } from '../media/storage.types';
 import type { EmbedManifest } from '../media/embed';
 import type { MediaEntry, MediaId } from '../model/media';
 import { newSheetId, type NodeId } from '../model/ids';
@@ -52,7 +53,7 @@ export interface BoardClipboardPasteHost {
     readonly embedManifest?: EmbedManifest;
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     /** Must encode actual source records and run native C5 before returning. */
     admitExternal(source: ExternalClipboardSource, context: JobContext, identity: BoardJobIdentity): Promise<ExternalClipboardAdmission>;
     resolveBinding(request: ExcalidrawBindingRequest, context: { readonly actualDraftDoc: BoardDoc; readonly signal: AbortSignal }): Promise<Attachment>;

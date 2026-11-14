@@ -12,6 +12,8 @@ import { createPicture } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { inspectMedia } from './inspect';
+import { resolveMediaStorage } from './storage';
+import type { MediaStorageReceipt, StoreMedia } from './storage.types';
 
 // Provenance: media §10a, actual export capture and atomic delete/create
 // contracts; independent transaction, no upstream engine source.
@@ -29,7 +31,7 @@ export interface FlattenOptions {
     current(): boolean;
     /** Capture must use the canonical ordered paint stream, excluding these locked subtrees. */
     capture(roots: readonly NodeId[], excludedLocked: readonly NodeId[], signal: AbortSignal): Promise<FlattenCapture>;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
 }
 export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId | null> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner;
@@ -49,6 +51,7 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
             && runtime.jobs.isCurrent(context.job) && options.current() && session.doc === doc && doc.rev === revision && session.owner === owner;
         const check = () => { context.assertCurrent(); if (!current(identity) || session.isReadOnly || runtime.selection.getSnapshot() !== selection) throw new DOMException('Flatten target became stale', 'AbortError'); };
         let captured: FlattenCapture | undefined, geometry: { release(): void } | undefined, mediaLease: { release(): void } | undefined;
+        let storageReceipt: MediaStorageReceipt | null = null;
         try {
             check();
             geometry = await runtime.render.pinChangeGeometry(ids, context.signal, doc, () => current(identity)); check();
@@ -64,10 +67,14 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
             if (old && (old.mime !== info.mime || old.bytes !== blob.size || old.w !== info.width || old.h !== info.height || old.animated !== info.animated)) throw new Error('Existing media metadata conflicts with flatten capture');
             const entry: MediaEntry = old ?? { id: info.id, mime: info.mime, bytes: blob.size, w: info.width, h: info.height,
                 duration: null, animated: false, name: 'Flattened selection', file: null, ext: null };
-            const file = await options.storeMedia(entry, blob, context.signal); check();
-            // Flatten deletes the vector originals. A cache-only/missing asset
-            // would survive until reload and then lose the user's actual drawing.
-            if (file === null || !isSafeMediaFile(file)) throw new Error('The flattened image could not be stored');
+            const proof = { runtime, context, inspection: info };
+            const result = await options.storeMedia(entry, blob, context.signal, proof);
+            const stored = resolveMediaStorage(result, { ...proof, entry, blob });
+            storageReceipt = stored.receipt;
+            const file = stored.file; check();
+            // Only a real issued embedded receipt can carry file:null. An
+            // unavailable/cache-only result must never delete the vector originals.
+            if (!isSafeMediaFile(file)) throw new Error('The flattened image could not be stored');
             if (old && old.file !== file && (old.ext?.raw.size || old.ext?.fields.size || (doc.preservedMediaRefs.get(info.id) ?? 0) > 0)) throw new Error('Cannot remap preserved image metadata');
             mediaLease = runtime.media.retain(info.id, 'snapshot'); runtime.media.put(info.id, blob);
             const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, bounds.y + bounds.height) : undefined;
@@ -96,11 +103,11 @@ export function flattenSelectionToImage(options: FlattenOptions): Promise<NodeId
                     planDelete(doc, builder, selection.sheet, ids, runtime.render.changeGeometry);
                     builder.push({ t: 'create', node: picture });
                     const applied = builder.commit(); builder = undefined;
-                    try { runtime.media.setFile(info.id, file); runtime.selection.setScope(parent, [id]); }
+                    try { runtime.media.setFile(info.id, file); storageReceipt?.committed(); runtime.selection.setScope(parent, [id]); }
                     finally { applied.release(); }
                     return id;
                 } finally { builder?.abort(); session.history.close(); }
             });
-        } finally { mediaLease?.release(); captured?.release(); geometry?.release(); }
+        } finally { try { storageReceipt?.release(); } finally { mediaLease?.release(); captured?.release(); geometry?.release(); } }
     }, { signal: options.signal, deadlineMs: 120_000 });
 }

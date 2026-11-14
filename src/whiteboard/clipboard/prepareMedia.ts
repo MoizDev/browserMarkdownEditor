@@ -11,6 +11,8 @@ import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 import { nodeRawValues } from '../model/rawMedia';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
+import { resolveMediaStorage } from '../media/storage';
+import type { MediaStorageReceipt, StoreMedia } from '../media/storage.types';
 
 // Provenance: private clipboard media, session job authority and SEC-W4
 // verification contracts; independent pre-transaction staging, no third-party source.
@@ -20,6 +22,8 @@ export interface PreparedClipboardMedia {
     readonly files: ReadonlyMap<MediaId, string | null>;
     readonly blobs: ReadonlyMap<MediaId, Blob>;
     readonly missing: readonly MediaId[];
+    /** Called inside the same owning job, after the one destination kernel commit. */
+    committed(): void;
     /** Release only after the destination transaction has retained its media. */
     release(): void;
 }
@@ -28,7 +32,7 @@ export interface PrepareClipboardMediaOptions {
     readonly acquisition: Pick<BoardClipboardAcquisition, 'load' | 'inline'>;
     readonly memory: MemoryAllocator;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     current(): boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
@@ -79,8 +83,13 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             check(); steps = 0; sliceStart = performance.now();
         };
         const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [], missing: MediaId[] = [];
+        const receipts: MediaStorageReceipt[] = [];
         let held = true;
-        const release = () => { if (!held) return; held = false; for (const lease of leases) lease.release(); leases.length = 0; };
+        const release = () => {
+            if (!held) return; held = false; context.signal.removeEventListener('abort', release);
+            try { for (const receipt of receipts) receipt.release(); }
+            finally { receipts.length = 0; for (const lease of leases) lease.release(); leases.length = 0; }
+        };
         try {
             check();
             const entries = new Map<MediaId, MediaEntry>(), preservedRefs = new Map<MediaId, number>(), inline = new Map<MediaId, Blob>();
@@ -134,7 +143,11 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 const location = existing ? runtime.media.currentFile(id) : undefined;
                 const existingFile = existing ? (location === undefined ? existing.file : location) : null;
                 const proposed = existing ? { ...cloneEntry(existing), file: existingFile } : { ...entry, file: null };
-                const file = await options.storeMedia(proposed, blob, context.signal); check();
+                const proof = { runtime, context, inspection: info };
+                const result = await options.storeMedia(proposed, blob, context.signal, proof);
+                const { file, receipt } = resolveMediaStorage(result, { ...proof, entry: proposed, blob });
+                if (receipt) receipts.push(receipt);
+                check();
                 if (!isSafeMediaFile(file)) throw new Error(`Invalid destination media file: ${id}`);
                 const sourceConflict = file !== entry.file && ((entry.ext && (entry.ext.raw.size || entry.ext.fields.size))
                     || (preservedRefs.get(id) ?? 0) > 0 || (entry.file !== null && hasUnknownRaw));
@@ -152,7 +165,8 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             abortOwned = release;
             context.signal.addEventListener('abort', release, { once: true });
             check();
-            return { stamp, mediaOps: Object.freeze(ops), files, blobs, missing: Object.freeze(missing), release };
+            return { stamp, mediaOps: Object.freeze(ops), files, blobs, missing: Object.freeze(missing),
+                committed() { if (!held) throw new Error('Clipboard media storage ended'); for (const receipt of receipts) receipt.committed(); }, release };
         } catch (error) { release(); throw error; }
     };
     const operation = existingContext ? work(existingContext) : runtime.jobs.run(work, { signal: options.signal, deadlineMs });

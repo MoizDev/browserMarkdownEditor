@@ -6,6 +6,8 @@ import {
 } from '../utils/pdfViewState';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
 import PdfInvertToggle from './PdfInvertToggle';
+import PdfCapabilitiesNotice from './PdfCapabilitiesNotice';
+import { PDF_ENCRYPTED_READ_ONLY, type PdfCapabilities } from '../utils/pdfCapabilities';
 import './PdfNativeEmphasis.css';
 import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import type { PdfDocumentSession, PdfPageLease } from '../utils/pdfDocumentSession';
@@ -318,6 +320,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const [saved] = useState(() => readPdfViewPos(filePath));
     const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
     const [docState, setDocState] = useState<DocState | null>(null);
+    const [capabilities, setCapabilities] = useState<PdfCapabilities | null>(null);
+    useEffect(() => {
+        let current = true;
+        setCapabilities(null);
+        void session.capabilities().then(value => { if (current) setCapabilities(value); }, () => {
+            if (current) setCapabilities({ encrypted: 'unknown', copy: 'unknown', forms: 'unknown', xfa: 'unknown', javascript: 'unknown' });
+        });
+        return () => { current = false; };
+    }, [session]);
     const failedThumbnailPages = useMemo(() => {
         const failed = new Set<number>();
         for (const issue of renderDiagnostics) {
@@ -599,7 +610,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         }
         return { scroll, camera: { x, y, z }, inverted, pages };
     };
-    const syncPreview = usePdfPlatformPreview(rootRef, previewIdentity, session, isVisible, isActive, readPreview);
+    const syncPreview = usePdfPlatformPreview(rootRef, previewIdentity, session, isVisible, isActive, readPreview, onNotify);
 
     // ── Page rendering (windowed) ───────────────────────────────────────────
     const getState = useCallback((i: number): PageState => {
@@ -725,6 +736,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const gen = docGenRef.current;
         st.textPromise = (async () => {
             try {
+                if ((await session.capabilities()).copy !== true) return;
                 const page = await getPage(i);
                 if (docGenRef.current !== gen || st.textToken !== token || textElsRef.current[i] !== container) return;
                 if (!visibleRef.current) { st.textStarted = false; st.textPromise = undefined; return; }
@@ -1776,6 +1788,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
      * page box shows, so "this page" means the one under the top edge.
      */
     const rotate = useCallback((delta: number, onePage: boolean) => {
+        if (capabilities?.encrypted !== false) return;
         const index = shownPageRef.current;
         const canvas = canvasElsRef.current[index];
         const page = layoutRef.current?.pages[index];
@@ -1807,7 +1820,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             base.width = base.height = output.width = output.height = 0;
         }
         onRotate?.(delta, onePage ? index : undefined, picture);
-    }, [onRotate]);
+    }, [onRotate, capabilities]);
     /** A turn of THIS file is being written. Shown on the buttons, never used
      *  to block them: a second click while one is pending queues a second
      *  quarter turn, which is what the user asked for. */
@@ -1958,6 +1971,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     recordPdfNavigation(filePath, 'user-scroll'); findBar.current?.cancelReveal();
                 }
             }}>
+            {capabilities && <PdfCapabilitiesNotice capabilities={capabilities} />}
             <PdfFindBar ref={findBar} engine={reader?.findEngine} memory={findMemory} isVisible={isVisible} isActive={isActive}
                 selectedText={selectedPdfText} readingPosition={findPosition} atOrAfter={hitAtOrAfter} reveal={revealFind} publish={publishFind} close={closeFind} onNotify={onNotify} />
             {thumbsOpen && docState && (
@@ -2011,8 +2025,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                                 <button
                                     className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
                                     aria-busy={rotating}
+                                    disabled={capabilities?.encrypted !== false}
                                     onClick={e => rotate(LEFT, e.altKey)}
-                                    data-tooltip="Rotate left ([) — hold ⌥ for this page only"
+                                    data-tooltip={capabilities?.encrypted === true ? PDF_ENCRYPTED_READ_ONLY : capabilities?.encrypted !== false ? 'Checking PDF protection' : 'Rotate left ([) — hold ⌥ for this page only'}
                                     aria-label="Rotate the document left"
                                 >
                                     <RotateCcw size={15} className="pdf-viewer-rotate-ccw" />
@@ -2020,8 +2035,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                                 <button
                                     className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
                                     aria-busy={rotating}
+                                    disabled={capabilities?.encrypted !== false}
                                     onClick={e => rotate(RIGHT, e.altKey)}
-                                    data-tooltip="Rotate right (]) — hold ⌥ for this page only"
+                                    data-tooltip={capabilities?.encrypted === true ? PDF_ENCRYPTED_READ_ONLY : capabilities?.encrypted !== false ? 'Checking PDF protection' : 'Rotate right (]) — hold ⌥ for this page only'}
                                     aria-label="Rotate the document right"
                                 >
                                     <RotateCw size={15} />

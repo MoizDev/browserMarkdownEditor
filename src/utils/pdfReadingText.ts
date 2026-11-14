@@ -20,7 +20,7 @@ export const USER_TEXT_NAVIGATION_CAUSES = ['user-scroll', 'user-navigation', 's
 export interface PdfTextPage extends PdfPageText { digest: string }
 export interface PdfFindHit { anchor: PdfTextAnchor; snippet: string }
 export interface PdfFindBatch {
-    queryId: string; hits: readonly PdfFindHit[]; done: boolean; pagesDone: number;
+    queryId: string; hits: readonly PdfFindHit[]; totalHits: number; done: boolean; pagesDone: number;
     pagesTotal: number; truncated: boolean; unavailablePages: readonly number[]; textlessPages: number;
 }
 export interface PdfTextReaderOptions {
@@ -32,7 +32,6 @@ export interface PdfTextReader {
     getPageCount(signal?: AbortSignal): Promise<number>;
     getPage(index0: number, signal?: AbortSignal, priority?: 0 | 1 | 2 | 3): Promise<PdfTextPage>;
     readonly findEngine: PdfFindEngine;
-    find(query: string, signal?: AbortSignal): AsyncIterable<PdfFindBatch>;
     navigate(anchor: PdfTextAnchor): Promise<PdfTextAnchor>;
     resolveAnchor(anchor: PdfTextAnchor, options: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution>;
     setWindow(index0: number): void;
@@ -261,40 +260,13 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
         getPageCount: pageCount,
         getPage,
         findEngine,
-        async *find(query, externalSignal) {
-            const signal = AbortSignal.any([lifetime.signal, visibility.signal, ...(externalSignal ? [externalSignal] : [])]);
-            const snippets = new Map<string, PdfFindHit>();
-            for await (const batch of findEngine.search(query, windowCenter, signal)) {
-                const hits: PdfFindHit[] = [];
-                let snippetPage = -1, text = '', steps = 0, deadline = performance.now() + 4;
-                for (const hit of batch.hits) {
-                    if ((++steps & 127) === 0 && performance.now() >= deadline) {
-                        await new Promise<void>(resolve => setTimeout(resolve, 0)); deadline = performance.now() + 4;
-                    }
-                    if (signal.aborted) throw abort();
-                    const key = `${hit.page}:${hit.from}:${hit.to}`;
-                    let result = snippets.get(key);
-                    if (!result) {
-                        // Hits are in page order. Decode once for the group,
-                        // not 10,000 copies of the same canonical page at the cap.
-                        if (snippetPage !== hit.page) { text = (await findEngine.pageText(hit.page, signal)).text; snippetPage = hit.page; }
-                        result = { anchor: pdfTextAnchor({ text, physicalPageIndex: hit.page }, hit.from),
-                            snippet: text.slice(Math.max(0, hit.from - 32), Math.min(hit.to + 64, hit.from + 320)) };
-                        snippets.set(key, result);
-                    }
-                    hits.push(result);
-                }
-                yield { queryId: String(batch.queryId), hits, done: batch.done, pagesDone: batch.pagesDone,
-                    pagesTotal: batch.pagesTotal, truncated: batch.capped, textlessPages: batch.textlessPages,
-                    unavailablePages: [...new Set([...batch.failedPages, ...batch.partialPages])] };
-            }
-        },
         resolveAnchor,
         async navigate(anchor) { return (await resolveAnchor(anchor, { sameSchema: true })).anchor; },
         setWindow(index0) { windowCenter = index0; },
         setVisible(next) {
             if (visible === next) return;
             visible = next;
+            findEngine.setVisible(next);
             if (next) { visibility = new AbortController(); if (hiddenTimer !== undefined) clearTimeout(hiddenTimer); hiddenTimer = undefined; }
             else {
                 visibility.abort(); for (const request of requests.values()) request.cancel.abort();

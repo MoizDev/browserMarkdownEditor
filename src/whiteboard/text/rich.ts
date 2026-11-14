@@ -4,6 +4,9 @@ export type RichMark = 'b' | 'i' | 'u' | 's' | 'code' | 'hl';
 export interface RichSelection { readonly anchor: number; readonly focus: number }
 export interface RichEdit { readonly from: number; readonly to: number; readonly insert: RichFragment; readonly selection: RichSelection; readonly replaceBlocks?: true }
 export type { Block, Marks, RichFragment, RichSpliceResult, RichText, Run } from './richText';
+export { plain, fromPlain, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
+export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
+export { convertLegacyRichText } from './importRich';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {

@@ -23,9 +23,18 @@ function changesOf(changes: ChangeDesc): Change[] {
 }
 
 function touched(from: number, to: number, changes: readonly Change[], inclusive = false): boolean {
-    return changes.some(c => c.fromA === c.toA
-        ? (inclusive ? c.fromA >= from && c.fromA <= to : c.fromA > from && c.fromA < to)
-        : c.fromA < to && c.toA > from);
+    let lo = 0, hi = changes.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (changes[mid].toA < from) lo = mid + 1; else hi = mid;
+    }
+    for (let i = lo; i < changes.length && changes[i].fromA <= to; i++) {
+        const c = changes[i];
+        if (c.fromA === c.toA
+            ? (inclusive ? c.fromA >= from && c.fromA <= to : c.fromA > from && c.fromA < to)
+            : c.fromA < to && c.toA > from) return true;
+    }
+    return false;
 }
 
 function terminatorsIn(doc: Text, from: number, to: number): number[] {
@@ -172,8 +181,13 @@ export function scanObjects(doc: Text, code: readonly CharRange[], math: readonl
 export function updateObjects(previous: ObjectScans, oldDoc: Text, doc: Text, changes: ChangeDesc,
     openers: readonly number[], code: readonly CharRange[], math: readonly CharRange[]): ObjectScans {
     const edits = changesOf(changes);
-    const terminators = previous.terminators.filter(pos => !edits.some(c => c.fromA <= pos && pos < c.toA))
-        .map(pos => changes.mapPos(pos, 1));
+    const terminators: number[] = [];
+    let edit = 0;
+    for (const pos of previous.terminators) {
+        while (edit < edits.length && edits[edit].toA <= pos) edit++;
+        if (edit < edits.length && edits[edit].fromA <= pos && pos < edits[edit].toA) continue;
+        terminators.push(changes.mapPos(pos, 1));
+    }
     for (const c of edits) terminators.push(...terminatorsIn(doc, c.fromB, c.toB));
     terminators.sort((a, b) => a - b);
     const tails = new Map<number, Tail>();
@@ -196,11 +210,11 @@ export function updateObjects(previous: ObjectScans, oldDoc: Text, doc: Text, ch
         const from = changes.mapPos(window.from, -1), to = changes.mapPos(window.to, 1);
         return { from: tableRegion(doc, newLines, from).from, to: tableRegion(doc, newLines, to).to };
     }));
-    const kept = previous.tables.filter(table => !oldWindows.some(window => table.from < window.to && table.to > window.from))
+    const kept = previous.tables.filter(table => !overlapsRange(oldWindows, table.from, table.to))
         .map(table => {
             const from = changes.mapPos(table.from, 1), to = changes.mapPos(table.to, -1);
             return { from, to, accepted: !containsRange(code, from, to) };
-        }).filter(table => !newWindows.some(window => table.from < window.to && table.to > window.from));
+        }).filter(table => !overlapsRange(newWindows, table.from, table.to));
     const tables = [...kept, ...tableMatches(doc, newWindows, code)].sort((a, b) => a.from - b.from);
     return { embeds, tables, terminators, tails };
 }

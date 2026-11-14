@@ -59,7 +59,7 @@ export async function prepareRaster(
           if (signal.aborted) { lease.release(); signal.throwIfAborted() }
           leases.set(item.imageKey, lease)
         }
-      } else {
+      } else if (item.kind !== 'text') {
         const [a, b, c, d] = item.localToWorld
         const itemScale = Math.max(Number.MIN_VALUE, scale * Math.hypot(a, b, c, d))
         const key = `${item.kind}:${item.geometryKey}:${item.kind === 'ink' ? itemScale : ''}`

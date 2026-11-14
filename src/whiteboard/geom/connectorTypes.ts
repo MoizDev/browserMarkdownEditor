@@ -1,9 +1,13 @@
 import type { Affine, Rect } from '../../platform/types';
+import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { ConnectorNode } from '../model/nodes';
 import type { Arrowhead } from '../model/styles';
 import type { TextPaint } from '../text/paint';
-import type { PathOp, Vec2 } from './path';
+import type { Arc, PathOp, Vec2 } from './path';
+
+export interface IncidentEnd { readonly connector: NodeId; readonly terminal: 'start' | 'end' }
+export type IncidentEndReader = (doc: Readonly<BoardDoc>, target: NodeId) => readonly IncidentEnd[];
 
 export interface AttachmentSurface {
     readonly target: NodeId;
@@ -40,6 +44,11 @@ export type ConnectorGeometryResult =
     | Readonly<{ status: 'ready'; geometry: ConnectorGeometry }>
     | Readonly<{ status: 'pending'; reason: 'target' | 'text' | 'budget' }>
     | Readonly<{ status: 'unroutable'; connector: NodeId; reason: string }>;
+export type ConnectorBody =
+    | Readonly<{ kind: 'line'; start: Vec2; end: Vec2; length: number }>
+    | Readonly<{ kind: 'arc'; start: Vec2; end: Vec2; arc: Arc; length: number }>;
+export type ConnectorBodyBuilder = (start: Vec2, end: Vec2, bend: number, straightTolerance: number) => ConnectorBody;
+
 export interface HeadGeometryRequest {
     readonly kind: Arrowhead;
     readonly tip: Vec2;

@@ -3,6 +3,7 @@ import type { ReadIssue, ReadSourceRecord, UnmappedRecord } from '../format/read
 import type { SavedView } from '../format/encode';
 import type { BoardDocInput, BoardKind } from './doc';
 import type { JsonObject } from './json';
+import type { NodeRecord } from './nodes';
 import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
 
 /** Ordered, unindexed records: duplicate ids are still present and file order is significant. */
@@ -17,7 +18,7 @@ export interface LoadRepairOptions {
     readonly newId: () => string;
     readonly sampleWire: (ref: SampleRef) => LoadSampleWire;
     /** Reparent as a sheet root; paged hosts map the stored world centre to physical page. */
-    readonly rootPlacement: (nodeId: string, sheetId: string, x: number, y: number) => { readonly page: number; readonly x: number; readonly y: number };
+    readonly rootPlacement: (node: NodeRecord, sheetId: string, sourceOrdinal: number) => { readonly page: number; readonly x: number; readonly y: number };
     readonly cooperate?: () => Promise<void>;
     readonly signal?: AbortSignal;
 }

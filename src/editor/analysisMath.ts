@@ -32,19 +32,20 @@ export function pairMathTokens(doc: Text, tokens: readonly number[], code: reado
 
 /** Resume pairing before the first edited line and reuse the suffix once pairing converges. */
 export function updateBlockPairs(previous: readonly BlockPair[], oldDoc: Text, doc: Text,
-    changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[]): BlockPair[] {
+    changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[], codeChanged: readonly CharRange[]): BlockPair[] {
     let firstOld = oldDoc.length, lastNew = 0;
     changes.iterChangedRanges((fromA, _toA, _fromB, toB) => {
         firstOld = Math.min(firstOld, oldDoc.lineAt(fromA).from);
         lastNew = Math.max(lastNew, doc.lineAt(toB).to);
     });
-    if (changes.empty) return previous.map(pair => ({ ...pair,
-        accepted: !!pair.latex && !overlapsRange(code, pair.from, pair.to) }));
+    if (changes.empty) return previous.map(pair => overlapsRange(codeChanged, pair.from, pair.to)
+        ? { ...pair, accepted: !!pair.latex && !overlapsRange(code, pair.from, pair.to) } : pair);
     let prefix = 0;
     while (prefix < previous.length && previous[prefix].to <= firstOld) prefix++;
     const mapPair = (pair: BlockPair): BlockPair => {
         const from = changes.mapPos(pair.from, 1), to = changes.mapPos(pair.to, -1);
-        return { from, to, latex: pair.latex, accepted: !!pair.latex && !overlapsRange(code, from, to) };
+        return { from, to, latex: pair.latex, accepted: overlapsRange(codeChanged, from, to)
+            ? !!pair.latex && !overlapsRange(code, from, to) : pair.accepted };
     };
     const result = previous.slice(0, prefix).map(mapPair);
     const start = result.length ? result[result.length - 1].to : 0;
@@ -83,6 +84,26 @@ export function filterInlineMath(raw: readonly LineMatch[], code: readonly CharR
             accepted: !latex.endsWith('\\') && !overlapsRange(code, match.from, match.to)
                 && !overlapsRange(acceptedBlocks, match.from, match.to),
         };
+    });
+}
+
+/** Re-filter only matches reached by changed code or accepted block math. */
+export function updateInlineMath(raw: readonly LineMatch[], previous: readonly InlineMath[], changes: ChangeDesc,
+    code: readonly CharRange[], blocks: readonly BlockPair[], dirty: readonly CharRange[]): InlineMath[] {
+    const old = new Map<string, InlineMath>();
+    for (const item of previous) {
+        const from = changes.mapPos(item.from, 1), to = changes.mapPos(item.to, -1);
+        old.set(`${from}:${to}:${item.latex}`, item);
+    }
+    const acceptedBlocks = blocks.filter(pair => pair.accepted);
+    return raw.map(match => {
+        const latex = match.groups[0], key = `${match.from}:${match.to}:${latex}`;
+        const existing = old.get(key);
+        const accepted = existing && !overlapsRange(dirty, match.from, match.to)
+            ? existing.accepted
+            : !latex.endsWith('\\') && !overlapsRange(code, match.from, match.to)
+                && !overlapsRange(acceptedBlocks, match.from, match.to);
+        return { from: match.from, to: match.to, latex, accepted };
     });
 }
 

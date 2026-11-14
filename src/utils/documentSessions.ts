@@ -1,4 +1,5 @@
 import type { ContentSource, DocumentBuffer, SourceOwner } from './documentBuffers';
+import type { JournalCapture } from './recoveryFunnel';
 
 // Share the source types without a runtime dependency; App's bindings are the
 // only runtime bridge, so two stores cannot drift into separate ownership rules.
@@ -18,7 +19,7 @@ export interface SessionAdapter {
      *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
     /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
-    journalDelta?(): unknown;
+    journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */
     recover?(payload: unknown): void | Promise<void>;
     /** App subscribes once when the session is created, never through the lifetime of a pane. */

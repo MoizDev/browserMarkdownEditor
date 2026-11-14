@@ -360,10 +360,6 @@ export class SampleStore implements SampleStoreReader {
     }
     has(ref: SampleRef): boolean { return this.records.has(ref); }
     count(ref: SampleRef): number { return this.record(ref).count; }
-    byteSize(ref: SampleRef): number {
-        const record = this.record(ref);
-        return record.bytes + (record.encoded === null ? 0 : record.encoded.length * 2);
-    }
     pressureMode(ref: SampleRef): 'real' | 'none' { return this.record(ref).hasPressure ? 'real' : 'none'; }
     byteSize(ref: SampleRef): number {
         const record = this.record(ref);

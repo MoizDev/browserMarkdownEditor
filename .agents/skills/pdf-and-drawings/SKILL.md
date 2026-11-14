@@ -76,8 +76,11 @@ as live tldraw shapes.
 - `withPdf` is gone: role inventory uses the build worker, while `openPdfPages` keeps a guarded
   classic task alive until its caller closes it. Only the classic adapter copies renderer bytes
   (pdf.js detaches its input); a display/Retry never mutates the original.
-- `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
-  in-flight build and nulls the worker so the next call re-spawns it.
+- `pdfBuildClient` keeps one warm `Worker` for the app's life; errors or a build deadline reject
+  in-flight requests and replace it on the next call. Its bounded 30-second-idle artifact cache holds
+  compressed source bytes and standalone ink PDFs, never PDFRefs or a mutated document. The canvas
+  waits for pen-up and 250ms quiet, discards exports overtaken by an edit, then awaits the immediate
+  versioned save before exporting the latest queued revision.
 
 ## Rotation (`utils/pdfRotate.ts`, `utils/pdfRotation.ts`, `App.rotatePdf`)
 

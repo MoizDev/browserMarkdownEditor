@@ -16,6 +16,7 @@ import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
+import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -189,13 +190,22 @@ export async function buildAnnotatedPdf(
 
         // The Form's bounding box clips the page-local display list. Both kinds
         // of ink use the very same inverse viewport when the Form is placed.
-        const ink = await PDFDocument.create();
-        const inkPage = ink.addPage([geometry.width, geometry.height]);
-        for (const layer of overlay.layers ?? [overlay]) {
-            if (layer.raster?.length) stampRaster(inkPage, await ink.embedPng(layer.raster.slice()));
-            if (layer.vector?.length) stampVector(inkPage, layer.vector);
-        }
-        const embedded = await doc.embedPage(inkPage);
+        const layers = overlay.layers ?? [overlay];
+        const identity: unknown[] = [];
+        for (const layer of layers) identity.push([layer.raster?.length ? await artifactHash(layer.raster) : '', layer.vector ?? []]);
+        const inkKey = await artifactHash(new TextEncoder().encode(JSON.stringify([
+            'ink-form-v2', geometry.width, geometry.height, identity,
+        ])));
+        const inkBytes = await immutableArtifact(`page:${inkKey}`, async () => {
+            const ink = await PDFDocument.create();
+            const inkPage = ink.addPage([geometry.width, geometry.height]);
+            for (const layer of layers) {
+                if (layer.raster?.length) stampRaster(inkPage, await ink.embedPng(layer.raster));
+                if (layer.vector?.length) stampVector(inkPage, layer.vector);
+            }
+            return ink.save(SAVE_WITHOUT_TICKS);
+        });
+        const [embedded] = await doc.embedPdf(inkBytes, [0]);
         const page = pages[i];
         // pdf-lib normalizes inherited resources in place. Fork both the outer
         // dictionary and its mutable subdictionaries before adding the Form.

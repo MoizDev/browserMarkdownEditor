@@ -43,20 +43,22 @@ export type MediaStorageDestination =
     }>;
 
 /** Only the real issuer can create an admitted receipt. Structural lookalikes fail its brand check. */
-export interface MediaStorageReceipt {
-    readonly kind: 'file' | 'embedded';
+export interface MediaStorageReceiptBase {
     readonly id: MediaId;
-    readonly file: string | null;
     readonly owner: Readonly<{ documentId: string; session: number }>;
     assertCurrent(): void;
     /** Call only after the same atomic media+node model transaction succeeds. */
     committed(): void;
-    /** Embedded capture is available only after commit, while this receipt is retained. */
-    captureCurrentBytes(signal: AbortSignal): Promise<CurrentDocumentBytes>;
     /** Before commit: rollback pending retention. After commit: document/history/journal
      * and captured checkpoints retain the canonical MediaStore blob independently. */
     release(): void;
 }
+export type MediaStorageReceipt = MediaStorageReceiptBase & (
+    | Readonly<{ kind: 'file'; file: string }>
+    | Readonly<{ kind: 'embedded'; file: null;
+        /** Available only after commit, while the receipt is retained. */
+        captureCurrentBytes(signal: AbortSignal): Promise<CurrentDocumentBytes> }>
+);
 export type StoreVerifiedMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal,
     proof: MediaStorageProof) => Promise<MediaStorageReceipt>;
 export type MediaStorageIssuer = (request: MediaStorageRequest, destination: MediaStorageDestination) => MediaStorageReceipt;

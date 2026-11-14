@@ -24,6 +24,15 @@ interface WorkerInspection {
     readonly decodePixels: number;
 }
 const worker = boardWorker('decode');
+const inspected = new WeakMap<InspectedMedia, { input: Blob; bytes: Blob; identity: BoardJobIdentity; current(): boolean }>();
+
+/** Storage consumes the actual verified immutable bytes, never a descriptor-shaped claim. */
+export function inspectedMediaBytes(info: InspectedMedia, input: Blob, identity: BoardJobIdentity): Blob {
+    const ticket = inspected.get(info);
+    if (!ticket || ticket.input !== input || ticket.identity.session !== identity.session || ticket.identity.epoch !== identity.epoch
+        || ticket.identity.revision !== identity.revision || !ticket.current()) throw new TypeError('Media inspection is foreign or stale');
+    return ticket.bytes;
+}
 
 function validSize(width: number, height: number): boolean {
     return checkMediaDimensions(width, height).ok;
@@ -33,7 +42,15 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia> {
     // File objects carry path-like metadata and are refused by the worker host;
     // a Blob slice preserves the bytes without sending that metadata across.
+    const input = blob;
     blob = blob.slice(0, blob.size, blob.type);
+    const identity = Object.freeze({ ...options.identity });
+    const attest = (value: InspectedMedia): InspectedMedia => {
+        if (!options.isCurrent(identity)) throw new DOMException('Media inspection became stale', 'AbortError');
+        const result = Object.freeze(value);
+        inspected.set(result, { input, bytes: blob, identity, current: () => options.isCurrent(identity) });
+        return result;
+    };
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
     const call = <T>(op: string, payload: unknown, deadlineMs: number): Promise<T> =>
         worker.request<T>(op, payload, options.identity, { priority: 1, deadlineMs, signal }, options.isCurrent);
@@ -66,7 +83,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();
-        return { id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null };
+        return attest({ id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null });
     }
     const result = await call<WorkerInspection>('inspect', { blob }, 10000);
     signal.throwIfAborted();
@@ -98,6 +115,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             }
         }
         signal.throwIfAborted();
-        return { id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration };
+        return attest({ id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration });
     } finally { options.memory.release(lease); }
 }

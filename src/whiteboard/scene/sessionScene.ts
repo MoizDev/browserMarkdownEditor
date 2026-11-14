@@ -28,7 +28,7 @@ export interface SessionSceneOptions {
     retainNode(node: Readonly<Node>): { release(): void };
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
-    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal): Promise<PaintNodeSource>;
+    preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>): Promise<PaintNodeSource>;
     /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;

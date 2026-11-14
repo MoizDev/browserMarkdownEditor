@@ -49,7 +49,7 @@ export interface SceneSnapshot {
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
-    release(): void;
+    release(): void | Promise<void>;
 }
 export interface SceneSpatial {
     readonly revision: number;

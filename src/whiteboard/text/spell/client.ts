@@ -103,10 +103,18 @@ export class BoardSpellClient {
         }, 300);
     }
 
+    /** Drop the worker when the editing pane is hidden; retain downloaded dictionary bytes. */
+    suspend(): void {
+        this.generation++;
+        if (this.debounce !== null) clearTimeout(this.debounce);
+        this.debounce = null;
+        if (this.worker) this.failed(this.worker, new DOMException('Spelling client suspended', 'AbortError'));
+    }
+
     dispose(): void {
         if (this.disposed) return;
-        this.disposed = true; this.generation++;
-        if (this.debounce !== null) clearTimeout(this.debounce);
-        if (this.worker) this.failed(this.worker, new DOMException('Spelling client disposed', 'AbortError'));
+        this.disposed = true;
+        this.suspend();
+        this.dictionary = null;
     }
 }

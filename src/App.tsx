@@ -2313,8 +2313,17 @@ export default function App() {
       if (!tab || tab.content === content) latestContentRef.current.delete(path);
     }
   }, [tabs]);
-  const contentOf = useCallback((path: string): string | undefined =>
-    latestContentRef.current.get(path) ?? tabsRef.current.find(t => t.file.path === path)?.content, []);
+  const contentOf = useCallback((path: string): string | undefined => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    if (!tab) return undefined;
+    const buffer = documentBuffers.get(tab.id);
+    if (buffer?.readable) return documentBuffers.contentOf(path);
+    // Until every PDF caller migrates to snapshotOf, its legacy snapshot is
+    // still needed by the annotate and print paths. Other unreadable kinds
+    // must never be exposed as empty text.
+    if (tab.representation.loadedKind === 'pdf') return latestContentRef.current.get(path) ?? tab.content;
+    return buffer ? undefined : canReadTabText(tab) ? latestContentRef.current.get(path) ?? tab.content : undefined;
+  }, [documentBuffers]);
 
   /**
    * Writes are SERIALIZED per document (by id, so a rename mid-write cannot
@@ -2579,9 +2588,9 @@ export default function App() {
               kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => ({ payload: text, copy: text, mediaRefs: [] }) });
           }
         }
-        const current = !currentRevision || currentRevision.revision === revision;
+        const current = (!currentRevision || currentRevision.revision === revision) && !documentBuffers.isDirty(id);
         setTabs(prev => prev.map(t =>
-          t.id === id && current && t.content === snapshot ? { ...t, dirty: false } : t));
+          t.id === id && current ? { ...t, dirty: false } : t));
         // Any column on screen, not only the focused one: with the editor split
         // the status line speaks for everything the reader can see.
         if (current && visiblePathsRef.current.includes(path)) {

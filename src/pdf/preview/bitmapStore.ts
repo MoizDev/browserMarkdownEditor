@@ -1,12 +1,7 @@
 /* PDF-private CPU mirrors for the temporary platform preview. The classic canvas remains
  * the producer and is never transferred or cleared by this store. */
 
-export interface PreviewRect {
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-}
+import type { PreviewRect } from './contracts';
 
 interface BitmapLease { readonly id: number; readonly bytes: number }
 

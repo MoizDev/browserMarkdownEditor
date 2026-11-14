@@ -1,6 +1,7 @@
 import type { ViewState, LayerHost, GfxDevice, GpuPass, TextureHandle, FrameBudget, GpuReleaseReason, Layer } from '../../platform/render';
 import { PreviewBitmapStore } from './bitmapStore';
-import type { PreviewRect, PreviewTile } from './bitmapStore';
+import type { PreviewTile } from './bitmapStore';
+import type { PreviewRect } from './contracts';
 
 export interface PreviewExpectedPage {
     readonly rect: PreviewRect;

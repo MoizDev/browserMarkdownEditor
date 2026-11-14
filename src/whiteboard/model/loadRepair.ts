@@ -3,6 +3,7 @@ import type { BoardDocInput, Sheet } from './doc';
 import { createLoadedBoardDoc } from './loadDocument';
 import { recountLoadMedia } from './loadMediaCounts';
 import { repairGraph } from './repairGraph';
+import { repairLoadIdentities } from './repairIdentities';
 import { projectLoad, rehydrateLoad } from './loadProjection';
 import { repairNodeValues } from './repairValues';
 import { repairNodeText } from './repairText';
@@ -42,7 +43,10 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
         reserved.add(id);
         return id;
     };
-    const sheetRepair = await repairSheets(sheets, newId, options);
+    const identities = await repairLoadIdentities(sheets, nodes, draft.sources, newId, options);
+    notices.push(...identities.notices);
+    if (identities.readOnlyReason) return refuse(identities.readOnlyReason);
+    const sheetRepair = await repairSheets(identities.sheets, newId, options);
     notices.push(...sheetRepair.notices);
     if (sheetRepair.readOnlyReason) return refuse(sheetRepair.readOnlyReason);
     const mediaIds = new Set<string>();
@@ -53,7 +57,7 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
     }
     // Repair local values before group composition: NaN/Infinity must not spread
     // from a malformed container into an otherwise valid child transform.
-    const values = await repairNodeValues(nodes, media, options);
+    const values = await repairNodeValues(identities.nodes, media, options);
     notices.push(...values.notices);
     if (values.readOnlyReason) return refuse(values.readOnlyReason);
     const text = await repairNodeText(values.nodes, options);
@@ -97,11 +101,11 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
                 if (source.id !== undefined && !liveNodeIds.has(source.id)) removedSources.push(source);
                 continue;
             }
-            const changed = source.reencode || values.changedOrdinals.has(ordinal) || text.changedOrdinals.has(ordinal) || graph.changedOrdinals.has(ordinal);
+            const changed = source.reencode || identities.changedNodeOrdinals.has(ordinal) || values.changedOrdinals.has(ordinal) || text.changedOrdinals.has(ordinal) || graph.changedOrdinals.has(ordinal);
             sources.push(changed ? { ...source, id: node.id, reencode: true } : source);
         } else if (source.category === 'sheet') {
             const ordinal = sheetOrdinal++, sheet = sheetRepair.sheets[ordinal];
-            sources.push(sheetRepair.changedOrdinals.has(ordinal) ? { ...source, id: sheet.id, reencode: true } : source);
+            sources.push(identities.changedSheetOrdinals.has(ordinal) || sheetRepair.changedOrdinals.has(ordinal) ? { ...source, id: sheet.id, reencode: true } : source);
         } else sources.push(source);
     }
     const projection = await projectLoad({ input, sources, removedSources, unmapped: draft.unmapped,

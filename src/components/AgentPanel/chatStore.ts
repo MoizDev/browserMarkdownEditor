@@ -13,6 +13,7 @@
 import { agentBridge, BridgeError, helperReady, isTerminalEvent } from '../../utils/agentBridge';
 import type { HelperEvent, HelperInfo } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
+import { releaseAgentMatcher } from '../../utils/agentMatcher/client';
 import { buildAgentContext, stripAgentContext } from '../../utils/agentContext';
 import { getReplyModePref, resolveReplyMode } from '../../utils/agentReplyMode';
 import { AGENT_IDS, AGENT_LABELS, MAX_IMAGES_PER_MESSAGE } from '../../../shared/vaultAgentProtocol';
@@ -25,6 +26,7 @@ import {
     selectVersion as selectVersionIn, type ChatNode, type ChatTree, type StoredTool,
 } from '../../utils/chatTree';
 import { readOpenChat, rememberOpenChat } from './openChatMemory';
+import { writeJSON } from '../../utils/storage';
 
 /* ───────────────────────── shapes ───────────────────────── */
 
@@ -158,7 +160,7 @@ function writeChoice(config: ChatConfig): void {
     const current = readChoice();
     current.agent = config.agent;
     current.perAgent[config.agent] = { model: config.model, effort: config.effort };
-    try { localStorage.setItem(CHOICE_KEY, JSON.stringify(current)); } catch { /* not remembered */ }
+    writeJSON(CHOICE_KEY, current);
 }
 
 function draftFor(agent: AgentId): ChatConfig {
@@ -361,6 +363,7 @@ class ChatStore {
         if (key === this.state.vaultKey) return;
         this.indexVaultToken = host.toolHost.vaultToken();
         if (this.state.run) this.abandonRun('The vault changed, so the agent was stopped.');
+        releaseAgentMatcher();
         this.set({
             vaultKey: key,
             chats: [],
@@ -1097,6 +1100,7 @@ class ChatStore {
     /** The helper removed itself: whatever was running is gone with it. */
     onUninstalled(): void {
         if (this.state.run) this.finishRun(this.state.run.chatId);
+        releaseAgentMatcher();
         this.set({ agents: [], agentsStatus: 'idle', models: {} });
     }
 }

@@ -92,4 +92,8 @@ third-party code included (normally "none") · date.
 
 ## Editing lanes (w-f to w-j), export and hosts (w-k, w-l)
 
-Sections are added when these lanes open.
+## Pages and paged hosts (lane w-l)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract; no tldraw source | none | 2026-11-13 |

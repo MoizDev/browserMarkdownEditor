@@ -15,7 +15,7 @@ const stale = () => new DOMException('PDF conversion ended', 'AbortError');
 function visualFailure(phase: 'preview' | 'final', visual: Awaited<ReturnType<typeof inspectPdfVisualModel>>): Error {
     const counts = new Map<string, number>();
     const families = new Set(['legacy-document', 'legacy-user', 'legacy-shape', 'legacy-binding', 'legacy-unknown-record',
-        'legacy-unreadable-record', 'legacy-bookmark-asset', 'legacy-orphan-asset', 'legacy-unreadable-asset']);
+        'legacy-unreadable-record', 'legacy-bookmark-asset', 'legacy-orphan-asset', 'legacy-unreadable-asset', 'legacy-rich-text']);
     for (const issue of visual.issues) {
         const key = issue.kind === 'preserved-record'
             ? `${issue.kind}/${families.has(issue.type) ? issue.type : 'other'}` : issue.kind;

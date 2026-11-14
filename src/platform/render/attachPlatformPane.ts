@@ -60,6 +60,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
     let lastInputAt = performance.now();
+    let pendingInputAt: number | null = null;
+    let healthyInputAt: number | null = null;
     let lastFrameInterval: number | null = null;
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
@@ -153,7 +155,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
-        inputHealthy: () => false,
+        inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
         frameInterval: () => lastFrameInterval,
         onEvict: () => {
             const surface = lifecycle?.surface;
@@ -220,7 +222,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         if (cpu?.kind === 'ready') compositor.setMetrics(cpu.metrics);
                         return cpu;
                     },
-                    consumeInput: (time: number) => { options.consumeInput(time); camera.setCamera(options.readCamera()); },
+                    consumeInput: (time: number) => {
+                        options.consumeInput(time);
+                        if (pendingInputAt !== null) {
+                            const now = performance.now();
+                            if (now - pendingInputAt <= RENDER_CONSTANTS.stalledFenceMs) healthyInputAt = now;
+                            pendingInputAt = null;
+                        }
+                        camera.setCamera(options.readCamera());
+                    },
                     isInteracting: options.isInteracting,
                     snapshotScene: (view: ViewState) => { lastView = view; const drawing = drawCompositor(); drawing?.setAppearance(options.readAppearance()); drawing?.snapshot(view); },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
@@ -346,11 +356,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpu?.bundle.compositor.setLayers(layerSet.compositorLayers);
             runtime.refresh();
         },
-        invalidate(reason) { if (!disposed) { if (reason === 'input') lastInputAt = performance.now(); lifecycle?.invalidate(reason); } },
+        invalidate(reason) {
+            if (disposed) return;
+            if (reason === 'input') { lastInputAt = performance.now(); pendingInputAt = lastInputAt; }
+            lifecycle?.invalidate(reason);
+        },
         captureRegion(worldRect, maxSidePx, captureOptions) {
-            const capture = surfaceHost.current?.captureRegion;
-            if (disposed || !capture || !surfaceHost.current) return Promise.reject(new Error('Pane capture is unavailable'));
-            return capture.call(surfaceHost.current, worldRect, maxSidePx, captureOptions);
+            if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));
+            // Session capture owns its own revision lease and survives later pane unmount.
+            if (options.session.captureRegion) return options.session.captureRegion(worldRect, maxSidePx, captureOptions);
+            const selected = surfaceHost.current;
+            if (!selected?.captureRegion) return Promise.reject(new Error('Pane capture is unavailable'));
+            return selected.captureRegion(worldRect, maxSidePx, captureOptions);
         },
         dispose() {
             if (disposed) return;

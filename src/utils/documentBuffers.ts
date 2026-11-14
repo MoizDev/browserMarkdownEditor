@@ -79,9 +79,11 @@ export interface DocumentBufferStore {
 
     /** Latest readable text, otherwise undefined. Never a promise; one flatten per new revision. */
     contentOf(path: string): string | undefined;
+    contentForDocument(documentId: string): string | undefined;
 
     /** Binary-aware save/conflict snapshot, independent of readable. */
     snapshotOf(path: string): BufferSnapshot | undefined;
+    snapshotForDocument(documentId: string): BufferSnapshot | undefined;
 
     /** The same ledger as revisionForDocument, resolving today's id at the supplied path. */
     revisionOf(path: string): BufferRevision | undefined;
@@ -131,6 +133,21 @@ export function createDocumentBuffers(
         const snapshot = Object.freeze({ revision: buffer.revision, data });
         snapshots.set(documentId, snapshot);
         return snapshot;
+    };
+
+    const contentForDocument = (documentId: string): string | undefined => {
+        const buffer = buffers.get(documentId);
+        if (!buffer || !buffer.readable) return undefined;
+        if (buffer.flat?.revision === buffer.revision) return buffer.flat.text;
+        const data = readSnapshot(documentId, buffer).data;
+        if (typeof data !== 'string') return undefined;
+        const flat = Object.freeze({ revision: buffer.revision, text: data });
+        buffers.set(documentId, Object.freeze({ ...buffer, flat }));
+        return flat.text;
+    };
+    const snapshotForDocument = (documentId: string): BufferSnapshot | undefined => {
+        const buffer = buffers.get(documentId);
+        return buffer ? readSnapshot(documentId, buffer) : undefined;
     };
 
     return {
@@ -190,23 +207,15 @@ export function createDocumentBuffers(
                 if (!subscribed.size && listeners.get(documentId) === subscribed) listeners.delete(documentId);
             };
         },
+        contentForDocument,
         contentOf(path) {
             const documentId = documentIdAtPath(path);
-            if (documentId === undefined) return undefined;
-            const buffer = buffers.get(documentId);
-            if (!buffer || !buffer.readable) return undefined;
-            if (buffer.flat?.revision === buffer.revision) return buffer.flat.text;
-            const data = readSnapshot(documentId, buffer).data;
-            if (typeof data !== 'string') return undefined;
-            const flat = Object.freeze({ revision: buffer.revision, text: data });
-            buffers.set(documentId, Object.freeze({ ...buffer, flat }));
-            return flat.text;
+            return documentId === undefined ? undefined : contentForDocument(documentId);
         },
+        snapshotForDocument,
         snapshotOf(path) {
             const documentId = documentIdAtPath(path);
-            if (documentId === undefined) return undefined;
-            const buffer = buffers.get(documentId);
-            return buffer ? readSnapshot(documentId, buffer) : undefined;
+            return documentId === undefined ? undefined : snapshotForDocument(documentId);
         },
         revisionOf(path) {
             const documentId = documentIdAtPath(path);

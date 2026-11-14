@@ -1534,7 +1534,7 @@ export default function App() {
       }
       const revision = assetReferenceRevisionRef.current;
       const proofTabs = tabsRef.current;
-      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? tab.content : undefined]));
+      const proofContents = new Map(proofTabs.map(tab => [tab.file.path, canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) : undefined]));
       const proofRevisions = new Map(proofTabs.map(tab => [tab.id, documentBuffers.revisionForDocument(tab.id)?.revision]));
       const unsavedBoards = new Map(boards.map(board => [board.path, unsavedBoardContentRef.current.get(board.path)]));
       // Dirty-only save acknowledgements do not change a reference proof.
@@ -1546,7 +1546,7 @@ export default function App() {
           return tab.id === old.id && tab.file.path === old.file.path
             && tab.readError === old.readError && tab.representation === old.representation
             && documentBuffers.revisionForDocument(tab.id)?.revision === proofRevisions.get(tab.id)
-            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) ?? tab.content : undefined) === proofContents.get(tab.file.path)
+            && (canReadTabText(tab) ? documentBuffers.contentOf(tab.file.path) : undefined) === proofContents.get(tab.file.path)
             && (!isCanvasFile(tab.file.name) || !getView(tab.file.path)?.hasPendingEdits?.());
         });
       let retired = false;

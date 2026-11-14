@@ -3,6 +3,7 @@ import type { WorkerContext } from '../../platform/workers/serve';
 import type { IndexFile, IndexSession } from '../../utils/vaultIndex/types';
 import { IndexEngine } from './engine';
 import { HandleReader } from './reader';
+import { PersistSession } from './persistSession';
 import { SearchResidency } from './searchResidency';
 import { searchSidebar, type SearchOverlay } from './workerSearch';
 import { matchAgentSearch } from '../../utils/agentMatcher/client';
@@ -30,9 +31,10 @@ function problem(context: WorkerContext, session: IndexSession, error: unknown):
 }
 serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
     ready() { return null; },
-    open(value, context) {
+    async open(value, context) {
         const { session } = value as SessionArgs;
         engine?.close();
+        await engine?.persistence?.close();
         searchText?.dispose();
         reader = new HandleReader();
         pending = undefined;
@@ -46,15 +48,25 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
                 context.emit('status', { session, phase, done, total });
             }, (changes, sweepComplete) => context.emit('fileTimes', { session, changes, sweepComplete }));
         const owner = engine;
+        const persistence = new PersistSession(session.vaultId, (kind, detail) => context.emit('problem', { session, kind, detail }));
+        owner.persistence = persistence;
+        const records = await persistence.open();
+        if (current(session) !== owner) { await persistence.close(); return null; }
+        owner.store.hydrate(records);
+        owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
         searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner, (path, mtime, size) => {
             const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
             return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
         });
         return null;
     },
-    close(value) {
+    async close(value) {
         const { session } = value as SessionArgs;
-        if (current(session)) { engine?.close(); searchText?.dispose(); searchText = undefined; engine = undefined; reader = undefined; pending = undefined; primes.clear(); overlays.clear(); overlayRevisions.clear(); }
+        if (current(session)) {
+            const active = engine;
+            active?.close(); searchText?.dispose(); searchText = undefined; engine = undefined; reader = undefined; pending = undefined; primes.clear(); overlays.clear(); overlayRevisions.clear();
+            await active?.persistence?.close();
+        }
         return null;
     },
     treeBegin(value) {

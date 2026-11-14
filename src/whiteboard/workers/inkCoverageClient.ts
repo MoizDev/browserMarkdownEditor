@@ -5,6 +5,7 @@ import { DOT_METRIC_PROVISIONAL, radiusAtCurveParameter, type InkWidth } from '.
 import { boardWorker } from './client';
 import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
 import type { BoardJobIdentity } from './protocol';
+import { TransferSlabs } from './slabs';
 
 /** Copies only one canonical range and its neighbours; the caller retains the original sequence. */
 export async function prepareInkCoverageInWorker(samples: SampleSequence, parameters: CurveParameters,
@@ -19,8 +20,13 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
     const first = Math.max(0, range.firstSpan - 2);
     const end = Math.min(samples.count, range.firstSpan + range.spanCount + 3);
     if (options.closed && (first !== 0 || end !== samples.count)) throw new RangeError('Closed ink needs its complete sample sequence');
-    const count = end - first, xy = new Float64Array(2 * count), kinds = new Uint8Array(count);
-    const pressure = style.pressure === 'real' ? new Float64Array(count) : null;
+    const count = end - first, slabs = new TransferSlabs();
+    const xyHandle = slabs.allocate(16 * count), kindsHandle = slabs.allocate(count);
+    const pressureHandle = style.pressure === 'real' ? slabs.allocate(8 * count) : null;
+    const xyBytes = slabs.view(xyHandle), kinds = slabs.view(kindsHandle);
+    const xy = new Float64Array(xyBytes.buffer, xyBytes.byteOffset, 2 * count);
+    const pressureBytes = pressureHandle ? slabs.view(pressureHandle) : null;
+    const pressure = pressureBytes ? new Float64Array(pressureBytes.buffer, pressureBytes.byteOffset, count) : null;
     for (let i = 0; i < count; i++) {
         const source = first + i;
         xy[2 * i] = samples.x(source); xy[2 * i + 1] = samples.y(source);
@@ -32,12 +38,18 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
         if (source + 1 < samples.count) kinds[i] = samples.segmentKind(source) === 'straight' ? 1 : 0;
     }
     const { dotMetric: _dotMetric, ...plainOptions } = options;
-    const payload: InkCoverageRequest = { samples: { xy, pressure, kinds, indexOffset: first, totalCount: samples.count },
-        parameters, style, range, options: plainOptions };
-    const transfer: Transferable[] = [xy.buffer, kinds.buffer];
-    if (pressure) transfer.push(pressure.buffer);
-    const reply = await boardWorker('geometry').request<InkCoverageReply>('ink.coverage', payload, identity,
-        { priority: 1, signal, transfer }, isCurrent);
+    const moved = slabs.move(xyHandle);
+    slabs.dispose();
+    const payload: InkCoverageRequest = { samples: {
+        xy: new Float64Array(moved.buffer, xyHandle.offset, 2 * count),
+        pressure: pressureHandle ? new Float64Array(moved.buffer, pressureHandle.offset, count) : null,
+        kinds: new Uint8Array(moved.buffer, kindsHandle.offset, count), indexOffset: first, totalCount: samples.count,
+    }, parameters, style, range, options: plainOptions };
+    let reply: InkCoverageReply;
+    try {
+        reply = await boardWorker('geometry').request<InkCoverageReply>('ink.coverage', payload, identity,
+            { priority: 1, signal, transfer: [moved.buffer] }, isCurrent);
+    } finally { moved.release(); }
     return Object.freeze({ ...reply, radiusAt(span: number, t: number): number {
         const { arcMaps: maps, radii } = reply;
         if (!Number.isInteger(span) || span < 0 || span >= maps.length || !Number.isFinite(t) || t < 0 || t > 1) {

@@ -41,6 +41,7 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
     try {
         const geometry = materializeCurveRange(sequence, range, parameters);
         const job = new InkCoverageJob(sequence, geometry, style, { ...options, dotMetric: DOT_METRIC_PROVISIONAL });
+        reportGeometryMemory(context, owner, inputBytes + job.byteLength);
         try {
             let started = performance.now(), work = 0;
             for (;;) {
@@ -56,13 +57,14 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
                         for (const child of Object.values(value)) collect(child);
                     };
                     collect(result);
-                    let outputBytes = 0;
-                    for (const buffer of buffers) outputBytes += buffer.byteLength;
-                    reportGeometryMemory(context, owner, inputBytes + outputBytes);
+                    reportGeometryMemory(context, owner, inputBytes + job.byteLength);
                     context.transfer(...buffers);
                     return result;
                 }
-                if (++work >= 256 || performance.now() - started >= 3) { await context.slice(); work = 0; started = performance.now(); }
+                if (++work >= 256 || performance.now() - started >= 3) {
+                    reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+                    await context.slice(); work = 0; started = performance.now();
+                }
             }
         } finally { job.cancel(); }
     } finally { reportGeometryMemory(context, owner, null); }

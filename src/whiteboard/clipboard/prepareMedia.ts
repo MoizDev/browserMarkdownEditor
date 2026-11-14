@@ -56,25 +56,10 @@ export function prepareBoardClipboardMediaInJob(options: PrepareClipboardMediaOp
 function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: JobContext): Promise<PreparedClipboardMedia> {
     const { runtime } = options, source = options.acquisition.load.doc;
     options.signal?.throwIfAborted();
-    // Capture source-owned data before the caller can release its acquisition.
-    const entries = new Map<MediaId, MediaEntry>();
-    for (const [id, refs] of source.mediaRefs) if (refs.size) {
-        const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard media has no metadata: ${id}`);
-        entries.set(id, cloneEntry(entry));
-    }
-    for (const [id, count] of source.preservedMediaRefs) if (count > 0) {
-        const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard preserved media has no metadata: ${id}`);
-        entries.set(id, cloneEntry(entry));
-    }
-    const preservedRefs = new Map(source.preservedMediaRefs);
-    let hasUnknownRaw = false;
-    for (const node of source.nodes.values()) for (const item of nodeRawValues(node)) if (item !== null) hasUnknownRaw = true;
-    const inline = new Map<MediaId, Blob>();
-    for (const item of options.acquisition.inline) {
-        if (inline.has(item.id) || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)) throw new TypeError('Invalid clipboard inline media');
-        inline.set(item.id, new Blob([item.blob], { type: item.blob.type }));
-    }
-    const deadlineMs = Math.max(30_000, Math.ceil([...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0) / (100 * 1024 * 1024)) * 30_000);
+    // Rehydrated source maps and Blob values remain immutable after acquisition disposal;
+    // copy their metadata cooperatively inside the owning job, not on the event path.
+    const sourceInline = options.acquisition.inline;
+    const deadlineMs = 180_000;
     let abortOwned: (() => void) | undefined, stampedRevision = -1;
     const work = async (context: JobContext): Promise<PreparedClipboardMedia> => {
         runtime.jobs.assertContext(context);
@@ -92,6 +77,33 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
         const release = () => { if (!held) return; held = false; for (const lease of leases) lease.release(); leases.length = 0; };
         try {
             check();
+            const entries = new Map<MediaId, MediaEntry>(), preservedRefs = new Map<MediaId, number>(), inline = new Map<MediaId, Blob>();
+            let hasUnknownRaw = false, visits = 0;
+            for (const [id, refs] of source.mediaRefs) {
+                if (refs.size) {
+                    const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard media has no metadata: ${id}`);
+                    entries.set(id, cloneEntry(entry));
+                }
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const [id, count] of source.preservedMediaRefs) {
+                preservedRefs.set(id, count);
+                if (count > 0) {
+                    const entry = source.media.get(id); if (!entry) throw new Error(`Clipboard preserved media has no metadata: ${id}`);
+                    entries.set(id, cloneEntry(entry));
+                }
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const node of source.nodes.values()) {
+                for (const item of nodeRawValues(node)) if (item !== null) { hasUnknownRaw = true; break; }
+                if (hasUnknownRaw) break;
+                if ((++visits & 255) === 0) await cooperate();
+            }
+            for (const item of sourceInline) {
+                if (inline.has(item.id) || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)) throw new TypeError('Invalid clipboard inline media');
+                inline.set(item.id, new Blob([item.blob], { type: item.blob.type }));
+                if ((++visits & 255) === 0) await cooperate();
+            }
             for (const [id, entry] of entries) {
                 check();
                 const existing = runtime.session.doc.media.get(id);

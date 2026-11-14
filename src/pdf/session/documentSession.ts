@@ -15,8 +15,11 @@ export interface OpenTiledDocument {
 }
 
 export interface TiledDocumentPool {
-    open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal): Promise<OpenTiledDocument>;
+    open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal, password?: string): Promise<OpenTiledDocument>;
 }
+
+/** App-owned prompt; null means the user cancelled, never an empty password. */
+export type PdfPasswordRequest = (token: RenderToken, incorrect: boolean, signal: AbortSignal) => Promise<string | null>;
 
 /** Geometry, not path, determines whether older pixels can bridge a version. */
 export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {

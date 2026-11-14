@@ -141,6 +141,20 @@ export function projectionPosition(text: RichText, offset: number): TextProjecti
 }
 export function projectionLength(text: RichText): number { return indexFor(text).length; }
 
+/** Locate a block by ordinal without walking all earlier blocks. */
+export function projectionBlockStart(text: RichText, blockIndex: number): number {
+    const root = indexFor(text).tree;
+    if (!root || !Number.isSafeInteger(blockIndex) || blockIndex < 0 || blockIndex >= root.count)
+        throw new RangeError('Invalid text block index');
+    let tree: Tree = root, local = blockIndex, start = 0;
+    while (tree.kind === 'branch') {
+        if (local < tree.left.count) tree = tree.left;
+        else { local -= tree.left.count; start += tree.left.units; tree = tree.right; }
+    }
+    for (let i = 0; i < local; i++) start += tree.lengths[i] + 1;
+    return start;
+}
+
 /** Read only intersecting blocks; newline separators are projection characters. */
 export function projectionSlice(text: RichText, from: number, to: number): string {
     if (to < from) throw new RangeError('Reversed text slice');

@@ -1,6 +1,8 @@
 import type { Block, RichText } from './richText';
-import { projectionLength, projectionPosition } from './projection';
+import { projectionBlockStart, projectionLength, projectionPosition } from './projection';
 import { WeakIdentityLru } from './weakLru';
+import { WordBlockIndex } from './wordIndex';
+import { runIndex } from './runIndex';
 
 export interface BoundarySelection { readonly anchor: number; readonly focus: number }
 export type BoundaryDirection = -1 | 1;
@@ -48,6 +50,7 @@ function blockString(block: Block): string {
 export class TextBoundaries {
     // LRU values retain text/ICU views, not blocks and their potentially large opaque data.
     private readonly entries: WeakIdentityLru<Block, BlockEntry>;
+    private readonly emptyWords = new WordBlockIndex();
 
     constructor(byteLimit = DEFAULT_BYTES, entryLimit = DEFAULT_ENTRIES) {
         this.entries = new WeakIdentityLru(byteLimit, entryLimit);
@@ -140,7 +143,14 @@ export class TextBoundaries {
         const point = projectionPosition(text, cursor);
         let index = point.index, start = point.start, local = point.offset;
         while (index >= 0 && index < text.blocks.length) {
+            if (this.emptyWords.has(text, index)) {
+                index = this.emptyWords.next(text, index, direction);
+                if (index < 0 || index >= text.blocks.length) break;
+                start = projectionBlockStart(text, index);
+                local = direction < 0 ? runIndex(text.blocks[index]).length : 0;
+            }
             const entry = this.entry(text.blocks[index]);
+            const scannedWhole = direction < 0 ? local >= entry.text.length : local === 0;
             if (direction < 0) {
                 local = Math.min(local, entry.text.length);
                 while (local > 0) {
@@ -150,9 +160,12 @@ export class TextBoundaries {
                     if (part.index >= local) break;
                     local = part.index;
                 }
-                if (--index < 0) break;
-                const previous = this.entry(text.blocks[index]);
-                start -= previous.text.length + 1; local = previous.text.length;
+                if (scannedWhole) this.emptyWords.mark(text, index);
+                const previous = index;
+                index = this.emptyWords.next(text, index - 1, -1);
+                if (index < 0) break;
+                local = runIndex(text.blocks[index]).length;
+                start = index === previous - 1 ? start - local - 1 : projectionBlockStart(text, index);
             } else {
                 while (local < entry.text.length) {
                     const part = (entry.words ??= wordSegmenter.segment(entry.text)).containing(local);
@@ -162,14 +175,18 @@ export class TextBoundaries {
                     if (end <= local) break;
                     local = end;
                 }
-                start += entry.text.length + 1;
-                index++; local = 0;
+                if (scannedWhole) this.emptyWords.mark(text, index);
+                const previous = index;
+                index = this.emptyWords.next(text, index + 1, 1);
+                if (index >= text.blocks.length) break;
+                start = index === previous + 1 ? start + entry.text.length + 1 : projectionBlockStart(text, index);
+                local = 0;
             }
         }
         return direction < 0 ? 0 : length;
     }
 
-    clear(): void { this.entries.clear(); }
+    clear(): void { this.entries.clear(); this.emptyWords.clear(); }
 }
 
 /** Bounded shared cache for the synchronous, view-independent rich operation API. */

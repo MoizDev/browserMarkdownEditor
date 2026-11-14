@@ -312,10 +312,15 @@ export class CameraController {
     /** Paged resize keeps page/offset/userZoom; free resize keeps the centre world point (§8:732–737).
      * During a gesture the caller supplies its CURRENT world/surface anchor instead of an old down point.
      */
-    setViewport(viewport: Viewport, anchor?: CameraAnchor): void {
+    setViewport(viewport: Viewport, anchor?: CameraAnchor, geometryChanged = false): void {
         validateViewport(viewport);
         const previous = this.viewportValue;
-        if (previous.width === viewport.width && previous.height === viewport.height && previous.dpr === viewport.dpr) return;
+        if (previous.width === viewport.width && previous.height === viewport.height && previous.dpr === viewport.dpr) {
+            // A new physical geometry may quantize to the same budgeted viewport. It still
+            // invalidates view-dependent work, but never the document/content token.
+            if (geometryChanged) this.epoch++;
+            return;
+        }
         // Preserve the last useful geometry across a zero-size dormancy; fit-width at zero cannot
         // recover userZoom on show. A DPR-only change likewise must not reinterpret a reading position.
         const reference = previous.width > 0 && previous.height > 0 ? previous : this.resizeReference;

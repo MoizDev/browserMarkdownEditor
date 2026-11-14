@@ -90,11 +90,18 @@ export async function recoverBoardJournal(payload: unknown, options: {
                 if (due()) await cooperate();
                 if (node.kind === 'opaque' && !doc.nodes.has(node.id)) throw new Error(`Recovery cannot create opaque node ${node.id}`);
             }
+            const earlyDeleted = new Set<NodeId>();
             for (const sheet of desired.sheets.values()) {
                 if (due()) await cooperate();
                 const old = doc.sheets.get(sheet.id);
                 if (!old) {
-                    if (doc.nodes.has(sheet.id as unknown as NodeId)) throw new Error('Recovery sheet identity conflicts with a current node');
+                    const conflict = doc.nodes.get(sheet.id as unknown as NodeId);
+                    if (conflict) {
+                        if (conflict.kind === 'opaque' || desired.nodes.has(conflict.id) || (doc.children.get(conflict.id)?.length ?? 0) > 0)
+                            throw new Error('Recovery sheet identity conflicts with retained content');
+                        ops.push({ t: 'delete', id: conflict.id });
+                        earlyDeleted.add(conflict.id);
+                    }
                     ops.push({ t: 'sheet', op: 'create', sheet });
                 } else {
                     if (old.name !== sheet.name) ops.push({ t: 'sheet', op: 'set', id: sheet.id, key: 'name', value: sheet.name });
@@ -146,7 +153,7 @@ export async function recoverBoardJournal(payload: unknown, options: {
             const removed: Node[][] = Array.from({ length: 65 }, () => []), added: Node[][] = Array.from({ length: 65 }, () => []);
             for (const node of doc.nodes.values()) {
                 if (due()) await cooperate();
-                if (!desired.nodes.has(node.id)) removed[depth(doc, node)].push(node);
+                if (!desired.nodes.has(node.id) && !earlyDeleted.has(node.id)) removed[depth(doc, node)].push(node);
             }
             for (let d = 64; d >= 1; d--) for (const node of removed[d]) { if (due()) await cooperate(); ops.push({ t: 'delete', id: node.id }); }
             // Free removed sheet identities after their old children have moved or gone,

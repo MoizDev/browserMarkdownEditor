@@ -36,22 +36,15 @@ export function resizeFigureKind(node: Readonly<FigureNode>, factors: KindResize
     if (reflected(factors.y, factors.zeroSignY)) ops.push({ t: 'set', id: node.id, key: 'flipY', value: !node.flipY });
     return ops;
 }
-// x/y placement and parent/page anchoring are supplied by the gesture plan;
-// these patches alter only the kind's representable geometry and never its paint width.
-export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext): readonly Op[] {
+export type IntrinsicResizeNode = Extract<Node, { kind: 'stroke' | 'text' | 'sticky' | 'picture' | 'polyline' }>;
+export function resizeIntrinsicKind(node: Readonly<IntrinsicResizeNode>, factors: KindResizeFactors): readonly Op[] {
     const { x, y, zeroSignX, zeroSignY } = factors;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || node.kind === 'opaque' || node.locked) throw new RangeError('Node cannot be resized');
-    const ax = Math.abs(x), ay = Math.abs(y), flipX = reflected(x, zeroSignX), flipY = reflected(y, zeroSignY);
-    const ops: Op[] = [];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || node.locked) throw new RangeError('Node cannot be resized');
+    const ax = Math.abs(x), ay = Math.abs(y), flipX = reflected(x, zeroSignX), flipY = reflected(y, zeroSignY), ops: Op[] = [];
     switch (node.kind) {
         case 'stroke':
-            ops.push({ t: 'set', id: node.id, key: 'sx', value: signedNonzero(node.sx * x, (node.sx < 0) !== flipX ? -1 : 1) },
-                { t: 'set', id: node.id, key: 'sy', value: signedNonzero(node.sy * y, (node.sy < 0) !== flipY ? -1 : 1) });
-            return ops;
-        case 'figure': {
-            const { width, height } = figureResizeDimensions(node, factors);
-            return resizeFigureKind(node, factors, context.layoutFigure(node, width, height));
-        }
+            return [{ t: 'set', id: node.id, key: 'sx', value: signedNonzero(node.sx * x, (node.sx < 0) !== flipX ? -1 : 1) },
+                { t: 'set', id: node.id, key: 'sy', value: signedNonzero(node.sy * y, (node.sy < 0) !== flipY ? -1 : 1) }];
         case 'text':
             if (factors.handle === 'side') {
                 if (ax !== 1) ops.push({ t: 'set', id: node.id, key: 'w', value: extent(node.w * ax) }, { t: 'set', id: node.id, key: 'autoSize', value: false });
@@ -59,14 +52,25 @@ export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, con
             return ops;
         case 'sticky':
             if (factors.scope === 'single') return [];
-            ops.push({ t: 'set', id: node.id, key: 'scale', value: scale(node.scale * Math.max(ax, ay)) });
-            return ops;
+            return [{ t: 'set', id: node.id, key: 'scale', value: scale(node.scale * Math.max(ax, ay)) }];
         case 'picture':
-            ops.push({ t: 'set', id: node.id, key: 'w', value: extent(node.w * ax) }, { t: 'set', id: node.id, key: 'h', value: extent(node.h * ay) });
-            return [...ops, ...pictureReflection(node, flipX, flipY)];
-        case 'polyline':
-            ops.push({ t: 'set', id: node.id, key: 'points', value: node.points.map(p => ({ x: p.x * x, y: p.y * y })) });
-            return ops;
+            return [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * ax) },
+                { t: 'set', id: node.id, key: 'h', value: extent(node.h * ay) }, ...pictureReflection(node, flipX, flipY)];
+        case 'polyline': return [{ t: 'set', id: node.id, key: 'points', value: node.points.map(p => ({ x: p.x * x, y: p.y * y })) }];
+    }
+}
+// x/y placement and parent/page anchoring are supplied by the gesture plan;
+// these patches alter only the kind's representable geometry and never its paint width.
+export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext): readonly Op[] {
+    const { x, y } = factors;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || node.kind === 'opaque' || node.locked) throw new RangeError('Node cannot be resized');
+    const ax = Math.abs(x), ay = Math.abs(y);
+    switch (node.kind) {
+        case 'stroke': case 'text': case 'sticky': case 'picture': case 'polyline': return resizeIntrinsicKind(node, factors);
+        case 'figure': {
+            const { width, height } = figureResizeDimensions(node, factors);
+            return resizeFigureKind(node, factors, context.layoutFigure(node, width, height));
+        }
         case 'frame': return context.resizeFrame(node, extent(node.w * ax), extent(node.h * ay), factors);
         case 'group': return context.resizeGroup(node, factors);
         case 'connector': return context.resizeConnector(node, factors);

@@ -8,7 +8,7 @@ import type { FigureNode, FrameNode, Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { PreparedBoardText } from '../render/textGeometry';
 import type { Vec2 } from './path';
-import { figureResizeDimensions, resizeFigureKind } from './resizeKinds';
+import { figureResizeDimensions, resizeFigureKind, resizeIntrinsicKind, type IntrinsicResizeNode } from './resizeKinds';
 import type { KindResizeFactors } from './resizeKinds.types';
 
 export interface BoardLeafResizeOptions {
@@ -30,7 +30,7 @@ export interface BoardLeafResizeResult {
     release(): void;
 }
 
-type Leaf = FigureNode | FrameNode;
+type Leaf = FigureNode | FrameNode | IntrinsicResizeNode | Extract<Node, { kind: 'clip' | 'linkcard' | 'embed' }>;
 function asSets(ops: ReturnType<typeof resizeFigureKind>): NodeSetOp[] {
     return ops.map(op => { if (op.t !== 'set') throw new TypeError('Resize kind produced a non-set operation'); return op; });
 }
@@ -51,7 +51,7 @@ async function loadText(runtime: BoardRuntime, node: FigureNode, signal: AbortSi
     for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required figure font could not be loaded'); check(); }
 }
 
-/** Real figure growth and frame boundary resize; the returned geometry lease is caller-owned. */
+/** Real leaf resize and placement; the returned geometry lease is caller-owned. */
 export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: BoardLeafResizeOptions): Promise<BoardLeafResizeResult> {
     const { runtime, factors } = options, session = runtime.session, live = session.doc, doc = options.doc ?? live;
     const owner = session.owner, revision = doc.rev, liveRevision = live.rev, host = doc.host;
@@ -91,10 +91,20 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         if (second && !loadedText(runtime, second)) throw new Error('Figure text faces are unavailable');
         if (second && Math.max(0, runtime.render.text.layout.measure(second.request).requiredHeight + node.width - height) !== growY)
             throw new Error('Figure layout changed during resize');
-    } else {
+    } else if (node.kind === 'frame' || node.kind === 'linkcard' || node.kind === 'embed' || node.kind === 'clip') {
         const extent = (value: number) => Math.min(1_000_000, Math.max(1, value));
-        kindOps = [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * Math.abs(factors.x)) },
-            { t: 'set', id: node.id, key: 'h', value: extent(node.h * Math.abs(factors.y)) }];
+        let x = Math.abs(factors.x), y = Math.abs(factors.y);
+        if (node.kind === 'clip') {
+            // Default, calibration cut by owner: clip resize is intrinsically aspect-locked.
+            if (x !== y) throw new Error('Clip resize requires a whole-selection uniform scale');
+            x = y = Math.min(Math.min(1_000_000 / node.w, 1_000_000 / node.h), Math.max(x, 1 / node.w, 1 / node.h));
+        }
+        // Default, calibration cut by owner: card/embed reflow inside independently resized bounds.
+        kindOps = [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * x) },
+            { t: 'set', id: node.id, key: 'h', value: extent(node.h * y) }];
+    } else {
+        if (node.kind === 'sticky' && factors.scope === 'single') throw new Error('A single sticky has no resize handles');
+        kindOps = asSets(resizeIntrinsicKind(node, factors));
     }
     check();
     const candidate = await project(kindOps); check();

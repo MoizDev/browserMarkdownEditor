@@ -59,16 +59,21 @@ export class BoundsVersions {
         this.current = new BoundsView({ prior: null, values: new Map() }, initialRevision, 0);
     }
     update(nextRevision: number, delta: ReadonlyMap<NodeId, SceneBounds | null>): void {
+        for (const _ of this.updateSteps(nextRevision, delta)) { /* synchronous callers finish the same publication */ }
+    }
+    *updateSteps(nextRevision: number, delta: ReadonlyMap<NodeId, SceneBounds | null>): Generator<void, void> {
         revision(nextRevision);
         const old = this.current;
         if (nextRevision < old.revision) throw new RangeError('Scene bounds revision cannot go backwards');
         const values = new Map<NodeId, Value | null>();
-        let size = old.size;
+        let size = old.size, count = 0;
         for (const [id, value] of delta) {
             const had = old.has(id);
             if (value === null) { if (had) size--; values.set(id, null); }
             else { if (!had) size++; values.set(id, copyValue(value)); }
+            if ((++count & 255) === 0) yield;
         }
+        if (this.current !== old) throw new Error('Stale scene bounds publication');
         this.current = new BoundsView(values.size ? { prior: old.root, values } : old.root, nextRevision, size);
     }
     pin(): ReadonlyMap<NodeId, SceneBounds> { return this.current; }

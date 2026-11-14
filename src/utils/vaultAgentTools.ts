@@ -688,6 +688,10 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
     return ok(caption, undefined, [{ type: 'image', data: img.data, mimeType: img.mimeType }]);
 }
 
+function onScreenCaption(viewport: { readonly x: number; readonly y: number; readonly w: number; readonly h: number }): string {
+    return ` — the part on screen: x ${Math.round(viewport.x)}…${Math.round(viewport.x + viewport.w)}, y ${Math.round(viewport.y)}…${Math.round(viewport.y + viewport.h)}`;
+}
+
 function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
     if (!emphasis) return '';
     if (emphasis.kind === 'active') return ' (word emphasis applied)';
@@ -745,6 +749,15 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {
+        // An open native drawing is read from its session: no mounted pane is waited for or opened.
+        const native = isNativeDrawingFile(name) && ctx.host.nativeCanvasView ? await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+        } }) : null;
+        if (native) {
+            const blob = await withTimeout(native.capture(max, ctx.signal), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+            ctx.ensureLive();
+            return pngResult(blob, native.wholeSheet ? `${path}, the whole sheet:` : `${path}${onScreenCaption(native.info.viewport)}:`, `"${path}"`);
+        }
         // A closed canvas opens beside the user without taking focus.
         let view = getView(path);
         if (!view?.canvas) {
@@ -766,10 +779,7 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         const blob = await withTimeout(view.capture(max), REPORTER_TIMEOUT_MS, 'capturing the canvas');
         ctx.ensureLive();
         const info = await describe(view);
-        const where = info.kind === 'drawing'
-            ? ` — the part on screen: x ${Math.round(info.viewport.x)}…${Math.round(info.viewport.x + info.viewport.w)}, y ${Math.round(info.viewport.y)}…${Math.round(info.viewport.y + info.viewport.h)}`
-            : '';
-        return pngResult(blob, `${path}${where}:`, `"${path}"`);
+        return pngResult(blob, `${path}${info.kind === 'drawing' ? onScreenCaption(info.viewport) : ''}:`, `"${path}"`);
     }
 
     throw new ToolError(`vault_view shows PDFs, notebooks, drawings and images; "${path}" is text — read it with vault_read.`);

@@ -1649,8 +1649,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, [boardOwnerGuard]);
     const readLegacyBoardAsset = useCallback(async (request: BoardOwnerAccess & { src: string }): Promise<Blob | null> => {
         const activation = vaultActivationRef.current, src = request.src;
+        const hasPathControl = (value: string) => {
+            for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) < 32 || value.charCodeAt(i) === 127) return true;
+            return false;
+        };
         if (typeof src !== 'string' || !src || src.length > 8192 || /^[a-z][a-z0-9+.-]*:/i.test(src)
-            || src.startsWith('/') || /[\\\u0000-\u001f\u007f?#]/.test(src)) throw new Error('Legacy asset is not a local relative path');
+            || src.startsWith('/') || /[\\?#]/.test(src) || hasPathControl(src)) throw new Error('Legacy asset is not a local relative path');
         await boardOwnerGuard(request, activation);
         const base = await request.root.resolve(request.parent);
         if (!base) throw new Error('Board folder is outside the vault');
@@ -1667,7 +1671,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                 if (!segments.length) throw new Error('Legacy asset path leaves the vault');
                 segments.pop(); continue;
             }
-            if (segment.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(segment)) throw new Error('Invalid legacy asset path');
+            if (segment.length > 255 || /[\\/]/.test(segment) || hasPathControl(segment)) throw new Error('Invalid legacy asset path');
             segments.push(segment);
             if (segments.length > 256) throw new Error('Legacy asset path is too deep');
         }

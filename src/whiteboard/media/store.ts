@@ -12,7 +12,7 @@ export interface MediaLease { release(): void }
 export class MediaStore {
     private readonly entries = new Map<MediaId, StoredMedia>();
     private readonly pending = new Map<MediaId, Map<MediaHolder, number>>();
-    private idle: number | null = null;
+    private idle: ReturnType<typeof setTimeout> | null = null;
 
     put(id: MediaId, blob: Blob): void {
         const previous = this.entries.get(id);

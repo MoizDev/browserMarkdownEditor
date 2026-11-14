@@ -117,11 +117,11 @@ export class GpuCompositor implements PaneCompositor {
         this.#options = options;
         this.surface = options.canvas;
         this.target = options.target;
-        const compositor = this;
+        const currentDevice = () => !this.#disposed && this.#available ? options.owner.resources : null;
         this.resources = Object.freeze({ owner: this,
-            get device() { return !compositor.#disposed && compositor.#available ? options.owner.resources : null; },
-            uniforms: (bytes: ArrayBufferView) => compositor.uniforms(bytes),
-            drawTexturedQuad: compositor.drawTexturedQuad.bind(compositor) as PaneCompositor['resources']['drawTexturedQuad'] });
+            get device() { return currentDevice(); },
+            uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
+            drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
     }
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }

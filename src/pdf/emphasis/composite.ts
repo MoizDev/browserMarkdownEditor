@@ -17,7 +17,7 @@ export function compositeEmphasis(off: Uint8Array | Uint8ClampedArray, on: Uint8
     cells: readonly EmphasisCell[], region: EmphasisRegion): { pixels: Uint8Array; changedPixels: number } {
     const { x, y, width, height, pageX, pageY, scale } = region;
     if (![x, y, width, height].every(Number.isSafeInteger) || width <= 0 || height <= 0 ||
-        width * height > 1_048_576 || ![pageX, pageY, scale].every(Number.isFinite) || scale <= 0 ||
+        !Number.isSafeInteger(x + width) || !Number.isSafeInteger(y + height) || width * height > 1_048_576 || ![pageX, pageY, scale].every(Number.isFinite) || scale <= 0 ||
         off.length !== width * height * 4 || on.length !== off.length) throw new RangeError('Invalid emphasis raster');
     const mask = new Uint8Array(width * height);
     let coverageWork = 0;

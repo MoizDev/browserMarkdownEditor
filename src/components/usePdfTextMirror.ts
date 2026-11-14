@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import type { Rect, ViewState } from '../platform/render';
+import { pagePresentation, type Rect, type ViewState } from '../platform/render';
 import type { OpenTiledDocument, PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import { mirrorTextFromReply, PdfTextMirror } from '../pdf/overlay/textMirror';
 import type { MirrorPageText, MirrorSelection } from '../pdf/overlay/textMirror';
@@ -88,9 +88,14 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
         controller.current = {
             updateView(view) {
                 const { camera, viewport } = view;
-                mirror.element.style.transform = `translate(${-camera.x * camera.z}px, ${-camera.y * camera.z}px) scale(${camera.z})`;
                 if (!pageRects.length || camera.z <= 0) return;
+                mirror.setViewport(camera.x, camera.y, camera.z);
                 const first = pageAtY(camera.y), last = pageAtY(camera.y + viewport.height / camera.z);
+                for (let page = Math.max(0, first - 1); page <= Math.min(pageRects.length - 1, last + 1); page++) {
+                    const rect = pageRects[page], transform = pagePresentation(rect, view).surface;
+                    mirror.setPageBox(page, { ...rect,
+                        x: camera.x + transform[4] / camera.z, y: camera.y + transform[5] / camera.z });
+                }
                 if (first !== announced) { announced = first; mirror.announcePage(first); }
                 loadWindow(first, last);
             },

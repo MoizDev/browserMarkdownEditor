@@ -4,6 +4,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { SourceOwner } from '../../utils/documentBuffers';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { mediaExtension } from '../media/ingest';
+import { hashMedia } from '../media/sha256';
 import { MEDIA_MIMES, type MediaId } from '../model/media';
 import { createPdfInkRebind, type PdfInkRebindSnapshot } from './pdfInkRebind';
 import { prepareNativePdfRuntime } from './prepareNativePdfRuntime';
@@ -101,6 +102,9 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
                     if (!entry || entry.file !== null || !mime || !/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error(`Invalid embedded PDF media: ${id}`);
                     const source = rebind.getSnapshot().source;
                     const blob = await source.readMedia(`board-media/${id.slice(7)}.${mediaExtension(mime)}`, mediaSignal);
+                    mediaSignal.throwIfAborted();
+                    if (closed || !current() || !isLiveOwner(owner) || rebind.getSnapshot().source !== source) throw stale();
+                    if (blob.size !== entry.bytes || await hashMedia(blob, mediaSignal) !== id) throw new Error(`Corrupt embedded PDF media: ${id}`);
                     mediaSignal.throwIfAborted();
                     if (closed || !current() || !isLiveOwner(owner) || rebind.getSnapshot().source !== source) throw stale();
                     return blob;

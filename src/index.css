@@ -3646,9 +3646,11 @@ body.is-resizing-panes * {
 /* ── Bottom-right controls: page number, then zoom ── */
 .pdf-pane-print {
   position: absolute;
-  z-index: 4;
+  z-index: 13;
   top: 8px;
-  left: 16px;
+  /* The annotator menu owns the left corner; PDF features owns the right. */
+  left: 50%;
+  transform: translateX(-50%);
   padding: 5px 10px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;

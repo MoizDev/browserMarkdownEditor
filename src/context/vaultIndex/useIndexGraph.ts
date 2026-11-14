@@ -23,6 +23,7 @@ export function useIndexGraph(options: {
     vaultId: string | null;
     activation: number;
     getActivation(): number;
+    autoStart: boolean;
     tree: FileTreeNode[];
     resolve(path: string): Promise<FileSystemFileHandle | null>;
     stat(handle: FileSystemFileHandle): Promise<{ lastModified: number; size: number } | null>;
@@ -32,11 +33,12 @@ export function useIndexGraph(options: {
     onTimes?(changes: [string, number, number][], sweepComplete: boolean): void;
     onProblem(problem: unknown): void;
 }) {
-    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
+    const { root, vaultId, activation, getActivation, autoStart, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
     const publishedTree = useRef<IndexTreeFile[]>([]);
+    const pendingMoves = useRef(new Map<string, { to: string; expires: number }>());
     useLayoutEffect(() => { latestTree.current = tree; }, [tree]);
     useEffect(() => {
         let live = true;
@@ -88,11 +90,10 @@ export function useIndexGraph(options: {
             return starting;
         };
         startRef.current = start;
-        const cancelIdle = onIdle(() => { void start().catch(() => {}); });
         return () => {
             live = false;
+            pendingMoves.current.clear();
             if (startRef.current === start) startRef.current = null;
-            cancelIdle();
             const owner = active.current;
             if (owner?.root === root && owner.activation === activation) {
                 active.current = null;
@@ -101,14 +102,47 @@ export function useIndexGraph(options: {
             }
         };
     }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem]);
+    useEffect(() => {
+        if (!root || !autoStart) return;
+        let second = 0;
+        let cancelIdle = () => {};
+        // Two frames let the restored pane paint before even fetching the worker chunk.
+        const first = requestAnimationFrame(() => {
+            second = requestAnimationFrame(() => {
+                cancelIdle = onIdle(() => { void startRef.current?.().catch(() => {}); });
+            });
+        });
+        return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); cancelIdle(); };
+    }, [root, activation, autoStart]);
     useLayoutEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;
         const next = indexTree(tree);
-        const delta = indexTreeDelta(publishedTree.current, next);
+        const now = performance.now();
+        const moves: { from: string; to: string }[] = [];
+        for (const [from, move] of pendingMoves.current) {
+            if (move.expires > now) moves.push({ from, to: move.to });
+            else pendingMoves.current.delete(from);
+        }
+        const delta = indexTreeDelta(publishedTree.current, next, moves);
+        for (const move of delta?.renamed ?? []) pendingMoves.current.delete(move.from);
         publishedTree.current = next;
         if (delta) void owner.client.treeDelta(delta).catch(() => {});
     }, [tree, root, activation]);
-    return Object.assign(active, { whenReady: () => active.current ? Promise.resolve(active.current)
-        : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')) });
+    return Object.assign(active, {
+        whenReady: () => active.current ? Promise.resolve(active.current)
+            : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')),
+        noteMoves: (moves: readonly { from: string; to: string }[]) => {
+            const owner = active.current;
+            if (!owner || owner.activation !== getActivation()) return () => {};
+            const recorded: [string, { to: string; expires: number }][] = [];
+            for (const { from, to } of moves) for (const file of publishedTree.current) {
+                if (file.path !== from && !file.path.startsWith(`${from}/`)) continue;
+                const move = { to: to + file.path.slice(from.length), expires: performance.now() + 60_000 };
+                pendingMoves.current.set(file.path, move);
+                recorded.push([file.path, move]);
+            }
+            return () => { for (const [path, move] of recorded) if (pendingMoves.current.get(path) === move) pendingMoves.current.delete(path); };
+        },
+    });
 }

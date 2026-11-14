@@ -66,6 +66,7 @@ export interface WorkerSpec {
     onStart?(client: WorkerClient): Promise<void>;
     silenceMs?: Record<Priority, number>;
     absoluteMs?: number;
+    restartPolicy?: { delaysMs: readonly number[]; maxFailures: number; windowMs: number };
     disposeResult?(op: string, result: unknown): void;
     events?: readonly string[];
     eventLimit?: number;

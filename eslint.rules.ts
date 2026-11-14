@@ -99,7 +99,11 @@ const noTests: Rule.RuleModule = {
   create(context) {
     const file = rel(context.filename)
     const listeners = onImport(context, (node, source) => {
-      if (RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
+      // The browser-run driver is the `playwright` library root; every other entry point
+      // it exports (`playwright/test`, `/lib/runner`, `/types/test`, ...) is its test
+      // runner or that runner's machinery (r-gates on I-0: `playwright/test` passed).
+      const playwrightRunner = source.startsWith('playwright/') && source !== 'playwright/package.json'
+      if (playwrightRunner || RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
         context.report({ node, message: `Code-based tests are banned (AGENTS.md): no test runner may be imported (${source}). Verify with a browser run driving the real app.` })
       }
     })

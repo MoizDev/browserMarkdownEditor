@@ -1,0 +1,11 @@
+--- a/src/utils/agentMatcher/client.ts
++++ b/src/utils/agentMatcher/client.ts
+@@ -79,7 +79,7 @@
+                     priority: 0, signal, deadlineMs: Math.max(0, deadline - performance.now()),
+                     key: requestKey,
+                 });
+-                answer.out.push(...progress.out);
++                answer.out = [];
+                 answer.count = progress.count;
+                 answer.fileCount = progress.fileCount;
+                 answer.stopped = progress.stopped;

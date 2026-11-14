@@ -1,6 +1,6 @@
 import type { RenderConstants } from './types';
 
-/** Fixed rendering policy from rendering.md §4:115–132. MiB are binary; these are not measurements.
+/** Fixed policy from rendering.md §4:115–132 and rendering-design.md §6. MiB are binary, not measurements.
  * Keep runtime values out of the type modules, and freeze nested policy records as well as the root.
  */
 export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
@@ -29,6 +29,25 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     tileInteriorPixels: 512,
     tileGutterTexels: 1,
     movingTileLevelsPerOctave: 2,
+    // Bounded tile motion, low coverage and request demand (rendering-design.md §5.1–5.7).
+    motionLevelKeepMinDivisor: 1.15,
+    motionLevelKeepMaxFactor: 1.6,
+    versionBridgeDurationMs: 2000,
+    lowPreviewScaleDivisor: 4,
+    lowPreviewMaxAspectRatio: 16,
+    lowPreviewAheadViewports: 2,
+    lowPreviewBehindViewports: 1,
+    maxPagePreviewsPerPane: 12,
+    demandAgePromotionMs: 250,
+    velocityWindowMs: 100,
+    prefetchHorizonSeconds: 0.2,
+    prefetchMinViewports: 0.25,
+    prefetchMaxViewports: 1,
+    prefetchBehindViewports: 0.25,
+    pinchDemandIntervalMs: 50,
+    settledDemandDelayMs: 100,
+    tileWatchdogMs: 2000,
+    tileRetryCount: 1,
     memoryCeilings: Object.freeze({
         low: Object.freeze({ gpuBytes: 134217728, cpuRasterBytes: 67108864 }),
         medium: Object.freeze({ gpuBytes: 268435456, cpuRasterBytes: 134217728 }),
@@ -41,6 +60,23 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
     cpuGrantPerVisiblePixelBytes: 8,
+    // Governor policy from rendering-design.md §6.1–6.4; no thresholds are inferred from hardware.
+    deviceMemoryLowGiB: 4,
+    deviceMemoryMiddleGiB: 8,
+    deviceMemoryHighGiB: 16,
+    focusedPaneWeight: 2,
+    unfocusedPaneWeight: 1,
+    minPaneTileCredits: 2,
+    liveVectorScratchBytes: 2097152,
+    decodedRgbaBytesPerPixel: 4,
+    memorySoftPressureRatio: 0.9,
+    memoryTrimTargetRatio: 0.8,
+    qualityReductionFactor: 0.8,
+    minInteractiveQualityScale: 0.5,
+    memoryRecoveryRatio: 0.6,
+    memoryRecoveryDelayMs: 5000,
+    slowGpuSampleCount: 120,
+    stalledFenceMs: 250,
     surfaceReserveBytesPerPixel: 12,
     surfaceMaxGpuGrantFraction: 0.4,
     frameTargetMaxMs: 4,

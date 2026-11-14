@@ -10,6 +10,7 @@ import type { PdfiumForms } from './pdfium/forms';
 import { pdfiumPageGeometry, pdfiumPageSize } from './pdfium/geometry';
 import type { PdfiumPageSize } from './pdfium/geometry';
 import { pdfiumLinks } from './pdfium/links';
+import { pdfiumJbig2Regions } from './pdfium/imageRegions';
 import { loadPdfiumModule } from './pdfium/loader';
 import type { PdfiumLoadOptions, PdfiumRuntime } from './pdfium/loader';
 import { heapView, withPdfiumMemory, withPdfiumPassword } from './pdfium/memory';
@@ -50,7 +51,7 @@ class PdfiumDocument implements BackendDoc {
         const signatures = runtime.call('FPDF_GetSignatureCount', document);
         if (!Number.isSafeInteger(signatures) || signatures < 0) throw new PdfEngineError('FileError', 'PDF signature inventory is unavailable');
         const type = runtime.call('FPDF_GetFormType', document);
-        const formType = type === 0 ? 'none' : type === 1 ? 'acroform' : type === 2 || type === 3 ? 'xfa' : 'unknown';
+        const formType = type === 0 ? 'none' : type === 1 ? 'acroform' : type === 2 ? 'xfa-full' : type === 3 ? 'xfa-foreground' : 'unknown';
         const version = withPdfiumMemory(runtime, 4, pointer => runtime.call('FPDF_GetFileVersion', document, pointer)
             ? heapView(runtime, pointer, 4).getInt32(0, true) : null);
         const attachments = this.inventory();
@@ -196,6 +197,13 @@ class PdfiumDocument implements BackendDoc {
             }
         }
         return this.render(request);
+    }
+    imageRegions(index: number) {
+        this.stopJobs();
+        const page = this.load(index);
+        const result = pdfiumJbig2Regions(this.runtime, page.handle, page.geometry, this.limits);
+        this.checkAccess();
+        return result;
     }
     links(index: number) {
         this.stopJobs(); const page = this.load(index);

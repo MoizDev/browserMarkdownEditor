@@ -24,6 +24,8 @@ export interface ServeSpec {
     capabilities?: string[];
     handlers: Record<string, (args: unknown, context: WorkerContext) => unknown | Promise<unknown>>;
     endpoint?: ServeEndpoint;
+    /** A contained renderer can use MessageChannel turns without timer clamping. */
+    yield?: () => Promise<void>;
 }
 
 type Task = {
@@ -84,7 +86,7 @@ export function serve(spec: ServeSpec): () => void {
             },
             async slice() {
                 context.heartbeat();
-                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                await (spec.yield?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
                 while (task.paused && !task.cancelled && !disposed) await new Promise<void>(resolve => { task.wake = resolve; });
                 task.wake = undefined;
                 check();

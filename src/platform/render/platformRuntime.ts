@@ -10,7 +10,7 @@ export interface RuntimePane {
     demand(): PaneMemoryDemand;
     interacting(): boolean;
     windowVisibility?(visible: boolean): void;
-    notice(message: 'memory-pressure'): void;
+    notice(message: 'memory-pressure' | 'cpu-floor-denied'): void;
     error(error: unknown): void;
 }
 
@@ -101,7 +101,7 @@ export class PlatformRuntime {
             const denied = demand.visible && (this.governor.grant(demand.paneId)?.cpuBytes ?? 0) < (demand.cpuMandatoryBytes ?? 0);
             if (denied && !this.deniedCpuFloor.has(demand.paneId)) {
                 this.deniedCpuFloor.add(demand.paneId);
-                this.panes.get(demand.paneId)?.notice('memory-pressure');
+                this.panes.get(demand.paneId)?.notice('cpu-floor-denied');
             } else if (!denied) this.deniedCpuFloor.delete(demand.paneId);
         }
         this.advance();

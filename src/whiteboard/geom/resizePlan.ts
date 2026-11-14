@@ -15,7 +15,7 @@ export class ResizePlan {
     private readonly mixed: boolean;
     private cancelled = false;
     constructor(nodes: readonly Readonly<Node>[], private readonly down: Vec2, private readonly handle: ResizeHandle,
-        private readonly services: ResizePlanServices) {
+        private readonly services: ResizePlanServices, private readonly scopeOverride?: 'single' | 'multi') {
         if (!nodes.length || nodes.some(node => node.kind === 'opaque' || node.locked)) throw new RangeError('Invalid resize selection');
         this.snapshots = nodes.map(node => {
             const value = services.capture(node);
@@ -51,7 +51,7 @@ export class ResizePlan {
             const swap = !this.mixed && Math.abs(quarterTurns % 2) === 1;
             const factors: KindResizeFactors = { x: swap ? frame.scaleY : frame.scaleX, y: swap ? frame.scaleX : frame.scaleY,
                 zeroSignX: swap ? zeroSignY : zeroSignX, zeroSignY: swap ? zeroSignX : zeroSignY,
-                handle: this.handle.x && this.handle.y ? 'corner' : 'side', scope: this.snapshots.length === 1 ? 'single' : 'multi' };
+                handle: this.handle.x && this.handle.y ? 'corner' : 'side', scope: this.scopeOverride ?? (this.snapshots.length === 1 ? 'single' : 'multi') };
             const patch = resizeKind(snapshot.node, factors, this.services.kinds);
             ops.push(...patch, ...this.services.place(snapshot, centre, patch));
         }

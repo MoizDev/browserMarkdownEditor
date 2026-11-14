@@ -1231,7 +1231,9 @@ export default function App() {
       return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
         && policy.activation === identity.vaultActivation && policy.kind === identity.kind
         && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasWritableHostedNativeOwner(entry, identity.documentId);
+        && hasWritableHostedNativeOwner(entry, identity.documentId)
+        && (identity.kind !== 'pdfInk' || !!getBaseline(identity.documentId) && !diskStateRef.current.has(identity.documentId)
+          && policy.pdfWriteAuthority?.canWrite() === true);
     };
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
@@ -1263,6 +1265,7 @@ export default function App() {
           vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
       },
       isCurrent: identity => !!current(identity),
+      canWrite: identity => writable(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;
         return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;

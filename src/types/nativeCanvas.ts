@@ -26,6 +26,8 @@ export interface NativeCanvasHost {
     outerIdentity(documentId: string): NativeCanvasIdentity | undefined;
     session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
+    /** Live App write authority, including PDF rebind/source safety when applicable. */
+    canWrite(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
     /** Capture the actual cold buffer before any asynchronous source preparation. */
     pinBoardSource(identity: NativeCanvasIdentity): {

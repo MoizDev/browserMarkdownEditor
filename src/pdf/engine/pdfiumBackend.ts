@@ -119,8 +119,16 @@ class PdfiumDocument implements BackendDoc {
         if (!page.checked) { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
         this.checkAccess();
         const holder: { job?: RenderJob } = {};
-        const job = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
+        const native = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
             () => { if (holder.job) this.jobs.delete(holder.job); });
+        const job: RenderJob = {
+            step: budget => {
+                try { const state = native.step(budget); this.checkAccess(); return state; }
+                catch (error) { native.abort(); throw error; }
+            },
+            result: () => { this.checkAccess(); return native.result(); },
+            abort: () => native.abort(),
+        };
         holder.job = job;
         this.jobs.add(job);
         return job;

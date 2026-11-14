@@ -1645,8 +1645,10 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             resetPageInput();       // nothing was typed — just re-sync the box
             return;
         }
-        const typed = parseInt(input.value.trim(), 10);
-        if (!Number.isFinite(typed)) {
+        const value = input.value.trim();
+        const typed = Number(value);
+        // A fractional or partly numeric entry must not jump to a different page.
+        if (!value || !Number.isInteger(typed)) {
             resetPageInput();
             return;
         }

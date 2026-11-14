@@ -25,17 +25,18 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
     const drag = useRef<number | null>(null);
     const blob = useRef(thumbnail?.blob);
     const [image, setImage] = useState<{ key: string; url: string } | null>(null);
-    blob.current = thumbnail?.blob;
+    useLayoutEffect(() => { blob.current = thumbnail?.blob; }, [thumbnail?.blob]);
     const key = thumbnail?.key;
     const active = isVisible && currentOwner();
     useLayoutEffect(() => {
         if (!active || key === undefined || !blob.current) return;
         const url = URL.createObjectURL(blob.current);
+        const target = element.current;
         setImage({ key, url });
         return () => {
             const pointer = drag.current;
             drag.current = null;
-            if (pointer !== null && element.current?.hasPointerCapture(pointer)) element.current.releasePointerCapture(pointer);
+            if (pointer !== null && target?.hasPointerCapture(pointer)) target.releasePointerCapture(pointer);
             URL.revokeObjectURL(url);
         };
     }, [active, key]);

@@ -322,7 +322,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             finish(reason) {
                 if (ended || cancelled) return; ended = true;
                 if (reason !== 'up' || !mutable()) { cancel(); return; }
-                void stickyHandles.activate(direction, false).finally(cleanup);
+                void stickyHandles.activate(direction, sample.source === 'keyboard').finally(cleanup);
             },
             cancel,
         };

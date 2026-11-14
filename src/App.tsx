@@ -5503,22 +5503,36 @@ export default function App() {
     const isPdf = isPdfFile(file.name);
     resolvingRef.current.add(id);
     const shortName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
-    /** The reader's version, pending canvas strokes included. Null for a PDF
-     *  with no annotations to rebuild it from. */
-    const mine = async (): Promise<string | Uint8Array | null> => {
-      await getView(path)?.flushPending?.();
+    /** Capture before any asynchronous build; later edits belong to another revision. */
+    const captureMine = () => {
+      const session = documentSessions.get(id);
+      const checkpoint = documentSessions.checkpoint(id);
+      const prior = documentBuffers.get(id)?.source;
+      if (checkpoint && typeof checkpoint !== 'string') {
+        if (!documentSessions.isLiveOwner(id, checkpoint.owner)) throw new Error('The document session changed.');
+        if (typeof prior === 'string' || !prior || prior.owner.session !== checkpoint.owner.session || checkpoint.revision > prior.revision) {
+          sessionReportRef.current(id, checkpoint);
+        }
+      }
+      const source = documentBuffers.get(id)?.source;
+      if (checkpoint && typeof checkpoint !== 'string' && (typeof source === 'string' || !source
+        || source.owner.session !== checkpoint.owner.session || source.revision < checkpoint.revision)) {
+        throw new Error('The current document revision could not be captured.');
+      }
       const snapshot = documentBuffers.snapshotForDocument(id);
       if (!snapshot) throw new Error('The document buffer is unavailable.');
-      let content = snapshot.data;
-      if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
-        content = await content.run(new AbortController().signal);
-      }
-      if (content instanceof Blob) content = new Uint8Array(await content.arrayBuffer());
-      if (!isPdf || typeof content !== 'string') return content;
-      const data = getPdfRenderData(path);
-      if (!data) return null;
-      const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
-      return buildAnnotatedPdfAsync(data.original, content, data.overlays);
+      const sourceRevision = typeof source === 'string' ? undefined : source?.revision;
+      const pdf = isPdf && typeof snapshot.data === 'string' ? getPdfRenderData(path) : undefined;
+      return { revision: snapshot.revision, sourceRevision, session, build: async (): Promise<string | Uint8Array | Blob | null> => {
+        let content = snapshot.data;
+        if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
+          content = await content.run(new AbortController().signal);
+        }
+        if (!isPdf || typeof content !== 'string') return content;
+        if (!pdf) return null;
+        const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
+        return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
+      } };
     };
     try {
       if (action === 'close') {
@@ -5534,8 +5548,9 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
-        const data = await mine();
+        const captured = captureMine();
+        const dataRevision = captured.revision;
+        const data = await captured.build();
         if (data === null) {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
           return;
@@ -5556,15 +5571,19 @@ export default function App() {
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
         diskStateRef.current.delete(id);
-        if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
+        documentBuffers.markSaved(id, dataRevision);
+        if (captured.sourceRevision !== undefined && captured.session && documentSessions.get(id) === captured.session) {
+          captured.session.adapter.acknowledge(captured.sourceRevision, 'written');
+        }
+        void recoveryEvent({ type: 'written', documentId: id, revision: dataRevision, fingerprint: result.version.hash });
         syncExitGuard();
-        if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
+        if (documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
         notifySearchChanges();
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
-          dirty: dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision ? false : t.dirty,
+          dirty: documentBuffers.isDirty(id),
           disk: undefined,
         } : t)));
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
@@ -5582,8 +5601,8 @@ export default function App() {
 
       if (action === 'reload') {
         await drain(id);
-        if (documentSessions.get(id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
-        const keep = await mine();
+        const captured = captureMine();
+        const keep = await captured.build();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
@@ -5595,6 +5614,11 @@ export default function App() {
         const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
         const now = tabsRef.current.find(t => t.id === id);
         if (!now) return;
+        const latest = documentSessions.checkpoint(id);
+        if (documentBuffers.revisionForDocument(id)?.revision !== captured.revision || documentSessions.get(id) !== captured.session
+          || (latest && typeof latest !== 'string' && latest.revision !== captured.sourceRevision)) {
+          throw new Error('The document changed while its earlier version was being preserved. Keep this tab open and retry.');
+        }
         reloadFromDisk(now, read.text, read.version);
         if (copy) announce(`Your version was kept as “${shortName(copy)}”.`);
         return;
@@ -5615,7 +5639,7 @@ export default function App() {
       // 'keep': theirs goes beside the file, then mine is saved through the
       // one save funnel — against the version just read, so a disk that moved
       // AGAIN in between raises the conflict again rather than being overwritten.
-      await getView(path)?.flushPending?.();
+      await drain(id);
       const disk = await readBytesVersioned(handle);
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path, caller: 'disk-keep-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
@@ -5644,7 +5668,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes

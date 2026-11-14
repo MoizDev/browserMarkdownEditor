@@ -25,9 +25,11 @@ function Attached<T extends object, S extends BoardSessionPort>({
 export default function DrawingSessionView<T extends object, S extends BoardSessionPort>(props: DrawingSessionViewProps<T, S>) {
     const current = useRef<BoardViewParameters>({ mode: props.mode, visible: props.isVisible, focused: props.isFocused,
         theme: props.theme, inverted: props.inverted });
-    current.current = { mode: props.mode, visible: props.isVisible, focused: props.isFocused, theme: props.theme, inverted: props.inverted };
     const error = useRef(props.onAttachError);
-    error.current = props.onAttachError;
+    useEffect(() => {
+        current.current = { mode: props.mode, visible: props.isVisible, focused: props.isFocused, theme: props.theme, inverted: props.inverted };
+        error.current = props.onAttachError;
+    });
     const [entry, setEntry] = useState<{ adapter: typeof props.adapter; attach: typeof props.attachView; mode: typeof props.mode; lease: BoardViewLease<T> } | null>(null);
     useEffect(() => {
         let lease: BoardViewLease<T>;

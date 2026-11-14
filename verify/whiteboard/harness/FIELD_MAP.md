@@ -1,5 +1,8 @@
 # Probe fields → controls → permitted read-outs
 
+**Deferred review-phase material under charter §0.** Retained work, not an implementation merge
+condition or a prerequisite for the plain pinned reference reader.
+
 Every read below first passes the fetched-package-marker, exact-path/provider and object-schema
 guards. This table describes **eligibility**, not a green result. The actual same-run journal is
 required. `PAIR` means A/B/A app-written fixtures with known differing **leaf-value sets**, compared
@@ -133,7 +136,7 @@ F is checkpoint data, not a draft. No raw legacy enum/object is made a native sc
 | session.pages[].y | checked backdrop.y | UNCONTROLLED | Same |
 | session.pages[].width | checked backdrop.props.w | UNCONTROLLED | F PDF MediaBox/Rotate/paper + P |
 | session.pages[].height | checked backdrop.props.h | UNCONTROLLED | Same |
-| session.pages[].locked | checked backdrop.isLocked | ACTION real Unlock all (legacy defect reference) | **UNMAPPED raw structural lock**; target proves inability to damage paper |
+| session.pages[].locked | checked backdrop.isLocked | ACTION real Edit → Toggle locked on a locked page (legacy reference) | **UNMAPPED raw structural lock**; target proves inability to damage paper |
 | session.pages[].asset.* | checked referenced asset | UNCONTROLLED | **UNMAPPED structural tokens/meta**; F/P source and paint |
 | session.pages[].raster.* | actual backdrop img dimensions/state | UNCONTROLLED | **UNMAPPED ordinary-arm bitmap object**; P clarity or separate authorized bench gate |
 | session.backdrops[].index | alias of pages[].index | UNCONTROLLED | Same physical-page limit; not a separate source |
@@ -142,7 +145,7 @@ F is checkpoint data, not a draft. No raw legacy enum/object is made a native sc
 | session.backdrops[].y | alias of pages[].y | UNCONTROLLED | Same |
 | session.backdrops[].width | alias of pages[].width | UNCONTROLLED | F/P physical geometry |
 | session.backdrops[].height | alias of pages[].height | UNCONTROLLED | Same |
-| session.backdrops[].locked | alias of pages[].locked | ACTION same real Unlock all | Same raw structural-lock gap; do not double-count the alias |
+| session.backdrops[].locked | alias of pages[].locked | ACTION same real Edit → Toggle locked | Same raw structural-lock gap; do not double-count the alias |
 | session.backdrops[].asset.* | alias of pages[].asset | UNCONTROLLED | Structural metadata/tokens unmapped |
 | session.backdrops[].raster.* | alias of pages[].raster | UNCONTROLLED | Ordinary-arm bitmap object unmapped |
 | paper.paper.* | independently saved notebook paper/default blank | UNCONTROLLED | F/X paper semantics + P; blank defaults are not a changing-field control |

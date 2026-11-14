@@ -156,14 +156,14 @@ export function fieldControls(h) {
         const area = await root().boundingBox();
         await h.page.mouse.click(area.x + area.width * .78, area.y + area.height * .45, { button: 'right' });
         await h.page.getByRole('menuitem', { name: 'Edit', exact: true }).hover();
-        const unlock = h.page.getByRole('menuitem', { name: /^Unlock all(?:\s|$)/ });
+        const unlock = h.page.getByRole('menuitem', { name: /^Toggle locked(?:\s|$)/ });
         await unlock.waitFor({ state: 'visible' });
-        if (await unlock.count() !== 1 || !await unlock.isEnabled()) fail('session.backdrops[].locked', 'no real enabled Unlock all control');
+        if (await unlock.count() !== 1 || !await unlock.isEnabled()) fail('session.backdrops[].locked', 'no real enabled Edit → Toggle locked control');
         await unlock.click();
         await frames(h.page, 3);
         const after = await session(path);
-        if (after.backdrops.length !== before.backdrops.length || after.backdrops.some(page => page.locked !== false)) fail('session.backdrops[].locked', 'Unlock all did not change the observed backdrop locks');
-        add(['session.pages[].locked', 'session.backdrops[].locked'], kind, 'action', { before: before.backdrops.map(page => ({ id: page.id, locked: page.locked })), after: after.backdrops.map(page => ({ id: page.id, locked: page.locked })), action: 'actual Unlock all menu item (legacy defect reference, not target behaviour)' });
+        if (after.backdrops.length !== before.backdrops.length || after.backdrops.some(page => page.locked !== false)) fail('session.backdrops[].locked', 'Toggle locked did not change the observed backdrop locks');
+        add(['session.pages[].locked', 'session.backdrops[].locked'], kind, 'action', { before: before.backdrops.map(page => ({ id: page.id, locked: page.locked })), after: after.backdrops.map(page => ({ id: page.id, locked: page.locked })), action: 'actual Edit → Toggle locked on a locked page (legacy reference, not target behaviour)' });
       }
       requireValue('path', await h.probe.binding(path), binding, 'actions stayed bound to the same editor object');
       return journal.filter(row => row.kind === kind && row.mode === 'action');

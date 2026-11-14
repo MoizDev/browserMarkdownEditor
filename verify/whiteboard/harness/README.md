@@ -4,6 +4,26 @@ This is an outside-the-app recorder for **`impl/reference` only**. It drives the
 with ordinary UI/input and OPFS fixtures. It is not an engine page, diagnostics route or test suite.
 No function in it is shipped by the app. No probe calls an editor setter.
 
+**Current implementation scope (charter §0):** pinned runtime, plain package-marker/object-shape
+assertions before private reads, and the reference-only import split. Field-control tables, source/
+served mutants and artifact-identity diagnostics already written below are retained for the deferred
+review phase; none is a prerequisite for using or merging this reader.
+
+```js
+import {launch} from './index.mjs'
+const h = await launch({baseURL:'http://localhost:6520/'}) // serve impl/reference's build
+try {
+  await h.vault.seed({'Seed.md':'# Reference'})
+  await h.vault.open()
+  await h.ui.createDrawing('Example.tldraw')
+  console.log(await h.probe.session('Example.tldraw')) // checked tool/selection and other reads
+} finally { await h.close() }
+```
+
+The implementation sanity command is `L run -w 2 -- node verify/whiteboard/w-b/b39-sanity.mjs`.
+It reads tool/selection through actual input on all three hosts and saves light/dark captures.
+The stricter recipes below are deferred proof tooling, not the implementation merge bar.
+
 ## Import boundary
 
 `index.mjs` imports `today/probe.mjs`, its network-version guard and its field controls: it is a
@@ -86,10 +106,10 @@ Unmapped/unsupported fields are explicit in `FIELD_MAP.md`. In particular the ol
 `inputs.isHovering` and invented edge-scroll/paste defaults are not returned as fake false/1 values.
 `pending()` and private `export()` are explicitly unavailable: use actual writes/UI downloads.
 
-## Guard (d): per-field, same-run controls
+## Deferred guard (d): per-field, same-run controls
 
 `h.referenceControls.runUI(path)` uses actual toolbar clicks, ink, selection/Escape, public Undo/Redo,
-zoom/pan, viewport resize and the legacy Unlock all action. Each qualifying field records before/
+zoom/pan, viewport resize and the legacy Edit → Toggle locked action on a locked page. Each qualifying field records before/
 after plus its independent public witness. Undo is a bounded public sequence: selection itself can
 occupy a history entry. The token confirms the same exact editor object answered throughout.
 
@@ -109,7 +129,7 @@ No token is inherited across runs or host kinds. A field with no qualifying cont
 coverage**, not permission to compare a raw unmapped quantity. r-gates reads `FIELD_MAP.md` row by
 row and the actual journal, including the mapping precision/aliasing limits.
 
-## Three named-guard mutants
+## Deferred proof tooling: three named-guard mutants
 
 - **(c), `--mode object`:** marker-kind substitution renames `getCurrentPageShapes` consistently in
   **every** script containing it. Expected per-file counts come from the local compiled artifact;

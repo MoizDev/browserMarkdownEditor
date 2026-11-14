@@ -5,7 +5,9 @@ const EXPECTED = '5.2.4';
 const parsed = new WeakMap();
 
 export async function assertProbeVersion(h) {
-  await h.assertReferenceBuild();
+  // Artifact binding remains an optional diagnostic, not a prerequisite for
+  // the plain reference reader (charter §0 defers gate-proof work).
+  if (h.expectedReferenceBuild) await h.assertReferenceBuild();
   const evidence = [];
   for (const [url, response] of h.responseObjects) {
     if (response.request().resourceType() !== 'script' || response.status() !== 200) continue;

@@ -16,6 +16,11 @@ export interface TiledDocumentPool {
     open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal): Promise<OpenTiledDocument>;
 }
 
+/** Geometry, not path, determines whether older pixels can bridge a version. */
+export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {
+    return JSON.stringify(pages.map(page => [page.index, page.width, page.height, page.rotate, page.userUnit, ...page.toUserSpace]));
+}
+
 interface Slot { value: unknown; dispose?: () => void }
 
 /**
@@ -33,16 +38,16 @@ export class PdfTiledDocumentSession {
     private closed = false;
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: File, private readonly pool: TiledDocumentPool,
-        private readonly isCurrent: (token: RenderToken) => boolean) {}
+        private readonly file: Blob, private readonly pool: TiledDocumentPool,
+        private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
 
     open(): Promise<OpenTiledDocument> {
-        if (this.closed || !this.isCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
+        if (this.closed || !this.isTokenCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
         if (!this.opening) {
             this.opening = (async () => {
                 const blob = await stablePdfBlob(this.file, this.controller.signal);
                 const opened = await this.pool.open(blob, this.token, this.source, this.controller.signal);
-                if (this.closed || !this.isCurrent(this.token)) {
+                if (this.closed || !this.isTokenCurrent(this.token)) {
                     await opened.close();
                     throw new DOMException('PDF session replaced', 'AbortError');
                 }
@@ -54,6 +59,8 @@ export class PdfTiledDocumentSession {
         }
         return this.opening;
     }
+
+    isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
 
     getSlot<T>(key: symbol): T | undefined { return this.slots.get(key)?.value as T | undefined; }
     setSlot<T>(key: symbol, value: T, dispose?: () => void): void {

@@ -13,6 +13,7 @@ import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
 import { EdgeScroll } from './edgeScroll'
+import { TouchDoubleTap } from './touchDoubleTap'
 import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
@@ -257,6 +258,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
+  const doubleTap = new TouchDoubleTap({ doc: session.doc, camera: view.camera,
+    eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
+    changed: services.cameraChanged })
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
     id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
@@ -264,11 +268,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!current()) return
     if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
     let focusSurface = event.pointerType !== 'touch'
-    if (event.pointerType === 'pen') services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp)
+    if (event.pointerType === 'pen') { doubleTap.clear(); services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp) }
     else if (event.pointerType === 'touch') {
-      const admitted = touch.touchDown(contact(event)); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
+      const point = contact(event), admitted = touch.touchDown(point); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
+      const target = event.target
+      const control = target instanceof Element && !!target.closest('button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="menu"], [role="dialog"], [role="listbox"]')
+      doubleTap.down(event.pointerId, point, event.timeStamp, admitted && !control)
       try { view.surface.setPointerCapture(event.pointerId) }
-      catch { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId); return }
+      catch { doubleTap.up(event.pointerId, point, event.timeStamp, true); touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId); return }
     }
     const target = event.target
     if (focusSurface && !services.editing() && target instanceof Element && view.surface.contains(target)
@@ -279,12 +286,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const move = (event: PointerEvent) => {
     services.textInput?.cancelPending()
     if (!current()) return
-    if (event.pointerType === 'touch') touch.touchMove(contact(event))
+    if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
   }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)
-    else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
+    else if (event.pointerType === 'touch') {
+      doubleTap.up(event.pointerId, contact(event), event.timeStamp, event.type !== 'pointerup')
+      touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId)
+    }
   }
   // Deferred text hits must also stop before non-tool keys, touch navigation and wheel changes.
   const keyActivity = (event: KeyboardEvent) => {
@@ -496,7 +506,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)

@@ -1,7 +1,7 @@
-import { fitWidthZ, type CameraController, type Point, type ViewportInsets } from '../../platform/render/camera';
+import type { CameraController, Point } from '../../platform/render/camera';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
-import { NOTEBOOK_INSETS, PDF_INK_INSETS } from '../host/pagedView';
+import { boardCameraInsets, resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
 import { boardPageStack } from '../model/pages';
 
@@ -15,7 +15,6 @@ export interface BoardCameraCommandsOptions {
     cooperate?(): Promise<void>;
 }
 interface Bounds { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
-const STEPS = [.05, .1, .25, .5, 1, 2, 4, 8] as const;
 
 /** Commands share the pane camera and its paper constraint. They never change
  * document history; asynchronous fit owns a revision/selection/camera fence. */
@@ -25,15 +24,8 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const cancel = () => { serial++; pending?.abort(); pending = undefined; };
-    const insets = (): Readonly<ViewportInsets> => doc.kind === 'notebook' ? NOTEBOOK_INSETS
-        : doc.kind === 'pdf-ink' ? PDF_INK_INSETS : { left: 0, right: 0, top: 0, bottom: 0 };
+    const insets = () => boardCameraInsets(doc);
     const viewport = () => camera.viewport;
-    const base = () => {
-        const stack = boardPageStack(doc.host);
-        if (!stack) return 1;
-        const value = fitWidthZ(viewport(), stack, insets());
-        return Number.isFinite(value) && value > 0 ? value : 1;
-    };
     const moved = (event: PointerEvent) => {
         if (!current()) return;
         const rect = surface.getBoundingClientRect(), view = viewport();
@@ -51,20 +43,9 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
         camera.zoomTo(value, anchor); notify();
     };
     const stepped = (direction: -1 | 1, atCursor: boolean) => {
-        const unit = base(), relative = camera.camera.z / unit;
-        let nearest = 0;
-        // Halfway bands are intentional: 1.51 chooses 2 before the next step.
-        for (let i = 1; i < STEPS.length; i++) {
-            if (relative >= (STEPS[i - 1] + STEPS[i]) / 2) nearest = i;
-            else break;
-        }
-        const index = Math.max(0, Math.min(STEPS.length - 1, nearest + direction));
-        zoom(STEPS[index] * unit, atCursor ? cursor ?? centre() : centre());
+        zoom(stepBoardZoom(doc, camera, direction), atCursor ? cursor ?? centre() : centre());
     };
-    const reset = () => {
-        const unit = base(), z = camera.camera.z;
-        zoom(doc.kind === 'whiteboard' || Math.abs(z - unit) <= Math.max(1e-6, unit * .001) ? 1 : unit, centre());
-    };
+    const reset = () => { zoom(resetBoardZoom(doc, camera), centre()); };
     const setCentered = (bounds: Bounds, z: number, area: Readonly<{ left: number; right: number; top: number; bottom: number }>) => {
         if (!current() || ![bounds.x, bounds.y, bounds.width, bounds.height, z].every(Number.isFinite) || bounds.width < 0 || bounds.height < 0 || z <= 0) return;
         const clamped = camera.clampZoom(z), width = viewport().width, height = viewport().height;

@@ -88,7 +88,7 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
         hb.shape(entry.font, buffer);
         const infos = buffer.getGlyphInfos(), positions = buffer.getGlyphPositions(), upem = entry.font.face.upem;
         if (!Number.isFinite(upem) || upem <= 0 || infos.length !== positions.length || infos.length > fragment.text.length * 8 + 1024) return null;
-        let advance = 0, glyphCommands = 0;
+        let advance = 0, hasGlyphCommands = false;
         for (let i = 0; i < infos.length; i++) {
             const info = infos[i], position = positions[i];
             if (!Number.isSafeInteger(info.codepoint) || info.codepoint <= 0 || !Number.isFinite(position.xAdvance)
@@ -97,14 +97,20 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
             if ((i & 1023) === 1023) { current(context); await context.slice(); }
         }
         if (!Number.isFinite(advance) || Math.abs(advance * 64 / upem - fragment.width * 64 / face.size) > 0.05) return null;
+        const validated = new Set<number>();
         for (let i = 0; i < infos.length; i++) {
             current(context);
-            const path = glyphPath(entry, infos[i].codepoint);
-            if (!validGlyphPath(path)) return null;
-            glyphCommands += path.length;
+            const id = infos[i].codepoint;
+            if (!validated.has(id)) {
+                const path = glyphPath(entry, id);
+                if (!validGlyphPath(path)) return null;
+                if (path.length) hasGlyphCommands = true;
+                validated.add(id);
+            }
             if ((i & 127) === 127) await context.slice();
         }
-        if (!glyphCommands && /\S/u.test(fragment.text)) return null;
+        validated.clear();
+        if (!hasGlyphCommands && /\S/u.test(fragment.text)) return null;
         current(context);
         const factor = face.size / upem;
         return {

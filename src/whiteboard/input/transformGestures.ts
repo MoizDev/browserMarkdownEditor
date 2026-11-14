@@ -2,7 +2,8 @@ import type { Op } from '../change/ops';
 import { createBoardLeafResizePlan, type BoardLeafResizePlan, type BoardLeafResizePlanOptions, type BoardLeafResizePreview } from '../geom/runtimeLeafPlan';
 import { createBoardRotationPlan, type BoardRotationOptions, type BoardRotationPlan, type BoardRotationPreview } from '../geom/runtimeTransforms';
 import { createBoardTranslationPlan, type BoardTranslationOptions, type BoardTranslationPreview } from '../geom/runtimeTranslation';
-import type { BoardSnapGuide } from '../geom/runtimeSnap';
+import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
 export interface AsyncTransformGestureHost {
@@ -121,18 +122,63 @@ export function rotationHandleGesture(sample: RealSample, modifiers: Modifiers, 
         return { preview: (point, keys, request) => plan.preview(point, keys.shift, request), commit: value => plan.commit(value), cancel: () => plan.cancel() };
     }, host);
 }
+export interface ResizeSnapOptions {
+    readonly zoom: () => number;
+    readonly alwaysSnap: () => boolean;
+}
 export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardLeafResizePlanOptions, 'down' | 'signal'>,
-    host: AsyncTransformGestureHost): GestureOwner {
+    host: AsyncTransformGestureHost, snap?: ResizeSnapOptions): GestureOwner {
     return new AsyncTransformGesture<BoardLeafResizePreview>(sample, modifiers, async signal => {
         const plan: BoardLeafResizePlan = await createBoardLeafResizePlan({ ...options, down: sample, signal });
+        const { runtime, ids } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
+        const selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
+        const guides = new WeakMap<BoardLeafResizePreview, readonly BoardSnapGuide[]>();
         let signX: -1 | 1 = 1, signY: -1 | 1 = 1;
+        const remember = (value: BoardLeafResizePreview) => {
+            if (value.frame.scaleX !== 0) signX = value.frame.scaleX < 0 ? -1 : 1;
+            if (value.frame.scaleY !== 0) signY = value.frame.scaleY < 0 ? -1 : 1;
+        };
         return {
             async preview(point, keys, request) {
-                const result = await plan.preview(point, { shift: keys.shift, alt: keys.alt }, request, signX, signY);
-                if (result.frame.scaleX !== 0) signX = result.frame.scaleX < 0 ? -1 : 1;
-                if (result.frame.scaleY !== 0) signY = result.frame.scaleY < 0 ? -1 : 1;
+                let result = await plan.preview(point, { shift: keys.shift, alt: keys.alt }, request, signX, signY);
+                remember(result);
+                const active = () => !signal.aborted && !request.aborted && options.current() && session.owner === owner
+                    && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection
+                    && runtime.render.text.fonts.epoch === font;
+                if (!snap || snap.alwaysSnap() === keys.accel || Math.hypot(point.x - sample.x, point.y - sample.y) * snap.zoom() < 1) {
+                    guides.set(result, []); return result;
+                }
+                const scope = await acquireBoardGeometryScope(runtime, ids, { doc: result.doc, signal: request, current: active, cooperate: options.cooperate });
+                let bounds: { x: number; y: number; width: number; height: number };
+                try {
+                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visited = 0;
+                    for (const id of ids) {
+                        const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+                        if (++visited % 128 === 0) {
+                            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                            if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
+                        }
+                    }
+                    bounds = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+                } finally { scope.release(); }
+                if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
+                const target = await snapBoardBounds({ runtime, bounds, selected: ids, zoom: snap.zoom(), current: active, signal: request, cooperate: options.cooperate });
+                if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
+                const angle = plan.startBox.rotation, c = Math.cos(angle), s = Math.sin(angle), factor = keys.alt ? 2 : 1;
+                const localX = options.handle.x ? (c * target.delta.x + s * target.delta.y) / factor : 0;
+                const localY = options.handle.y ? (-s * target.delta.x + c * target.delta.y) / factor : 0;
+                const dx = c * localX - s * localY, dy = s * localX + c * localY;
+                if (dx || dy) {
+                    result = await plan.preview({ x: point.x + dx, y: point.y + dy }, { shift: keys.shift, alt: keys.alt }, request, signX, signY);
+                    remember(result);
+                }
+                // A side handle cannot claim a guide that its constrained movement did not reach.
+                const actualX = (c * localX - s * localY) * factor, actualY = (s * localX + c * localY) * factor;
+                guides.set(result, target.guides.filter(guide => Math.abs((guide.axis === 'x' ? actualX - target.delta.x : actualY - target.delta.y) * snap.zoom()) <= 0.5));
                 return result;
             },
+            display: value => host.guides?.(guides.get(value) ?? []),
             commit: value => plan.commit(value), cancel: () => plan.cancel(),
         };
     }, host);

@@ -345,11 +345,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
                 show: (ops: readonly Op[]) => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
                 armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
-                clear: () => options.preview.clear(), error: report,
+                guides: setGuides, clear: () => { setGuides([]); options.preview.clear(); }, error: report,
             };
             if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
                 { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);
-            return leafResizeHandleGesture(sample, modifiers, { runtime, ids, handle: hit.handle, current: mutable }, host);
+            return leafResizeHandleGesture(sample, modifiers, { runtime, ids, handle: hit.handle, current: mutable }, host,
+                { zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) });
         }
         const release = session.beginGesture(), pointerIds = new Set([sample.pointerId]), down = surface;
         let ended = false, cancelled = false, cleaned = false, unregister: (() => void) | undefined;

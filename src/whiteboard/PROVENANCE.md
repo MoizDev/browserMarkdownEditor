@@ -170,9 +170,9 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
 | `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
-| `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; cancellable shared painter and capture-pinned resources, per-tile world projection; no tldraw source | none | 2026-11-13 |
+| `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; shared painter, two-pixel tile apron, cancellable pinned resources; no tldraw source | none | 2026-11-13 |
 | `export/displayList.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §3 | Sliced paint-frame and per-item conversion, world-space clips, source-pixel crop and cancellable shared ink outline; no tldraw source | none | 2026-11-13 |
-| `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Chunkable resolution-free serialization, self-contained embedded images and local clip paths; no tldraw source | none | 2026-11-13 |
+| `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5, 7 | Chunkable size-admitted serialization, four-decimal coordinates, self-contained images and clip paths; no tldraw source | none | 2026-11-13 |
 | `export/svgWorkerHandler.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Shared worker SVG stream with bounded chunk admission and abandoned-stream cleanup; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Platform-hosted pull-stream encoder handlers, bounded row transfer and abort propagation; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Shared governed export worker, pinned identity and bounded-band row backpressure; no tldraw source | none | 2026-11-13 |

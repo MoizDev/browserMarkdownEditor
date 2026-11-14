@@ -743,7 +743,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}
         {outline.panel}
-        <PdfCapabilitiesNotice capabilities={capabilities} />
+        <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">

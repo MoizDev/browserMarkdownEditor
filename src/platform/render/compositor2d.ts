@@ -521,7 +521,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                         job.stage = 'copy';
                     }
                     if (job.stage !== 'copy' || !this.metrics) return noMirror;
-                    this.activeKey = `mirror:${key}`; this.beginSources(this.activeKey); this.missing = false;
+                    const current = this.lastFrame;
+                    const scene = this.scene;
+                    if (!current || current.frameId !== frame.budget.frameId || !scene) return noMirror;
+                    this.activeKey = `mirror:${key}`;
+                    // Both attempts own this scene's pending images. Alternating regular/mirror
+                    // source keys pruned each other's upload admissions before a first frame existed.
+                    this.beginSources(this.key(scene, current)); this.missing = false;
                     // A partially or fully assembled inversion job also owns back's pixels.
                     this.cancelJob();
                     opaque(back.native, this.appearance);
@@ -530,9 +536,6 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     const full = { x: 0, y: 0, width: back.canvas.width, height: back.canvas.height };
                     this.image(back, job.buffer.canvas, full, full);
                     if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.copy(back.native, job.buffer.native, full, full);
-                    const current = this.lastFrame;
-                    const scene = this.scene;
-                    if (!current || current.frameId !== frame.budget.frameId || !scene) return noMirror;
                     const chrome = scene.layers.filter(layer => layer.group === 'chrome');
                     if (chrome.some(layer => !layer.coverage(current, this.backend).complete)) return noMirror;
                     this.paintBindings(chrome, back, scene, current);

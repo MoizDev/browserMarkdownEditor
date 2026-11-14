@@ -127,6 +127,12 @@ export class LiveInk implements GestureOwner {
   }
 
   cancel(): void { this.finish('os-cancel') }
+  discard(): void {
+    if (this.ended) return
+    this.ended = true
+    this.handover.clear(this.context.identity)
+    this.context.invalidate()
+  }
 
   private append(sample: RealSample, modifiers: Modifiers): void {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return

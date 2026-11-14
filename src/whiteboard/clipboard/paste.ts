@@ -78,8 +78,17 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
     const bytes = copied.files.reduce((sum, file) => sum + (file.directory ? 0 : Math.min(file.blob.size, SECURITY_LIMITS.mediaBytes)), 0)
         + (copied.privatePng ? Math.min(copied.privatePng.size, SECURITY_LIMITS.mediaBytes) : 0);
     const deadlineMs = Math.min(600_000, Math.max(120_000, Math.ceil(bytes / (100 * 1024 * 1024)) * 30_000));
-    return runtime.jobs.run(async context => {
-        const revision = doc.rev;
+    return runtime.jobs.run(context => {
+        if (runtime.session !== session || session.doc !== doc) throw new DOMException('Clipboard target became stale', 'AbortError');
+        return pasteBoardClipboardInJob(host, copied, captured, intent, context, cachePin ?? undefined);
+    }, { signal, deadlineMs }).finally(() => cachePin?.release());
+}
+/** Uses an existing session job, including when a text editor hands non-text content to the board. */
+export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, input: ClipboardInput, target: Readonly<ClipboardTarget>,
+    intent: ClipboardIntent, context: JobContext, cache?: Pick<ClipboardCopy, 'match'>): Promise<readonly NodeId[]> {
+    const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
+        pointer: target.pointer ? Object.freeze({ ...target.pointer }) : null });
+    const runtime = host.runtime, session = runtime.session, doc = session.doc, revision = doc.rev;
         const check = () => {
             runtime.jobs.assertContext(context); context.assertCurrent();
             if (!host.current(captured) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {
@@ -96,7 +105,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
             embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
-            plain: copied.text ?? '', cache: cachePin ?? undefined, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
+            plain: copied.text ?? '', cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {
             const id = await pasteClipboardTextInJob({ ...base, content: classification.kind === 'text'
                 ? { kind: 'plain', text: classification.text } : { kind: 'url', url: classification.url }, signal: context.signal }, context);
@@ -158,5 +167,4 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                 return inserted;
             } finally { media.release(); }
         } finally { acquisition?.dispose(); draft?.release(); wire?.release(); legacy?.release(); }
-    }, { signal, deadlineMs }).finally(() => cachePin?.release());
 }

@@ -8,7 +8,7 @@ import { SECURITY_LIMITS } from '../security/limits';
 import type { Block, RichFragment } from '../text/richText';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { classifyClipboard, type ClipboardClassifierHost } from './classify';
-import type { ClipboardCopy } from './copy';
+import type { ClipboardCachePin, ClipboardCopy } from './copy';
 import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
 import type { ClipboardInput, ClipboardIntent, ClipboardTextEditor } from './types';
 
@@ -18,7 +18,9 @@ export interface TextEditorPasteOptions {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator;
     readonly input: ClipboardInput; readonly intent: ClipboardIntent;
     readonly classifier: ClipboardClassifierHost; readonly html: Pick<ClipboardHtmlFrameHost, 'projectHTML'>;
-    readonly editor: ClipboardTextEditor; readonly cache?: Pick<ClipboardCopy, 'match'>;
+    readonly editor: ClipboardTextEditor; readonly cache?: ClipboardCopy | ClipboardCachePin;
+    /** Ends editing, then invokes the real board ingest in this same job. */
+    pasteBoard(context: JobContext, cache?: Pick<ClipboardCopy, 'match'>): Promise<void>;
     /** Checks the captured editor, selection, pane and session after every await. */
     current(): boolean;
     cooperate?(): Promise<void>;
@@ -55,6 +57,7 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
     const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && value.revision === revision
         && runtime.jobs.isCurrent(context.job) && options.current() && session.doc === doc && doc.rev === revision;
     const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const board = async (): Promise<TextEditorPasteResult> => { check(); await options.pasteBoard(context, options.cache); context.assertCurrent(); return 'board'; };
     check();
     const classification = await classifyClipboard(input, options.intent, options.classifier, context.signal); check();
     if (classification.kind === 'empty') return 'handled';
@@ -68,7 +71,7 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
         const projection = await options.html.projectHTML(classification.html, context.signal);
         try {
             check();
-            if (projection.dataImages.length || projection.refusedImages.length) return 'board';
+            if (projection.dataImages.length || projection.refusedImages.length) { projection.release(); return await board(); }
             const nonempty = projection.rich.blocks.some(block => block.runs.some(run => run.text.length > 0)) || projection.rich.blocks.length > 1;
             if (nonempty) { check(); options.editor.replaceSelection(projection.rich); }
             return 'handled';
@@ -85,13 +88,18 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
                 ...(match ? { cache: { match, encoded: classification.encoded, plain: input.text ?? '' } } : {}), cooperate: options.cooperate });
             check();
             const source = acquisition.load.doc, roots = source.children.get(acquisition.payload.from.sheet) ?? [];
-            if (source.nodes.size !== 1 || roots.length !== 1 || roots[0].kind !== 'text') return 'board';
+            if (source.nodes.size !== 1 || roots.length !== 1 || roots[0].kind !== 'text') {
+                acquisition.dispose(); acquisition = undefined; decoded.release(); return await board();
+            }
             options.editor.replaceSelection(roots[0].text); return 'handled';
         } finally { acquisition?.dispose(); decoded.release(); }
     }
-    return 'board';
+    return board();
 }
 export function pasteIntoTextEditor(options: TextEditorPasteOptions, signal?: AbortSignal): Promise<TextEditorPasteResult> {
-    const input = captureInput(options.input);
-    return options.runtime.jobs.run(context => pasteIntoTextEditorInJob({ ...options, input }, context), { signal, deadlineMs: 120_000 });
+    const input = captureInput(options.input), cache = options.cache;
+    const pin = cache && 'pin' in cache && typeof cache.pin === 'function' ? cache.pin() : null;
+    const capturedCache = cache && 'pin' in cache ? pin ?? undefined : cache;
+    return options.runtime.jobs.run(context => pasteIntoTextEditorInJob({ ...options, input, cache: capturedCache }, context),
+        { signal, deadlineMs: 120_000 }).finally(() => pin?.release());
 }

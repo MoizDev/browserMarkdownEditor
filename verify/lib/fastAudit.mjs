@@ -46,7 +46,7 @@ export async function readFastAudit(page) {
     return page.evaluate(async () => {
         const calls = window.__bmeFastAudit.calls;
         await Promise.all(calls.map(call => call.resolved));
-        return { calls: calls.map(({ resolved: _resolved, ...call }) => call),
+        return { calls: calls.map(call => Object.fromEntries(Object.entries(call).filter(([key]) => key !== 'resolved'))),
             reports: window.__perf?.vault?.reports() ?? [] };
     });
 }

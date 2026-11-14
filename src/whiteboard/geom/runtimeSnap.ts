@@ -60,10 +60,11 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
             || !scene?.ready || scene.revision !== revision) throw new DOMException('Snap source changed', 'AbortError');
     };
     check();
-    const selected = new Set(options.selected), ancestors = new Set<NodeId>();
+    const selected = new Set(options.selected), ancestors = new Set<NodeId>(); let visited = 0;
     for (const id of selected) {
         let node = doc.nodes.get(id);
         for (let depth = 0; node && depth < 64; depth++) { ancestors.add(node.id); node = doc.nodes.get(node.parent as NodeId); }
+        if (++visited % 256 === 0) { await cooperate(); check(); }
     }
     const excluded = (id: NodeId) => {
         if (ancestors.has(id)) return true;
@@ -101,8 +102,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
         const better = (candidate: Winner, old: Winner | undefined) => !old || Math.abs(candidate.delta) < Math.abs(old.delta)
             || (Math.abs(candidate.delta) === Math.abs(old.delta) && (candidate.rank > old.rank
                 || (candidate.rank === old.rank && (candidate.source < old.source || (candidate.source === old.source && candidate.edge < old.edge)))));
+        visited = 0;
         for (const id of candidates) {
-            check(); const other = scope.logicalBounds(id), rank = scope.rank(id);
+            check(); if (++visited % 256 === 0) { await cooperate(); check(); }
+            const other = scope.logicalBounds(id), rank = scope.rank(id);
             for (const [axis, own, target] of [
                 ['x', xs, [other.x, other.x + other.width / 2, other.x + other.width]],
                 ['y', ys, [other.y, other.y + other.height / 2, other.y + other.height]],

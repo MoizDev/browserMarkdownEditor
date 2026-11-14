@@ -8,7 +8,7 @@ description: How this app reads and writes the user's real files — the File Sy
 `context/FileSystemContext.tsx` is the **only** thing that touches the File System Access API.
 Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
-`importFiles`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
+`importFiles`, `keepCopyInGarbage`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
 `listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`,
 `pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault` — and, for open DOCUMENTS, the
 versioned IO (`readFileVersioned`/`readBytesVersioned`/`statFile`/`writeFileVersioned`/
@@ -27,6 +27,11 @@ There is no backend and no undo stack behind these calls — a mistake here dest
   buffers, saved output and vault-search match offsets all stay in agreement. The vault-search cache
   normalizes identically.
 - `writeFileBytes` hands the *view*, not `.buffer`, so a subarray does not write the whole buffer.
+- `keepCopyInGarbage(dir, name, bytes)` preserves the supplied bytes in that folder's `.Garbage`,
+  returning the collision-free physical basename only after close. It never opens or changes the
+  source. Backup calls have a recoverable queue; callers still coordinate with other Trash mutations
+  and retain document-version checks before backup and at the final versioned save. A failure throws
+  and must stop the rebuild. The hidden backup needs no tree refresh.
 
 ## There is no native move
 
@@ -313,6 +318,12 @@ should spell `'.Assets'`.**
   second apart, so they overlap easily — and raced, the classic sequence loses a picture: remove an
   embed (a long scan starts), undo (the next save restores the asset at once), then the first scan's
   retire lands on top and the note points at a file in `.Garbage`.
+- **A reconcile belongs to one activation, not a reusable directory handle.** Capture the synchronous
+  `getVaultActivation()` before save/agent IO; A→B→A invalidates the first A job. Both `retireAsset`
+  and `restoreAsset` require a guard, checked before copying and immediately before source removal.
+  A copy finishing after cancellation may leave both copies; it must not delete either source or
+  revoke another activation's blob. Reference proofs also validate the edit/tree revision and open
+  readable buffers; undecided drops retry only on a later actual save, never a per-keystroke scan.
 - **The diff is taken against the last SAVED text, not per keystroke** (`assetRefsRef`, seeded when a
   tab opens). Until a removal reaches the disk it isn't one; the 1s save debounce doubles as the undo
   grace period; and it is one regex pass per second instead of one per character. `flushTab` reads
@@ -464,8 +475,9 @@ raising the setting later still has history to show.
   the other two raisers**, because "Open folder…" is a menu row and the menu closes on the result:
   refused by the switch gate it must come back `'busy'` and leave the menu up to say so, and while it
   returned void that row closed the menu, opened no picker and said nothing at all. A **cancelled**
-  pick is `'ok'` — nothing failed, so the menu closes as it always did — and so is the unsupported
-  browser's `alert` path being `'error'`. `FileExplorer.browseForVault` no longer closes the menu
+  pick is `'ok'` — nothing failed, so the menu closes as it always did. An unsupported browser
+  returns `{status:'error', message}`; App shows its own notice (including on welcome) and maps it
+  to legacy `'error'`. `FileExplorer.browseForVault` no longer closes the menu
   before the call; `VaultMenu.browse` owns that, mirroring its `activate`.
 
 Binary EPUB snapshots use readFileSnapshot: immutable Blob/stat, same-Blob bounded worker fingerprint and explicit disposal. Strict UTF-8 text reads reject ZIP/PDF signatures and NUL; renamed binaries cannot inherit text write authority. App document operations also gate on loaded representation.

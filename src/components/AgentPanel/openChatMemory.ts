@@ -15,6 +15,8 @@
 // Keyed by the panel's vault key, and capped, so hopping through vaults cannot
 // grow the record without bound.
 
+import { writeJSON } from '../../utils/storage';
+
 const KEY = 'vaultAgentOpenChat';
 
 /** How many vaults' choices are kept. Past this the oldest-written goes: a
@@ -82,10 +84,5 @@ export function readOpenChat(vaultKey: string | null): string | null {
 /** Remember (or, with null, forget) the chat on screen for this vault. */
 export function rememberOpenChat(vaultKey: string | null, chatId: string | null): void {
     if (!vaultKey) return;
-    try {
-        localStorage.setItem(KEY, JSON.stringify(withOpenChat(read(), vaultKey, chatId)));
-    } catch {
-        // Full or blocked: the panel opens on a new chat next time, which is
-        // what it always used to do.
-    }
+    writeJSON(KEY, withOpenChat(read(), vaultKey, chatId));
 }

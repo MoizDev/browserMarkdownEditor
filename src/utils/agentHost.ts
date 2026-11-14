@@ -1,4 +1,5 @@
 import { readReaderViewState } from './readerViewState';
+import { routeEngines } from './engineRouting';
 import { canReadTabText,canUpdateTabContent } from './documentReading';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 // App's side of the AI agent panel: the two host objects the panel and the
@@ -426,6 +427,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if(isNativeDrawingFile(path)||isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
+            const route = routeEngines().canvas[pdf ? 'pdfInk' : isNotebookFile(path) ? 'notebook' : 'drawing'];
+            if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
             if (!pdf) {
                 let text = open?.content;
                 if (text === undefined) {

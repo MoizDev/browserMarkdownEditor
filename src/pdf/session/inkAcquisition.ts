@@ -9,6 +9,7 @@ import type { PdfInkInspection } from '../writing/inkInspection.types';
 import type { WriterSource } from '../writing/protocol';
 import { typedPdfWriter } from '../writing/writerClient';
 import { getSharedPdfPool } from './startup';
+import { createPdfInkBackdrop } from './inkBackdrop';
 import type { PdfInkAcquisition, PdfInkAcquisitionOptions } from './inkAcquisition.types';
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -164,6 +165,14 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
                 guard(); requestSignal.throwIfAborted();
                 if (actual !== expected) throw new Error('PDF ink media fingerprint mismatch');
                 return blob;
+            },
+            async createBackdrop(viewOptions) {
+                guard();
+                const signal = AbortSignal.any([lifetime, ...(viewOptions.signal ? [viewOptions.signal] : [])]);
+                signal.throwIfAborted();
+                const view = await createPdfInkBackdrop({ ...viewOptions, pool, source, isCurrent: current, signal });
+                try { guard(); signal.throwIfAborted(); return view; }
+                catch (error) { view.dispose(); throw error; }
             },
             async openWriter(signal) {
                 guard();

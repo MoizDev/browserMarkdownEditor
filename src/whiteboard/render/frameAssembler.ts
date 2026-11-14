@@ -20,7 +20,11 @@ interface Staging {
     readonly blocks: Block[];
     used: number;
 }
-interface Published { readonly pin: PinnedPaintSource; readonly frame: PaintFrame; readonly blocks: Block[] }
+interface Published {
+    readonly pin: PinnedPaintSource; readonly frame: PaintFrame; readonly blocks: Block[];
+    borrowers: number;
+    retired: boolean;
+}
 
 /** Stages source commands in bounded slices. A retired frame's source lease remains owned until
  * the backend explicitly drops it; a newer requested revision alone never frees pixels in use. */
@@ -45,22 +49,27 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         try { work.job.cancel(); } catch (error) { errors.push(error); }
         releasePin(work.pin, errors); releaseBlocks(work.blocks, errors); throwErrors(errors);
     };
+    const freeRetired = (entry: Published, errors: unknown[]) => {
+        if (!entry.retired || entry.borrowers) return;
+        retained.delete(entry.frame);
+        releasePin(entry.pin, errors); releaseBlocks(entry.blocks, errors);
+    };
     const retire = (frame: PaintFrame) => {
         const entry = retained.get(frame);
         if (!entry || entry === latest) return;
-        retained.delete(frame);
+        entry.retired = true;
         const errors: unknown[] = [];
-        releasePin(entry.pin, errors); releaseBlocks(entry.blocks, errors); throwErrors(errors);
+        freeRetired(entry, errors); throwErrors(errors);
     };
     const clear = () => {
         const work = staging; staging = null; latest = null; blocked = false;
-        const entries = [...retained.values()]; retained.clear();
+        const entries = [...retained.values()];
         const errors: unknown[] = [];
         if (work) {
             try { work.job.cancel(); } catch (error) { errors.push(error); }
             releasePin(work.pin, errors); releaseBlocks(work.blocks, errors);
         }
-        for (const entry of entries) { releasePin(entry.pin, errors); releaseBlocks(entry.blocks, errors); }
+        for (const entry of entries) { entry.retired = true; freeRetired(entry, errors); }
         throwErrors(errors);
     };
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
@@ -104,15 +113,27 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (status === 'pending') continue;
                     if (status !== 'complete') { dropStaging(); return; }
                     const frame: PaintFrame = Object.freeze({ token: work.pin.source.token, sceneRevision: work.pin.source.sceneRevision,
-                        sensitiveNodes: work.pin.source.sensitiveNodes,
+                        sourceDoc: work.pin.source.sourceDoc, sensitiveNodes: work.pin.source.sensitiveNodes,
                         underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
-                    const published: Published = { pin: work.pin, frame, blocks: work.blocks };
+                    const published: Published = { pin: work.pin, frame, blocks: work.blocks, borrowers: 0, retired: false };
                     retained.set(frame, published); latest = published; staging = null; invalidate(); return;
                 }
             } catch (error) { dropStaging(); onError(error); }
         },
         readFrame: () => disposed ? null : latest?.frame ?? null,
-        isCurrent: frame => !disposed && retained.has(frame) && retained.get(frame)!.pin.source.isCurrent(),
+        isCurrent: frame => !disposed && retained.has(frame) && !retained.get(frame)!.retired && retained.get(frame)!.pin.source.isCurrent(),
+        retain(frame) {
+            const entry = retained.get(frame);
+            if (disposed || !entry || entry.retired) throw new Error('Cannot retain an unowned paint frame');
+            entry.borrowers++;
+            let released = false;
+            return () => {
+                if (released) return;
+                released = true; entry.borrowers--;
+                const errors: unknown[] = [];
+                freeRetired(entry, errors); throwErrors(errors);
+            };
+        },
         needsFrame: () => !disposed && staging !== null && !blocked,
         presented(frame) {
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');

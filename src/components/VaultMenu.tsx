@@ -325,7 +325,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
                 <button
                     className="vault-menu-item"
                     role="menuitem"
-                    onClick={() => void browse()
+                    onClick={() => void browse()}
                 >
                     <span className="vault-menu-label">Open folder…</span>
                 </button>

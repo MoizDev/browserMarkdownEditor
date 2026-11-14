@@ -36,7 +36,7 @@ export interface LiveInkContext {
   toLocal(sample: RealSample): { readonly x: number; readonly y: number }
   clearRedoAtDown(): void
   invalidate(): void
-  commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean): DryInkIdentity
+  commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean, closed: boolean): DryInkIdentity
   error(error: unknown): void
 }
 
@@ -143,7 +143,11 @@ export class LiveInk implements GestureOwner {
     try {
       const finished = this.builder.finish()
       this.snapshot = finished.publication
-      this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo')
+      const points = finished.publication.samples, last = points.count - 1
+      // R-20 keeps closure inert; only an exact, non-degenerate loop is marked.
+      const closed = this.context.presentation.tool === 'pen' && points.count >= 4
+        && points.x(0) === points.x(last) && points.y(0) === points.y(last)
+      this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo', closed)
       if (reason === 'undo') this.handover.clear(this.context.identity)
       else {
         try { this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: this.dry }) }

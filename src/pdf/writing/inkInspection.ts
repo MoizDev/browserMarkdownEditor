@@ -3,6 +3,7 @@ import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAtt
 import type { AttachmentEntry } from '../../utils/pdfAttachmentTree';
 import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import { checkPdfWriteMark } from '../../utils/pdfWriteMark';
+import { inspectPdfDocumentWriteSafety } from '../../utils/pdfWriteSafety';
 import { Sha256 } from '../../utils/sha256';
 import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
 import { fenceBytes, isCompatibilityFenceBytes } from '../../whiteboard/format/fence';
@@ -104,8 +105,11 @@ export class PdfInkInspector {
             await step();
             const outerFingerprint = await hash(bytes, step);
             let document: PDFDocument;
-            try { document = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false }); }
+            try { document = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false, throwOnInvalidObject: true }); }
             catch (error) { return { kind: 'read-only', reason: error instanceof Error && /encrypt/i.test(error.message) ? 'encrypted' : 'unreadable' }; }
+            await step();
+            const writeSafety = inspectPdfDocumentWriteSafety(document);
+            if (writeSafety.kind !== 'safe') return refuse(writeSafety.kind === 'unknown' ? 'unsafe-policy' : writeSafety.kind);
             await step();
             const entries = inventory(document), owned = [...entries].filter(([name, entry]) => isAuthority(name, entry));
             if (entries.has(NOTEBOOK_SOURCE_ATTACHMENT)) {
@@ -132,7 +136,10 @@ export class PdfInkInspector {
                 await step();
                 pristineFingerprint = await hash(originalBytes, step);
                 pristine = new Blob([new Uint8Array(originalBytes)], { type: 'application/pdf' });
-                const nested = await PDFDocument.load(originalBytes, { parseSpeed: Infinity, updateMetadata: false });
+                const nested = await PDFDocument.load(originalBytes, { parseSpeed: Infinity, updateMetadata: false, throwOnInvalidObject: true });
+                await step();
+                const pristineSafety = inspectPdfDocumentWriteSafety(nested);
+                if (pristineSafety.kind !== 'safe') return refuse(pristineSafety.kind === 'unknown' ? 'unsafe-policy' : pristineSafety.kind);
                 await step();
                 if ([...inventory(nested)].some(([name, entry]) => isAuthority(name, entry))) return refuse('nested-source');
                 const boardBytes = attachment(entries.get('board.json')!, BOARD_LIMIT);
@@ -152,8 +159,8 @@ export class PdfInkInspector {
             await step();
             const id = crypto.randomUUID();
             this.retained.set(id, { document, bytes, media });
-            if (!board) return { kind: 'plain', id, outerFingerprint, pristine, pristineFingerprint, board: null, media: [], formatId: NATIVE_FORMAT_ID };
-            return { kind: 'native', id, outerFingerprint, pristine, pristineFingerprint, board, writeId: writeId!, media: descriptors, formatId: NATIVE_FORMAT_ID };
+            if (!board) return { kind: 'plain', id, outerFingerprint, pristine, pristineFingerprint, board: null, media: [], formatId: NATIVE_FORMAT_ID, writeSafety };
+            return { kind: 'native', id, outerFingerprint, pristine, pristineFingerprint, board, writeId: writeId!, media: descriptors, formatId: NATIVE_FORMAT_ID, writeSafety };
         } catch (error) {
             if (error instanceof Interrupted) throw error.cause;
             return { kind: 'read-only', reason: error instanceof Refusal ? error.reason : 'unreadable' };

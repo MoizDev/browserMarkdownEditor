@@ -87,6 +87,15 @@ export function figureDragBox(shape: FigureShape, down: Vec2, pointer: Vec2, mod
     };
 }
 
+export function figureSemanticBounds(shape: FigureShape, width: number, height: number,
+    flipX: boolean, flipY: boolean): Rect {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) throw new RangeError('Invalid figure box');
+    const fit = CREATION_FIT[shape];
+    const left = fit?.xInset ?? 0, top = fit?.yInset ?? 0, xScale = fit?.xScale ?? 1, yScale = fit?.yScale ?? 1;
+    return { x: width * (flipX ? 1 - left - xScale : left), y: height * (flipY ? 1 - top - yScale : top),
+        width: width * xScale, height: height * yScale };
+}
+
 /** The polygonal forms; curved forms require their analytic outlines. */
 export function polygonFigure(shape: FigureShape): readonly (readonly PathOp[])[] | null {
     let points: readonly Vec2[];

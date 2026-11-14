@@ -1,5 +1,5 @@
 import type { BoardAssetAccess, FileSystemContextValue } from '../types';
-import { hashBytes } from './diskVersion';
+import { fingerprintSnapshot } from './snapshotFingerprint';
 
 /** App-owned session identity: a rename, vault activation or closed/replaced
  * tab retires this bridge, rather than redirecting an in-flight write. */
@@ -54,24 +54,30 @@ export function createBoardMediaBridge(
         signal.throwIfAborted();
         if (!isCurrent()) throw new DOMException('Board session ended', 'AbortError');
     };
+    const resolveMedia = async (entry: BoardMediaDescriptor, signal: AbortSignal): Promise<{ name: string | null; blob: Blob } | null> => {
+        const access = request(entry, signal);
+        const found = pdf
+            ? await pdf.read(entry.id, access.signal).then(blob => blob ? { name: null, blob } : null)
+            : await io.readBoardAsset(access);
+        assertCurrent(access.signal);
+        if (found && await fingerprintSnapshot(found.blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
+        assertCurrent(access.signal);
+        return found;
+    };
     return {
         isCurrent,
+        resolveMedia,
         async storeMedia(entry: BoardMediaDescriptor, blob: Blob, signal: AbortSignal): Promise<string | null> {
             const access = request(entry, signal);
             if (!pdf) return io.putBoardAsset({ ...access, blob, extension: EXTENSIONS[entry.mime] });
-            if (await hashBytes(await blob.arrayBuffer()) !== access.hash) throw new Error('Board media hash mismatch');
+            if (await fingerprintSnapshot(blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
             assertCurrent(access.signal);
             await pdf.stage(entry.id, blob, access.signal);
             assertCurrent(access.signal);
             return null;
         },
         async readMedia(entry: BoardMediaDescriptor, signal: AbortSignal): Promise<Blob | null> {
-            const access = request(entry, signal);
-            const blob = pdf ? await pdf.read(entry.id, access.signal) : (await io.readBoardAsset(access))?.blob ?? null;
-            assertCurrent(access.signal);
-            if (blob && await hashBytes(await blob.arrayBuffer()) !== access.hash) throw new Error('Board media hash mismatch');
-            assertCurrent(access.signal);
-            return blob;
+            return (await resolveMedia(entry, signal))?.blob ?? null;
         },
     };
 }

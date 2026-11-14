@@ -10,6 +10,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
+import { recordNativeAgentViewport } from '../../whiteboard/host/nativeAgentView';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
@@ -121,9 +122,12 @@ export function createNativeViewLease(options: {
     if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
+    const boardRuntime = runtime;
     const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
     if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
-        sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.())) {
+        sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
+        sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||
+        sourceToken.vaultEpoch !== runtime.paintToken.vaultEpoch || sourceToken.bytesGeneration !== runtime.paintToken.bytesGeneration)) {
         throw new Error('PDF view source does not match its acquired owner');
     }
     const token = Object.freeze(sourceToken ? { ...sourceToken } : { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
@@ -294,13 +298,13 @@ export function createNativeViewLease(options: {
         : board.doc.kind === 'pdf-ink' ? [...(backdrop?.layers.map(layer => layer.id) ?? []), 'board-underlay', 'board-content']
             : ['board-underlay', 'board-content'];
     const services = createNativeViewPlatform({ host, identity, board, viewer, camera, documentToken: token,
-        currentSource: () => !backdrop?.sourceToken || backdrop.isCurrentSource?.() === true,
+        currentSource: sourceCurrent,
         paneId, viewLease,
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
             setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
-            writeOverlays: frame => { refreshViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
+            writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
                 camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); },
             onPresentation: presentation => {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
@@ -310,7 +314,7 @@ export function createNativeViewLease(options: {
                 navigation.onPresentation(presentation);
                 const source = backdrop?.sourceToken;
                 if (presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
-                    presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+                    presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
                     presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
                     (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
                         presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
@@ -328,15 +332,23 @@ export function createNativeViewLease(options: {
         if (page !== navigationSnapshot.page || zoom !== navigationSnapshot.zoom) navigationSnapshot = { page, zoom };
         return navigationSnapshot;
     };
+    function recordViewport() {
+        if (!parameters.visible || !current() || !platformPane) return;
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+    }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
-    const sourceCurrent = () => {
+    function sourceCurrent() {
         if (!backdrop?.sourceToken) return true;
-        try { return backdrop.isCurrentSource?.() === true; }
+        try { const source = backdrop.sourceToken, paint = boardRuntime.paintToken;
+            return backdrop.isCurrentSource?.() === true && source.documentId === paint.documentId && source.session === paint.session &&
+                source.vaultEpoch === paint.vaultEpoch && source.bytesGeneration === paint.bytesGeneration &&
+                source.documentId === token.documentId && source.session === token.session && source.vaultEpoch === token.vaultEpoch &&
+                source.bytesGeneration === token.bytesGeneration; }
         catch (error) { options.onError(error); return false; }
-    };
+    }
     const updateInput = () => {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
@@ -386,13 +398,14 @@ export function createNativeViewLease(options: {
             sourceToken: token,
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
+                if (parameters.visible && !next.visible) recordViewport();
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 viewer.setView(viewParameters());
                 updateInput();
             },
             attachPlatform(next) {
-                if (!next) navigation.cancelViewWork('platform-detach');
+                if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
                 if (next) next.invalidate('native-attachment');
@@ -421,7 +434,7 @@ export function createNativeViewLease(options: {
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispose() {
             if (disposed) return;
-            disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
+            recordViewport(); disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
             navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };

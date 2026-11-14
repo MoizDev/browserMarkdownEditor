@@ -21,7 +21,7 @@ const spelling: BoardToolServicesOptions['spelling'] = {
 };
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
-    readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'contextMenu' | 'keyboardNavigation'> & {
+    readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
         readonly text: Omit<BoardToolServicesOptions['ui']['text'], 'spellingMenu' | 'selectionChanged' | 'menu'>;
     };
 };
@@ -68,7 +68,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
-                    contextMenu: event => binding!.openMenu(event), error: options.onError });
+                    contextMenu: options.toolOptions.ui.contextMenu, error: options.onError });
                 importer = createNativeImportAdapter(binding, options.runtime, () => options.current(options.token) &&
                     options.toolOptions.editable() && options.host.canWrite(options.identity), options.onError);
                 const keyboardNavigation = createBoardKeyboardNavigation({ runtime: options.runtime, camera: options.camera,
@@ -77,7 +77,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                     cancelMotion: () => options.toolOptions.platform().cancelMotion(), cancelReveal: () => options.engine.cancelReveal(),
                     changed: options.toolOptions.interaction.cameraChanged, error: options.onError });
                 tools = createBoardToolServices({ ...options.toolOptions, spelling, surface, overlay, imports: importer.imports,
-                    ui: { ...options.toolOptions.ui, keyboardNavigation, contextMenu: event => binding?.openMenu(event),
+                    ui: { ...options.toolOptions.ui, keyboardNavigation,
                         text: { ...options.toolOptions.ui.text,
                             menu(x, y) {
                                 const editor = tools?.actualsubcontrollers.text, selected = editor?.clipboardSelection(), link = editor?.linkContext();

@@ -6,7 +6,8 @@ import { createBoardChangeGeometry } from '../geom/changeGeometry';
 import { compose, inverse } from '../geom/affine';
 import { transformBox } from '../geom/bounds';
 import { nextUp } from '../geom/numeric';
-import type { PaintNode } from './paintStream';
+import type { PaintNode, PaintNodeSource } from './paintStream';
+import { SessionDenseRasters } from './sessionDenseRasters';
 import type { PaintNodeOrder } from './paintOrder';
 import { geometrySceneBounds, transformedPathBounds } from '../geom/providers';
 import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/resolveConnector';
@@ -29,7 +30,7 @@ import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
 import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
-import { prepareScenePaintSource, prepareScenePaintSourceNow, type SceneResolveContext } from './sceneSource';
+import { createScenePaintNodeStream, prepareScenePaintSource, prepareScenePaintSourceNow, type ScenePaintPorts, type SceneResolveContext } from './sceneSource';
 import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
@@ -117,6 +118,7 @@ export function createBoardRenderServices(options: {
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    const sessionRasters = new SessionDenseRasters();
     // An opaque service incarnation binds the full owner token without putting an arbitrarily
     // long document id into the worker protocol's 128-character session field.
     const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
@@ -136,7 +138,7 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear();
+        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); sessionRasters.dispose();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -287,9 +289,9 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
-    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) => {
+    const asyncPaintPorts = (doc: BoardDoc, request: ScenePaintRequest, orderedIds?: PaintNodeOrder): ScenePaintPorts => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-        return prepareScenePaintSource(doc, sourceToken, request, {
+        return {
             cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
             // Physical-page capture owns its final clip. A stored pg is an
             // origin, not a certificate that overflowing geometry is invisible.
@@ -303,8 +305,20 @@ export function createBoardRenderServices(options: {
                         { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
                 return withAllocation(paint, geometry, context);
             },
-        }, signal);
+        };
     };
+    const rasterVariant = (doc: BoardDoc, request: ScenePaintRequest, epoch: number) => JSON.stringify([
+        request.sheetId, request.theme, palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, epoch,
+    ]);
+    const paint = async (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): Promise<PaintNodeSource> => {
+        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch);
+        const world = request.world ? Object.freeze({ ...request.world }) : undefined;
+        const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+        return { ...source, sessionRasters, sourceWorld: world,
+            ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
+    };
+    const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) =>
+        createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
     const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
         return prepareScenePaintSourceNow(doc, sourceToken, request, {
@@ -478,6 +492,7 @@ export function createBoardRenderServices(options: {
                 || captured.bytesGeneration < options.token.bytesGeneration) throw new TypeError('Paint binding is not the same document source');
             return Object.freeze({
                 token: captured, retainRenderer,
+                preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paintStream(doc, request, signal, order, captured),
                 preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paint(doc, request, signal, order, captured),
                 prepareOverlay: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => paint(doc, request, signal, ids, captured),
                 prepareOverlayNow: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => {
@@ -564,7 +579,7 @@ export function createBoardRenderServices(options: {
         },
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        preparePaint: paint,
+        preparePaint: paint, preparePaintStream: paintStream,
         prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
             return paint(doc, request, signal, ids);
         },

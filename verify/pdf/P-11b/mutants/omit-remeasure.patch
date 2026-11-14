@@ -1,0 +1,11 @@
+diff --git a/src/components/PdfViewer.tsx b/src/components/PdfViewer.tsx
+--- a/src/components/PdfViewer.tsx
++++ b/src/components/PdfViewer.tsx
+@@ -620,7 +620,6 @@
+                 try {
+                     await layer.render();
+                     if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
+-                    remeasurePdfTextLayer(layer, viewport);
+                 } finally {
+                     textLayersRef.current.delete(layer);
+                 }

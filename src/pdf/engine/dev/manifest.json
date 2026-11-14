@@ -1,0 +1,23 @@
+{
+  "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8152/pdfium-wasm.tgz",
+  "sha256": "005bba72c9da3b7ce334c2b13270a3369831730b7dfb3b7088550c336f989bf1",
+  "bytes": 2699876,
+  "lengthSource": "Release response Content-Length, confirmed by the first SHA-256-verified download; the planning evidence did not retain archive length.",
+  "qualification": "development",
+  "buildId": "dev-005bba72c9da3b7ce334c2b13270a3369831730b7dfb3b7088550c336f989bf1",
+  "files": {
+    "glue": {
+      "path": "lib/pdfium.js",
+      "sha256": "4fb0a212e4e5856f0cd7a9877365d0f5d04f6efb170a334d764af1524198146a",
+      "bytes": 165929
+    },
+    "wasm": {
+      "path": "lib/pdfium.wasm",
+      "sha256": "8f12dd340d93ce8e46044d74bbb1587eaa7044ef42622fa1072b1b8fb1acfb05",
+      "bytes": 5590002
+    }
+  },
+  "exports": 496,
+  "initialMemoryBytes": 18939904,
+  "maximumMemoryBytes": 2147483648
+}

@@ -1,9 +1,10 @@
 import { runReaderHostCommand } from './utils/documentReading';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,getReadingSurface } from './utils/documentReading';
+import { watchForNewVersion } from './utils/versionPoll';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
-import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
+import React, { useState, useReducer, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
 import type { EditorState } from '@codemirror/state';
 import { useFileSystem } from './context/FileSystemContext';
 import { loadHelpDoc } from './utils/helpDocLoader';
@@ -408,6 +409,8 @@ export default function App() {
     readFileVersioned,
     readFileSnapshot,
     readBytesVersioned,
+    inspectExportTarget,
+    writeNotebookExport,
     statFile,
     writeFileVersioned,
     writeConflictCopy,
@@ -419,7 +422,11 @@ export default function App() {
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [tabs, setTabs] = useReducer(
+    (previous: OpenTab[], action: React.SetStateAction<OpenTab[]>) =>
+      classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous),
+    [],
+  );
   // How those documents are arranged on screen: a row of panes — columns, all
   // drawn at once — each holding its own ordered tabs and showing one of them
   // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
@@ -1726,73 +1733,75 @@ export default function App() {
     if (next !== current) void writeEntryStyles(next);
   }, [writeEntryStyles]);
 
-  /** PDF names this session has exported. Re-exporting must not ask about a
-   *  file that is this notebook's own previous export. */
-  const exportedNotebooksRef = useRef<Set<string>>(new Set());
+  const exportedNotebooksRef = useRef(new Map<string, DiskVersion>());
+  const notebookExportInFlightRef = useRef(false);
+  const trashInFlightRef = useRef<boolean>(false);
 
-  /**
-   * Write the open notebook out as a PDF beside it.
-   *
-   * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting overwrites the same name rather than piling up "(1)" copies —
-   * that name is derived from the notebook's, so it can only ever land on this
-   * notebook's own export. It is the one deliberate exception to the app's
-   * never-overwrite rule, and it is why the confirm below exists: a PDF of that
-   * name that ISN'T ours is a file we would be destroying.
-   */
+  // Shared destination transaction for a staged notebook PDF. The source owner
+  // is pinned before rendering; no worker receives a filesystem handle.
+  const commitNotebookPdf = useCallback(async (file: ActiveFile, bytes: Uint8Array, sourceId: string, isCurrent: () => boolean): Promise<boolean> => {
+    if (!file.parentHandle || trashInFlightRef.current || !isCurrent()) return false;
+    const vault = currentVaultIdRef.current;
+    const parentPath = parentVaultPath(file.path), targetName = notebookPdfName(file.name);
+    const targetPath = joinVaultPath(parentPath, targetName);
+    const key = JSON.stringify([vault, sourceId, file.path, targetPath]);
+    const targetClosed = () => !tabsRef.current.some(tab => tab.file.path === targetPath);
+    if (!targetClosed()) { notify(`Close "${targetName}" before replacing it.`); return false; }
+    trashInFlightRef.current = true;
+    try {
+      await reconcileQueueRef.current;
+      while (isCurrent() && targetClosed()) {
+        const observed = await inspectExportTarget(file.parentHandle, targetName);
+        if (!isCurrent() || !targetClosed()) return false;
+        const trusted = exportedNotebooksRef.current.get(key);
+        if (observed && (!trusted || observed.hash !== trusted.hash || !sameStat(observed, trusted))) {
+          const replace = await ask({
+            title: `Replace "${targetName}"?`,
+            body: 'A PDF of that name is already in this folder. Its existing contents will be kept in Trash.',
+            confirmLabel: 'Replace', danger: true,
+          });
+          if (!replace || !isCurrent() || !targetClosed()) return false;
+        }
+        const result = await writeNotebookExport(file.parentHandle, parentPath, targetName, bytes, observed, () => isCurrent() && targetClosed());
+        if (result.status !== 'written') {
+          if (result.status === 'changed') continue;
+          return false;
+        }
+        exportedNotebooksRef.current.set(key, result.version);
+        return true;
+      }
+      return false;
+    } finally { trashInFlightRef.current = false; }
+  }, [ask, inspectExportTarget, notify, writeNotebookExport]);
+
+  /** Export the notebook's frozen render; destination consent is a separate transaction. */
   const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle) return;
-    const targetName = notebookPdfName(file.name);
-
+    if (!file.parentHandle || notebookExportInFlightRef.current) return;
+    const vault = currentVaultIdRef.current, root = rootHandleRef.current;
+    const source = tabsRef.current.find(tab => tab.file.path === file.path);
     const exporter = getNotebookExporter(file.path);
-    if (!exporter) {
-      notify(`Open "${file.name}" before exporting it.`);
-      return;
-    }
-
+    if (!vault || !root || !source || !exporter) { notify(`Open "${file.name}" before exporting it.`); return; }
+    const epoch = readerEpochRef.current.epoch, generation = source.representation.generation, diskRev = source.diskRev;
+    const isCurrent = () => rootHandleRef.current === root && currentVaultIdRef.current === vault && readerEpochRef.current.epoch === epoch &&
+      tabsRef.current.some(tab => tab.id === source.id && tab.file.path === file.path && tab.representation.generation === generation && tab.diskRev === diskRev);
+    notebookExportInFlightRef.current = true;
     try {
       const exported = await exporter();
-      if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
-
-      // Only ask when there is something to lose, and only once: after the
-      // first export the file at that name is one of ours.
-      if (!exportedNotebooksRef.current.has(targetName)
-          && await nameTaken(file.parentHandle, targetName)) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: `A PDF of that name is already in this folder. Exporting will overwrite it.`,
-          confirmLabel: 'Replace',
-          danger: true,
-        });
-        if (!replace) return;
-      }
-
+      if (!exported || !isCurrent()) return;
       const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
-        path: file.path,
-        exportedAt: Date.now(),
-      });
-      // createFile refreshes the tree, so the PDF shows up in the sidebar.
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export:create' }); } catch { /* Measurement must not interrupt a write. */ }
-      }
-      const handle = await createFile(file.parentHandle, targetName);
-      if (__BME_BENCH__) {
-        try { reportVault({ op: 'write', path: joinVaultPath(parentVaultPath(file.path), targetName), caller: 'export' }); } catch { /* Measurement must not interrupt a write. */ }
-      }
-      await writeFileBytes(handle, bytes);
-      exportedNotebooksRef.current.add(targetName);
+      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
+      if (!isCurrent() || !await commitNotebookPdf(file, bytes, source.id, isCurrent)) return;
       void tell({
-        title: 'Exported to PDF',
-        confirmLabel: 'OK',
-        body: `"${targetName}" is in the same folder — ${exported.paper.pageCount} `
+        title: 'Exported to PDF', confirmLabel: 'OK',
+        body: `"${notebookPdfName(file.name)}" is in the same folder — ${exported.paper.pageCount} `
           + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
       });
     } catch (err) {
       console.error('Could not export the notebook:', err);
-      notify(`Could not export "${file.name}".`);
-    }
-  }, [ask, createFile, notify, tell, writeFileBytes, nameTaken]);
+      notify(err instanceof DOMException && err.name === 'TypeMismatchError'
+        ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);
+    } finally { notebookExportInFlightRef.current = false; }
+  }, [commitNotebookPdf, notify, tell]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached
@@ -2204,6 +2213,10 @@ export default function App() {
         // Only while the document is still open: a close drops its entry, and
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
+        if (isPdf && data instanceof Uint8Array) {
+          const aliases = (await import('./utils/pdfBuildClient')).pdfBuildAliases(data);
+          if (aliases.length) notifyRef.current(`Attachments with conflicting names were preserved under recovered names: ${aliases.join(', ')}.`);
+        }
         if (pdfEntry && pdfRebuildRef.current.get(id) === pdfEntry) {
           pdfEntry.baseline = result.version;
           setPdfRebuildNotice(id, { state: 'kept', generation: pdfEntry.value.role.generation, approved: pdfEntry.approved, copyName: pdfEntry.copyName });
@@ -2249,6 +2262,7 @@ export default function App() {
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
         console.error('Auto-save failed:', err);
+        if (isPdf) notifyRef.current(`The PDF was not saved: ${describeReadError(err)}`);
         return 'failed';
       }
     };
@@ -2272,7 +2286,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, contentOf, queueReconcile, setDiskState, keepClosingEdits, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice, syncExitGuard]);
+  }, [clearSaveTimer, contentOf, queueReconcile, setDiskState, keepClosingEdits, syncExitGuard, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2415,7 +2429,12 @@ export default function App() {
         contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
     const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
       !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
-    return { bytes: disk.bytes, valid };
+    const validate = async () => {
+      if (!valid()) return false;
+      try { const latest = await readBytesVersioned(handle as FileSystemFileHandle); return valid() && latest.version.hash === disk.version.hash; }
+      catch { return false; }
+    };
+    return { bytes: disk.bytes, valid, validate };
   }, [contentOf, flushTab, readBytesVersioned]);
 
   /**
@@ -3681,7 +3700,6 @@ export default function App() {
    * the same fact: unlike every other deletion in this app, trashing a folder is
    * a copy of arbitrary size, and it runs for as long as that takes. See below.
    */
-  const trashInFlightRef = useRef<boolean>(false);
 
   /**
    * The move itself, with no question in front of it — shared by the reader's
@@ -4316,6 +4334,18 @@ export default function App() {
       || flushingRef.current.has(tab.id)
       || !!getView(tab.file.path)?.hasPendingEdits?.();
   }, []);
+
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
+  const reloadUpdatedApp = useCallback(() => {
+    // Do not discard an in-flight save, a not-yet-committed text edit, or ink
+    // still held by a canvas serializer. Conflicts remain for the reader to fix.
+    if (latestContentRef.current.size || flushingRef.current.size || anyPending() || tabsRef.current.some(hasUnsaved)) {
+      notifyRef.current('Finish saving your changes and resolve any disk conflicts before reloading.');
+      return;
+    }
+    window.location.reload();
+  }, [hasUnsaved]);
 
   /**
    * Put the file's new contents into an open document that had nothing unsaved.
@@ -5111,6 +5141,14 @@ export default function App() {
     </ConfirmDialog>
   );
 
+  const updateNotice = updateAvailable && (
+    <div className="app-update-notice" role="status">
+      <span>A new version is available.</span>
+      <button type="button" onClick={reloadUpdatedApp}>Reload</button>
+      <button type="button" aria-label="Dismiss update notice" onClick={() => setUpdateAvailable(false)}>×</button>
+    </div>
+  );
+
   // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
@@ -5160,6 +5198,7 @@ export default function App() {
           </div>
         </div>
         {dialogHost}
+        {updateNotice}
       </div>
     );
   }
@@ -5170,6 +5209,7 @@ export default function App() {
         <div className="welcome-inner">
           <p className="welcome-subtitle">Loading vault...</p>
         </div>
+        {updateNotice}
       </div>
     );
   }
@@ -5365,6 +5405,7 @@ export default function App() {
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
       {dialogHost}
+      {updateNotice}
     </div>
   );
 }

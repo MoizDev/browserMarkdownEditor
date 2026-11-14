@@ -2,7 +2,7 @@ import type { ArchiveSection, EpubTextLocator } from './types';
 import type { CanonicalText } from './canonicalText';
 import { canonicalRange } from './canonicalText';
 import * as CFI from './vendor/epubcfi.js';
-import { sha256 } from './sha256';
+import { sha256 } from '../utils/sha256';
 function context(text:string,offset:number){const graphemes=typeof Intl.Segmenter==='function'?new Intl.Segmenter(undefined,{granularity:'grapheme'}):null;const take=(s:string,last=false)=>{s=last?s.slice(-1024):s.slice(0,1024);const values=graphemes?[...graphemes.segment(s)].map(x=>x.segment):Array.from(s);return (last?values.slice(-64):values.slice(0,64)).join('').slice(0,256)};return {quote:take(text.slice(offset)),before:take(text.slice(Math.max(0,offset-256),offset),true),after:take(text.slice(offset+take(text.slice(offset)).length))}}
 export function textLocator(section:ArchiveSection,c:CanonicalText,digest:string,offset:number,affinity:'before'|'after'='after'):EpubTextLocator {
  const at=Math.max(0,Math.min(c.text.length,offset));let cfi:string|undefined;

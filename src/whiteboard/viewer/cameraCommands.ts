@@ -72,7 +72,7 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
         }
         return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
     };
-    const fit = (selectionOnly: boolean) => {
+    const fit = (selectionOnly: boolean, natural = false) => {
         cancel(); if (!current()) return;
         const state = runtime.selection.getSnapshot();
         if (selectionOnly && !state.selected.length) return;
@@ -113,7 +113,7 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
                 }
                 if (!active()) return;
                 const bounds = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-                if (selectionOnly && Math.abs(starting.z - 1) > .001) setCentered(bounds, 1, { left: 0, right: 0, top: 0, bottom: 0 });
+                if (natural || (selectionOnly && Math.abs(starting.z - 1) > .001)) setCentered(bounds, 1, { left: 0, right: 0, top: 0, bottom: 0 });
                 else fitBounds(bounds, false);
             } finally { scope.release(); }
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
@@ -127,6 +127,7 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             case 'camera.zoomOutCursor': cancel(); stepped(-1, true); return true;
             case 'camera.reset': cancel(); reset(); return true;
             case 'camera.fit': fit(false); return true;
+            case 'camera.backToContent': fit(false, true); return true;
             case 'camera.selection': if (!runtime.selection.getSnapshot().selected.length) return false; fit(true); return true;
             default: return false;
         }

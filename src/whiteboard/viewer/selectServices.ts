@@ -24,6 +24,7 @@ import { prepareFrameDrop } from '../input/frameDrop';
 import { createBoardCameraCommands } from './cameraCommands';
 import { createSelectionCommandDriver } from './selectionCommands';
 import { createStyleShortcuts } from './styleShortcuts';
+import { createBackToContent } from './backToContent';
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
@@ -340,7 +341,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
+        navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
@@ -480,6 +481,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const cameraCommands = createBoardCameraCommands({ runtime, camera: options.cameraController, surface: options.surface,
         current, changed: options.cameraChanged, error: report });
+    const backToContent = createBackToContent({ runtime, overlay: options.overlay, current,
+        activate: () => { cameraCommands.run('camera.backToContent'); }, error: report });
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });
     const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
@@ -497,7 +500,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+        dispose() { if (disposed) return; cancelPending(); disposed = true; backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

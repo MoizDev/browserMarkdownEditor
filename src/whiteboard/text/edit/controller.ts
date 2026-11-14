@@ -3,14 +3,15 @@ import type { NodeId } from '../../model/ids';
 import type { Marks, RichText } from '../richText';
 import type { EditSelection, TextChange } from './host';
 import { linkUrl, type ToggleMark } from './format';
-import { inputRule, type InputRuleResult } from './rules';
+import { inputRule } from './rules';
 
 // The rich-text lane supplies these operations; this controller owns only the
 // edit session and sends every content change through the transaction service.
 export interface EditTransactions {
     apply(transaction: Transaction): void;
     readText(): RichText;
-    rememberTransformation(rule: InputRuleResult, before: EditSelection, after: EditSelection): void;
+    markTransformation(): number;
+    rememberTransformation(mark: number, before: EditSelection, after: EditSelection): void;
     setSelection(selection: EditSelection): void;
     typing(kind: 'typing' | 'composition' | 'boundary', before: EditSelection, after: EditSelection): void;
     marksAt(offset: number): Marks;
@@ -59,8 +60,9 @@ export class TextEditController {
             const rule = inputRule(this.id, this.key, this.services.readText(), selection.focus);
             if (rule) {
                 const after = { anchor: rule.caret, focus: rule.caret };
+                const mark = this.services.markTransformation();
                 this.services.apply(rule.transaction);
-                this.services.rememberTransformation(rule, selection, after);
+                this.services.rememberTransformation(mark, selection, after);
                 selection = after;
             }
         }

@@ -50,7 +50,7 @@ In **Settings → About**, the third-party notices link lists the software inclu
 
 When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
 
-In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
+In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. **Indexing your notes…** means the graph is being built; **Updating…** marks a graph while its index catches up. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.

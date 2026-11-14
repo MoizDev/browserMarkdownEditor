@@ -15,6 +15,7 @@ export interface BoardNavigationOptions {
     viewport(): Viewport;
     platform(): Pick<PlatformPane, 'startFling' | 'animateZoom' | 'cancelMotion'> | null;
     changed(): void;
+    interactionChanged?(active: boolean): void;
     onError(error: unknown): void;
     readonly mac: boolean;
     linkAt?(point: Point): (() => void) | null;
@@ -33,6 +34,11 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     const previousTouchAction = surface.style.touchAction;
     surface.style.touchAction = 'none';
     const contacts = new Set<number>();
+    let interacting = false;
+    const reportInteraction = () => {
+        const next = contacts.size > 0;
+        if (next !== interacting) { interacting = next; options.interactionChanged?.(next); }
+    };
     const active = () => live && options.visible() && options.current();
     const run = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
     const point = (x: number, y: number): Point => {
@@ -54,7 +60,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     const flush = () => {
         const ids = [...contacts]; contacts.clear(); drag = null; space = false; suppressMenu = false;
         for (const id of ids) { touch.touchUp(id); touch.penUp(id, performance.now()); release(id); }
-        cancelMotion();
+        reportInteraction(); cancelMotion();
     };
     const samples = (d: Drag, p: Point, time: number) => {
         d.samples.push({ x: -p.x, y: -p.y, time: Math.max(0, time) });
@@ -69,14 +75,16 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         const secondary = event.button === 2 || (options.mac && event.button === 0 && event.ctrlKey);
         if (isTouch) {
             const admitted = touch.touchDown({ ...p, id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height });
-            contacts.add(event.pointerId);
-            try { surface.setPointerCapture(event.pointerId); } catch { /* Cancellation will clear this contact. */ }
+            contacts.add(event.pointerId); reportInteraction();
+            try { surface.setPointerCapture(event.pointerId); }
+            catch { contacts.delete(event.pointerId); touch.touchUp(event.pointerId); reportInteraction(); return; }
             if (!admitted || drag) return;
         } else {
             if (drag) return;
             if (event.pointerType === 'pen') touch.penDown(event.pointerId, false);
-            contacts.add(event.pointerId);
-            try { surface.setPointerCapture(event.pointerId); } catch { /* Cancellation will clear this contact. */ }
+            contacts.add(event.pointerId); reportInteraction();
+            try { surface.setPointerCapture(event.pointerId); }
+            catch { contacts.delete(event.pointerId); touch.penUp(event.pointerId, event.timeStamp); reportInteraction(); return; }
         }
         if (secondary) suppressMenu = false;
         const open = !secondary && event.button === 0 && !space && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
@@ -104,7 +112,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         if (!contacts.has(event.pointerId)) return;
         const allowed = active(), d = drag?.id === event.pointerId ? drag : null;
         if (d) drag = null;
-        contacts.delete(event.pointerId);
+        contacts.delete(event.pointerId); reportInteraction();
         if (event.pointerType === 'touch') touch.touchUp(event.pointerId);
         if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp);
         release(event.pointerId);

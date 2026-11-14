@@ -15,6 +15,7 @@ export interface BoardAccessibilityDomOptions {
     readonly visible: () => boolean;
     readonly schedule: (callback: () => void) => () => void;
     readonly reveal: (id: NodeId | null) => void;
+    readonly contextMenu: (event: MouseEvent) => void;
     readonly error: (error: unknown) => void;
 }
 
@@ -40,6 +41,11 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     cursor.setAttribute('aria-hidden', 'true');
     cursor.style.cssText = 'position:absolute;left:0;top:0;width:12px;height:12px;border:2px solid #75b7ff;border-radius:50%;box-shadow:0 0 0 1px #fff;transform:translate(-50%,-50%);pointer-events:none;display:none;z-index:1';
     options.overlay.append(cursor);
+    const exitPenMode = document.createElement('button');
+    exitPenMode.type = 'button'; exitPenMode.textContent = 'Exit pen mode';
+    exitPenMode.setAttribute('aria-label', 'Exit pen mode');
+    exitPenMode.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2;pointer-events:auto;padding:5px 9px;border:1px solid #75b7ff;border-radius:5px;background:var(--background-primary,#25262a);color:var(--text-normal,#fff);font:inherit';
+    exitPenMode.hidden = true; options.overlay.append(exitPenMode);
     const rows = new Map<NodeId, { item: HTMLLIElement; button: HTMLButtonElement }>();
     let disposed = false, scheduled: (() => void) | undefined, activate: (() => void) | undefined;
     let lastTool = '', lastSelection = '', lastCursorActive = false;
@@ -47,12 +53,21 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const report = (error: unknown) => { try { options.error(error); } catch { /* A reporting failure cannot block cleanup. */ } };
     const announce = (message: string) => { if (active()) status.textContent = message; };
     const cursorClick = () => { if (active()) activate?.(); };
-    cursorButton.addEventListener('click', cursorClick);
+    const exitPen = () => {
+        if (!active()) return;
+        options.runtime.tools.setPenMode(false);
+    };
+    const menu = (event: MouseEvent) => {
+        if (!active()) return;
+        event.preventDefault(); options.contextMenu(event);
+    };
+    cursorButton.addEventListener('click', cursorClick); root.addEventListener('contextmenu', menu);
+    exitPenMode.addEventListener('click', exitPen); exitPenMode.addEventListener('contextmenu', menu);
     const dropRows = () => { for (const row of rows.values()) row.item.remove(); rows.clear(); };
     const sync = () => {
         scheduled = undefined;
-        if (!active()) { root.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
-        root.hidden = false;
+        if (!active()) { root.hidden = true; exitPenMode.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
+        root.hidden = false; exitPenMode.hidden = !options.runtime.tools.penMode;
         let snapshot: ViewerAccessibilitySnapshot;
         try { snapshot = options.engine.accessibility.getSnapshot(); }
         catch (error) { report(error); return; }
@@ -97,6 +112,15 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         if (!scheduled) scheduled = options.schedule(sync);
     };
     const unsubscribe = options.engine.accessibility.subscribe(refresh);
+    const unsubscribePenMode = options.runtime.tools.subscribePenMode(enabled => {
+        if (active()) {
+            const wasFocused = document.activeElement === exitPenMode;
+            exitPenMode.hidden = !enabled;
+            if (!enabled && wasFocused) options.surface.focus({ preventScroll: true });
+            announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.');
+        }
+        else exitPenMode.hidden = true;
+    });
     const a11y: BoardInputView['a11y'] = {
         toolState(snapshot: ToolStateSnapshot) {
             if (!active()) return;
@@ -122,8 +146,10 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         refresh,
         dispose() {
             if (disposed) return;
-            disposed = true; scheduled?.(); scheduled = undefined; unsubscribe(); activate = undefined;
-            cursorButton.removeEventListener('click', cursorClick); dropRows(); cursor.remove(); root.remove();
+            disposed = true; scheduled?.(); scheduled = undefined; unsubscribe(); unsubscribePenMode(); activate = undefined;
+            cursorButton.removeEventListener('click', cursorClick); root.removeEventListener('contextmenu', menu);
+            exitPenMode.removeEventListener('click', exitPen); exitPenMode.removeEventListener('contextmenu', menu);
+            dropRows(); exitPenMode.remove(); cursor.remove(); root.remove();
         },
     };
 }

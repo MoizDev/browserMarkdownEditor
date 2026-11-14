@@ -1,5 +1,6 @@
+import { styleGeometryMetrics } from '../../geom/styleMetrics';
 import type { Node, NodeBase, Point } from '../../model/nodes';
-import { DASHES, SIZES, SWATCHES, type Size } from '../../model/styles';
+import { DASHES, SIZES, SWATCHES } from '../../model/styles';
 import { object } from './envelope';
 import type { LegacyShape } from './common';
 
@@ -15,8 +16,6 @@ function choice<T extends string>(value: unknown, values: readonly T[], field: s
     if (typeof value !== 'string' || !values.includes(value as T)) throw new Error(`Unknown ${field}`);
     return value as T;
 }
-const OUTLINE_WIDTHS: Readonly<Record<Size, number>> = { s: 2, m: 3.5, l: 5, xl: 10 };
-
 export function readBasicShape(shape: LegacyShape, base: NodeBase): Node | null {
     const p = shape.props;
     switch (shape.type) {
@@ -39,7 +38,7 @@ export function readBasicShape(shape: LegacyShape, base: NodeBase): Node | null 
             return { ...base, kind: 'polyline', points: sorted.map(({ x, y }) => ({ x, y })),
                 spline: choice(p.spline, ['line', 'cubic'] as const, 'spline'),
                 color: choice(p.color, SWATCHES, 'colour'), dash: choice(p.dash, DASHES.filter(d => d !== 'none'), 'dash'),
-                size, width: OUTLINE_WIDTHS[size] * requiredNumber(p.scale, 'scale') };
+                size, width: styleGeometryMetrics.actualWidth('polyline', size, requiredNumber(p.scale, 'scale')) };
         }
         default: return null;
     }

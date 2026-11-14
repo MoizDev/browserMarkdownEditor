@@ -120,6 +120,9 @@ export class StreamingDenseTileJob {
         if (options.signal?.aborted) this.cancel();
     }
     get blocked(): boolean { return this.blockedValue; }
+    /** Stopped without parts: cancelled because its source went stale, or failed (already reported). */
+    get stopped(): boolean { return this.state === 'cancelled' || this.state === 'failed'; }
+    get failed(): boolean { return this.state === 'failed'; }
     get isComplete(): boolean { return this.state === 'complete'; }
     get isEmpty(): boolean { return this.state === 'empty'; }
     /** The tile's only part when no barrier split it: the complete band content of this apron. */

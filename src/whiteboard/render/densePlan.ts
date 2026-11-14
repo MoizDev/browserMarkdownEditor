@@ -55,6 +55,8 @@ const isEmpty = (live: ReadonlySet<string> | undefined) => !live || live.values(
 export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
     let lastFrame = -1;
+    // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
+    let failedFrame: PaintFrame | null = null;
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + (p.directLease?.bytes ?? 0);
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
@@ -157,6 +159,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
         p.job.prepare(view, budget);
+        if (p.job.failed) { failedFrame = p.source; drop(p); staged = null; return; }
+        if (p.job.stopped) { drop(p); staged = null; return; }
         if (!p.job.isComplete && !p.job.isEmpty) return;
         const job = p.job, pending = p.cache;
         p.job = null; p.cache = null;
@@ -255,6 +259,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             lastFrame = budget.frameId; denied = false;
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) { drop(staged); staged = null; return; }
+            if (frame !== failedFrame) failedFrame = null;
+            else { drop(staged); staged = null; return; }
             const key = projection(view);
             if (staged && (staged.source !== frame || staged.view !== key || !supportsLive(staged, liveNodes))) { drop(staged); staged = null; }
             const matches = ready?.source === frame && ready.view === key && supportsLive(ready, liveNodes);
@@ -267,6 +273,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                     if (!resources.frames.isCurrent(frame)) { drop(p); staged = null; return; }
                     if (p.phase === 'tiles') {
                         raster(p, view, budget);
+                        if (p.retired) return;
                         if (p.job && !p.job.needsFrame()) return;
                     } else if (p.phase === 'direct') {
                         if (!p.directAdapter) {

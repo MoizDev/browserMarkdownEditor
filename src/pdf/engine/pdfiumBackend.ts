@@ -57,7 +57,7 @@ class PdfiumDocument implements BackendDoc {
         const attachments = this.inventory();
         // Index-only extents deliberately omit rotation and transforms. Exact
         // geometry comes from page(), never an invented affine on doc.open.
-        const pages = this.sizes.map((size, index) => ({ index, ...size })) as unknown as PageGeometry[];
+        const pages = this.sizes.map((size, index) => ({ index, ...size }));
         this.documentInfo = { pageCount: count, pages, encrypted: revision >= 0,
             permissions: runtime.call('FPDF_GetDocPermissions', document) >>> 0, signatureCount: signatures,
             tagged: runtime.call('FPDFCatalog_IsTagged', document) !== 0, hasForms: type !== 0,

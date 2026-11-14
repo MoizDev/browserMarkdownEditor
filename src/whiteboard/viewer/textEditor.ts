@@ -159,8 +159,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     const stopDictionary = options.spelling.subscribe(() => {
         spellSource = null; spellGeneration++;
         const words = options.spelling.words();
-        const added = new Set(words.map(word => word.toLowerCase()));
-        misspellings = misspellings.filter(range => !added.has(range.word.toLowerCase()));
+        misspellings = [];
+        if (spellTimer !== null) { clearTimeout(spellTimer); spellTimer = null; }
+        spellingMenu?.cancel();
+        spellingMenu = null;
+        options.ui.spellingMenu(0, 0, null);
         requestFrame();
         if (spell) void spell.setDictionary(words).then(checkSpelling, report);
         else checkSpelling();

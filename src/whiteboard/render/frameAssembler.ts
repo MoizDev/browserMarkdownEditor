@@ -29,6 +29,7 @@ interface Owner {
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
+    readonly liveOnly?: true;
     isCurrent(): boolean;
     release(): void | Promise<void>;
 }
@@ -80,6 +81,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
         openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
+        liveOnly: pin.liveOnly,
         isCurrent: () => stream.isCurrent(),
         // The stream drains its active next() before the snapshot that pins its sources may go.
         async release() {
@@ -201,6 +203,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const frame: PaintFrame = Object.freeze({ token: o.token, sceneRevision: o.sceneRevision,
             sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
+            ...(o.liveOnly ? { liveOnly: true as const } : {}),
             underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         retained.set(frame, published); latest = published; staging = null; invalidate();

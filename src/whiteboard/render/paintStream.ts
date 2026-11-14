@@ -90,6 +90,8 @@ export interface PaintFrame {
     readonly sourceWorld?: Readonly<Rect>;
     /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
+    /** True for a dense frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. */
+    readonly liveOnly?: true;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

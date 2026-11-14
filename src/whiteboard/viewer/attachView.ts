@@ -8,6 +8,7 @@ import type { PlatformLayerDefinition } from '../../platform/render/attachPlatfo
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
+import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
@@ -43,6 +44,9 @@ export const attachView: AttachView = options => {
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
+    // Density mode and the index's candidate count drive which frame kind is requested; both are read
+    // by the layers, which never own a frame request of their own.
+    let densityMode: DensityMode = 'direct', lastCandidates: number | null = null;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -112,7 +116,9 @@ export const attachView: AttachView = options => {
         selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
-        liveNodeIds,
+        liveNodeIds, candidates: () => lastCandidates,
+        onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
+        requestFrame: () => { if (!disposed) requestPaint(); },
         onDrawn(revision, _frame, context) {
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
                 sceneRevision: revision, omittedNodeIds: context.omittedNodeIds });
@@ -179,20 +185,27 @@ export const attachView: AttachView = options => {
             return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
         })() : undefined;
         lastSensitive = sensitive;
-        const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
         // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
+        lastCandidates = world ? pin.countCandidates?.(selectedSheet, world) ?? null : null;
+        // Dense mode keeps only the live nodes in its frame: selection, wet ink, embeds and previewed nodes.
+        // Their set is the frame's whole sensitivity set, so every barrier a tile meets is present.
+        // An absent set is EMPTY here: an unset `only` would stream the whole sheet as the "live" frame.
+        const dense = densityMode === 'dense';
+        const liveSet = dense ? (union(precisionNodeIds(sensitive), previewCoverage?.()?.nodeIds ?? null) ?? new Set<string>()) as ReadonlySet<NodeId> : null;
+        const sensitiveNodes = (dense ? liveSet : precisionNodeIds(sensitive)) as ReadonlySet<NodeId>;
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
-        void open.call(pin, { ...identity, ...(world ? { world } : {}) }, controller.signal).then(stream => {
+        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
                 void stream.release().catch(report).finally(() => pin.release());
                 return;
             }
-            frames.requestStream({ stream, release: () => pin.release(),
+            frames.requestStream({ stream, release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal) => open.call(pin, { ...identity, world: apron }, signal) });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });

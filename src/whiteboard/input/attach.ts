@@ -62,6 +62,7 @@ export interface BoardInputServices {
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
   keyboardHandleCommand?(id: string, sample: RealSample): boolean
+  keyboardContextMenu?(surface: Point, world: Point): boolean
   handleDoubleClick?(surface: Point, world: Point, time: number): boolean
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
@@ -433,6 +434,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     run(id, event) {
       if (!current()) return false
       if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
+      if (id === 'accessibility.contextMenu' && services.keyboardContextMenu) {
+        const sample = cursor.active ? cursor.currentSample() : null
+        const viewport = view.camera.viewport
+        const surface = sample ? view.sampleToSurface(sample) : services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 }
+        if (![surface.x, surface.y, viewport.width, viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) return false
+        const point = { x: Math.max(0, Math.min(viewport.width, surface.x)), y: Math.max(0, Math.min(viewport.height, surface.y)) }
+        return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
+      }
       if (id === 'escape') {
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true

@@ -8,18 +8,30 @@ function number(value: number): string {
   if (!Number.isFinite(value)) throw new RangeError('Non-finite SVG coordinate')
   return String(Number(value.toFixed(4)))
 }
-function pathData(commands: readonly PathCommand[]): string {
-  return commands.map(command => command[0] === 'Z' ? 'Z' : `${command[0]}${command.slice(1).map(value => number(value as number)).join(' ')}`).join(' ')
+function commandData(command: PathCommand): string {
+  if (!Array.isArray(command)) throw new TypeError('Invalid SVG path command')
+  const op = command[0], size = op === 'Z' ? 1 : op === 'M' || op === 'L' ? 3 : op === 'C' ? 7 : 0
+  if (!size || command.length !== size) throw new TypeError('Invalid SVG path command')
+  return op === 'Z' ? 'Z' : `${op}${command.slice(1).map(value => number(value as number)).join(' ')}`
 }
+function pathData(commands: readonly PathCommand[]): string { return commands.map(commandData).join(' ') }
 function pathLength(commands: readonly PathCommand[]): number {
   let length = 0
-  for (const command of commands) {
-    length++
-    for (let i = 1; i < command.length; i++) length += number(command[i] as number).length + 1
-  }
+  for (const command of commands) length += commandData(command).length + 1
   return length
 }
-function matrix(value: Affine): string { return `matrix(${value.map(number).join(' ')})` }
+function matrix(value: Affine): string {
+  if (!Array.isArray(value) || value.length !== 6) throw new TypeError('Invalid SVG transform')
+  return `matrix(${value.map(number).join(' ')})`
+}
+function rule(value: 'nonzero' | 'evenodd' | undefined): string {
+  if (value !== undefined && value !== 'nonzero' && value !== 'evenodd') throw new TypeError('Invalid SVG fill rule')
+  return value ?? 'nonzero'
+}
+function mime(value: 'image/png' | 'image/jpeg'): string {
+  if (value !== 'image/png' && value !== 'image/jpeg') throw new TypeError('Invalid SVG image type')
+  return value
+}
 function rgb(value: Rgba): string { return `rgb(${value.slice(0, 3).map(channel => number(channel * 255)).join(' ')})` }
 function bytes64(bytes: Uint8Array): string {
   const chunks: string[] = []
@@ -34,7 +46,9 @@ function effects(opacity: number | undefined, blend: 'normal' | 'multiply' | und
   return `${opacity === undefined ? '' : ` opacity="${number(opacity)}"`}${blend === 'multiply' ? ' style="mix-blend-mode:multiply"' : ''}`
 }
 function pathAttributes(item: Extract<PageDisplayItem, { kind: 'path' }>): string {
-  const fill = item.fill ? ` fill="${rgb(item.fill)}" fill-opacity="${number(item.fill[3])}" fill-rule="${item.fillRule ?? 'nonzero'}"` : ' fill="none"'
+  const fill = item.fill ? ` fill="${rgb(item.fill)}" fill-opacity="${number(item.fill[3])}" fill-rule="${rule(item.fillRule)}"` : ' fill="none"'
+  if (item.stroke && (!['butt', 'round', 'square'].includes(item.stroke.cap) || !['miter', 'round', 'bevel'].includes(item.stroke.join)))
+    throw new TypeError('Invalid SVG stroke style')
   const stroke = item.stroke ? ` stroke="${rgb(item.stroke.color)}" stroke-opacity="${number(item.stroke.color[3])}" stroke-width="${number(item.stroke.width)}" stroke-linecap="${item.stroke.cap}" stroke-linejoin="${item.stroke.join}" stroke-miterlimit="${number(item.stroke.miterLimit ?? 10)}"${item.stroke.dash ? ` stroke-dasharray="${item.stroke.dash.map(number).join(' ')}" stroke-dashoffset="${number(item.stroke.dashPhase ?? 0)}"` : ''}` : ''
   return `${fill}${stroke}${effects(undefined, item.blend)}`
 }
@@ -71,7 +85,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
   function clipKey(clip: NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>): string | null {
     // Exported text fragments repeat their enclosing frame clips. Keep this cache bounded even
     // for arbitrary user paths; large, unique clips still serialize normally.
-    return clip.d.length <= 512 ? `${clip.fillRule ?? 'nonzero'}\0${pathData(clip.d)}` : null
+    return clip.d.length <= 512 ? `${rule(clip.fillRule)}\0${pathData(clip.d)}` : null
   }
   function rememberClip(key: string, id: string): void {
     const size = key.length * 2 + 64
@@ -107,7 +121,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
           if (id && key) { clips.delete(key); clips.set(key, id) }
           else {
             id = `clip${nextClip++}`
-            definitions.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(item.clip.d)}" clip-rule="${item.clip.fillRule ?? 'nonzero'}"/></clipPath>`)
+            definitions.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(item.clip.d)}" clip-rule="${rule(item.clip.fillRule)}"/></clipPath>`)
             if (key) rememberClip(key, id)
           }
           clip = ` clip-path="url(#${id})"`
@@ -117,7 +131,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
         return `<g${transform}${clip}${isolation}>${item.items.map(child => emit(child, depth + 1)).join('')}</g>`
       }
       case 'path': return `<path d="${pathData(item.d)}"${pathAttributes(item)}/>`
-      case 'image': return `<image ${rect(item.rect)} transform="${matrix(item.transform)}" preserveAspectRatio="none" href="data:${item.mime};base64,${bytes64(item.bytes)}"${effects(item.opacity, item.blend)}/>`
+      case 'image': return `<image ${rect(item.rect)} transform="${matrix(item.transform)}" preserveAspectRatio="none" href="data:${mime(item.mime)};base64,${bytes64(item.bytes)}"${effects(item.opacity, item.blend)}/>`
       case 'raster': return `<image ${rect(item.rect)} preserveAspectRatio="none" href="data:image/png;base64,${bytes64(item.png)}"${effects(item.opacity, item.blend)}/>`
     }
   }
@@ -165,7 +179,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
                 id = `clip${nextClip++}`
                 put(definitions, `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="`)
                 await path(definitions, current.clip.d)
-                put(definitions, `" clip-rule="${current.clip.fillRule ?? 'nonzero'}"/></clipPath>`)
+                put(definitions, `" clip-rule="${rule(current.clip.fillRule)}"/></clipPath>`)
                 if (key) rememberClip(key, id)
               }
               clip = ` clip-path="url(#${id})"`
@@ -183,7 +197,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
             put(body, `"${pathAttributes(current)}/>`)
             break
           case 'image':
-            put(body, `<image ${rect(current.rect)} transform="${matrix(current.transform)}" preserveAspectRatio="none" href="data:${current.mime};base64,`)
+            put(body, `<image ${rect(current.rect)} transform="${matrix(current.transform)}" preserveAspectRatio="none" href="data:${mime(current.mime)};base64,`)
             await binary(body, current.bytes)
             put(body, `"${effects(current.opacity, current.blend)}/>`)
             break

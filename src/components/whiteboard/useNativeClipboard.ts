@@ -136,7 +136,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
                 pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, finishGesture,
-                matchClipboard: commands.matchClipboard, readMedia, storeMedia, notice: report, onError: fail });
+                pinClipboard: () => commands.clipboardCopy.pin(), readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice }; bindings.add(binding); active = binding;
             const focus = () => { active = binding; };

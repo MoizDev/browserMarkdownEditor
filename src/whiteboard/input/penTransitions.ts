@@ -14,6 +14,7 @@ export interface PenTransitionHost {
     error(error: unknown): void;
 }
 type Batch = { readonly type: 'move'; readonly samples: readonly RealSample[]; readonly modifiers: Modifiers; readonly event: PointerEvent }
+    | { readonly type: 'modifiers'; readonly modifiers: Modifiers }
     | { readonly type: 'end'; readonly samples: readonly RealSample[]; readonly modifiers: Modifiers; readonly reason: FinishReason };
 
 /** A pen eraser-end change is a real gesture boundary. Preserve every acquired
@@ -32,6 +33,10 @@ export class PenContactTransitions {
         if (this.terminal || this.closed) return;
         this.queue.push({ type: 'move', samples, modifiers, event }); this.drain();
     }
+    modifiersChanged(modifiers: Modifiers): void {
+        if (this.terminal || this.closed) return;
+        this.queue.push({ type: 'modifiers', modifiers }); this.drain();
+    }
     end(samples: readonly RealSample[], modifiers: Modifiers, reason: FinishReason): void {
         if (this.terminal || this.closed) return;
         this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
@@ -49,6 +54,7 @@ export class PenContactTransitions {
         while (!this.closed && this.cursor < this.queue.length) {
             if (!this.host.current()) { this.stop('os-cancel'); return; }
             const batch = this.queue[this.cursor++];
+            if (batch.type === 'modifiers') { this.host.update([], batch.modifiers); continue; }
             if (batch.type === 'end') {
                 if (batch.samples.length) this.host.update(batch.samples, batch.modifiers);
                 this.closed = true;

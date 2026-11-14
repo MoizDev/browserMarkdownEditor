@@ -106,7 +106,9 @@ export class PointerRouter<Context> {
     this.acquisition = new PointerAcquisition(options.root, options.mappings, sink, options.mac)
   }
   modifiersChanged(modifiers: Modifiers): void {
-    if (this.options.current() && this.pointerId !== null) this.options.router.update(this.options.token, this.pointerId, [], modifiers)
+    if (!this.options.current() || this.pointerId === null) return
+    if (this.pen) this.pen.modifiersChanged(modifiers)
+    else this.options.router.update(this.options.token, this.pointerId, [], modifiers)
   }
   discardPreview(): void {
     if (this.options.router.discardPreview(this.options.token)) { this.pointerId = null; this.options.releaseClaim(); this.options.ended('os-cancel') }

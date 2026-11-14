@@ -57,10 +57,8 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         if (current(session) !== owner) { await persistence.close(); return null; }
         owner.store.hydrate(records);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);
-        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner, (path, mtime, size) => {
-            const persistent = owner as IndexEngine & { readPersistedText?: (path: string, mtime: number, size: number) => Promise<string | undefined> };
-            return persistent.readPersistedText?.(path, mtime, size) ?? Promise.resolve(undefined);
-        });
+        searchText = new SearchResidency((file, work) => owner.searchStat(file, work), () => current(session) === owner,
+            (path, mtime, size) => owner.readPersistedText(path, mtime, size));
         return null;
     },
     async close(value) {

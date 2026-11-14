@@ -1,4 +1,5 @@
 import type { RawJson } from '../model/json';
+import { NATIVE_FORMAT_ID } from './identity';
 import { FORMAT_LIMITS } from './schema';
 
 export type JsonKind = 'object' | 'array' | 'string' | 'number' | 'boolean' | 'null';
@@ -251,7 +252,7 @@ export function hasNativeMarker(source: string): boolean {
             if (source.charCodeAt(index++) !== 58) return false;
             index = reader.white(index);
             const value = reader.span(index, 1);
-            if (name === 'format') return value.kind === 'string' && value.string(FORMAT_LIMITS.recordBytes) === 'board';
+            if (name === 'format') return value.kind === 'string' && value.string(FORMAT_LIMITS.recordBytes) === NATIVE_FORMAT_ID;
             index = reader.white(value.end);
             if (source.charCodeAt(index++) !== 44) return false;
         }

@@ -1,3 +1,4 @@
+import { sha256 } from '../../utils/sha256';
 import { reorderBidiLine } from './bidi';
 import { BoardFonts, fontCss, fontDescriptor, type FontKey } from './fonts';
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
@@ -91,7 +92,17 @@ export class BoardTextLayout implements TextLayoutEngine {
         return indexed.map(x => x.piece);
     }
     private build(request: TextLayoutRequest): { paint: TextPaint; measurement: TextMeasurement } {
-        const key = JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch]);
+        const states = new Map<string, boolean>();
+        for (const block of request.text.blocks) {
+            const heading = block.kind[0] === 'h';
+            for (const run of block.runs) {
+                const font = faceKey(request.style.font, run.marks, heading);
+                states.set(JSON.stringify(font), this.fonts.isLoaded(font));
+            }
+            const font = faceKey(request.style.font, {}, heading);
+            states.set(JSON.stringify(font), this.fonts.isLoaded(font));
+        }
+        const key = sha256(new TextEncoder().encode(JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch, [...states].sort()])));
         const old = this.layouts.get(key);
         if (old) return old;
         const style = request.style, pad = style.padding;

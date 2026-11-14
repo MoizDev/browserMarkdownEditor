@@ -14,6 +14,7 @@ import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATC
 import type { UiBlock } from '../model/styles';
 import type { Block, Marks, RichText, Run } from '../text/richText';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
+import { NATIVE_FORMAT_ID } from './identity';
 import { JsonReadError, parseJson } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
 import { inspectPoints } from './points';
@@ -377,7 +378,7 @@ function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, context: Mo
 
 export function readHeader(root: JsonSpan): { kind: BoardKind; version: readonly [number, number]; fields: Map<string, RawJson>; fenceValid: boolean; } {
     const fields = root.fieldMap();
-    if (required(fields, 'format').string(128) !== 'board') fail('Not native board content', root);
+    if (required(fields, 'format').string(128) !== NATIVE_FORMAT_ID) fail('Not native board content', root);
     const version = tuple(required(fields, 'version'), 2);
     if (version.length !== 2) fail('Version must be [major,minor]', root);
     const major = integer(version[0], 1, Number.MAX_SAFE_INTEGER), minor = integer(version[1], 0, Number.MAX_SAFE_INTEGER);

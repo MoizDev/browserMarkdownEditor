@@ -255,7 +255,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
@@ -601,6 +601,13 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 tabs,
                 focusedPath: focusedPathOf(deps.layout),
                 remembered: path => rememberedPosition(getDeps(), path),
+                // The same native read the tools use, guarded to this vault for its whole duration.
+                nativeView: (path, signal) => {
+                    const root = deps.root;
+                    return toolHost.nativeCanvasView
+                        ? toolHost.nativeCanvasView(path, { signal, isCurrent: () => getDeps().root === root })
+                        : Promise.resolve(null);
+                },
             };
         },
 

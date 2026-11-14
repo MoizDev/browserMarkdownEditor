@@ -78,6 +78,9 @@ export interface AgentWorkspaceSnapshot {
     focusedPath: string | null;
     /** Stored position for a tab that is not on screen. */
     remembered(path: string): RememberedPosition | null;
+    /** An open native drawing read from its own session, for a tab with no mounted pane. null = not open
+     *  natively; a failure rejects and the caller names it. The signal bounds the work, which then stops. */
+    nativeView?(path: string, signal: AbortSignal): Promise<NativeCanvasView | null>;
 }
 
 /* ───────────────────────── VaultToolHost — the agent's hands, implemented by App ───────────────────────── */

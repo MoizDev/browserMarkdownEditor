@@ -19,11 +19,13 @@ export async function applyNativeCanvasOperations(options: {
     };
     check();
     const tab = deps.tabs.find(tab => tab.file.path === path);
-    if (!tab || (tab.representation.loadedKind !== 'drawing' && tab.representation.loadedKind !== 'notebook')) {
+    const loaded = tab?.representation.loadedKind;
+    if (!tab || (loaded !== 'drawing' && loaded !== 'notebook' && loaded !== 'pdf')) {
         throw new DOMException('Canvas representation changed', 'AbortError');
     }
-    // This is a representation choice, never a fallback after native acquisition failure.
-    if (!tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
+    // This is a representation choice, never a fallback after native acquisition failure. A PDF has no Classic
+    // board to fall back to, so an open PDF always takes the native route and its failures throw.
+    if (loaded !== 'pdf' && !tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
     if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
     const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
     check();

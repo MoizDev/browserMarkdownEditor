@@ -25,9 +25,9 @@ export async function readNativeCanvasShapePage(options: {
     const job = { signal, deadlineMs: 30_000 };
     if (tab) {
         const kind = tab.representation.loadedKind;
-        if (kind !== 'drawing' && kind !== 'notebook') return null;
-        // Classic is a separate representation, not a recovery path for failed native reads.
-        if (!tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
+        if (kind !== 'drawing' && kind !== 'notebook' && kind !== 'pdf') return null;
+        // Classic is a separate representation, not a recovery path for failed native reads; a PDF has none.
+        if (kind !== 'pdf' && !tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
         if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
         // Keep the existing agent readiness bound without imposing that timer
         // on the immutable read after App has returned its actual session.

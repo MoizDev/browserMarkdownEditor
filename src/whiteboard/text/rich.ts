@@ -2,6 +2,7 @@ import type { Block, Marks, RichFragment, RichSpliceResult, RichText } from './r
 import type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
 import type { TextAffinity } from './rangeMap';
 import type { PlainTextOptions } from './plainText';
+import type { FragmentSnapshotOptions } from './fragmentSnapshot';
 
 export type RichMark = 'b' | 'i' | 'u' | 's' | 'code' | 'hl';
 export interface RichSelection { readonly anchor: number; readonly focus: number }
@@ -18,7 +19,7 @@ export type { LogicalMotion } from './selectionOps';
 export { TextProjectionReader } from './projectionReader';
 export type { ProjectionWindow, ProjectionReadOptions } from './projectionReader';
 export { coalesceCarriersCooperative } from './carriers';
-export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText } from './richText';
+export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText, spliceRichTextCooperative } from './richText';
 export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
     mapRichTextChange, mapRichTextChangeCooperative, mapRichTextChanges, mapRichTextChangesCooperative } from './rangeMap';
@@ -26,7 +27,7 @@ export type { TextAffinity, TextSpliceMap, MappedRichTextChange, MappedRichTextC
 export { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
 export type { RichTextChange, RichTextDiffOptions } from './richDiff';
 export { deriveRichTextChanges, deriveRichTextChangesCooperative } from './richMultiDiff';
-export { applyRichTransaction, validateRichFragment, validateRichFragmentCooperative, richTransactionLength } from './richTransaction';
+export { applyRichTransaction, applyRichTransactionCooperative, validateRichFragment, validateRichFragmentCooperative, richTransactionLength } from './richTransaction';
 export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
 export { snapshotRichFragmentCooperative } from './fragmentSnapshot';
 export type { FragmentSnapshotOptions } from './fragmentSnapshot';
@@ -42,6 +43,8 @@ export interface RichTextOperations {
     normalizeCooperative(value: RichText, options: PlainTextOptions): Promise<RichText>;
     splice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks?: boolean): RichSpliceResult;
     transaction(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection, affinity?: TextAffinity): RichTransactionResult;
+    transactionCooperative(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection,
+        options: FragmentSnapshotOptions, affinity?: TextAffinity): Promise<RichTransactionResult>;
     marksAt(value: RichText, offset: number): Marks;
     insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment;
     toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment;

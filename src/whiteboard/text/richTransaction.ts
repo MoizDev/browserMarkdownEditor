@@ -1,13 +1,14 @@
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { SECURITY_LIMITS } from '../security/limits';
 import { textBoundaries } from './boundaries';
-import { deriveRichTextChange } from './richDiff';
+import { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
 import { projectionLength } from './projection';
 import { mapTextSelectionTo, normalizeTextSelection, type TextAffinity, type TextSpliceMap } from './rangeMap';
-import { sliceRichText, spliceRichText, type Block, type RichFragment, type RichText } from './richText';
+import { sliceRichText, sliceRichTextCooperative, spliceRichText, spliceRichTextCooperative, type Block, type RichFragment, type RichText } from './richText';
 import type { RichSelection } from './rich';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
+import type { FragmentSnapshotOptions } from './fragmentSnapshot';
 
 export interface RichSpliceOperation {
     readonly from: number;
@@ -194,6 +195,38 @@ export function applyRichTransaction(initial: RichText, operations: readonly Ric
         text = result.text;
     }
     inverses.reverse();
+    return { text, selection: current, inverse: inverses, inverseSelection, maps };
+}
+
+/** Build a complete multi-op result privately, fencing the source after every scheduler yield. */
+export async function applyRichTransactionCooperative(initial: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection,
+    options: FragmentSnapshotOptions, affinity: TextAffinity = 'after'): Promise<RichTransactionResult> {
+    if (operations.length > 10_000) throw new RangeError('Rich transaction has too many operations');
+    const budget = options.sliceMilliseconds ?? 3;
+    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich transaction time slice');
+    const check = () => {
+        options.signal?.throwIfAborted();
+        if (options.current && !options.current()) throw new DOMException('Rich transaction source changed', 'AbortError');
+    };
+    const fenced: PlainTextOptions = { ...options, cooperate: async () => { check(); await options.cooperate(); check(); } };
+    check();
+    let text = initial, current = normalizeTextSelection(initial, selection, affinity), started = performance.now();
+    const inverseSelection = current, inverses: RichSpliceOperation[] = [], maps: (TextSpliceMap | null)[] = [];
+    for (const operation of operations) {
+        check();
+        if (operation.to < operation.from || !textBoundaries.isBoundary(text, operation.from) || !textBoundaries.isBoundary(text, operation.to))
+            throw new RangeError('Rich splice must use grapheme boundaries');
+        await validateRichFragmentCooperative(operation.insert, fenced);
+        const old = await sliceRichTextCooperative(text, operation.from, operation.to, fenced, true);
+        const local = await deriveRichTextChangeCooperative(old, operation.insert, fenced);
+        const map: TextSpliceMap | null = local ? { from: operation.from + local.from, to: operation.from + local.oldTo,
+            insertedLength: local.newTo - local.from } : null;
+        const result = await spliceRichTextCooperative(text, operation.from, operation.to, operation.insert, fenced, operation.wholeBlocks === true);
+        current = map ? mapTextSelectionTo(current, map, result.text, affinity) : normalizeTextSelection(result.text, current, affinity);
+        maps.push(map); inverses.push(result.inverse); text = result.text;
+        if (performance.now() - started >= budget) { await fenced.cooperate(); started = performance.now(); }
+    }
+    check(); inverses.reverse();
     return { text, selection: current, inverse: inverses, inverseSelection, maps };
 }
 

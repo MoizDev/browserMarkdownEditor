@@ -1,5 +1,6 @@
 import type { Block, RichText } from './richText';
 import { firstRunAt, runIndex } from './runIndex';
+import { finishTextSteps } from './cooperative';
 
 export interface TextProjectionPosition {
     readonly block: Block;
@@ -86,12 +87,24 @@ function split(tree: Tree | null, count: number): readonly [Tree | null, Tree | 
     const [first, rest] = split(tree.right, count - tree.left.count);
     return [join(tree.left, first), rest];
 }
-function build(blocks: readonly Block[]): Tree | null {
+function* buildSteps(blocks: readonly Block[]): Generator<void, Tree | null> {
     const leaves: Tree[] = [];
+    let work = 0;
     for (let start = 0; start < blocks.length; start += LEAF_BLOCKS) {
         const lengths: number[] = [];
-        for (let index = start; index < Math.min(blocks.length, start + LEAF_BLOCKS); index++) lengths.push(lengthOf(blocks[index]));
+        for (let index = start; index < Math.min(blocks.length, start + LEAF_BLOCKS); index++) {
+            const block = blocks[index];
+            let length = blockLengths.get(block);
+            if (length === undefined) {
+                length = 0;
+                for (const run of block.runs) { length += run.text.length; if ((++work & 255) === 0) yield; }
+                blockLengths.set(block, length);
+            }
+            lengths.push(length);
+            if ((++work & 255) === 0) yield;
+        }
         leaves.push(leaf(lengths));
+        if ((leaves.length & 15) === 0) yield;
     }
     const make = (from: number, to: number): Tree => {
         if (to - from === 1) return leaves[from];
@@ -100,6 +113,7 @@ function build(blocks: readonly Block[]): Tree | null {
     };
     return leaves.length ? make(0, leaves.length) : null;
 }
+function build(blocks: readonly Block[]): Tree | null { return finishTextSteps(buildSteps(blocks)); }
 function indexed(tree: Tree | null): ProjectionIndex { return { tree, length: tree ? tree.units - 1 : 0 }; }
 function indexFor(text: RichText): ProjectionIndex {
     let index = indexes.get(text);
@@ -108,18 +122,22 @@ function indexFor(text: RichText): ProjectionIndex {
 }
 
 /** Reuse unchanged immutable block lengths after a splice, without rebuilding all prefix offsets. */
-export function inheritProjection(before: RichText, after: RichText, first: number, removed: number,
-    inserted: readonly Block[]): void {
+export function* inheritProjectionSteps(before: RichText, after: RichText, first: number, removed: number,
+    inserted: readonly Block[]): Generator<void, void> {
     const old = indexes.get(before);
     if (!old) return;
     if (!Number.isSafeInteger(first) || !Number.isSafeInteger(removed) || first < 0 || removed < 0
         || first + removed > before.blocks.length || after.blocks.length !== before.blocks.length - removed + inserted.length)
         throw new RangeError('Invalid projection splice');
     const [left, tail] = split(old.tree, first), [, right] = split(tail, removed);
-    let tree = join(join(left, build(inserted)), right);
+    const insertedTree = yield* buildSteps(inserted);
+    let tree = join(join(left, insertedTree), right);
     // Repeated edits can split leaves into tiny pieces. Repack only after substantial fragmentation.
-    if (tree && tree.leaves > 4 * Math.ceil(tree.count / LEAF_BLOCKS) + 32) tree = build(after.blocks);
+    if (tree && tree.leaves > 4 * Math.ceil(tree.count / LEAF_BLOCKS) + 32) tree = (yield* buildSteps(after.blocks));
     indexes.set(after, indexed(tree));
+}
+export function inheritProjection(before: RichText, after: RichText, first: number, removed: number, inserted: readonly Block[]): void {
+    finishTextSteps(inheritProjectionSteps(before, after, first, removed, inserted));
 }
 
 /** Newline belongs to the preceding block; the next offset starts the next block. */

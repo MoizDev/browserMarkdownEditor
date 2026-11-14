@@ -37,19 +37,29 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         }
         return line.stops.reduce((best, stop) => Math.abs(stop.x - x) < Math.abs(best.x - x) ? stop : best);
     }
+    const byOffset = new Map<number, CaretStop[]>();
+    for (const line of lines) for (const stop of line.stops) {
+        const stops = byOffset.get(stop.offset);
+        if (stops) stops.push(stop); else byOffset.set(stop.offset, [stop]);
+    }
+    const offsets = [...byOffset.keys()].sort((a, b) => a - b);
     function caret(position: CaretPosition): CaretStop {
-        let best: CaretStop | undefined, distance = Infinity;
-        const primary = (stop: CaretStop) => lines[stop.line].clusters.some(cluster =>
+        if (!offsets.length) return hitTest(0, 0);
+        let lo = 0, hi = offsets.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (offsets[mid] < position.offset) lo = mid + 1;
+            else hi = mid;
+        }
+        const before = offsets[Math.max(0, lo - 1)], after = offsets[Math.min(lo, offsets.length - 1)];
+        const offset = position.offset - before <= after - position.offset ? before : after;
+        const candidates = byOffset.get(offset)!;
+        if (position.affinity) return candidates.find(stop => stop.affinity === position.affinity) ?? candidates[0];
+        const primary = candidates.find(stop => lines[stop.line].clusters.some(cluster =>
             cluster.rtl === (paint.lines[stop.line].direction === 'rtl')
             && (cluster.src[0] === stop.offset || cluster.src[1] === stop.offset)
-            && (Math.abs(cluster.bounds.x - stop.x) < 0.001 || Math.abs(cluster.bounds.x + cluster.bounds.width - stop.x) < 0.001));
-        for (const line of lines) for (const stop of line.stops) {
-            const next = Math.abs(stop.offset - position.offset);
-            const preferred = position.affinity ? stop.affinity === position.affinity && best?.affinity !== position.affinity
-                : best !== undefined && primary(stop) && !primary(best);
-            if (next < distance || (next === distance && preferred)) { best = stop; distance = next; }
-        }
-        return best ?? hitTest(0, 0);
+            && (Math.abs(cluster.bounds.x - stop.x) < 0.001 || Math.abs(cluster.bounds.x + cluster.bounds.width - stop.x) < 0.001)));
+        return primary ?? candidates[0];
     }
     function selection(start: number, end: number): readonly Rect[] {
         if (start > end) [start, end] = [end, start];

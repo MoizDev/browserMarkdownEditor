@@ -1,4 +1,5 @@
-import type { WorkerClient } from '../../platform/workers';
+import type { BoardWorkerClient } from '../workers/client';
+import type { BoardJobIdentity } from '../workers/protocol';
 import { BoardFonts } from './fonts';
 import { BoardTextLayout } from './layout';
 import type { Face, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
@@ -29,17 +30,25 @@ function matches(a: LayoutProduct, b: LayoutProduct): boolean {
  */
 export class TextLayoutClient {
     private readonly versions = new Map<string, number>();
+    private readonly pending = new Map<string, AbortController>();
     private readonly unsubscribe: (() => void)[] = [];
     private compatibility: 'unknown' | 'matching' | 'different' = 'unknown';
     private epoch = 0;
-    constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: WorkerClient, onFontArrival?: () => void) {
+    constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: () => void) {
         const changed = () => { this.compatibility = 'unknown'; onFontArrival?.(); };
         this.unsubscribe.push(fonts.subscribe(changed));
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', changed));
     }
     /** Call on every vault/session switch, including a switch to a same-path document. */
-    beginSession(): void { this.epoch++; this.versions.clear(); }
+    beginSession(): void {
+        this.epoch++;
+        this.versions.clear();
+        for (const controller of this.pending.values()) controller.abort();
+        this.pending.clear();
+    }
     private next(node: string): number {
+        this.pending.get(node)?.abort();
+        this.pending.delete(node);
         const version = (this.versions.get(node) ?? 0) + 1;
         this.versions.set(node, version);
         return version;
@@ -55,15 +64,21 @@ export class TextLayoutClient {
         void this.main.prepare(request).catch(() => {});
         return this.onMain(request);
     }
-    async layoutBackground(node: string, request: TextLayoutRequest, signal?: AbortSignal): Promise<LayoutProduct | null> {
+    async layoutBackground(node: string, request: TextLayoutRequest, identity: BoardJobIdentity, isCurrent: (identity: BoardJobIdentity) => boolean, signal?: AbortSignal): Promise<LayoutProduct | null> {
         const version = this.next(node), epoch = this.epoch;
-        const current = () => !signal?.aborted && this.epoch === epoch && this.versions.get(node) === version;
+        const controller = new AbortController();
+        this.pending.set(node, controller);
+        const abort = () => controller.abort();
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+        const current = () => !controller.signal.aborted && this.epoch === epoch && this.versions.get(node) === version && isCurrent(identity);
+        try {
         let workerProduct: LayoutProduct | undefined;
         if (this.worker && this.compatibility !== 'different') {
             try {
                 const [, product] = await Promise.all([
                     this.main.prepare(request),
-                    this.worker.request<LayoutProduct>('layout', request, { priority: 2, signal }),
+                    this.worker.request<LayoutProduct>('layout', request, identity, { priority: 2, signal: controller.signal }, current),
                 ]);
                 workerProduct = product;
             } catch {
@@ -83,6 +98,10 @@ export class TextLayoutClient {
         await this.main.prepare(request).catch(() => {});
         if (!current()) return null;
         return this.onMain(request);
+        } finally {
+            if (this.pending.get(node) === controller) this.pending.delete(node);
+            signal?.removeEventListener('abort', abort);
+        }
     }
     dispose(): void { this.beginSession(); for (const unsubscribe of this.unsubscribe) unsubscribe(); }
 }

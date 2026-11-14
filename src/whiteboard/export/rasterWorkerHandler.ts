@@ -65,11 +65,12 @@ export async function rasterEncode(args: unknown, context: WorkerContext): Promi
     return { path: job.result, origin }
   }
   try {
+    let preparedCount = 0
     for (const item of entry.items) {
       context.signal.throwIfAborted()
       for (const clip of item.clips) if (!clips.has(clip.key)) clips.set(clip.key, await prepare(clip.d))
       if (item.kind === 'path') paths.set(item, await prepare(item.d))
-      await context.slice()
+      if (++preparedCount % 128 === 0) await context.slice()
     }
     const resources: PaintResources2d = {
       path(item) { const value = paths.get(item as RasterWireItem); if (!value) throw new Error('Missing raster path'); return value },

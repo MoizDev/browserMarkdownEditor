@@ -1,5 +1,6 @@
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import type { PlainTextOptions } from './plainText';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 export interface RepairedText {
     /** CR and CRLF are normalized to LF, which represents a block separator. */
@@ -50,24 +51,10 @@ export function* repairLegacyCharacterSteps(value: string, limit: number): Gener
 
 /** Repair malformed legacy text; unknown carriers are not inspected or rewritten. */
 export function repairLegacyCharacters(value: string, contentLimit = MAX_TEXT_LENGTH): RepairedText {
-    const steps = repairLegacyCharacterSteps(value, contentLimit);
-    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+    return finishTextSteps(repairLegacyCharacterSteps(value, contentLimit));
 }
 
-export async function repairLegacyCharactersCooperative(value: string, options: PlainTextOptions,
+export function repairLegacyCharactersCooperative(value: string, options: PlainTextOptions,
     contentLimit = MAX_TEXT_LENGTH): Promise<RepairedText> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid text repair time slice');
-    const steps = repairLegacyCharacterSteps(value, contentLimit);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = steps.next();
-        if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+    return finishTextStepsCooperative(repairLegacyCharacterSteps(value, contentLimit), options);
 }

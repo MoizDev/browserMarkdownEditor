@@ -331,20 +331,24 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
 }
 
 function finish(steps: ImportSteps<RichImportResult>): RichImportResult {
-    let value: RawJson | undefined, failure: unknown, failed = false;
-    for (;;) {
-        const step = failed ? steps.throw(failure) : steps.next(value);
-        failed = false; value = undefined;
-        if (step.done) return step.value;
-        if (step.value) try {
-            value = step.value.kind === 'raw' ? step.value.span.raw() : parseJson(step.value.text).raw();
-        } catch (error) { failure = error; failed = true; }
+    let value: RawJson | undefined, failure: unknown, failed = false, completed = false;
+    try {
+        for (;;) {
+            const step = failed ? steps.throw(failure) : steps.next(value);
+            failed = false; value = undefined;
+            if (step.done) { completed = true; return step.value; }
+            if (step.value) try {
+                value = step.value.kind === 'raw' ? step.value.span.raw() : parseJson(step.value.text).raw();
+            } catch (error) { failure = error; failed = true; }
+        }
+    } finally {
+        if (!completed) try { steps.return(undefined as unknown as RichImportResult); } catch { /* Preserve the original error. */ }
     }
 }
 async function finishCooperative(steps: ImportSteps<RichImportResult>, options: PlainTextOptions): Promise<RichImportResult> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich import time slice');
-    let started = performance.now(), value: RawJson | undefined, failure: unknown, failed = false;
+    let started = performance.now(), value: RawJson | undefined, failure: unknown, failed = false, completed = false;
     const cooperate = async () => {
         options.signal?.throwIfAborted();
         if (performance.now() - started < budget) return;
@@ -353,27 +357,31 @@ async function finishCooperative(steps: ImportSteps<RichImportResult>, options: 
         options.signal?.throwIfAborted();
         started = performance.now();
     };
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = failed ? steps.throw(failure) : steps.next(value);
-        failed = false; value = undefined;
-        if (step.done) return step.value;
-        if (step.value) {
-            try {
-                if (step.value.kind === 'raw') value = await step.value.span.rawIncremental(cooperate);
-                else {
-                    const span = await parseJsonIncremental(step.value.text, cooperate);
-                    value = await span.rawIncremental(cooperate);
+    try {
+        for (;;) {
+            options.signal?.throwIfAborted();
+            const step = failed ? steps.throw(failure) : steps.next(value);
+            failed = false; value = undefined;
+            if (step.done) { completed = true; return step.value; }
+            if (step.value) {
+                try {
+                    if (step.value.kind === 'raw') value = await step.value.span.rawIncremental(cooperate);
+                    else {
+                        const span = await parseJsonIncremental(step.value.text, cooperate);
+                        value = await span.rawIncremental(cooperate);
+                    }
+                } catch (error) {
+                    options.signal?.throwIfAborted();
+                    if (error instanceof RichImportSchedulerError) throw error.original;
+                    failure = error; failed = true;
                 }
-            } catch (error) {
-                options.signal?.throwIfAborted();
-                if (error instanceof RichImportSchedulerError) throw error.original;
-                failure = error; failed = true;
+            } else {
+                try { await cooperate(); }
+                catch (error) { if (error instanceof RichImportSchedulerError) throw error.original; throw error; }
             }
-        } else {
-            try { await cooperate(); }
-            catch (error) { if (error instanceof RichImportSchedulerError) throw error.original; throw error; }
         }
+    } finally {
+        if (!completed) try { steps.return(undefined as unknown as RichImportResult); } catch { /* Preserve the original error. */ }
     }
 }
 

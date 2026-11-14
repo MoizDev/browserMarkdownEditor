@@ -6,6 +6,7 @@ import { mapTextSelectionTo, normalizeTextSelection, type TextAffinity, type Tex
 import { sliceRichText, spliceRichText, type Block, type RichFragment, type RichText } from './richText';
 import type { RichSelection } from './rich';
 import type { PlainTextOptions } from './plainText';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 export interface RichSpliceOperation {
     readonly from: number;
@@ -109,25 +110,12 @@ function* validationSteps(fragment: RichFragment): Generator<void, void> {
 
 /** Validate only the incoming immutable fragment, never rescan the whole document on each edit. */
 export function validateRichFragment(fragment: RichFragment): void {
-    const steps = validationSteps(fragment);
-    while (!steps.next().done) { /* complete synchronously for an atomic transaction */ }
+    finishTextSteps(validationSteps(fragment));
 }
 
 /** Caller owns immutability across yields; only deeply frozen fragments are cached for later apply. */
-export async function validateRichFragmentCooperative(fragment: RichFragment, options: PlainTextOptions): Promise<void> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich fragment validation time slice');
-    const steps = validationSteps(fragment);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        if (steps.next().done) return;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+export function validateRichFragmentCooperative(fragment: RichFragment, options: PlainTextOptions): Promise<void> {
+    return finishTextStepsCooperative(validationSteps(fragment), options);
 }
 
 function selectionMap(before: RichText, operation: RichSpliceOperation): TextSpliceMap | null {

@@ -5,6 +5,7 @@ import { inheritWordBoundaries, textBoundaries } from './boundaries';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarrierSteps, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 import type { PlainTextOptions } from './plainText';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 // text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
@@ -110,26 +111,12 @@ export function* normalizeRichTextSteps(text: RichText): Generator<void, RichTex
 }
 
 export function normalizeRichText(text: RichText): RichText {
-    const steps = normalizeRichTextSteps(text);
-    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+    return finishTextSteps(normalizeRichTextSteps(text));
 }
 
 /** Large imported fragments can normalize without retaining partially published output. */
-export async function normalizeRichTextCooperative(text: RichText, options: PlainTextOptions): Promise<RichText> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich normalization time slice');
-    const steps = normalizeRichTextSteps(text);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = steps.next();
-        if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+export function normalizeRichTextCooperative(text: RichText, options: PlainTextOptions): Promise<RichText> {
+    return finishTextStepsCooperative(normalizeRichTextSteps(text), options);
 }
 
 interface TextPoint { readonly block: number; readonly offset: number; readonly start: number }
@@ -160,8 +147,7 @@ function* sliceRunSteps(block: Block, from: number, to: number, keepEndAnchors: 
     return runs;
 }
 function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
-    const steps = sliceRunSteps(block, from, to, keepEndAnchors, preserveOrigin);
-    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+    return finishTextSteps(sliceRunSteps(block, from, to, keepEndAnchors, preserveOrigin));
 }
 function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
     const indexed = runIndex(block);
@@ -191,27 +177,13 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
 }
 
 export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {
-    const steps = sliceSteps(text, from, to, preserveOrigins);
-    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+    return finishTextSteps(sliceSteps(text, from, to, preserveOrigins));
 }
 
 /** A long selection can be captured cooperatively without publishing a partial fragment. */
-export async function sliceRichTextCooperative(text: RichText, from: number, to: number, options: PlainTextOptions,
+export function sliceRichTextCooperative(text: RichText, from: number, to: number, options: PlainTextOptions,
     preserveOrigins = false): Promise<RichFragment> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich slice time slice');
-    const steps = sliceSteps(text, from, to, preserveOrigins);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = steps.next();
-        if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+    return finishTextStepsCooperative(sliceSteps(text, from, to, preserveOrigins), options);
 }
 
 function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {

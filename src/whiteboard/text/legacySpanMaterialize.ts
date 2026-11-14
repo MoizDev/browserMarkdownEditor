@@ -62,39 +62,46 @@ export async function materializeLegacySpan(root: JsonSpan, options: PlainTextOp
             source: span.source, fields: entries, previous: span.start + 1 });
         return target;
     };
-    const value = await make(root);
-    while (frames.length) {
+    try {
+        const value = await make(root);
+        while (frames.length) {
+            options.signal?.throwIfAborted();
+            const frame = frames[frames.length - 1];
+            if (frame.kind === 'array') {
+                const next = await frame.iterator.next();
+                if (next.done) { frames.pop(); continue; }
+                frame.target.push(await make(next.value));
+            } else {
+                const next = await frame.iterator.next();
+                if (next.done) { frames.pop(); continue; }
+                const [key, span] = next.value;
+                if (key.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich key exceeds preservation limit');
+                if (frame.keys.has(key)) throw new RangeError('Duplicate rich JSON property cannot be preserved');
+                frame.keys.add(key);
+                let start = frame.previous;
+                while (start < span.start) {
+                    const code = frame.source.charCodeAt(start);
+                    if (code !== 32 && code !== 9 && code !== 10 && code !== 13 && code !== 44) break;
+                    if ((++start & 4095) === 0) await cooperate();
+                }
+                let keyEnd = start + 1, keyCheckpoint = keyEnd + 4096;
+                while (keyEnd < span.start) {
+                    const code = frame.source.charCodeAt(keyEnd++);
+                    if (code === 92) keyEnd++;
+                    else if (code === 34) break;
+                    if (keyEnd >= keyCheckpoint) { await cooperate(); keyCheckpoint = keyEnd + 4096; }
+                }
+                frame.fields.push({ key, prefix: `${frame.source.slice(start, keyEnd)}:`, span });
+                frame.previous = span.end;
+                frame.target[key] = await make(span);
+            }
+        }
         options.signal?.throwIfAborted();
-        const frame = frames[frames.length - 1];
-        if (frame.kind === 'array') {
-            const next = await frame.iterator.next();
-            if (next.done) { frames.pop(); continue; }
-            frame.target.push(await make(next.value));
-        } else {
-            const next = await frame.iterator.next();
-            if (next.done) { frames.pop(); continue; }
-            const [key, span] = next.value;
-            if (key.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich key exceeds preservation limit');
-            if (frame.keys.has(key)) throw new RangeError('Duplicate rich JSON property cannot be preserved');
-            frame.keys.add(key);
-            let start = frame.previous;
-            while (start < span.start) {
-                const code = frame.source.charCodeAt(start);
-                if (code !== 32 && code !== 9 && code !== 10 && code !== 13 && code !== 44) break;
-                if ((++start & 4095) === 0) await cooperate();
-            }
-            let keyEnd = start + 1, keyCheckpoint = keyEnd + 4096;
-            while (keyEnd < span.start) {
-                const code = frame.source.charCodeAt(keyEnd++);
-                if (code === 92) keyEnd++;
-                else if (code === 34) break;
-                if (keyEnd >= keyCheckpoint) { await cooperate(); keyCheckpoint = keyEnd + 4096; }
-            }
-            frame.fields.push({ key, prefix: `${frame.source.slice(start, keyEnd)}:`, span });
-            frame.previous = span.end;
-            frame.target[key] = await make(span);
+        return { value, originals, fields };
+    } finally {
+        while (frames.length) {
+            const frame = frames.pop()!;
+            try { await frame.iterator.return?.(); } catch { /* Preserve the original error. */ }
         }
     }
-    options.signal?.throwIfAborted();
-    return { value, originals, fields };
 }

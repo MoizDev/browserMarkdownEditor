@@ -1,4 +1,5 @@
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 export interface PlainTextOptions {
     readonly signal?: AbortSignal;
@@ -40,27 +41,10 @@ function* normalizeSteps(value: string): Generator<void, string> {
 }
 
 export function normalizePlainInsertion(value: string): string {
-    const steps = normalizeSteps(value);
-    for (;;) {
-        const step = steps.next();
-        if (step.done) return step.value;
-    }
+    return finishTextSteps(normalizeSteps(value));
 }
 
 /** Cancellation discards the unpublished partial conversion. */
-export async function normalizePlainInsertionCooperative(value: string, options: PlainTextOptions): Promise<string> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid text normalization time slice');
-    const steps = normalizeSteps(value);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = steps.next();
-        if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+export function normalizePlainInsertionCooperative(value: string, options: PlainTextOptions): Promise<string> {
+    return finishTextStepsCooperative(normalizeSteps(value), options);
 }

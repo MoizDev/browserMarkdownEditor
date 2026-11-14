@@ -2,6 +2,7 @@ import { textBoundaries } from './boundaries';
 import { projectionLength } from './projection';
 import type { TextSpliceMap } from './rangeMap';
 import type { RichText } from './richText';
+import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 /** Result coordinates are in the old and new projections, respectively. */
 export interface RichTextChange {
@@ -91,11 +92,7 @@ function* changeSteps(before: RichText, after: RichText): Generator<void, RichTe
 
 /** Synchronous form for small changes and callers already inside a transaction. */
 export function deriveRichTextChange(before: RichText, after: RichText): RichTextChange | null {
-    const steps = changeSteps(before, after);
-    for (;;) {
-        const step = steps.next();
-        if (step.done) return step.value;
-    }
+    return finishTextSteps(changeSteps(before, after));
 }
 
 export interface RichTextDiffOptions {
@@ -106,19 +103,6 @@ export interface RichTextDiffOptions {
 }
 
 /** Long external changes can share the same algorithm without monopolizing a frame. */
-export async function deriveRichTextChangeCooperative(before: RichText, after: RichText, options: RichTextDiffOptions): Promise<RichTextChange | null> {
-    const budget = options.sliceMilliseconds ?? 3;
-    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid text diff time slice');
-    const steps = changeSteps(before, after);
-    let started = performance.now();
-    for (;;) {
-        options.signal?.throwIfAborted();
-        const step = steps.next();
-        if (step.done) return step.value;
-        if (performance.now() - started >= budget) {
-            await options.cooperate();
-            options.signal?.throwIfAborted();
-            started = performance.now();
-        }
-    }
+export function deriveRichTextChangeCooperative(before: RichText, after: RichText, options: RichTextDiffOptions): Promise<RichTextChange | null> {
+    return finishTextStepsCooperative(changeSteps(before, after), options);
 }

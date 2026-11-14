@@ -377,6 +377,7 @@
     "paper.deleteContents": "Boggan waxa ku jira {items}.",
     "paper.deleteConfirm": "Tirtir bogga",
     "paper.cancel": "Jooji",
-    "paper.keepProtected": "Waxyaabaha xidhan waa la hayn doonaa"
+    "paper.keepProtected": "Waxyaabaha xidhan waa la hayn doonaa",
+    "chrome.readOnly": "Looxani waa akhri-kaliya."
   }
 }

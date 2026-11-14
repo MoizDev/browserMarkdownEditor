@@ -1,6 +1,5 @@
 import type { Rect, Rgba } from '../../platform/types'
-import { capturePaintFrame } from './captureFrame'
-import { capturePng } from './capturePng'
+import { streamRasterPng } from './streamRaster'
 import { createExportImageResolver } from './exportImage'
 import { streamSvg } from './streamSvg'
 import { withExportSnapshot } from './snapshot'
@@ -16,10 +15,8 @@ export function exportSnapshotPng(
   pin: PinExportSnapshot, bounds: SnapshotExportBounds, signal: AbortSignal,
   options: { background?: string; clipboard?: boolean } = {},
 ): Promise<Blob> {
-  return withExportSnapshot(pin, signal, async snapshot => {
-    const frame = await capturePaintFrame(snapshot.source, signal)
-    return capturePng({ frame, images: snapshot.images, world: bounds.world, scale: bounds.scale, ...options }, signal)
-  })
+  return withExportSnapshot(pin, signal, snapshot => streamRasterPng(
+    snapshot.source, snapshot.images, bounds.world, bounds.scale, signal, options))
 }
 
 export function exportSnapshotSvg(

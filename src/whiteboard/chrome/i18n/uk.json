@@ -377,6 +377,7 @@
     "paper.deleteContents": "Ця сторінка містить {items}.",
     "paper.deleteConfirm": "Видалити сторінку",
     "paper.cancel": "Скасувати",
-    "paper.keepProtected": "Заблокований вміст буде збережено."
+    "paper.keepProtected": "Заблокований вміст буде збережено.",
+    "chrome.readOnly": "Ця дошка доступна лише для читання."
   }
 }

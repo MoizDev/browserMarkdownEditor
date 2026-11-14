@@ -40,8 +40,10 @@ export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[]): OpenTa
   const sniff = unchanged ? undefined : sniffCanvas(tab.content, tab.file.name);
   const policy = sniff?.format === 'native' && !r.nativeCanvasKind
    ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
-  const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp
-   && (unchanged ? before.representation.contentWritable : !canvasReadOnlyReason(sniff!));
+  const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
+   && !policy.emergencyReadOnly && (unchanged || (sniff?.format === 'native' && !sniff.kindMismatch));
+  const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
+   && (admittedNative || (unchanged ? before.representation.contentWritable : !canvasReadOnlyReason(sniff!)));
   return policy === r && r.contentWritable === writable ? tab : {...tab, representation: {...policy, contentWritable: writable}};
  });
 }

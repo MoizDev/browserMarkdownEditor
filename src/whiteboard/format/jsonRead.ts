@@ -19,10 +19,15 @@ export interface JsonSpan {
     number(): number;
     value(): unknown;
     raw(): RawJson;
+    rawIncremental(cooperate: () => Promise<void>): Promise<RawJson>;
     fields(): Iterable<readonly [string, JsonSpan]>;
+    fieldsIncremental(cooperate: () => Promise<void>): AsyncIterable<readonly [string, JsonSpan]>;
     items(): Iterable<JsonSpan>;
+    itemsIncremental(cooperate: () => Promise<void>): AsyncIterable<JsonSpan>;
     length(limit: number): number;
+    lengthIncremental(limit: number, cooperate: () => Promise<void>): Promise<number>;
     fieldMap(): ReadonlyMap<string, JsonSpan>;
+    fieldMapIncremental(cooperate: () => Promise<void>): Promise<ReadonlyMap<string, JsonSpan>>;
 }
 
 function error(code: 'syntax' | 'limit', message: string, offset: number): never {
@@ -271,6 +276,27 @@ class Span implements JsonSpan {
         }
         return this.text() as RawJson;
     }
+    async rawIncremental(cooperate: () => Promise<void>): Promise<RawJson> {
+        const buffer = new Uint16Array(4096), parts: string[] = [];
+        let used = 0, quoted = false, escaped = false;
+        for (let i = this.start; i < this.end; i++) {
+            const code = this.source.charCodeAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (code === 92) escaped = true;
+                else if (code === 34) quoted = false;
+            } else if (code === 34) quoted = true;
+            else if (whitespace(code)) {
+                if ((i & 4095) === 4095) await cooperate();
+                continue;
+            }
+            buffer[used++] = code;
+            if (used === buffer.length) { parts.push(String.fromCharCode(...buffer)); used = 0; }
+            if ((i & 4095) === 4095) await cooperate();
+        }
+        if (used) parts.push(String.fromCharCode(...buffer.subarray(0, used)));
+        return parts.join('') as RawJson;
+    }
     *fields(): Iterable<readonly [string, JsonSpan]> {
         if (this.kind !== 'object') error('syntax', 'Expected an object', this.start);
         let index = this.reader.white(this.start + 1);
@@ -284,6 +310,22 @@ class Span implements JsonSpan {
             if (this.source.charCodeAt(index) === 44) index = this.reader.white(index + 1);
         }
     }
+    async *fieldsIncremental(cooperate: () => Promise<void>): AsyncIterable<readonly [string, JsonSpan]> {
+        if (this.kind !== 'object') error('syntax', 'Expected an object', this.start);
+        let index = await completeIncremental(this.reader.whiteSteps(this.start + 1), cooperate), count = 0;
+        while (index < this.end - 1) {
+            const keyEnd = await completeIncremental(this.reader.quotedSteps(index), cooperate);
+            const key = new Span(this.reader, index, keyEnd, this.depth + 1);
+            const name = await key.stringIncremental(FORMAT_LIMITS.recordBytes, cooperate);
+            const afterKey = await completeIncremental(this.reader.whiteSteps(keyEnd), cooperate);
+            const valueStart = await completeIncremental(this.reader.whiteSteps(afterKey + 1), cooperate);
+            const end = await completeIncremental(this.reader.skipSteps(valueStart, this.depth + 1), cooperate);
+            yield [name, new Span(this.reader, valueStart, end, this.depth + 1, this, name)];
+            index = await completeIncremental(this.reader.whiteSteps(end), cooperate);
+            if (this.source.charCodeAt(index) === 44) index = await completeIncremental(this.reader.whiteSteps(index + 1), cooperate);
+            if ((++count & 255) === 0) await cooperate();
+        }
+    }
     *items(): Iterable<JsonSpan> {
         if (this.kind !== 'array') error('syntax', 'Expected an array', this.start);
         let index = this.reader.white(this.start + 1), count = 0;
@@ -294,14 +336,38 @@ class Span implements JsonSpan {
             if (this.source.charCodeAt(index) === 44) index = this.reader.white(index + 1);
         }
     }
+    async *itemsIncremental(cooperate: () => Promise<void>): AsyncIterable<JsonSpan> {
+        if (this.kind !== 'array') error('syntax', 'Expected an array', this.start);
+        let index = await completeIncremental(this.reader.whiteSteps(this.start + 1), cooperate), count = 0;
+        while (index < this.end - 1) {
+            const end = await completeIncremental(this.reader.skipSteps(index, this.depth + 1), cooperate);
+            yield new Span(this.reader, index, end, this.depth + 1, this, count++);
+            index = await completeIncremental(this.reader.whiteSteps(end), cooperate);
+            if (this.source.charCodeAt(index) === 44) index = await completeIncremental(this.reader.whiteSteps(index + 1), cooperate);
+            if ((count & 255) === 0) await cooperate();
+        }
+    }
     length(limit: number): number {
         let count = 0;
         for (const _item of this.items()) if (++count > limit) error('limit', `Array exceeds ${limit} elements`, this.start);
         return count;
     }
+    async lengthIncremental(limit: number, cooperate: () => Promise<void>): Promise<number> {
+        let count = 0;
+        for await (const _item of this.itemsIncremental(cooperate)) if (++count > limit) error('limit', `Array exceeds ${limit} elements`, this.start);
+        return count;
+    }
     fieldMap(): ReadonlyMap<string, JsonSpan> {
         const fields = new Map<string, JsonSpan>();
         for (const [key, value] of this.fields()) {
+            if (fields.has(key)) error('syntax', 'Duplicate JSON property cannot be represented losslessly', value.start);
+            fields.set(key, value);
+        }
+        return fields;
+    }
+    async fieldMapIncremental(cooperate: () => Promise<void>): Promise<ReadonlyMap<string, JsonSpan>> {
+        const fields = new Map<string, JsonSpan>();
+        for await (const [key, value] of this.fieldsIncremental(cooperate)) {
             if (fields.has(key)) error('syntax', 'Duplicate JSON property cannot be represented losslessly', value.start);
             fields.set(key, value);
         }

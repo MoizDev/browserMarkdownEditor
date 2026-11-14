@@ -51,6 +51,30 @@ export function figureLabelRequest(node: Readonly<FigureNode>, revision: string,
             padding: { top: 16, right: 16, bottom: 16, left: 16 }, minHeight: height, overflow: 'grapheme' } } };
 }
 
+export function stickyLabelRequest(node: Readonly<StickyNode>, revision: string, fontEpoch: number):
+    Readonly<{ request: TextLayoutRequest; scale: number }> {
+    if (![node.scale, node.growY, fontEpoch].every(Number.isFinite) || node.scale < 0 || node.growY < 0) throw new RangeError('Invalid sticky label layout');
+    const align = node.align.startsWith('start') ? 'start' : node.align.startsWith('end') ? 'end' : 'middle';
+    const fit = node.fit ?? 1;
+    if (!Number.isFinite(fit) || fit <= 0) throw new RangeError('Invalid sticky text fit');
+    return { scale: node.scale, request: { text: node.text, revision, fontEpoch, width: 200,
+        style: { font: node.font, size: FIGURE_LABEL_SIZE[node.size] * fit, ink: { swatch: node.labelColor, role: 'label' },
+            align, verticalAlign: node.valign, padding: { top: 16, right: 16, bottom: 16, left: 16 },
+            minHeight: 200 + node.growY, overflow: 'shrink' } } };
+}
+
+/** Frame titles are laid out as text, not a second editable content format. */
+export function frameTitleRequest(node: Readonly<FrameNode>, fallback: string, revision: string,
+    fontEpoch: number, zoom: number): TextLayoutRequest {
+    if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(node.w) || node.w < 0 || !Number.isFinite(fontEpoch)) throw new RangeError('Invalid frame title layout');
+    const text = node.name || fallback;
+    return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] }] },
+        revision, fontEpoch, width: node.w, style: { font: 'sans', size: 12 / zoom,
+            ink: { swatch: node.color ?? 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow',
+            maxLines: 1, ellipsis: true } };
+}
+
 export interface FigureGeometryOptions {
     readonly key: string;
     readonly kernelVersion: number;

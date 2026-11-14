@@ -377,6 +377,7 @@
     "paper.deleteContents": "Ta stran vsebuje {items}.",
     "paper.deleteConfirm": "Izbriši stran",
     "paper.cancel": "Prekliči",
-    "paper.keepProtected": "Zaklenjena vsebina bo ohranjena."
+    "paper.keepProtected": "Zaklenjena vsebina bo ohranjena.",
+    "chrome.readOnly": "Ta plošča je samo za branje."
   }
 }

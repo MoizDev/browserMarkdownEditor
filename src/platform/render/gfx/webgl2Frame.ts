@@ -1,5 +1,5 @@
 import type {
-    BufferHandle, BufferSlice, ClipHandle, ClipToken, DrawCommand, FrameEncoder, GpuPass,
+    BufferHandle, BufferSlice, ClipHandle, ClipToken, CoverageTarget, CoverageToken, DrawCommand, FrameEncoder, GpuPass,
     GroupToken, PassDesc, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle,
     Samples, Submission, TargetHandle, TargetLease, TextureFormat, TextureHandle, UniformSlice,
 } from './api';
@@ -133,7 +133,8 @@ interface ClipEntry {
     readonly isolation: Isolation | null;
 }
 interface GroupEntry {
-    readonly token: GroupToken;
+    readonly kind: 'group' | 'coverage';
+    readonly token: GroupToken | CoverageToken;
     readonly previous: RectI;
     readonly clipDepth: number;
     readonly isolation: Isolation;
@@ -585,7 +586,7 @@ class DevicePass implements GpuPass {
         return this.#guard(() => {
             const token = Object.freeze({ id: this.#frame.token() });
             const isolation = this.#isolate(intersect(rect(bounds), this.#clip), { ...options }, null);
-            this.#groups.push({ token, previous: this.#clip, clipDepth: this.#clips.length, isolation });
+            this.#groups.push({ kind: 'group', token, previous: this.#clip, clipDepth: this.#clips.length, isolation });
             this.#scope = isolation.child;
             this.#clip = intersect(this.#clip, isolation.child.bounds);
             return token;
@@ -594,11 +595,67 @@ class DevicePass implements GpuPass {
     endGroup(token: GroupToken): void {
         this.#guard(() => {
             const entry = this.#groups.at(-1);
-            if (!entry || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
+            if (!entry || entry.kind !== 'group' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
             this.#groups.pop();
             this.#closeIsolation(entry.isolation, entry.previous);
             this.#clip = entry.previous;
         });
+    }
+    beginCoverage(target: CoverageTarget, bounds: RectI): CoverageToken {
+        return this.#guard(() => {
+            // A borrowed target is one open scope at a time: a nested borrow could overwrite the
+            // stencil counts that an enclosing scope is still covering with.
+            if (this.#groups.some(entry => entry.kind === 'coverage')) throw new ArenaError('invalid-input');
+            const native = this.#backend.target(target.target), texture = this.#backend.texture(target.texture);
+            const parent = this.#scope;
+            if (!native.stencil || native.samples !== target.samples || native.format !== 'rgba8' ||
+                native.width !== target.width || native.height !== target.height || !texture.uses.includes('sample') ||
+                texture.texture === parent.target.color?.texture || [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
+                bounds.width !== target.width || bounds.height !== target.height) throw new ArenaError('invalid-input');
+            const token = Object.freeze({ id: this.#frame.token() });
+            const previous = this.#clip;
+            // The scope covers the target's own rectangle; coverage outside the admitted area is never drawn.
+            const area = intersect(intersect(bounds, previous), parent.bounds);
+            const empty = parent.empty || !area.width || !area.height;
+            const options = { opacity: 1, blend: 'normal', colourEffect: 'none' } as const;
+            if (!empty) {
+                this.#frame.start(native, { target: target.target, viewport: parent.viewport,
+                    load: { kind: 'clear', color: [0, 0, 0, 0] }, store: 'store',
+                    stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } });
+            }
+            const child: Scope = { ...parent, target: native, bounds, originX: bounds.x, originY: bounds.y, empty, coverage: parent.coverage };
+            const isolation: Isolation = { parent, child, lease: null, mask: null, options };
+            this.#groups.push({ kind: 'coverage', token, previous, clipDepth: this.#clips.length, isolation });
+            this.#scope = child;
+            this.#clip = intersect(previous, child.bounds);
+            return token;
+        });
+    }
+    endCoverage(token: CoverageToken): void {
+        this.#guard(() => {
+            const entry = this.#groups.at(-1);
+            if (!entry || entry.kind !== 'coverage' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
+            this.#groups.pop();
+            this.#closeCoverage(entry.isolation, entry.previous);
+            this.#clip = entry.previous;
+        });
+    }
+    #closeCoverage(isolation: Isolation, clip: RectI): void {
+        if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');
+        this.#scope = isolation.parent;
+        const child = isolation.child;
+        if (child.empty) return;
+        this.#frame.end(child.target, { target: child.target.handle, viewport: child.viewport, load: { kind: 'load' }, store: 'store',
+            stencil: { load: { kind: 'load' }, store: 'discard' } });
+        if (child.target.samples === 4) {
+            const resolve: FrameTarget = { ...child.target, framebuffer: child.target.resolveFramebuffer, samples: 1 };
+            this.#frame.blit(child.target, { x: 0, y: 0, width: child.target.width, height: child.target.height }, resolve, 0, 0);
+        }
+        if (child.coverage) this.#scope.coverage = true;
+        const texture = child.target.color;
+        if (!texture) throw new ArenaError('invalid-resource');
+        this.#frame.composite(this.#scope, clip, texture, { x: 0, y: 0, width: child.bounds.width, height: child.bounds.height },
+            child.bounds, isolation.options, null);
     }
     composite(source: TextureHandle, bounds: RectI, options: { blend: 'normal' | 'multiply'; opacity: number }): void {
         this.#guard(() => {

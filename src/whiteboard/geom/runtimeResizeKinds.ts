@@ -127,9 +127,12 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         check();
         const local = staged.localBounds(node.id), before = worldPose(candidate, node.id), angle = before.rotation;
         const localX = (local[0] + local[2]) / 2, localY = (local[1] + local[3]) / 2;
+        // Default, calibration cut by owner: an exact-zero release puts the model minimum on the crossed side.
+        const crossedX = factors.x === 0 && factors.handleX ? factors.handleX * factors.zeroSignX * (local[2] - local[0]) / 2 : 0;
+        const crossedY = factors.y === 0 && factors.handleY ? factors.handleY * factors.zeroSignY * (local[3] - local[1]) / 2 : 0;
         const c = Math.cos(angle), s = Math.sin(angle), world = {
-            x: options.centreWorld.x - c * localX + s * localY,
-            y: options.centreWorld.y - s * localX - c * localY, rotation: angle,
+            x: options.centreWorld.x + c * crossedX - s * crossedY - c * localX + s * localY,
+            y: options.centreWorld.y + s * crossedX + c * crossedY - s * localX - c * localY, rotation: angle,
         };
         const bounds = staged.logicalBounds(node.id), center = {
             x: bounds.x + bounds.width / 2 + world.x - before.x,

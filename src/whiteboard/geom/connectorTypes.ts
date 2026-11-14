@@ -1,5 +1,4 @@
 import type { Affine, Rect } from '../../platform/types';
-import type { Op } from '../change/ops';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { ConnectorNode } from '../model/nodes';
@@ -9,11 +8,6 @@ import type { Arc, PathOp, Vec2 } from './path';
 
 export interface IncidentEnd { readonly connector: NodeId; readonly terminal: 'start' | 'end' }
 export type IncidentEndReader = (doc: Readonly<BoardDoc>, target: NodeId) => readonly IncidentEnd[];
-export interface DetachContext {
-    readonly resolvedTip: (connector: NodeId, terminal: 'start' | 'end') => Vec2 | undefined;
-    readonly toConnectorLocal: (connector: NodeId, world: Vec2) => Vec2 | undefined;
-}
-export type DetachIncidentBuilder = (doc: Readonly<BoardDoc>, target: NodeId, context: DetachContext) => readonly Op[];
 
 export interface AttachmentSurface {
     readonly target: NodeId;

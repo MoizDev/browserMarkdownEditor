@@ -79,7 +79,7 @@ export function createPdfInkBuildCapture(options: {
                 return pinPdfInkAssembly({ revision, source: context.acquisition.source, writeId: context.writeId,
                     media: scene.media, mediaBlob: scene.mediaBlob,
                     isCurrent: () => !released && options.currentOwner(), release,
-                    ink: { pages, sheets: scene.sheets, readSheetPage: scene.readSheetPage },
+                    ink: { pages, sheets: scene.sheets, readSheetPage: scene.readSheetPage, writeSheetPage: scene.writeSheetPage },
                 }, signal => context.acquisition.openWriter(signal));
             } catch (error) { release(); throw error; }
         },

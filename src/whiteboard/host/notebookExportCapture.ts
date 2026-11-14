@@ -8,6 +8,7 @@ import { createBoardHostImages } from '../media/hostImages';
 import type { MediaEntry, MediaId } from '../model/media';
 import { createExportImageResolver } from '../export/exportImage';
 import { streamPageDisplayList } from '../export/streamPage';
+import { writeIncrementalPdfPage, type IncrementalPdfPage } from '../export/incrementalPdf';
 
 /** Pins the notebook's real paper and scene at one revision; the caller owns its release. */
 export function pinNativeNotebookExport({ runtime, revision, current, onError }: {
@@ -23,7 +24,7 @@ export function pinNativeNotebookExport({ runtime, revision, current, onError }:
         if (pin.rects.length !== paper.pageCount || pin.rects.some(rect => rect.width !== width || rect.height !== height)) {
             throw new Error('Notebook page layout differs from its paper');
         }
-        return { revision, snapshot: { paper, sheets: pin.sheets, readSheetPage: pin.readSheetPage }, release: pin.release };
+        return { revision, snapshot: { revision, paper, sheets: pin.sheets, readSheetPage: pin.readSheetPage, writeSheetPage: pin.writeSheetPage }, release: pin.release };
     } catch (error) { pin.release(); throw error; }
 }
 
@@ -89,7 +90,26 @@ export function pinNotebookExportWithMedia(options: {
                 && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
             onError: options.onError });
         const provider = images;
-        return { revision: scene.revision, release, snapshot: { paper, sheets,
+        const capturePage = async (sheet: typeof sheets[number], page: number, signal: AbortSignal) => {
+            const active = AbortSignal.any([signal, lifetime.signal]);
+            active.throwIfAborted();
+            const world = rects[page];
+            if (released || !world || !sheets.includes(sheet)) throw new RangeError('Invalid notebook export page');
+            const source = await scene.paintSource({ sheetId: sheet, page, world, theme: 'light' }, active);
+            active.throwIfAborted();
+            const image = createExportImageResolver(token, provider, (key, imageSignal) => {
+                const match = /^(?:sha256:([0-9a-f]{64})(?::0)?|media:([0-9a-f]{64}):0)$/.exec(key);
+                if (!match) throw new TypeError('Invalid notebook export image key');
+                return read(`sha256:${match[1] ?? match[2]}`, imageSignal);
+            }, active);
+            return { source, world, image, active };
+        };
+        return { revision: scene.revision, release, snapshot: { revision: scene.revision, paper, sheets,
+            async writeSheetPage(sheet, page, sink: IncrementalPdfPage, signal) {
+                const captured = await capturePage(sheet, page, signal);
+                await writeIncrementalPdfPage(captured, page, 1, captured.image, sink, captured.active);
+                captured.active.throwIfAborted();
+            },
             async readSheetPage(sheet, page, signal) {
                 const combined = AbortSignal.any([signal, lifetime.signal]);
                 combined.throwIfAborted();

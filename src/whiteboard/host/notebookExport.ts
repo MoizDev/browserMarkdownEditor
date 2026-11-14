@@ -3,6 +3,7 @@ import { paperPageSize, type NotebookPaper } from '../../utils/paper';
 import type { SheetId } from '../model/ids';
 import type { DisplayPdfWriter } from '../export/capturePdf';
 import { notebookPaperList } from './notebookPaper';
+import type { IncrementalPdfPage, IncrementalPdfWriter } from '../export/incrementalPdf';
 
 export interface NotebookExportPage {
     readonly width: number;
@@ -22,9 +23,44 @@ export interface NotebookPdfStreamWriter {
 }
 
 export interface NotebookExportSnapshot {
+    readonly revision?: number;
     readonly paper: Readonly<NotebookPaper>;
     readonly sheets: readonly SheetId[];
     readSheetPage(sheet: SheetId, page: number, signal: AbortSignal): Promise<PageDisplayList>;
+    writeSheetPage?(sheet: SheetId, page: number, sink: IncrementalPdfPage, signal: AbortSignal): Promise<void>;
+}
+
+/** Native export emits procedural paper and every logical sheet into one physical page,
+ * without collecting text outlines, a page display list or all notebook pages first. */
+export async function exportIncrementalNotebookPdf(snapshot: NotebookExportSnapshot, sourcePath: string,
+    writer: IncrementalPdfWriter, signal: AbortSignal): Promise<Uint8Array> {
+    const { revision, writeSheetPage } = snapshot, paper = { ...snapshot.paper }, sheets = [...snapshot.sheets];
+    if (!Number.isSafeInteger(revision) || revision! < 0 || !writeSheetPage || !Number.isSafeInteger(paper.pageCount) || paper.pageCount < 1) {
+        throw new Error('A revision-pinned incremental notebook source is required');
+    }
+    const output = await writer.open({ revision: revision!, pageCount: paper.pageCount, notebookSource: { path: sourcePath } }, signal);
+    const size = paperPageSize(paper);
+    let complete = false;
+    try {
+        for (let index = 0; index < paper.pageCount; index++) {
+            signal.throwIfAborted();
+            const page = await output.beginPage({ index, ...size }, signal);
+            // Paper paths are bounded procedural geometry, not user text/ink arrays.
+            for (const item of notebookPaperList(paper, index).items) {
+                if (item.kind !== 'path') throw new Error('Notebook paper contains unsupported incremental geometry');
+                const { d, ...style } = item;
+                await page.beginPath(style, signal);
+                for (let at = 0; at < d.length; at += 1024) await page.pathCommands(d.slice(at, at + 1024), signal);
+                await page.endPath(signal);
+            }
+            for (const sheet of sheets) await writeSheetPage(sheet, index, page, signal);
+            await output.endPage(page, signal);
+        }
+        const bytes = await output.finish(signal);
+        signal.throwIfAborted();
+        complete = true;
+        return bytes;
+    } finally { if (!complete) await output.cancel(); }
 }
 
 async function contentOnPage(snapshot: NotebookExportSnapshot, sheets: readonly SheetId[], page: number, signal: AbortSignal): Promise<PageDisplayList> {

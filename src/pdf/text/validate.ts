@@ -44,7 +44,7 @@ export async function validatePdfTextReply(reply: PageTextReply, geometry: Reado
                 !Array.isArray(interval.transform) || interval.transform.length !== 6 || !interval.transform.every(Number.isFinite) ||
                 !Number.isFinite(interval.width) || interval.width < 0 || !Number.isFinite(interval.height) || interval.height < 0 ||
                 typeof interval.fontName !== 'string' || interval.fontName.length > 128 || !Array.isArray(interval.markedContentIds) ||
-                interval.markedContentIds.some(id => typeof id !== 'string' || id.length > 128)) fail();
+                interval.markedContentIds.some((id: unknown) => typeof id !== 'string' || id.length > 128)) fail();
             end = interval.to;
         }
         if (end !== reply.text.length || model.tokenBreaks.some((offset, index) => offset !== reply.tokenBreaks[index])) fail();

@@ -5,6 +5,7 @@ import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { createFillPointJob } from '../geom/fillPoint';
+import { createCubicBoundaryJob } from '../geom/cubicBoundaryJob';
 import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
 import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
 import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
@@ -266,6 +267,17 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                                 else if (state.status === 'uncertain') {
                                     result = { hit: true, distanceCss: 0, part: 'body' };
                                     ambiguous = !exactAttachmentBoundary(attachment.outline, query);
+                                    if (ambiguous) {
+                                        const boundary = createCubicBoundaryJob([attachment.outline], surface, localToSurface, { maxCommands: 8192 });
+                                        try {
+                                            for (;;) {
+                                                const value = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                                if (value.status === 'pending') { await tick(); continue; }
+                                                if (value.status === 'hit') ambiguous = false;
+                                                break;
+                                            }
+                                        } finally { boundary.cancel(); }
+                                    }
                                 }
                                 break;
                             }

@@ -59,7 +59,7 @@ function replacementCrop(crop: Crop | null, old: MediaEntry, next: InspectedMedi
 
 function checkResult(info: InspectedMedia): void {
     if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !Object.hasOwn(EXTENSIONS, info.mime)
-        || !checkMediaDimensions(info.width, info.height).ok
+        || !checkMediaDimensions(info.width, info.height).ok || info.width > 1_000_000 || info.height > 1_000_000
         || typeof info.animated !== 'boolean'
         || (info.duration !== null && (!Number.isFinite(info.duration) || info.duration < 0))
         || (info.mime.startsWith('video/') !== (info.duration !== null))) {
@@ -102,6 +102,7 @@ export class MediaIngestor {
         current();
         const initial = this.session.doc.nodes.get(id);
         if (!initial || initial.kind !== 'picture' || initial.locked || !initial.media) throw new Error('Picture cannot be replaced');
+        if (source.name.length > 10000) throw new RangeError('Media name is too long');
         if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
         const info = await this.host.inspectMedia(source.blob, { signal });
         current();
@@ -144,6 +145,7 @@ export class MediaIngestor {
         {
             for (const source of sources) {
                 current();
+                if (source.name.length > 10000) throw new RangeError('Media name is too long');
                 if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
                 const info = await this.host.inspectMedia(source.blob, { signal });
                 current();

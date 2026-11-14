@@ -125,7 +125,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const mounted = useRef(false);
     const liveSession = useRef(session);
     liveSession.current = session;
-    useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
     const reportRenderNotice = useCallback((message: string, error = false) => {
         if (!mounted.current || liveSession.current !== session || !session.isCurrent()) return;
         if (sessionNotices.get(session)?.error && !error) return;
@@ -528,7 +528,14 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     if (!controller.signal.aborted && session.isCurrent() && active.current.isVisible) {
                         links.current?.setPage(index, result); loadedLinks.current.add(index);
                     }
-                }).catch(error => { if (!controller.signal.aborted) onNotice(error instanceof Error ? error.message : 'PDF links are unavailable.'); })
+                }).catch(error => {
+                    // A notebook redirect can retire the source before passive
+                    // link cleanup. Cancellation is not a modal reader failure.
+                    if (controller.signal.aborted || !mounted.current || liveSession.current !== session ||
+                        !session.isCurrent() || pdf.poolDocument.closed || !active.current.isVisible ||
+                        error instanceof Error && error.name === 'AbortError') return;
+                    onNotice(error instanceof Error && error.message.trim() ? error.message : 'PDF links are unavailable.');
+                })
                     .finally(() => { if (linkTasks.current.get(index) === controller) linkTasks.current.delete(index); });
             }
             pdf.emphasis.setVisiblePages([...visible], active.current.isFocused ? Math.max(0, pageAt(stack, top)) : -1, active.current.isVisible);

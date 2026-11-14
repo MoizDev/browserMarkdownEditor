@@ -1,4 +1,4 @@
-import { worldToSurface } from '../../platform/render/camera';
+import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
@@ -17,7 +17,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
-import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
+import type { GestureOwner, InputToken, Modifiers, RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
 import { selectTool, type SelectRegion, type SelectToolContext } from '../tools/select';
@@ -27,6 +27,7 @@ import { createBoardAttachmentResolver } from './attachments';
 import { createShapeHandles } from './shapeHandles';
 import { createStickyHandles } from './stickyHandles';
 import { createSelectionHandles } from './selectionHandles';
+import { createBoardSelectionNavigation } from './selectionNavigation';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -34,6 +35,10 @@ export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
+    readonly cameraController: CameraController;
+    readonly surface: HTMLElement;
+    readonly inputToken: InputToken;
+    readonly cameraChanged: () => void;
     /** Convert a physical sample using the mapping that actually presented it. */
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
@@ -70,6 +75,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const cancelPending = () => {
         nudgeEpoch++;
+        navigation.cancel();
         const work = [...pending], had = work.length > 0 || controllers.size > 0;
         pending.clear(); for (const cancel of work) { try { cancel(); } catch (error) { report(error); } }
         for (const controller of controllers) controller.abort(); controllers.clear();
@@ -86,6 +92,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         invalidate: requestFrame, edit: options.editSticky, error: report });
     const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, error: report });
+    const navigation = createBoardSelectionNavigation({ runtime, camera: options.cameraController, surface: options.surface, token,
+        inputToken: options.inputToken, current, changed: options.cameraChanged, error: report });
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -259,7 +267,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
+        navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
@@ -343,7 +351,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, nudge, transform, stickyNeighbour, setGuides, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
+    return { select, tool, eraser, beginHandle, nudge, transform, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

@@ -58,6 +58,7 @@ third-party code included (normally "none") · date.
 | `agent/stage.ts` | w-p | F-AGENT-002/003/004/005/012, R-11, C8 | integration §9 | Agent specification and public model/change APIs, delegates protected deletion and authoritative geometry; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/closed.ts` | w-p | F-AGENT-001/011, WB-D11, C8 | integration §9, native-format read | Agent specification and native reader/sample lease APIs; C5 admission supplied by session host; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/adapter.ts` | w-p | F-AGENT-001/002/003/004/005/012/013, WB-D11/12, C8 | integration §9 | Agent specification and session, change and scene provider contracts; no tldraw or old canvas source | none | 2026-11-13 |
+| `agent/camera.ts` | w-p | F-AGENT-010, C8, C1 | integration §9; platform camera contract | Agent and platform camera conventions; no tldraw or old canvas source | none | 2026-11-13 |
 | `agent/errors.ts` | w-p | F-AGENT-012/013, C8 | integration §9 | Agent specification; no tldraw or old canvas source | none | 2026-11-13 |
 
 ## Formats, importer, save and agent adapter (lane w-d)
@@ -109,6 +110,8 @@ third-party code included (normally "none") · date.
 | `render/material.ts` | lane w-e | W-E4 shared contract; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink public types; direct v-b consumer agreement; own ordered two-band resumable command emission and clip/image transform contract, no second scene or stroker | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
+| `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4 | rendering §§2,10,12; integration §2 | Public LayerHost and model kinds; w-b accessibility source agreement; host-only pages/backdrops, lifecycle-owned layer disposal and React-free open contract | none | 2026-11-13 |
+| `session/gestureQueue.ts` | lane w-e | Session mutation serialisation | input gestures; integration §2 | Direct w-c/w-p/w-f synchronous after-gesture port; own FIFO admission, abort cleanup and readiness checks immediately before transaction task, independent of history | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
 
@@ -275,6 +278,8 @@ third-party code included (normally "none") · date.
 | `input/prediction.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture; browser Pointer Events and Ink APIs; no tldraw source | none | 2026-11-13 |
 | `input/frame.ts` | lane w-f | F-INPUT-001; R-19 | input §4 | Input architecture and shared scheduler contract; no tldraw source | none | 2026-11-13 |
 | `input/liveInk.ts` | lane w-f | F-INK-001/006/007; R-19 | ink §§3,7; input §§4,9 | Ink design and public SampleBuilder; no tldraw source | none | 2026-11-13 |
+| `input/sessionInk.ts` | lane w-f | F-INK-006/007; R-19 | ink §§3,7; input §9 | Public model, session transaction and sample admission APIs; no tldraw source | none | 2026-11-13 |
+| `input/continueInk.ts` | lane w-f | F-INK-010 | ink spec; ink architecture §3 | Public immutable sample and transaction APIs; no tldraw source | none | 2026-11-13 |
 | `input/basicTools.ts` | lane w-f | F-INK-008/009; F-INPUT-010 | input §§6–7; ink spec | Input and ink behavioural specifications; injected hierarchy and transaction services; no tldraw source | none | 2026-11-13 |
 | `input/laserTrail.ts` | lane w-f | F-INK-009 | input §7; ink spec | Input and ink behavioural specifications; shared scheduler deadline seam; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |

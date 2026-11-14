@@ -3,6 +3,7 @@ import { pagePresentation, type Rect, type ViewState } from '../platform/render'
 import type { OpenTiledDocument, PdfTiledDocumentSession } from '../pdf/session/documentSession';
 import { mirrorTextFromReply, PdfTextMirror } from '../pdf/overlay/textMirror';
 import type { MirrorPageText, MirrorSelection } from '../pdf/overlay/textMirror';
+import { getPdfFontEpoch, subscribePdfFontEpoch } from '../pdf/fonts/profiles';
 
 interface MirrorOptions {
     host: HTMLElement | null;
@@ -31,7 +32,7 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
         if (!host || !visible) return;
         const tasks = new Map<number, { controller: AbortController; request: Promise<unknown> }>(), pages = new Map<number, MirrorPageText>();
         const failed = new Set<number>();
-        let alive = true, windowPages = new Set<number>(), announced = -1;
+        let alive = true, windowPages = new Set<number>(), announced = -1, lastView: ViewState | undefined;
         const pageAtY = (y: number) => {
             let lo = 0, hi = pageRects.length;
             while (lo < hi) {
@@ -63,11 +64,11 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
             mirror.setWindow(pages);
             for (const page of wanted) {
                 if (pages.has(page) || tasks.has(page) || failed.has(page)) continue;
-                const task = new AbortController();
+                const task = new AbortController(), epoch = getPdfFontEpoch(pdf.poolDocument.docKey);
                 const request = pdf.poolDocument.text(page, 'select', { priority: page === priorityPage ? 0 : 2, signal: task.signal });
                 tasks.set(page, { controller: task, request });
                 void request.then(reply => {
-                    if (!alive || task.signal.aborted || !session.isCurrent() || !windowPages.has(page)) return;
+                    if (!alive || task.signal.aborted || !session.isCurrent() || !windowPages.has(page) || getPdfFontEpoch(pdf.poolDocument.docKey) !== epoch) return;
                     if (reply.docKey !== pdf.poolDocument.docKey || reply.page !== page || reply.schema !== 2) {
                         throw new Error('The PDF text worker returned a stale page.');
                     }
@@ -87,6 +88,7 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
         }
         controller.current = {
             updateView(view) {
+                lastView = view;
                 const { camera, viewport } = view;
                 if (!pageRects.length || camera.z <= 0) return;
                 mirror.setViewport(camera.x, camera.y, camera.z);
@@ -101,7 +103,17 @@ export function usePdfTextMirror(options: MirrorOptions): MirrorController {
             },
             setSelection(selection) { return mirror.setSelection(selection); },
         };
+        const unsubscribe = subscribePdfFontEpoch(pdf.poolDocument.docKey, () => {
+            for (const task of tasks.values()) task.controller.abort();
+            tasks.clear(); pages.clear(); failed.clear();
+            const selection = window.getSelection();
+            if (selection && (selection.anchorNode && mirror.element.contains(selection.anchorNode) ||
+                selection.focusNode && mirror.element.contains(selection.focusNode))) selection.removeAllRanges();
+            mirror.setWindow(pages);
+            if (lastView) controller.current?.updateView(lastView);
+        });
         return () => {
+            unsubscribe();
             alive = false;
             for (const task of tasks.values()) task.controller.abort();
             tasks.clear(); pages.clear();

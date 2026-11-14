@@ -2065,6 +2065,33 @@ body.is-resizing-panes * {
    every document, and a click or a drag-select that landed on it instead of on
    the note would be silently swallowed. Only the one control inside takes them
    back. */
+.app-update-notice {
+  position: fixed;
+  z-index: 1000;
+  right: 20px;
+  bottom: 36px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  box-shadow: 0 4px 20px #0004;
+}
+
+.app-update-notice button {
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.app-update-notice button:hover { color: var(--text-accent); }
+
 .status-bar {
   position: absolute;
   right: 12px;
@@ -2525,6 +2552,19 @@ body.is-resizing-panes * {
 
 .setting-control .settings-segmented {
   width: 190px;
+}
+
+.setting-control select {
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+}
+
+.settings-body .settings-notices-link {
+  color: var(--text-accent);
 }
 
 .settings-footer {

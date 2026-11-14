@@ -229,7 +229,12 @@ export class PaneCapturer {
             if (owner?.withCapturePass) {
                 try {
                     await this.prepare(request, snapshot, 'gpu', active);
-                    return await this.drawGpu(request, layers, owner, active);
+                    // Preparation can yield while the user begins input or the pane changes
+                    // generations. Never submit to an owner no longer selected for capture.
+                    const current = this.options.tryGpu?.(snapshot);
+                    if (current?.withCapturePass && current.resources === owner.resources) {
+                        return await this.drawGpu(request, layers, current, active);
+                    }
                 } catch (error) {
                     active.check();
                     // Hide can abort the device's view jobs without aborting this session

@@ -87,7 +87,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
             const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView,
                 onEmbedInfrastructure(value) {
                     embedControllerRef.current = value?.controller ?? null;
-                    if (!value) { embedPortRef.current = null; if (live) setEmbedPort(null); }
+                    embedPortRef.current = value?.port ?? null;
+                    if (live) setEmbedPort(value?.port ?? null);
                 },
                 onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
@@ -151,6 +152,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
+    const [servicesEpoch, refreshServices] = useState(0);
     const minimapRef = useRef(false), setMinimapRef = useRef<((value: boolean) => void) | null>(null);
     const minimapVisible = useCallback(() => minimapRef.current, []);
     const setMinimapVisible = useCallback((value: boolean) => { if (!setMinimapRef.current) throw new Error('Minimap view is not attached'); setMinimapRef.current(value); }, []);
@@ -191,8 +193,13 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
     }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
-    const registerShortcuts = useCallback((open: () => void) => { shortcutRef.current = open; return () => { if (shortcutRef.current === open) shortcutRef.current = null; }; }, []);
-    const onStyles = useCallback((value: Styles | null) => { styleRef.current = value; }, [styleRef]);
+    const registerShortcuts = useCallback((open: () => void) => {
+        shortcutRef.current = open; refreshServices(value => value + 1);
+        return () => { if (shortcutRef.current === open) shortcutRef.current = null; };
+    }, []);
+    const onStyles = useCallback((value: Styles | null) => {
+        styleRef.current = value; refreshServices(epoch => epoch + 1);
+    }, [styleRef]);
     const handleChromeReady = useCallback((ready: boolean) => { onChromeReady(ready); setChromeReady(ready); }, [onChromeReady]);
     const toolStateFor = useCallback((id: string, figure?: string): CommandState => {
         if (adapter.board.isReadOnly || !canWrite()) return { enabled: false, reason: adapter.board.readOnlyReason ?? 'Board is read-only' };
@@ -210,8 +217,25 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
             notebook={runtime.session.doc.kind === 'notebook' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
     }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
+    useEffect(() => {
+        if (!props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !owned || !embedPort
+            || !lease.editing?.isAttached() || !lease.editing.getTools() || !styleRef.current || !shortcutRef.current
+            || !commandRef.current || !contextMenuRef.current || !canMutateView()) return;
+        try {
+            if (!host.canWriteSource(identity)) return;
+            if (!adapter.activateEditing) throw new Error('The native session has no editing admission');
+            // The real view services exist before removing the temporary seal.
+            // Final canWrite includes that seal, so checking it first deadlocks admission.
+            const wasReadOnly = adapter.board.isReadOnly;
+            adapter.activateEditing();
+            if (!host.canWrite(identity) || adapter.board.isReadOnly) throw new Error(adapter.board.readOnlyReason ?? 'The canvas source is not writable');
+            lease.refreshAuthority();
+            if (wasReadOnly) refreshServices(epoch => epoch + 1);
+        } catch (error) { report(error); }
+    }, [props.isVisible, signal, current, attached, chromeReady, owned, embedPort, lease, styleRef, commandRef,
+        contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}{attached && chromeReady && <span role="status">Canvas editing services are attached; document remains read-only until all source services are ready.</span>}
+    return <>{dialogs.dialogs}
         {renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
             editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
             canMutate: lease.canMutateView })}</>;

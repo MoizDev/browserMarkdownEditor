@@ -12,6 +12,8 @@ export interface BoardSessionPort extends SessionAdapter {
 export interface HostedBoardAdapter<S extends BoardSessionPort> extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly board: S;
+    /** Called only after the real editing view has installed its required services. */
+    activateEditing?(): void;
     dispose(): void | Promise<void>;
 }
 

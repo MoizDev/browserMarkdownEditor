@@ -66,7 +66,7 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     }
 
     return <div className="board-chrome-tools" ref={root}>
-        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row">
+        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row" dir="ltr">
             <div className="board-chrome-primary-tools">{primary.map(button)}</div>
             <button type="button" ref={trigger} className="board-chrome-tool" aria-label={moreLabel}
                 data-tooltip={moreLabel} aria-expanded={open} aria-haspopup="dialog" disabled={disabled}

@@ -19,6 +19,8 @@ export interface BoardJournalOptions {
     projectMedia?: (entry: MediaEntry) => MediaEntry;
     prepareMedia?: (payload: unknown, signal: AbortSignal, isCurrent: () => boolean) => Promise<{ readonly files: ReadonlyMap<MediaId, string>; release(): void }>;
     isCurrent?: () => boolean;
+    /** App re-reads disk and compares its stat/hash with the session baseline. */
+    assertDiskBaseline(signal: AbortSignal): Promise<void>;
     onError(error: unknown): void;
     cooperate?: () => Promise<void>;
 }
@@ -91,11 +93,14 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
                     await options.cooperate?.();
                 }
                 if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                await options.assertDiskBaseline(signal);
+                if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
                 const media = await options.prepareMedia?.(payload, signal, current);
                 try {
                     if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
                     await recoverBoardJournal(payload, { doc: options.doc, samples: options.samples, apply, signal,
-                        cooperate: options.cooperate, projectMedia: options.projectMedia, mediaFiles: media?.files, isCurrent: current });
+                        cooperate: options.cooperate, projectMedia: options.projectMedia, mediaFiles: media?.files, isCurrent: current,
+                        assertDiskBaseline: options.assertDiskBaseline });
                 } finally { media?.release(); }
             })();
             replay = work;

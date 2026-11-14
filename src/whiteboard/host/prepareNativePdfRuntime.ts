@@ -182,6 +182,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                     },
                     retainMedia: id => store.retain(id, 'journal'), pdfCopy: build.pdfCopy,
                 }, append: (capture, source) => host.appendJournal(identity, source, capture), isCurrent: current,
+                    assertDiskBaseline: async recoverySignal => { await host.acquireBytes(identity, recoverySignal); },
                     async prepareMedia(payload, recoverySignal, isCurrent) {
                         const leases: MediaLease[] = [];
                         try {

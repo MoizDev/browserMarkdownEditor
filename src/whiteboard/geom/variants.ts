@@ -18,6 +18,43 @@ export interface DrawVariant {
     readonly boxHeight: number;
 }
 
+export interface DashInterval { readonly from: number; readonly to: number; readonly painted: boolean }
+
+/** A cursor carries world-space phase between independently leased path chunks. */
+export class DashWalker {
+    private readonly lengths: readonly number[];
+    private index = 0;
+    private remaining: number;
+    constructor(lengths: readonly number[], phase = 0) {
+        if (!lengths.length || lengths.length % 2 || lengths.some(n => !Number.isFinite(n) || n <= 0) || !Number.isFinite(phase)) {
+            throw new RangeError('Invalid dash pattern');
+        }
+        this.lengths = [...lengths];
+        const period = this.lengths.reduce((a, b) => a + b, 0);
+        if (!Number.isFinite(period) || period <= 0) throw new RangeError('Invalid dash period');
+        let offset = ((phase % period) + period) % period;
+        while (this.index < this.lengths.length - 1 && offset >= this.lengths[this.index]) offset -= this.lengths[this.index++];
+        this.remaining = this.lengths[this.index] - offset;
+    }
+    *consume(length: number): Generator<DashInterval> {
+        if (!Number.isFinite(length) || length < 0) throw new RangeError('Invalid path length');
+        let from = 0;
+        while (from < length) {
+            const step = Math.min(this.remaining, length - from);
+            const to = from + step;
+            if (!(to > from)) throw new RangeError('Dash step is below numeric resolution');
+            const interval = { from, to, painted: this.index % 2 === 0 };
+            from = to;
+            this.remaining -= step;
+            if (this.remaining <= 0) {
+                this.index = (this.index + 1) % this.lengths.length;
+                this.remaining = this.lengths[this.index];
+            }
+            yield interval;
+        }
+    }
+}
+
 /** Bounded-memory realization of a straight semantic segment. */
 export function* drawSegment(start: Vec2, end: Vec2, segment: number, style: DrawVariant): Generator<PathOp> {
     const { width, referenceWidth, boxWidth, boxHeight } = style;

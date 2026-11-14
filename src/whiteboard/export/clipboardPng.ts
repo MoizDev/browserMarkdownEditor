@@ -1,4 +1,4 @@
-import { ExportTooLarge } from './png';
+import { ExportTooLarge, splicePngDensity } from './png';
 import type { PinExportSnapshot } from './snapshot';
 import { exportSnapshotPng, type SnapshotExportBounds } from './snapshotExport';
 
@@ -20,5 +20,6 @@ export function createClipboardPngExport(pin: PinExportSnapshot, world: Snapshot
     // Leave a fraction below the side limit when ceil(width * scale) would otherwise cross it.
     const adjusted = Math.min(scale, (8192 - 1e-7) / frozen.width, (8192 - 1e-7) / frozen.height);
     const png = exportSnapshotPng(pin, { world: frozen, scale: adjusted }, signal, { background, clipboard: true });
-    return { items: { 'image/png': png, 'web image/x-board+png': png }, scale: adjusted, reduced: adjusted < 2 - 1e-9 };
+    const densityPng = png.then(blob => splicePngDensity(blob, frozen, signal));
+    return { items: { 'image/png': png, 'web image/x-board+png': densityPng }, scale: adjusted, reduced: adjusted < 2 - 1e-9 };
 }

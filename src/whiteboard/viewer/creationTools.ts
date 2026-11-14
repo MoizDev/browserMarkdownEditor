@@ -150,12 +150,36 @@ class CreationGesture implements GestureOwner {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
-            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4
-            || (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky')) {
+            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4) {
             this.context.guides?.([]); return node;
         }
-        const { runtime } = this.context, candidate = createAddedBoardDoc(this.document, [node]);
+        const { runtime } = this.context;
         const active = () => !signal.aborted && this.valid();
+        if (node.kind === 'connector' || node.kind === 'polyline') {
+            const endpoint = (value: Extract<Node, { kind: 'connector' | 'polyline' }>) => {
+                const p = value.kind === 'connector' ? value.end : value.points[value.points.length - 1];
+                const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                const x = value.x + p.x, y = value.y + p.y;
+                return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
+            };
+            const point = endpoint(node);
+            if (node.kind === 'connector' && !modifiers.accel) {
+                const attached = await this.context.resolveAttachment(point, signal, { precise: modifiers.shift, exact: modifiers.alt,
+                    input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+                if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+                if (attached) { this.context.guides?.([]); return node; }
+            }
+            const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
+                zoom: this.context.camera.camera.z, current: active, signal });
+            if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+            const next = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
+            if (next.kind !== 'connector' && next.kind !== 'polyline') throw new Error('Creation kind changed');
+            const actual = endpoint(next), zoom = this.context.camera.camera.z;
+            this.context.guides?.(snapped.guides.filter(guide => Math.abs((guide.axis === 'x' ? actual.x : actual.y) - guide.value) * zoom <= 0.5));
+            return next;
+        }
+        if (node.kind !== 'figure' && node.kind !== 'frame' && node.kind !== 'sticky') { this.context.guides?.([]); return node; }
+        const candidate = createAddedBoardDoc(this.document, [node]);
         const scope = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal, current: active });
         let bounds: ReturnType<typeof scope.logicalBounds>;
         try { bounds = scope.logicalBounds(node.id); } finally { scope.release(); }

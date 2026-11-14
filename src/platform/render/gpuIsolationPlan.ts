@@ -32,10 +32,11 @@ export class GpuIsolationPlan {
 
     constructor(width: number, height: number) { this.#width = width; this.#height = height; }
 
-    own(depth: number, multiply: boolean): void {
-        this.#ownDepth = depth;
+    own(depth: number, multiply: boolean, bounds: Readonly<RectI> = { x: 0, y: 0, width: this.#width, height: this.#height }): void {
+        this.#count(depth);
+        this.#ownDepth = Math.max(this.#ownDepth, depth);
         this.#multiply ||= multiply;
-        if (depth) this.#entry({ x: 0, y: 0, width: this.#width, height: this.#height }, 'rgba8', 1, false);
+        if (depth) this.#entry(bounds, 'rgba8', 1, false);
     }
 
     declare(value: LayerIsolationDeclaration): void {

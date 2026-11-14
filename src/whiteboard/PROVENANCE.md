@@ -53,13 +53,20 @@ third-party code included (normally "none") · date.
 | `format/points.ts` | w-d | FMT-2, F-3, F-9, E-FMT-7/18/21; R-W2/3/28/29/31/36/39 | native-format §4; ink §2.2 | The named greenfield specifications; arithmetic LEB128, zig-zag and second differences described there; lead's recorded arithmetic/inspection/run rulings; full validation without coordinate arrays, scale-aware precision, local quantized bounds/pressure summaries; no tldraw source/packages | none | 2026-11-13 |
 | `format/fence.ts` | w-d | F-10, FC-7; R-W15 | native-format §3.6; independence-protocol §3 conditions 1–5 | Native specification's exact inert bytes; its fact source is `formats/corpus/received/failure-results.json` (newer-schema/newer-sequences, empty-object/malformed); lead's W-D1 house-style review and R-W15's exact plain-word purpose label; no corpus source, old canvas code or tldraw package opened | none | 2026-11-13 |
 | `format/encode.ts` | w-d | FMT-3, F-1/5/6/7/8/10; R-W13/14/15/16/17/19/20/22/23/25/30/34/35/36 | native-format §§3,11; document-model §§3,7,8; text §4.2 | Those greenfield plans; w-c's public model/defaults/fileFields types and data; model-owned live/preserved media index contract; lead's recorded rulings; w-e's sample-coordinate/run contract (no ink implementation read); no tldraw source/packages | none | 2026-11-13 |
-| `format/lineTable.ts` | w-d | FMT-3, F-6/7; R-W16/30 | native-format §§3.2,11 | Those greenfield plans; TouchedSet public type; lead-approved commutative four-lane consistency digest, using independently seeded 32-bit FNV-style arithmetic (not a security hash); no third-party implementation consulted | none | 2026-11-13 |
+| `format/lineTable.ts` | w-d | FMT-3, F-6/7; R-W16/30 | native-format §§3.2,11 | Those greenfield plans; TouchedSet public type; lead-approved commutative four-lane consistency digest, using independently seeded 32-bit FNV-style arithmetic (not a security hash); immutable shared-line revision forks and canonical recovery positions; no third-party implementation consulted | none | 2026-11-13 |
 | `format/writeJson.ts` | w-d | FMT-3, F-5/6; R-W16/17/20/22/23 | native-format §§3.3,6,10,11; text §4.2 | Those greenfield plans and raw-lexeme rulings; model RawJson/ExtBag public types; JSON token/string rules implemented independently; no tldraw source/packages | none | 2026-11-13 |
 | `format/writeTypes.ts` | w-d | FMT-3, F-6/7 | native-format §§3.1–3.3,10,11 | Those greenfield plans; JSON identity tuples and UTF-8 byte-length rules implemented independently; no tldraw source/packages | none | 2026-11-13 |
 | `format/jsonRead.ts` | w-d | FMT-4, F-5/8/9; R-W16/20/22/30/33 | native-format §§3.3/6/7/10; security §3 | Independent bounded lexical JSON walk; validated raw spans and decoded-key duplicate rejection; no third-party parser implementation or tldraw source | none | 2026-11-13 |
 | `format/readTypes.ts` | w-d | FMT-4, F-4/8/9; R-W28/29/38/39 | native-format §§6–8; document-model §5 | Public ordered-draft/source-position/host-lease contract agreed with w-c, w-e and w-b; immutable stroke inspection metadata, not graph admission | none | 2026-11-13 |
 | `format/readModel.ts` | w-d | FMT-4, F-4/5/8/9; R-W25/28/29/30/33/35/38/39 | native-format §§3/5–8; text §4; document-model §§3/7–9 | Plans, shared model defaults/types, pure app-owned paper.ts; required pdf-and-drawings skill read in full (describes old integration names/behaviour), no old canvas implementation or tldraw source/package opened | none | 2026-11-13 |
 | `format/read.ts` | w-d | FMT-4, F-4/5/8/9, E-FMT-1/2/3/4/8/9/10/11/12/13/14; R-W25/28/29/33/37/38/39/40 | native-format §§6–8/10; security §3 | Independent bounded byte/UTF-8/line admission and no-record-lines fallback; model-owned raw visitors/scanner for every retained carrier; original retention/read-only and lease ownership delegated explicitly to host; no third-party or tldraw code | none | 2026-11-13 |
+
+| `format/serializerProtocol.ts` | w-d | CH-3, F-7 | native-format §11; change-and-history §5 | Greenfield plans and platform worker host plain-data contract; parsed bytes and durable Blob/index baseline, revision-pinned delta/build envelopes | none | 2026-11-13 |
+| `format/serializer.worker.ts` | w-d | CH-3, F-7 | native-format §11; change-and-history §5 | Platform serve/CPU cooperation; independently built per-revision line snapshots and Blob recovery index; app-owned pure utils/sha256.ts incremental FIPS implementation; no tldraw source/package | none | 2026-11-13 |
+| `format/serializerClient.ts` | w-d | CH-3, F-7, C7.5 | native-format §11; change-and-history §5 | Platform worker client/governor; session-owned parsed-byte/durable-Blob recovery and pinned version branches; no tldraw source/package | none | 2026-11-13 |
+| `format/recordChanges.ts` | w-d | CH-3, F-7 | native-format §11; change-and-history §5 | Model Applied/TouchedSet and encoder public seams, changed-record UTF-8 plus incremental record revision digest; no tldraw source/package | none | 2026-11-13 |
+| `session/saveScheduler.ts` | w-d | CH-3, H-4/7 | change-and-history §5 | Session-owned 150ms debounce, gesture/composition hold, serialized pinned 500ms journal capture; no tldraw source/package | none | 2026-11-13 |
+| `session/contentSource.ts` | w-d | CH-3, C7.5 | change-and-history §5; contracts C7 | Synchronous immutable revision-pinned BuildJob interface; PDF host composes pinned lists/bytes without an independent write; no tldraw source/package | none | 2026-11-13 |
 
 ## Ink, scene, rendering and the viewer host (lane w-e)
 
@@ -115,6 +122,40 @@ third-party code included (normally "none") · date.
 | `tools/whiteboard-fonts/manifest.json` | lane w-n | T-6 | text §7.1 | Upstream release and tag URLs and SHA-256 for each font | font metadata | 2026-11-13 |
 | `tools/whiteboard-fonts/generate.mjs` | lane w-n | T-6 | text §§7.1–7.2 | W3C WOFF2 directory and Brotli format; own metrics extraction and pinned-hash gate | none | 2026-11-13 |
 | `tools/whiteboard-fonts/{Shantell-OFL,IBM-Plex-OFL}.txt` | lane w-n | T-6 | text §7.1 | Exact upstream licences including copyright and Reserved Font Name | SIL OFL 1.1 notices | 2026-11-13 |
+
+## Geometry and selection (lane w-g)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `geom/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Generic box and affine helpers moved with w-e's agreement from scene/bounds.ts; no tldraw source | none | 2026-11-13 |
+| `scene/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Re-export generic helpers from geom/bounds.ts to retain the scene API | none | 2026-11-13 |
+| `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types | none | 2026-11-13 |
+| `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
+
+## Figures and geometry providers (lane w-h)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; no tldraw source | none | 2026-11-13 |
+| `geom/figures.ts` | lane w-h | F-FIG-001 | geometry §3 | Independent shape recipes from the design; fourth-derivative Hermite error bound; no tldraw source | none | 2026-11-13 |
+| `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe; no tldraw source | none | 2026-11-13 |
+
+## Media and clipboard (lane w-q)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `media/sha256.ts` | lane w-q | F-MEDIA-003/004; SEC-4 | media §1.2; security §3.2 | FIPS 180-4 §6.2 algorithm as specified in the design; independently implemented; no tldraw source | none | 2026-11-13 |
+| `media/sniff.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §6 | Format signatures from security §6, independent implementation | none | 2026-11-13 |
+| `media/headers.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §1; security §6 | Image container header structures, independently implemented; no tldraw source | none | 2026-11-13 |
+| `media/isoHeaders.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | ISO-BMFF bounded boxes and AVIF primary-property association, independently implemented | none | 2026-11-13 |
+| `media/webmHeader.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | security §6 | EBML bounded element encoding and WebM track fields, independently implemented | none | 2026-11-13 |
+| `media/decode.worker.ts` | lane w-q | F-MEDIA-001/003/004; SEC-4 | media §1; threading §2; security §6 | Platform worker contract and browser bitmap API; no tldraw source | none | 2026-11-13 |
+| `media/inspect.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §1; security §§3/6 | Platform worker and memory allocator contracts; isolated SVG profile injection; browser APIs | none | 2026-11-13 |
+| `media/ingest.ts` | lane w-q | F-MEDIA-001/002/003/004/008; SEC-4 | media §§1–3; security §3 | Board model/apply public contracts and media architecture; no tldraw source | none | 2026-11-13 |
+| `media/store.ts` | lane w-q | F-MEDIA-004; SEC-4 | media §3–4; security §4 | Session ownership, history and clipboard lifetime requirements | none | 2026-11-13 |
+| `media/svgProfile.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §§5–6 | Separate opaque XML/image profiles and fixed-shape response requirements | none | 2026-11-13 |
+| `media/svgXmlRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | XML preflight and SVG dimensions, isolated realm only | none | 2026-11-13 |
+| `media/svgImageRuntime.ts` | lane w-q | F-MEDIA-001/003; SEC-3/4 | security §6 | Browser image-context rasterization, isolated image profile only | none | 2026-11-13 |
 
 ## Editing lanes (w-f to w-j)
 

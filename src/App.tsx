@@ -2,7 +2,7 @@ import { runReaderHostCommand } from './utils/documentReading';
 import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
 import { createDocumentSessions } from './utils/documentSessions';
 import { createCanvasSessionBridge } from './utils/canvasSessionBridge';
-import { installSessionIdentity } from './utils/sessionIdentity';
+import { installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
 import { getSessionIdentity } from './utils/sessionIdentity';
@@ -44,6 +44,7 @@ import type { RecoveryEntry } from './utils/recoveryJournal';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from './utils/recoveryFunnel';
+import { getSearchRequest, subscribeSearchRequest } from './utils/searchRequest';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -998,6 +999,7 @@ export default function App() {
   useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
   const bumpBytesGeneration = useCallback((id: string) => {
     const generation = (bytesGenerationsRef.current.get(id) ?? 0) + 1;
+    prepareBytesChange(id, generation);
     bytesGenerationsRef.current.set(id, generation);
     const session = documentSessions.get(id);
     if (session) session.bytesGeneration = generation;
@@ -1242,6 +1244,11 @@ export default function App() {
   // Sidebar collapse (Cmd+\, the explorer-header button, or the rail) —
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
+  useEffect(() => subscribeSearchRequest(() => {
+    if (!getSearchRequest()) return;
+    setSidebarCollapsed(false);
+    setSearchOpen(true);
+  }), []);
   useEffect(() => {
     writeStoredValue('sidebarCollapsed', String(sidebarCollapsed));
   }, [sidebarCollapsed]);
@@ -2306,8 +2313,17 @@ export default function App() {
       if (!tab || tab.content === content) latestContentRef.current.delete(path);
     }
   }, [tabs]);
-  const contentOf = useCallback((path: string): string | undefined =>
-    latestContentRef.current.get(path) ?? tabsRef.current.find(t => t.file.path === path)?.content, []);
+  const contentOf = useCallback((path: string): string | undefined => {
+    const tab = tabsRef.current.find(t => t.file.path === path);
+    if (!tab) return undefined;
+    const buffer = documentBuffers.get(tab.id);
+    if (buffer?.readable) return documentBuffers.contentOf(path);
+    // Until every PDF caller migrates to snapshotOf, its legacy snapshot is
+    // still needed by the annotate and print paths. Other unreadable kinds
+    // must never be exposed as empty text.
+    if (tab.representation.loadedKind === 'pdf') return latestContentRef.current.get(path) ?? tab.content;
+    return buffer ? undefined : canReadTabText(tab) ? latestContentRef.current.get(path) ?? tab.content : undefined;
+  }, [documentBuffers]);
 
   /**
    * Writes are SERIALIZED per document (by id, so a rename mid-write cannot
@@ -2572,9 +2588,9 @@ export default function App() {
               kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => ({ payload: text, copy: text, mediaRefs: [] }) });
           }
         }
-        const current = !currentRevision || currentRevision.revision === revision;
+        const current = (!currentRevision || currentRevision.revision === revision) && !documentBuffers.isDirty(id);
         setTabs(prev => prev.map(t =>
-          t.id === id && current && t.content === snapshot ? { ...t, dirty: false } : t));
+          t.id === id && current ? { ...t, dirty: false } : t));
         // Any column on screen, not only the focused one: with the editor split
         // the status line speaks for everything the reader can see.
         if (current && visiblePathsRef.current.includes(path)) {

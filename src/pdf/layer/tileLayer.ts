@@ -1,6 +1,8 @@
-import { pageAt, renderTokenKey, tileKeyString } from '../../platform/render';
+import { pageAt, tileKeyString } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfSessionMirrors } from './tileMirror';
+import { covers, intersects } from './coverage';
+import { PdfTileCache } from './tileCache';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 
@@ -35,34 +37,14 @@ interface Entry {
     used: number;
 }
 
+function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
+    const { vaultEpoch, documentId, session } = input.token;
+    return JSON.stringify([vaultEpoch, documentId, session, input.variant, input.geometryDigest]);
+}
+
 function rect(request: PdfTileRequest): Rect {
     const c = request.tile.clip;
     return { x: c.left, y: c.top, width: c.right - c.left, height: c.bottom - c.top };
-}
-
-function intersects(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
-    return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
-}
-
-/** Exact rectangle union, not a bounding-box guess across missing tile holes. */
-function covers(target: Readonly<Rect>, boxes: readonly Rect[]): boolean {
-    const cuts = [target.x, target.x + target.width];
-    for (const box of boxes) {
-        if (!intersects(box, target)) continue;
-        cuts.push(Math.max(target.x, box.x), Math.min(target.x + target.width, box.x + box.width));
-    }
-    cuts.sort((a, b) => a - b);
-    for (let i = 1; i < cuts.length; i++) {
-        if (cuts[i] <= cuts[i - 1]) continue;
-        const x = (cuts[i] + cuts[i - 1]) / 2;
-        const intervals = boxes.filter(box => box.x <= x && box.x + box.width >= x)
-            .map(box => [Math.max(target.y, box.y), Math.min(target.y + target.height, box.y + box.height)] as const)
-            .filter(([top, bottom]) => bottom > top).sort((a, b) => a[0] - b[0]);
-        let end = target.y;
-        for (const [top, bottom] of intervals) { if (top > end + 1e-7) break; end = Math.max(end, bottom); }
-        if (end < target.y + target.height - 1e-7) return false;
-    }
-    return true;
 }
 
 function project(box: Readonly<Rect>, view: ViewState): Rect {
@@ -77,7 +59,7 @@ function project(box: Readonly<Rect>, view: ViewState): Rect {
  * come from the shared host. Waiting for a worker alone is not frame work.
  */
 export class PdfTileLayer implements Layer {
-    private readonly entries = new Map<string, Entry>();
+    private readonly entries = new PdfTileCache<Entry>();
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
@@ -118,7 +100,7 @@ export class PdfTileLayer implements Layer {
             }
         }
         const input = this.demand(view);
-        const identity = JSON.stringify([renderTokenKey(input.token), input.source, input.variant]);
+        const identity = contentFamily(input);
         if (identity !== this.contentIdentity) {
             for (const [key, entry] of this.entries) this.remove(key, entry);
             this.failed.clear();
@@ -163,7 +145,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded(input.viewport);
+                this.evictUnneeded(input.viewport, bytes);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -197,7 +179,7 @@ export class PdfTileLayer implements Layer {
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
         if (this.disposed || !this.isCurrent()) return { complete: false, sharp: false };
         const input = this.demand(view);
-        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) {
+        if (contentFamily(input) !== this.contentIdentity) {
             return { complete: false, sharp: false };
         }
         const device = gpu ? this.host.device() : null;
@@ -388,7 +370,7 @@ export class PdfTileLayer implements Layer {
 
     private drawable(view: ViewState): Entry[] {
         const input = this.demand(view);
-        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) return [];
+        if (contentFamily(input) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
@@ -400,11 +382,16 @@ export class PdfTileLayer implements Layer {
             width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
     }
 
-    private evictUnneeded(viewport: Readonly<Rect>): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
-            !intersects(rect(entry.request), viewport))
-            .sort((a, b) => a[1].used - b[1].used);
-        for (const [key, entry] of candidates) this.remove(key, entry);
+    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {
+        const candidates = this.entries.evictable(this.desired, viewport, entry => rect(entry.request), entry => !!entry.bitmap);
+        candidates.sort((a, b) => Number(a[1].request.level === 'low') - Number(b[1].request.level === 'low') ||
+            a[1].used - b[1].used);
+        let freed = 0;
+        for (const [key, entry] of candidates) {
+            freed += entry.lease.bytes;
+            this.remove(key, entry);
+            if (freed >= neededBytes) break;
+        }
     }
 
     private remove(key: string, entry: Entry): void {

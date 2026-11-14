@@ -1,18 +1,14 @@
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useSyncExternalStore } from 'react';
 import { FileText, X } from './icons';
 import { collectFiles } from '../utils/tree';
-import { searchVault, isTextFile } from '../utils/vaultSearch';
-import { isCanvasFile } from '../utils/fileTypes';
-import type { FileSearchResult } from '../utils/vaultSearch';
-import type { VaultIndexSession } from '../utils/vaultIndexSession';
+import type { FileSearchResult, VaultSearchResults } from '../utils/vaultSearch';
+import type { SearchController, SearchRow } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
+import { getIndexProgress, subscribeIndexProgress } from '../utils/indexProgress';
 
 interface SearchPanelProps {
     fileTree: FileTreeNode[];
-    /** Owned by the vault activation, surviving panel closure. */
-    cache: VaultIndexSession;
-    /** Latest in-memory content of an open tab (may be newer than disk). */
-    getOpenTabContent: (path: string) => string | null;
+    search: SearchController;
     onOpenResult: (node: FileTreeFileNode, range: TextRange | null) => void;
     onClose: () => void;
 }
@@ -44,41 +40,52 @@ function rowKeyHandler(activate: () => void) {
  * tree in the sidebar. Matches file names and file contents (VSCode-style),
  * grouped per file; clicking a row opens the file (and jumps to the match).
  */
-export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpenResult, onClose }: SearchPanelProps) {
-    const revision = useSyncExternalStore(cache.subscribe, cache.getRevision);
+export default function SearchPanel({ fileTree, search, onOpenResult, onClose }: SearchPanelProps) {
+    const progress = useSyncExternalStore(subscribeIndexProgress, getIndexProgress);
     const [query, setQuery] = useState('');
-    // Results are computed from the deferred value so typing stays instant
-    // even while a large vault is being scanned.
     const deferredQuery = useDeferredValue(query);
     const [ready, setReady] = useState(false);
-    const index = useMemo(() => cache.snapshot(), [cache, revision]);
+    const [failed, setFailed] = useState(false);
+    const [searchProgress, setSearchProgress] = useState<{ done: number; total: number } | null>(null);
+    const [epoch, setEpoch] = useState(0);
+    const [results, setResults] = useState<VaultSearchResults>({ files: [], matchCount: 0, clipped: false });
     const inputRef = useRef<HTMLInputElement | null>(null);
     const files = useMemo(() => collectFiles(fileTree), [fileTree]);
-    // Drawings are JSON on disk: indexing them would surface raw snapshot text
-    // as match snippets. They stay searchable by NAME (they're still in `files`).
-    const textFiles = useMemo(
-        () => files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name)),
-        [files]
-    );
 
     useEffect(() => {
-        let live = true;
-        setReady(false);
-        void cache.requestSync(textFiles).then(() => { if (live) setReady(true); }).catch(() => {});
-        return () => { live = false; };
-    }, [cache, textFiles]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const unsubscribe = search.subscribe(() => {
+            if (!query) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => setEpoch(value => value + 1), 500);
+        });
+        return () => { unsubscribe(); clearTimeout(timer); };
+    }, [query, search]);
 
-    // Open-tab buffers are read through a ref-backed accessor on purpose: it
-    // keeps the memoized sidebar from re-rendering on editor keystrokes, at
-    // the cost of results not live-updating while you type elsewhere. Any
-    // query change, tree change, or index publication recomputes.
-    const results = useMemo(
-        () => searchVault(files, deferredQuery, path =>
-            // An OPEN drawing would otherwise leak its live JSON buffer in here,
-            // bypassing the index filter above.
-            isCanvasFile(path) ? undefined : (getOpenTabContent(path) ?? index?.get(path))),
-        [files, deferredQuery, index, getOpenTabContent]
-    );
+    useEffect(() => {
+        const abort = new AbortController();
+        setResults({ files: [], matchCount: 0, clipped: false });
+        setFailed(false);
+        setSearchProgress(null);
+        setReady(!deferredQuery);
+        if (!deferredQuery) return () => abort.abort();
+        const byPath = new Map(files.map(file => [file.path, file]));
+        const rows: SearchRow[] = [];
+        void search.search(deferredQuery, batch => {
+            if (abort.signal.aborted) return;
+            if (batch.reset) rows.length = 0;
+            if (batch.scanned !== undefined && batch.total !== undefined) setSearchProgress({ done: batch.scanned, total: batch.total });
+            rows.push(...batch.batch);
+            const found = rows.flatMap(row => {
+                const file = byPath.get(row.path);
+                return file ? [{ file, nameMatch: row.nameMatch, matches: row.matches, clipped: row.clipped }] : [];
+            });
+            setResults({ files: [...found.filter(row => row.nameMatch), ...found.filter(row => !row.nameMatch)],
+                matchCount: batch.matchCount, clipped: batch.clipped });
+            if (batch.done) setReady(true);
+        }, abort.signal).catch(() => { if (!abort.signal.aborted) { setFailed(true); setReady(true); } });
+        return () => abort.abort();
+    }, [deferredQuery, epoch, files, search]);
 
     /** Open a file group's best target: its first match, or just the file. */
     const openResult = (result: FileSearchResult) => {
@@ -140,13 +147,18 @@ export default function SearchPanel({ fileTree, cache, getOpenTabContent, onOpen
             )}
 
             <div className="search-results">
+                {progress?.phase === 'sweeping' ? <p className="search-hint" role="status">Indexing — {progress.done} of {progress.total}</p>
+                    : query && !ready && searchProgress && <p className="search-hint" role="status">Indexing — {searchProgress.done} of {searchProgress.total}</p>}
                 {!query && (
                     <p className="search-hint">Search file names and contents across the vault.</p>
                 )}
                 {query && !ready && (
-                    <p className="search-hint">Indexing vault…</p>
+                    <p className="search-hint">Searching vault…</p>
                 )}
-                {query && deferredQuery && ready && fileCount === 0 && (
+                {query && failed && (
+                    <p className="search-hint">Search unavailable. <button onClick={() => { search.retry(); setEpoch(value => value + 1); }}>Retry</button></p>
+                )}
+                {query && deferredQuery && ready && !failed && fileCount === 0 && (
                     <p className="search-hint">No results for “{deferredQuery}”.</p>
                 )}
                 {query && results.files.map(result => {

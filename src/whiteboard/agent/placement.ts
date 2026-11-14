@@ -68,10 +68,15 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
     let candidate = node;
     const ops: NodeSetOp[] = [];
     if (op.w !== undefined || op.h !== undefined) {
-        if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
-        candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };
-        if (op.w !== undefined) ops.push({ t: 'set', id: node.id, key: 'w', value: op.w });
-        if (op.h !== undefined) ops.push({ t: 'set', id: node.id, key: 'h', value: op.h });
+        if (node.kind === 'text' && op.w !== undefined && op.h === undefined) {
+            candidate = { ...node, w: op.w, autoSize: false };
+            ops.push({ t: 'set', id: node.id, key: 'w', value: op.w }, { t: 'set', id: node.id, key: 'autoSize', value: false });
+        } else {
+            if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
+            candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };
+            if (op.w !== undefined) ops.push({ t: 'set', id: node.id, key: 'w', value: op.w });
+            if (op.h !== undefined) ops.push({ t: 'set', id: node.id, key: 'h', value: op.h });
+        }
     }
     const newBox = context.localBox(candidate);
     const parent = parentTransform(context, node, target.page);

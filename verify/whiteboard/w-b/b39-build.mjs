@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { buildMutant } from '../harness/mutant-build.mjs';
+import { markerSpecs } from '../harness/today/markers.mjs';
 
 const { values } = parseArgs({ options: {
   scratch: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/b39/reference' },
@@ -22,7 +23,7 @@ const patchFile = values['tool-mutant'] ? 'verify/whiteboard/harness/mutants/pin
 const patch = patchFile ? await readFile(resolve(worktree, patchFile), 'utf8') : '';
 if (patch && !Buffer.from(patch).equals(git(['show', `${harnessCommit}:${patchFile}`]))) throw Error('Uncommitted toolbar mutation');
 const identity = { referenceCommit, harnessCommit, mode: 'production', variant: patchFile ? 'pinned-tool' : 'reference', patchFile, patchSha256: patch ? sha(patch) : null, installLockSha256: sha(await readFile(resolve(worktree, 'package-lock.json'))) };
-const descriptor = await buildMutant({ sourceTree: worktree, sourceCommit: referenceCommit, scratchRoot: values.scratch, name: identity.variant, patch, identity, receiptName: 'b39-build.json' });
+const descriptor = await buildMutant({ sourceTree: worktree, sourceCommit: referenceCommit, scratchRoot: values.scratch, name: identity.variant, patch, identity, markerSpecs, receiptName: 'b39-build.json' });
 await mkdir(values.scratch, { recursive: true });
 await writeFile(resolve(values.scratch, 'latest.json'), JSON.stringify(descriptor, null, 2) + '\n');
 console.log(JSON.stringify(descriptor));

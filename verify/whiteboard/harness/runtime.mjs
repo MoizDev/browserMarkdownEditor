@@ -125,8 +125,9 @@ export async function launchRuntime(options = {}) {
     await context.addInitScript({ content: `(${installBrowser.toString()})(${JSON.stringify(params)});\n${after}` });
     const cdp = await context.newCDPSession(page);
     for(const script of options.initScripts||[])await context.addInitScript(script);
-    if(options.beforeNavigate)await options.beforeNavigate({browser,context,page,cdp,baseURL});
-    const mutations=[];for(const spec of options.mutations||[])mutations.push(await prepareMutation({browser,context,page,cdp,baseURL},spec));
+    const mutations=[];
+    if(options.beforeNavigate)await options.beforeNavigate({browser,context,page,cdp,baseURL,mutations});
+    for(const spec of options.mutations||[])mutations.push(await prepareMutation({browser,context,page,cdp,baseURL},spec));
     await page.goto(baseURL, { waitUntil:'domcontentloaded' });
     await page.getByRole('button', { name:'Open Vault',exact:true }).waitFor();
     const dev = await page.evaluate(()=>!!document.querySelector('script[src*="/@vite/client"]'));

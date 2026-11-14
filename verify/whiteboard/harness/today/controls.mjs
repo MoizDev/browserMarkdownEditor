@@ -19,6 +19,7 @@ export function fieldControls(h) {
   const runId = randomUUID();
   const journal = [];
   h.referenceControlJournal = journal;
+  h.referenceControlAttempts = [];
   const add = (fields, kind, mode, observation) => {
     const row = { runId, fields, kind, mode, complete: true, observation };
     journal.push(row);
@@ -33,6 +34,7 @@ export function fieldControls(h) {
     await frames(h.page, 3);
     const snapshot = await session(path);
     const pressed = await button.getAttribute('aria-pressed');
+    h.referenceControlAttempts.push({ runId, field: 'session.currentTool', path, action: `click ${id}`, observedTool: snapshot.currentTool, pressed });
     requireValue('session.currentTool', snapshot.currentTool, expected, `after ${id} click`);
     requireValue('session.currentTool', pressed, 'true', `${id} real toolbar state`);
     return { tool: snapshot.currentTool, pressed };
@@ -42,6 +44,7 @@ export function fieldControls(h) {
     journal,
     runId,
     require(fields, { kind, phase = 'after-action' } = {}) {
+      if (!['drawing', 'notebook', 'pdf'].includes(kind) || !['after-action', 'persisted-only'].includes(phase)) fail('control scope', 'an explicit host kind and known phase are required');
       for (const field of fields) {
         const control = journal.find(row => row.runId === runId && row.complete && row.fields.includes(field) && (!kind || row.kind === kind) && (phase !== 'after-action' || row.mode === 'action'));
         if (!control) fail(field, `UNCONTROLLED in this run/kind/phase; it cannot count as a parity reference`);
@@ -88,20 +91,32 @@ export function fieldControls(h) {
       const historyDrawn = await session(path);
       requireValue('session.canUndo', historyDrawn.canUndo, true, 'after new stroke');
       requireValue('session.canUndo', await root().getByTestId('quick-actions.undo').isEnabled(), true, 'public Undo enabled');
-      await root().getByTestId('quick-actions.undo').click();
-      await frames(h.page, 3);
+      // Measured: the first Undo restored selection and left one stroke.
+      // Exhaust the bounded public history, rather than calling selection Undo
+      // a failed document write or claiming a single click removed the ink.
+      const undoSteps = [], redoSteps = [];
+      for (let i = 0; i < 20 && await root().getByTestId('quick-actions.undo').isEnabled(); i++) {
+        requireValue('session.canUndo', (await session(path)).canUndo, true, 'public Undo remains enabled');
+        await root().getByTestId('quick-actions.undo').click();
+        await frames(h.page, 3);
+        undoSteps.push({ count: (await h.probe.today(path)).length, state: await session(path) });
+      }
       const undone = await session(path);
-      requireCount('nodes.length', (await h.probe.today(path)).length, 0, 'real Undo removed the stroke');
+      requireCount('nodes.length', (await h.probe.today(path)).length, 0, 'real Undo sequence removed the stroke');
       requireValue('session.canUndo', undone.canUndo, false, 'Undo restored empty fixture');
       requireValue('session.canRedo', undone.canRedo, true, 'real Undo enables Redo');
       requireValue('session.canRedo', await root().getByTestId('quick-actions.redo').isEnabled(), true, 'public Redo enabled');
-      await root().getByTestId('quick-actions.redo').click();
-      await frames(h.page, 3);
+      for (let i = 0; i < 20 && await root().getByTestId('quick-actions.redo').isEnabled(); i++) {
+        requireValue('session.canRedo', (await session(path)).canRedo, true, 'public Redo remains enabled');
+        await root().getByTestId('quick-actions.redo').click();
+        await frames(h.page, 3);
+        redoSteps.push({ count: (await h.probe.today(path)).length, state: await session(path) });
+      }
       const redone = await session(path);
-      requireCount('nodes.length', (await h.probe.today(path)).length, 1, 'real Redo restored the stroke');
+      requireCount('nodes.length', (await h.probe.today(path)).length, 1, 'real Redo sequence restored the stroke');
       requireValue('session.canUndo', redone.canUndo, true, 'Redo enables Undo');
-      requireValue('session.canRedo', redone.canRedo, false, 'Redo consumes redo entry');
-      add(['session.canUndo', 'session.canRedo', 'nodes.length'], kind, 'action', { before: { canUndo: historyBefore.canUndo, canRedo: historyBefore.canRedo }, drawn: { canUndo: historyDrawn.canUndo, canRedo: historyDrawn.canRedo }, undone: { canUndo: undone.canUndo, canRedo: undone.canRedo }, redone: { canUndo: redone.canUndo, canRedo: redone.canRedo }, counts: [0, 1, 0, 1] });
+      requireValue('session.canRedo', redone.canRedo, false, 'Redo consumes redo entries');
+      add(['session.canUndo', 'session.canRedo', 'nodes.length'], kind, 'action', { before: { canUndo: historyBefore.canUndo, canRedo: historyBefore.canRedo }, drawn: { canUndo: historyDrawn.canUndo, canRedo: historyDrawn.canRedo }, undone: { canUndo: undone.canUndo, canRedo: undone.canRedo }, redone: { canUndo: redone.canUndo, canRedo: redone.canRedo }, undoSteps, redoSteps });
       // These controls show raw observation responsiveness; exact paged camera
       // coordinates still have no cross-engine read-out (the mapping says so).
       const painted = root().locator(`[data-shape-id=${JSON.stringify(id)}]`).first();
@@ -115,6 +130,7 @@ export function fieldControls(h) {
       if (!(zoomed.viewport.world.width < beforeCamera.viewport.world.width) || !(zoomed.viewport.world.height < beforeCamera.viewport.world.height)) fail('session.viewport.world.width/height', 'zoom did not shrink both world-view dimensions');
       add(['session.camera.zoom', 'session.viewport.world.width', 'session.viewport.world.height'], kind, 'action', { before: beforeCamera.camera, after: zoomed.camera, beforeWorld: beforeCamera.viewport.world, afterWorld: zoomed.viewport.world, paintedWidths: [beforePaint.width, zoomPaint.width] });
       const panStart = { x: rectangle.x + rectangle.width * .55, y: rectangle.y + rectangle.height * .50 };
+      await h.input.settleModifiers(14, { minimumMs: 300, path, point: panStart, release: ['ctrl'] });
       await h.input.pointer('mousePressed', panStart, { kind: 'mouse', button: 'middle', buttons: 4 });
       await h.input.pointer('mouseMoved', { x: panStart.x + 45, y: panStart.y + 40 }, { kind: 'mouse', button: 'none', buttons: 4 });
       await h.input.pointer('mouseReleased', { x: panStart.x + 45, y: panStart.y + 40 }, { kind: 'mouse', button: 'middle', buttons: 0 });

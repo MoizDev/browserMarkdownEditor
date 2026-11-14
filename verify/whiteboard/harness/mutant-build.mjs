@@ -15,7 +15,7 @@ const command = (file, args, options = {}) => new Promise((done, reject) => {
   child.on('exit', code => code === 0 ? done() : reject(Error(`${file} exited ${code}; build before acquiring a run grant`)));
 });
 
-export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name, patch = '', identity = {}, receiptName = 'mutant-build.json' }) {
+export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name, patch = '', identity = {}, markerSpecs = [], receiptName = 'mutant-build.json' }) {
   if (!sourceTree || !sourceCommit || !scratchRoot || !/^[\w-]{1,60}$/.test(name ?? '')) throw Error('buildMutant requires sourceTree/sourceCommit/scratchRoot/safe name');
   if (!/^[0-9a-f]{40}$/.test(sourceCommit) || !/^[\w-]+\.json$/.test(receiptName)) throw Error('Invalid build identity/receipt name');
   const source = await fs.realpath(sourceTree);
@@ -24,7 +24,7 @@ export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name,
   await fs.mkdir(root, { recursive: true });
   const directory = await fs.mkdtemp(path.join(root, `${name}-`));
   const jobPath = path.join(directory, 'job.json');
-  await fs.writeFile(jobPath, JSON.stringify({ source, sourceCommit, directory, patch, identity, receiptName }));
+  await fs.writeFile(jobPath, JSON.stringify({ source, sourceCommit, directory, patch, identity, markerSpecs, receiptName }));
   // The lock covers the archive, independent dependency copy and Vite. Calling
   // this from inside a run grant is deliberately refused by the shared lock.
   await command(LOCK, ['build', '--', process.execPath, modulePath, '--job', jobPath]);
@@ -33,7 +33,7 @@ export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name,
 
 async function perform(jobPath) {
   const job = JSON.parse(await fs.readFile(jobPath, 'utf8'));
-  const { source, sourceCommit, directory, patch, identity, receiptName } = job;
+  const { source, sourceCommit, directory, patch, identity, markerSpecs, receiptName } = job;
   const tree = path.join(directory, 'source'), outDir = path.join(directory, 'dist');
   await fs.mkdir(tree);
   const archivePath = path.join(directory, 'source.tar');
@@ -75,8 +75,14 @@ export default {
   plugins: [...original.plugins, { name: 'reference-artifact-receipt', writeBundle(options, bundle) {
     const entry = Object.values(bundle).find(item => item.type === 'chunk' && item.isEntry && item.facadeModuleId === ${JSON.stringify(path.join(tree, 'index.html'))});
     if (!entry) throw new Error('Build has no app entry');
-    const scripts = Object.fromEntries(Object.values(bundle).filter(item => /\\.m?js$/.test(item.fileName)).map(item => [item.fileName, sha(readFileSync(resolve(options.dir, item.fileName)))]));
-    writeFileSync(resolve(options.dir, ${JSON.stringify(receiptName)}), JSON.stringify({ ...${JSON.stringify(record)}, entry: entry.fileName, scripts }));
+    const bodies = Object.values(bundle).filter(item => /\\.m?js$/.test(item.fileName)).map(item => [item.fileName, readFileSync(resolve(options.dir, item.fileName))]);
+    const scripts = Object.fromEntries(bodies.map(([file, body]) => [file, sha(body)]));
+    const markerCounts = Object.fromEntries(${JSON.stringify(markerSpecs)}.map(spec => [spec.name, Object.fromEntries(bodies.map(([file, body]) => {
+      const text = body.toString('utf8');
+      const count = spec.pattern ? [...text.matchAll(new RegExp(spec.pattern, 'g'))].length : text.split(spec.find).length - 1;
+      return [file, count];
+    }).filter(([, count]) => count > 0))]));
+    writeFileSync(resolve(options.dir, ${JSON.stringify(receiptName)}), JSON.stringify({ ...${JSON.stringify(record)}, entry: entry.fileName, scripts, markerCounts }));
   } }],
 };
 `);

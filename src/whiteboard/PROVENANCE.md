@@ -53,7 +53,8 @@ third-party code included (normally "none") · date.
 | `change/rawChanges.ts` | lane w-c | H-2/3, M-3/9, R-W23/25/37/40 | document-model §9.3; change-and-history §2 | Design/rulings; diff RawJson carrier multiplicities, scan entering/leaving values, omit only owning media self-reference | none | 2026-11-13 |
 | `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/2/5/6, D-10 | change-and-history §§2–4; integration §§2/9 | Design; source ownership, read-only safety and session-owned gesture queue public contract; no tldraw source | none | 2026-11-13 |
 | `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
-| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, import contract and replace-blocks semantics; no tldraw source | none | 2026-11-13 |
+| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, operations and import contract; no tldraw source | none | 2026-11-13 |
+| `text/richOperations.ts` | lane w-l | TX-2 | text §4; change-and-history §2.1 | Design-only projection, mark/link edits, insertion, list/heading transforms and enter; no tldraw source | none | 2026-11-13 |
 | `model/textOffsets.ts` | lane w-l | TX-2, V-11 | text §4.3 | Grapheme boundary admission over immutable block projection; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
 
@@ -104,6 +105,7 @@ third-party code included (normally "none") · date.
 | `security/urlPolicy.ts` | w-d | SEC-W1, SEC-5/6/7 | security §8 | Independent URL parser policy and literal IPv4/IPv6 special-address classification; no DNS-rebinding claim, no automatic requests; no third-party matcher code | none | 2026-11-13 |
 | `security/admission.ts` | w-d | SEC-W1, SEC-8 | security §3 | Fixed immutable session/epoch/generation/request jobs, bounded serialized queue and cancellation/current checks; no tldraw source/package | none | 2026-11-13 |
 | `workers/protocol.ts`, `workers/client.ts` | w-d | THR-1, THR-3 | threading §§2–3, platform C5 | App-owned identity envelopes, stale-result disposal, governed host requests and deadlines; no tldraw source/package | none | 2026-11-13 |
+| `workers/nativeParseTypes.ts` | w-d | THR-1, W-C5 | threading §2; native-format §7 | Types-only worker parse request and unadmitted ordered wire draft; no filesystem handles or fake validation authority | none | 2026-11-13 |
 | `workers/pointHandlers.ts` | w-d | THR-1, FMT-2 | threading §2; native-format §4 | Sliced point inspection/decode in the parse worker, explicit owned transfers and cancellation cooperation; no tldraw source/package | none | 2026-11-13 |
 | `workers/parse.worker.ts`, `workers/geometry.worker.ts`, `workers/export.worker.ts` | w-d | THR-1 | threading §2 | App-owned worker-host entrypoints; text layout and PNG handlers remain owned by their lanes, geometry operations registered as slab work lands; no tldraw source/package | none | 2026-11-13 |
 | `security/validatedImport.ts` | w-d | SEC-W1, SEC-8 | security §3 | Issuer-private one-shot WeakMap brand, trusted schema-validator seam and bounded owned inert data projection; no executable values, accessors or foreign prototypes; no tldraw source/package | none | 2026-11-13 |
@@ -169,6 +171,7 @@ third-party code included (normally "none") · date.
 | `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6; current-format §4; security SEC-W1 | Source/metadata retention, model raw-media indexing, shared paper normalization API (`utils/paper.ts` read), ordered C5 async admission seam | none | 2026-11-13 |
 | `import/basicGeometry.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; ink §3 | Public ink curve/sample interfaces, own cubic world bounds and w-h polylineWorldSemanticBounds; connectors delegated | none | 2026-11-13 |
 | `import/sampleWire.ts` | w-o | IMP-1/2, E-IMP-15, SEC-W1 | import §§1–3; native-format §4 | Public sample sequence and native point encoder; canonical C5 LoadSampleWire for host re-admission | none | 2026-11-13 |
+| `import/loadAdapterTypes.ts` | w-o | IMP-1, C5, SEC-W1 | import §1; document-model §9 | Public adapter contract for w-d's ordered C5 repair/projection port | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
 | `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 

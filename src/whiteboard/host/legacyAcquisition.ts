@@ -203,7 +203,10 @@ export async function rehostLegacyBoard(source: EditableLegacy,
             deadlineMs: importDeadline(bytes.size), cooperate: options.cooperate });
         check();
         if (owned.status !== 'editable' || !owned.report.complete || owned.report.format !== 'native'
-            || owned.report.repaired?.repairs.length) throw new Error('Final legacy PDF HOST failed lossless native C5 admission');
+            || owned.report.repaired?.repairs.length) {
+            const report = owned.report;
+            throw new Error(`Final legacy PDF HOST C5 admission failed (status: ${owned.status}, format: ${report.format}, complete: ${report.complete}, repairs: ${report.repaired?.repairs.length ?? 0}, issues: ${report.issueCount}). The original is unchanged.`);
+        }
         const native = owned; owned = undefined;
         return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,
             bytes, native, legacyReport: source.legacyReport, media, previousFrames: source.previousFrames,

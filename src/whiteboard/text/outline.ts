@@ -74,8 +74,9 @@ export async function textOutline(payload: unknown, context: WorkerContext): Pro
         if (!fragment.text) continue;
         let commands: PathCommand[] | null = null;
         if (!fragment.systemFallback && face.loaded) {
-            const [hb, font] = await Promise.all([import('harfbuzzjs'), outlineFont(face)]);
+            const [hb, font] = await Promise.all([import('harfbuzzjs'), outlineFont(face).catch(() => null)]);
             context.signal.throwIfAborted();
+            if (font) {
             const buffer = new hb.Buffer();
             buffer.addText(fragment.text); buffer.guessSegmentProperties();
             buffer.setDirection(fragment.rtl ? hb.Direction.RTL : hb.Direction.LTR);
@@ -105,6 +106,7 @@ export async function textOutline(payload: unknown, context: WorkerContext): Pro
                     }
                     x += position.xAdvance * factor; y -= position.yAdvance * factor;
                 }
+            }
             }
         }
         if (commands) items.push({ kind: 'path', d: commands, fill: color, blend: material.blend });

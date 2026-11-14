@@ -155,6 +155,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         }, 180);
     }, [clamp, persist]);
 
+    useEffect(() => {
+        if (thumbs && isVisible) return;
+        for (const task of thumbnailTasks.current) task.abort();
+        thumbnailTasks.current.clear();
+    }, [thumbs, isVisible]);
+
     const renderThumbnail = useCallback(async (index: number, scale: number): Promise<string> => {
         const page = pdf.pages[index];
         if (!page || !active.current.isVisible || !session.isCurrent()) throw new DOMException('Thumbnail cancelled', 'AbortError');

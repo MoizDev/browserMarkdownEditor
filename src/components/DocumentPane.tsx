@@ -986,13 +986,16 @@ function DocumentPane({
                             const currentPath = markdownSessions.pathOf(documentId);
                             if (currentPath === undefined || !blob) return true;
                             const parentHandle = markdownSessions.parentHandleOf(documentId);
-                            const assetFolder = joinVaultPath(parentVaultPath(currentPath), ASSETS_DIR);
+                            const folder = parentVaultPath(currentPath);
+                            const assetFolder = joinVaultPath(folder, ASSETS_DIR);
                             const adapter = markdownSessions.get(documentId);
                             saveAsset(filename, blob, parentHandle).then(() => {
                                 // A move during the write must not insert a reference
                                 // to a picture saved beside the old destination.
                                 if (!adapter || markdownSessions.get(documentId) !== adapter) return;
-                                if (markdownSessions.parentHandleOf(documentId) !== parentHandle) {
+                                const latestPath = markdownSessions.pathOf(documentId);
+                                if (latestPath === undefined) return;
+                                if (parentVaultPath(latestPath) !== folder) {
                                     onNotify('The note moved while its picture was saving. Paste it again in the new folder.');
                                     return;
                                 }

@@ -179,9 +179,8 @@ the primitive on purpose: routing `createFile` through `freeEntryName` would qui
 annotated-PDF path) genuinely wants create-or-open. **The primitive itself is still unguarded, so
 anything new that calls it inherits the hole.**
 
-> Note: `utils/entryNames.ts`'s `nameTaken` (App's create handlers and the AI agent's host) and
-> `FileSystemContext.tsx`'s `entryExists` are two **independent** implementations of the same "taken
-> by either kind" rule. They are not shared code. Change both.
+> `FileSystemContext.tsx`'s `entryExists`, exposed as `nameTaken`, is the single check used by
+> App's create handlers and the AI agent's host; files and folders both count.
 
 **The AI agent writes through the same rules** (`utils/agentHost.ts`, the `vault-agent` skill): its
 create/mkdir refuse a taken name instead of truncating, its move REFUSES a taken target (unlike
@@ -314,7 +313,7 @@ should spell `'.Assets'`.**
   trashed files: same name, exact inverse, no chance of resurrecting a user-trashed file's bytes into
   `.Assets`.
 - **Reconciles are serialized** (`reconcileQueueRef`, the same promise-queue shape as
-  `utils/recentVaults.ts`). One pass can read a whole subtree while the saves that start them are a
+  `context/recentVaults.ts`). One pass can read a whole subtree while the saves that start them are a
   second apart, so they overlap easily — and raced, the classic sequence loses a picture: remove an
   embed (a long scan starts), undo (the next save restores the asset at once), then the first scan's
   retire lands on top and the note points at a file in `.Garbage`.
@@ -344,7 +343,7 @@ should spell `'.Assets'`.**
   (`retireAsset` only ever touches the folder it was given). `.Garbage` makes even a wrong call
   recoverable.
 
-## Recent vaults (`utils/recentVaults.ts` + `VaultMenu.tsx`)
+## Recent vaults (`context/recentVaults.ts` + `VaultMenu.tsx`)
 
 The sidebar's vault switcher (bottom, `SidebarFooter`; its menu opens UPWARD, anchored by `bottom`)
 lists folders already opened as vaults rather than going straight to the OS picker. A vault is just a folder, so `~/Notes` and `~/Notes/mathnotes` are two of them; the list

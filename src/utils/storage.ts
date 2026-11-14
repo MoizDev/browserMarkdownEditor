@@ -25,7 +25,7 @@ export const LOCAL_STORAGE_KEYS = [
     'bme.developer', 'bme.whiteboard.engine.drawing', 'bme.whiteboard.engine.notebook',
     'bme.whiteboard.engine.pdfInk', 'bme.whiteboard.emergencyReadOnly.drawing',
     'bme.whiteboard.emergencyReadOnly.notebook', 'bme.whiteboard.emergencyReadOnly.pdfInk',
-    'bme.pdf.viewer', 'bme.pdf.platformLayer', 'bme.whiteboard.userDictionary',
+    'bme.pdf.viewer', 'bme.pdf.platformLayer', 'bme.whiteboard.userDictionary', 'bme.whiteboard.theme',
     // Migration removals also need tombstones, or an old backup resurrects them.
     'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus',
     'openTabGroupSizes', 'openTabsVaultId', 'activeTabPath', 'lastFilePath',

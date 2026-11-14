@@ -708,7 +708,7 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
             const files = collectFiles(ctx.host.getFileTree()).filter(f => inScope(f.path));
             // Keep scope/cache admission here; the disposable worker receives no file handles.
             const textFiles = files.filter(f => isTextFile(f.name) && !isCanvasFile(f.name));
-            const index = await searchCache.sync(textFiles);
+            const index = await searchCache.sync(textFiles, handle => ctx.host.readSnapshot(handle));
             ctx.ensureLive();
             textFileCount = textFiles.length;
             const textPaths = new Set(textFiles.map(f => f.path));
@@ -975,9 +975,12 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const ops = a.ops as CanvasOp[];
     const view = await liveCanvas(ctx, path);
     ctx.ensureLive();
+    if (ctx.signal?.aborted) throw new ToolError('Canvas edit cancelled. Nothing was applied.');
     let r: CanvasApplyResult;
     try {
-        r = view.canvas.apply(ops);
+        r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+        } });
     } catch (err) {
         throw new ToolError(`the canvas refused the change: ${err instanceof Error ? err.message : String(err)}. Nothing was applied.`);
     }

@@ -1,3 +1,6 @@
+import type { Node } from '../model/nodes';
+import { backdropRole, type LegacyShape } from './records/common';
+
 // IMP-3, E-IMP-7/9: legacy rectangles come from the saved backdrop, not a new PDF layout.
 export interface LegacyPageRect { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 export interface DisplayPage { readonly w: number; readonly h: number }
@@ -19,12 +22,56 @@ export function mapLegacyPdfPages(rects: readonly LegacyPageRect[], pages: reado
     });
 }
 
+export function legacyPdfPages(shapes: readonly LegacyShape[], pages: readonly DisplayPage[]): readonly LegacyPageMapping[] {
+    const rects: (LegacyPageRect | undefined)[] = new Array(pages.length);
+    for (const shape of shapes) {
+        if (backdropRole(shape, 'pdf-ink') !== 'backdrop') continue;
+        const index = shape.meta.pdfPage;
+        if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= pages.length || rects[index]) {
+            throw new Error('Invalid or duplicate saved PDF page geometry');
+        }
+        const { w, h } = shape.props;
+        if (typeof w !== 'number' || typeof h !== 'number') throw new Error(`Missing geometry for page ${index + 1}`);
+        rects[index] = { x: shape.x, y: shape.y, w, h };
+    }
+    if (rects.some(rect => rect === undefined) || rects.filter(Boolean).length !== pages.length) {
+        throw new Error('Missing saved PDF page geometry');
+    }
+    return mapLegacyPdfPages(rects as LegacyPageRect[], pages);
+}
+
 export function notebookPages(width: number, height: number, count: number): readonly LegacyPageMapping[] {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0
         || !Number.isInteger(count) || count < 1 || count > 500) throw new Error('Invalid notebook paper');
     return Array.from({ length: count }, (_, index) => ({
         rect: { x: 0, y: index * (height + 24), w: width, h: height }, scale: 1,
     }));
+}
+
+export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
+export type LegacyBoundsPreparation = (nodes: readonly Node[]) => (node: Node) => LegacyWorldBounds;
+export type PageSource =
+    | { readonly kind: 'notebook'; readonly width: number; readonly height: number; readonly count: number }
+    | { readonly kind: 'pdf-ink'; readonly pages: readonly DisplayPage[] };
+
+export function createPagePreparation(source: PageSource, geometry: LegacyBoundsPreparation):
+    (shapes: readonly LegacyShape[], nodes: readonly Node[]) => ReturnType<typeof preparePageMapper<Node>> {
+    return (shapes, nodes) => {
+        const pages = source.kind === 'notebook' ? notebookPages(source.width, source.height, source.count)
+            : legacyPdfPages(shapes, source.pages);
+        return preparePageMapper(pages, geometry(nodes));
+    };
+}
+export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(
+    pages: readonly LegacyPageMapping[], bounds: (shape: T) => LegacyWorldBounds):
+    (shape: T) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
+    return shape => {
+        const box = bounds(shape);
+        if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {
+            throw new Error(`Invalid world bounds for ${shape.id}`);
+        }
+        return locateLegacyPage(pages, shape.x, shape.y, box.y + box.h / 2);
+    };
 }
 
 export function locateLegacyPage(pages: readonly LegacyPageMapping[], x: number, y: number, centreY: number): {

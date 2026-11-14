@@ -1,6 +1,6 @@
 import type { BoardAccessibilitySource } from './BoardAccessibility';
 import type { BoardSessionPort } from './boardSessionAdapter';
-import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
+import type { AttachBoardView, BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
 import type { ViewerHostProps, ViewerViewHandle } from './ViewerHost';
 
 /** The renderer and input adapter are injected by the lazy engine entry. */
@@ -41,5 +41,19 @@ export function createBoardViewLease<S extends BoardSessionPort, T extends objec
         },
         subscribe: listener => engine.subscribe(listener),
         dispose: () => engine.dispose(),
+    };
+}
+
+/** Engine construction is per view, but the App-owned board identity is mandatory. */
+export function createBoardViewAttacher<S extends BoardSessionPort, T extends object>(options: {
+    attachEngine(board: S, parameters: BoardViewParameters): BoardViewEngine<T> & { readonly session: S };
+    readonly platform: ViewerHostProps<T>['platform'];
+    readonly input: AttachBoardInput<S, T>;
+    readonly viewExtras?: Readonly<Record<string, unknown>>;
+}): AttachBoardView<S, T> {
+    return (board, parameters) => {
+        const engine = options.attachEngine(board, parameters);
+        if (engine.session !== board) { engine.dispose(); throw new Error('Board view attached the wrong session'); }
+        return createBoardViewLease(board, engine, options.platform, parameters.mode, options.input, options.viewExtras);
     };
 }

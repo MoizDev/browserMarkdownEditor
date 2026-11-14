@@ -1,6 +1,6 @@
 import type { RenderToken } from '../../platform/render/types';
 import type { BoardDoc, BoardDocInput } from '../model/doc';
-import type { NodeId } from '../model/ids';
+import type { NodeId, SheetId } from '../model/ids';
 import { createLoadedBoardDoc } from '../model/loadDocument';
 import { boardPageStack } from '../model/pages';
 import type { PaintNode, PaintNodeSource } from '../render/paintStream';
@@ -9,6 +9,7 @@ import type { ScenePaintNodeStream } from '../render/scenePaintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import { BoundsQuality, validBox } from './bounds';
 import { createPinnedPaintDoc } from './paintDoc';
+import { SceneCellIndex } from './cellIndex';
 import type { SceneRecordPin } from './recordStore';
 import type { SceneMetadata } from './snapshotDoc';
 import type { SceneBounds, SceneOccupiedBounds, ScenePaintRequest, SceneSnapshot } from './types';
@@ -66,29 +67,62 @@ export function createSceneSnapshot(options: {
         return promise;
     };
     const paintDocument = (): BoardDoc => { check(); return paintDoc ??= createPinnedPaintDoc(records, metadata, revision, check); };
-    const ordered = function* (request: ScenePaintRequest): Generator<NodeId | null> {
+    // The index is built once per pinned sheet in bounded slices; every stream and frame of this pin
+    // then visits candidate ordinals only. A pending build is part of the pin, never a silent miss.
+    const built: SceneCellIndex[] = [];
+    const indexes = new Map<SheetId, Promise<SceneCellIndex>>();
+    const cooperateSlice = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const buildIndex = async (sheetId: SheetId): Promise<SceneCellIndex> => {
+        const index = new SceneCellIndex();
+        try {
+            const stack: Iterator<import('../model/nodes').Node>[] = [records.children(sheetId)[Symbol.iterator]()];
+            let visited = 0, started = performance.now();
+            while (stack.length) {
+                check();
+                if (++visited >= 64 || performance.now() - started >= 0.25) {
+                    await cooperateSlice(); check(); visited = 0; started = performance.now();
+                }
+                const next = stack[stack.length - 1].next();
+                if (next.done) { stack.pop(); continue; }
+                const node = next.value, bounds = options.bounds?.get(node.id);
+                const usable = bounds?.revision === revision && (bounds.quality === BoundsQuality.Exact || bounds.quality === BoundsQuality.Conservative)
+                    && bounds.ink && validBox(bounds.ink) ? bounds.ink : null;
+                index.add(node.id, usable);
+                if (records.childCount(node.id)) {
+                    if (stack.length >= 65) throw new RangeError('Invalid scene parent depth');
+                    stack.push(records.children(node.id)[Symbol.iterator]());
+                }
+            }
+            check();
+            built.push(index);
+            return index;
+        } catch (error) { index.close(); throw error; }
+    };
+    const indexFor = (sheetId: SheetId): Promise<SceneCellIndex> => {
         check();
-        let visited = 0, started = performance.now();
+        let pending = indexes.get(sheetId);
+        if (!pending) {
+            pending = track(buildIndex(sheetId));
+            indexes.set(sheetId, pending);
+            pending.catch(() => { if (indexes.get(sheetId) === pending) indexes.delete(sheetId); });
+        }
+        return pending;
+    };
+    const ordered = function* (index: SceneCellIndex, request: ScenePaintRequest): Generator<NodeId | null> {
+        check();
         const world = request.world;
         const cull = world && [world.x, world.y, world.width, world.height, world.x + world.width, world.y + world.height]
             .every(Number.isFinite) && world.width >= 0 && world.height >= 0 ? world : undefined;
-        const stack: Iterator<import('../model/nodes').Node>[] = [records.children(request.sheetId)[Symbol.iterator]()];
-        while (stack.length) {
-            check();
+        let visited = 0, started = performance.now();
+        for (const ordinal of index.candidates(cull)) {
             if (++visited >= 64 || performance.now() - started >= 0.25) {
                 yield null; check(); visited = 0; started = performance.now();
             }
-            const next = stack[stack.length - 1].next();
-            if (next.done) { stack.pop(); continue; }
-            const node = next.value, bounds = cull ? options.bounds?.get(node.id) : undefined;
+            const id = index.ids[ordinal], bounds = cull ? options.bounds?.get(id) : undefined;
             const usable = bounds?.revision === revision && (bounds.quality === BoundsQuality.Exact || bounds.quality === BoundsQuality.Conservative)
                 && bounds.ink;
             if (!cull || !usable || !(usable[2] < cull.x || usable[0] > cull.x + cull.width
-                || usable[3] < cull.y || usable[1] > cull.y + cull.height)) yield node.id;
-            if (records.childCount(node.id)) {
-                if (stack.length >= 65) throw new RangeError('Invalid scene parent depth');
-                stack.push(records.children(node.id)[Symbol.iterator]());
-            }
+                || usable[3] < cull.y || usable[1] > cull.y + cull.height)) yield id;
         }
     };
     const copyRequest = (request: ScenePaintRequest): ScenePaintRequest => Object.freeze({ ...request,
@@ -179,8 +213,9 @@ export function createSceneSnapshot(options: {
             const pinnedRequest = copyRequest(request);
             const work = track((async () => {
                 const doc = paintDocument();
+                const index = await indexFor(pinnedRequest.sheetId);
                 check();
-                const source = await options.prepare(doc, pinnedRequest, controller.signal, ordered(pinnedRequest));
+                const source = await options.prepare(doc, pinnedRequest, controller.signal, ordered(index, pinnedRequest));
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
                 const extended = source as PaintNodeSource & { readonly sessionRasters?: unknown; readonly rasterVariant?: unknown };
@@ -196,7 +231,9 @@ export function createSceneSnapshot(options: {
             const combined = AbortSignal.any(signal ? [controller.signal, local.signal, signal] : [controller.signal, local.signal]);
             const work = track((async () => {
                 const doc = paintDocument();
-                const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(pinnedRequest));
+                const index = await indexFor(pinnedRequest.sheetId);
+                check(); combined.throwIfAborted();
+                const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(index, pinnedRequest));
                 const stream = wrapStream(source, combined, local, pinnedRequest.world);
                 try {
                     check(); combined.throwIfAborted();
@@ -219,6 +256,8 @@ export function createSceneSnapshot(options: {
                 await Promise.allSettled([...inFlight]);
                 const retired = await Promise.allSettled([...streams].map(close => close()));
                 const failure = retired.find(result => result.status === 'rejected');
+                indexes.clear();
+                for (const index of built.splice(0)) index.close();
                 if (failure?.status === 'rejected') throw failure.reason;
                 try { records.release(); } finally { options.renderer?.release(); }
             })();

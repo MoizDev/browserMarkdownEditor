@@ -1,9 +1,12 @@
 import { fitWidthZ, pageAt, pageStack } from '../../platform/render';
 import type { Rect, RenderToken, ViewState } from '../../platform/render';
+import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
 import { getPdfFontEpoch, pdfVariantRevision, subscribePdfFontEpoch } from '../fonts/profiles';
 import { pdfPageLayerDefinition } from '../layer/definition';
+import { createPdfCaptureSnapshot } from '../layer/captureSnapshot';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { createPdfTileProducer } from '../layer/tileProducer';
 import type { PdfPool } from '../pool/types';
@@ -152,7 +155,47 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         const bitmap = await capturer.captureRegion(rect, Math.min(maxSide, 1568), { layers: ['pdf-page'], theme: 'light', inverted: false, signal });
         try { check(signal); return bitmap; } catch (error) { bitmap.close(); throw error; }
     };
-    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible,
+    const captureSnapshot = (request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot => {
+        const epoch = getPdfFontEpoch(pdf.docKey), controller = new AbortController();
+        const checkSource = () => {
+            if (controller.signal.aborted || !retained.session.isCurrent() || !currentToken(token) ||
+                pdf.closed || pdf.source !== 'original' || pdf.docKey !== source.docKey ||
+                !sameToken(pdf.token, token) || getPdfFontEpoch(pdf.docKey) !== epoch) throw stale();
+            assertPdfCaptureAllowed(tiledPdfCapabilities(pdf.info));
+        };
+        checkSource();
+        const unsubscribe = subscribePdfFontEpoch(pdf.docKey, () => {
+            if (getPdfFontEpoch(pdf.docKey) !== epoch) controller.abort(stale());
+        });
+        let released = false;
+        const releaseFont = () => { if (!released) { released = true; unsubscribe(); } };
+        try {
+            const snapshot = createPdfCaptureSnapshot({ token, source: 'original', variant: 'plain', fontEpoch: epoch,
+                revision: `${token.bytesGeneration}:${epoch}`, stack,
+                retain: async () => {
+                    const actual = await retained.session.acquireCapture();
+                    try {
+                        checkSource();
+                        if (actual.signal.aborted || actual.document !== document) throw stale();
+                        const producer = { async render(tile: Parameters<typeof document.producer.render>[0], signal: AbortSignal) {
+                            checkSource();
+                            if (tile.key.contentRevision !== pdfVariantRevision('plain', epoch)) throw stale();
+                            const bitmap = await actual.document.producer.render(tile, AbortSignal.any([signal, controller.signal]));
+                            try { signal.throwIfAborted(); checkSource(); return bitmap; } catch (error) { bitmap.close(); throw error; }
+                        } };
+                        return { document: { producer }, signal: AbortSignal.any([actual.signal, controller.signal]), release: actual.release };
+                    } catch (error) { actual.release(); throw error; }
+                } }, request, memory);
+            return { ...snapshot, signal: AbortSignal.any([snapshot.signal, controller.signal]),
+                async prepare(capture, route, signal) {
+                    checkSource();
+                    const result = await snapshot.prepare(capture, route, signal);
+                    checkSource(); return result;
+                },
+                release() { try { snapshot.release(); } finally { releaseFont(); } } };
+        } catch (error) { releaseFont(); throw error; }
+    };
+    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible, captureSnapshot,
         async resolveGeometry(page, signal) {
             check(signal);
             const geometry = await pdf.resolveGeometry(page, { priority: 0, signal });

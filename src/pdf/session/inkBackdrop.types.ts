@@ -1,5 +1,7 @@
 import type { PageGeometry } from '../../platform/types';
 import type { PlatformLayerDefinition, Rect } from '../../platform/render';
+import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PdfPool } from '../pool/types';
 import type { WriterSource } from '../writing/protocol';
 
@@ -18,6 +20,7 @@ export interface PdfInkBackdrop {
     pages: readonly { width: number; height: number }[];
     layers: readonly PlatformLayerDefinition[];
     resolveGeometry(page: number, signal: AbortSignal): Promise<PageGeometry>;
+    captureSnapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
     capture: {
         renderPage(page: number, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
         captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;

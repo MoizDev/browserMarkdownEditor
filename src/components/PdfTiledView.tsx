@@ -15,9 +15,10 @@ import type { PdfLinkTarget } from '../pdf/pdfLinkModel';
 import type { PdfSelectionState } from '../pdf/text/selectionState';
 import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
-import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfReadingBinding } from '../types/reading';
 import { pdfAgentPages } from '../pdf/text/agentText';
+import { captureTiledRotationPreview } from '../utils/pdfTiledRotationPreview';
+import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { flushPdfViewPositions, getPdfInverted, readPdfNavigationRevision, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -63,7 +64,9 @@ interface Props {
     readonly isFocused: boolean;
     readonly mirror: PdfSessionMirrors;
     readonly capturer: PdfSessionCapturer;
-    readonly onRotate?: (delta: number, pageIndex?: number) => void;
+    readonly sourceHash?: string;
+    readonly onRotate?: (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => void;
+    readonly onSearchVault: (query: string) => void;
     readonly findMemory: PdfFindMemory;
     readonly selectionState: PdfSelectionState;
     readonly onOpenTextView: (page?: number) => void;
@@ -73,7 +76,7 @@ interface Props {
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
-    mirror, capturer, findMemory, selectionState, onRotate, onOpenTextView, onNotice }: Props) {
+    mirror, capturer, findMemory, selectionState, sourceHash, onSearchVault, onRotate, onOpenTextView, onNotice }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [contentHost, setContentHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
@@ -113,6 +116,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     active.current = { isVisible, isFocused };
     const velocity = useRef({ x: 0, y: 0 });
     const previousInput = useRef({ x: 0, y: 0, time: 0 });
+    const rotationQueue = useRef<Promise<void>>(Promise.resolve());
+    const rotationIdentity = useRef({ sourceHash, geometryDigest, session });
+    rotationIdentity.current = { sourceHash, geometryDigest, session };
     const frameView = useRef<ViewState | null>(null);
     const touchHandler = useRef<(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent) => void>(() => {});
     const autoScroll = useRef({ x: 0, y: 0, time: 0 });
@@ -188,6 +194,23 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         recordPdfNavigation(filePath, 'user-navigation');
         updateCamera({ ...camera.current, y: target.y });
     }, [filePath, stack, updateCamera]);
+
+    const rotate = useCallback((delta: number, index?: number) => {
+        if (!onRotate || capabilities.encrypted) return;
+        const shownPage = Math.max(0, pageAt(stack, camera.current.y));
+        const capturePage = index ?? shownPage, rect = stack.rects[capturePage];
+        const identity = rotationIdentity.current;
+        rotationQueue.current = rotationQueue.current.catch(() => {}).then(async () => {
+            const pane = paneRef.current?.current;
+            const picture = identity.session === rotationIdentity.current.session && identity.session.isCurrent() && pane && rect && identity.sourceHash ? await captureTiledRotationPreview(pane, rect, capturePage, delta,
+                { sourceHash: identity.sourceHash, geometryDigest: identity.geometryDigest }, () => {
+                    const live = rotationIdentity.current;
+                    return live.session === identity.session && live.session.isCurrent() && live.sourceHash ?
+                        { sourceHash: live.sourceHash, geometryDigest: live.geometryDigest } : null;
+                }) : undefined;
+            onRotate(delta, index, picture);
+        });
+    }, [capabilities.encrypted, onRotate, stack]);
 
     const navigate = useCallback((target: Exclude<PdfLinkTarget, { kind: 'uri' }>) => {
         const current = Math.max(0, pageAt(stack, camera.current.y));
@@ -285,7 +308,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         isVisible: isVisible && capabilities.copy === true, locate, pageSize: index => pdf.pages[index],
         keyboardAnchor: () => { const box = contentHost?.getBoundingClientRect();
             return { x: (box?.left ?? 0) + (box?.width ?? 0) / 2, y: (box?.top ?? 0) + 24, page }; },
-        searchVault: requestVaultSearch, findPdf: query => find.find.current?.openFind(query),
+        searchVault: onSearchVault, findPdf: query => find.find.current?.openFind(query),
         readText: index => onOpenTextView(index), notice: onNotice });
     copyRef.current = copyMenu;
     const selectionInput = usePdfTiledSelection({ element: contentHost, docKey: pdf.poolDocument.docKey,
@@ -443,7 +466,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             const old = camera.current;
             if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
                 if (!onRotate || capabilities.encrypted) return;
-                onRotate(event.code === 'BracketLeft' ? -90 : 90);
+                rotate(event.code === 'BracketLeft' ? -90 : 90);
             } else if (event.key === '+' || event.key === '=' || event.key === '-') {
                 recordPdfNavigation(filePath, 'user-navigation');
                 const z = constraint.clampZoom(old.z * (event.key === '-' ? 1 / 1.2 : 1.2), viewport.current);
@@ -507,7 +530,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             host.removeEventListener('pointerdown', pointerDown); host.removeEventListener('pointermove', pointerMove);
             host.removeEventListener('pointerup', pointerEnd); host.removeEventListener('pointercancel', pointerEnd);
         };
-    }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, stack, updateCamera]);
+    }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
 
     useEffect(() => registerView(filePath, {
         kind: 'pdf',
@@ -584,7 +607,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         <div className="pdf-viewer-controls">
             <div className="pdf-viewer-pill"><ThumbnailsToggle open={thumbs} onToggle={() => setThumbs(previous => { writeThumbnailsOpen(!previous); return !previous; })} />
                 <PdfInvertToggle />
-                {onRotate && <PdfTiledRotateControls path={filePath} page={page} onRotate={onRotate}
+                {onRotate && <PdfTiledRotateControls path={filePath} page={page} onRotate={rotate}
                     disabledReason={capabilities.encrypted ? PDF_ENCRYPTED_READ_ONLY : undefined} />}
             </div>
             <PdfTiledPageField page={page} pageCount={pdf.pages.length} onNavigate={goPage} />

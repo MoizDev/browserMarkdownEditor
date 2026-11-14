@@ -23,7 +23,7 @@ export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {
     return JSON.stringify(pages.map(page => [page.index, page.width, page.height, page.rotate, page.userUnit, ...page.toUserSpace]));
 }
 
-interface Slot { value: unknown; dispose?: () => void }
+interface Slot { value: unknown; dispose?: () => void | Promise<void> }
 
 /**
  * App/session lifetime, not a component lifetime. The source snapshot and
@@ -90,10 +90,10 @@ export class PdfTiledDocumentSession {
     isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
 
     getSlot<T>(key: symbol): T | undefined { return this.slots.get(key)?.value as T | undefined; }
-    setSlot<T>(key: symbol, value: T, dispose?: () => void): void {
+    setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>): void {
         if (this.closed) throw new Error('PDF session is closed');
         if (this.slots.has(key)) throw new Error('PDF session slot is already occupied');
-        this.slots.set(key, { value, dispose });
+        this.slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });
     }
 
     close(): Promise<void> {
@@ -109,7 +109,7 @@ export class PdfTiledDocumentSession {
             const slots = [...this.slots.values()];
             this.slots.clear();
             const failures: unknown[] = [];
-            for (const slot of slots) try { slot.dispose?.(); } catch (error) { failures.push(error); }
+            for (const slot of slots) try { await slot.dispose?.(); } catch (error) { failures.push(error); }
             try { await document?.close(); } catch (error) { failures.push(error); }
             if (failures.length) throw new AggregateError(failures, 'PDF session could not be closed cleanly');
         })();

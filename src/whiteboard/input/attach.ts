@@ -48,6 +48,8 @@ export interface BoardInputServices {
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void
+  pointerChanged?(sample: RealSample): void
+  hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   linkAt?(sample: RealSample): (() => void) | null
   bindPenMode?(exit: () => void): Detach
@@ -114,6 +116,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
+    sampleChanged: services.pointerChanged,
+    hover: services.hover,
     claim() {
       if (gestureOwner.has(session) || session.isGestureActive) return false
       gestureOwner.set(session, owner)

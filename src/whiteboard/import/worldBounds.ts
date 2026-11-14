@@ -34,6 +34,8 @@ function union(a: Box | undefined, b: Box): Box {
 export async function legacyWorldBounds(nodes: readonly Node[], sheets: ReadonlySet<SheetId>,
     text: LegacyTextLayout, geometry: LegacyGeometry): Promise<(node: Node) => LegacyWorldBounds> {
     const children = new Map<ParentId, Node[]>();
+    const byId = new Map<Node['id'], Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     for (const node of nodes) {
         let group = children.get(node.parent);
         if (!group) children.set(node.parent, group = []);
@@ -53,7 +55,8 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
     }
     const result = new Map<Node, LegacyWorldBounds>();
     for (const root of nodes) {
-        if (!sheets.has(root.parent as SheetId)) continue;
+        const parent = byId.get(root.parent as Node['id']);
+        if (!sheets.has(root.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
         let box: Box | undefined;
         const pending: { node: Node; parent: Affine; depth: number }[] = [{ node: root, parent: IDENTITY, depth: 0 }];
         const seen = new Set<Node>();

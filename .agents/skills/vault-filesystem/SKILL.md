@@ -85,8 +85,8 @@ anywhere in the open vault. **`walkForTrash` and the four mutually-recursive col
 hides them and nothing else looks.
 
 - **The crawl is DELIBERATELY UNCACHED**, a stated exception to AGENTS.md's whole-vault-walk rule. It
-  runs on a click and never on a save, so the `(lastModified, size)` cache `graph.ts`/`vaultSearch.ts`
-  need would only be a second vault-sized index in a tab that already holds one. It must **never
+  runs on a click and never on a save, so the vault index's `(lastModified, size)` cache would only
+  be a second vault-sized index in a tab that already holds one. It must **never
   subscribe to `saveEpoch`**, holds metadata only (name, size, mtime — never a file's bytes), and the
   panel re-crawls on every open and after nothing else. An unreadable folder is logged and skipped:
   one locked directory must not cost the reader the rest of their trash.
@@ -227,12 +227,11 @@ A cache HIT still costs a `getFile()` — one browser round trip per note. Measu
 vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
 vault to discover nothing had changed. So:
 
-- **`flushTab` primes rather than re-reads.** `graph.primeLinks(path, mtime, size, text)` puts the
-  text the app just wrote into the link cache and returns whether that note's links MOVED. They
-  usually have not, and then no rebuild runs at all. When they have, `rebuildGraph(false)` runs
-  without revalidating: pure arithmetic over what is in memory.
-- **`revalidate: true` is for somebody ELSE's write** — a tree change, a watcher rescan, a vault
-  open. Never for one of ours.
+- **`flushTab` primes rather than re-reads.** It captures the index owner before the write, then
+  sends its saved text and stat to that same activation. The worker parses it, publishing a graph
+  only when links changed; no save walks the vault. Old-activation primes are dropped.
+- **Sweep on somebody ELSE's change**, a watcher rescan or vault open; path invalidations handle
+  individual external edits. Self-write observer echoes are deferred and checked once, not swept.
 - **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
   bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
 - **The first full index runs `onIdle`**, behind the notes the reader actually asked for.

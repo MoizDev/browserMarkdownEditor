@@ -63,7 +63,8 @@ class PdfiumDocument implements BackendDoc {
             attachments, pdfVersion: version, repairStatus: 'unknown', formType,
             attachmentInventory: 'name-tree-params-only', javascript: 'unknown', actions: 'unknown' } as DocInfo;
         this.forms = createPdfiumForms(runtime, document, index => this.pages.get(index)?.handle ?? 0,
-            () => this.pages.get(this.current)?.handle ?? 0);
+            () => this.pages.get(this.current)?.handle ?? 0,
+            handle => ([...this.pages.values()].find(page => page.handle === handle)?.geometry.rotate ?? 0) / 90);
         try { this.checkAccess(); } catch (error) { this.forms.close(); throw error; }
     }
 

@@ -3,8 +3,8 @@ import type { TLUserPreferences } from 'tldraw';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences, type BoardPreferences } from '../utils/boardPreferences';
 
 function fields(value: BoardPreferences) {
-    const { version: _version, ...preferences } = value;
-    return preferences;
+    const { version: _version, isDynamicResizeMode, ...preferences } = value;
+    return { ...preferences, isDynamicSizeMode: isDynamicResizeMode };
 }
 
 // Supply the public current-user interface ourselves. This avoids reading or
@@ -20,16 +20,16 @@ function accept(next: TLUserPreferences, paper: boolean) {
     const adjusted = paper ? { ...next, colorScheme: current.colorScheme } : next;
     preferences.set(adjusted);
     updateBoardPreferences({
-        isSnapMode: adjusted.isSnapMode,
-        isWrapMode: adjusted.isWrapMode,
-        isDynamicResizeMode: adjusted.isDynamicResizeMode,
-        animationSpeed: adjusted.animationSpeed,
-        areKeyboardShortcutsEnabled: adjusted.areKeyboardShortcutsEnabled,
-        enhancedA11yMode: adjusted.enhancedA11yMode,
-        inputMode: adjusted.inputMode,
-        isZoomDirectionInverted: adjusted.isZoomDirectionInverted,
-        locale: adjusted.locale,
-        colorScheme: adjusted.colorScheme,
+        isSnapMode: adjusted.isSnapMode ?? undefined,
+        isWrapMode: adjusted.isWrapMode ?? undefined,
+        isDynamicResizeMode: adjusted.isDynamicSizeMode ?? undefined,
+        animationSpeed: adjusted.animationSpeed ?? undefined,
+        areKeyboardShortcutsEnabled: adjusted.areKeyboardShortcutsEnabled ?? undefined,
+        enhancedA11yMode: adjusted.enhancedA11yMode ?? undefined,
+        inputMode: adjusted.inputMode ?? undefined,
+        isZoomDirectionInverted: adjusted.isZoomDirectionInverted ?? undefined,
+        locale: adjusted.locale ?? undefined,
+        colorScheme: adjusted.colorScheme ?? undefined,
     });
 }
 export const BOARD_USER = createTLCurrentUser({

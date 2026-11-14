@@ -14,13 +14,17 @@ export interface CachedClipboard {
     /** Source bytes remain behind their original session-owned media leases. */
     readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
+export interface ClipboardCut {
+    commit(): void;
+    release(): void;
+}
 export interface ClipboardCopyHost {
     /** Shared allocator; frozen copy leases can outlive their document owner. */
     readonly memory: MemoryAllocator;
     readMedia(snapshot: CopySnapshot, id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;
     /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
-    prepareCut(snapshot: CopySnapshot): (() => void) & { release?(): void };
+    prepareCut(snapshot: CopySnapshot): ClipboardCut;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     notice(message: string): void;
 }
@@ -125,11 +129,11 @@ export class ClipboardCopy {
     copyEvent(event: ClipboardEvent, cut = false): boolean {
         const candidate = this.candidate;
         if (!candidate || !event.clipboardData) return false;
-        let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
+        let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && candidate.held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
-            if (cut) commitCut = this.host.prepareCut(candidate.held.snapshot);
+            if (cut) preparedCut = this.host.prepareCut(candidate.held.snapshot);
             const envelope = candidate.envelope;
             event.clipboardData.setData('text/plain', envelope.plain);
             event.clipboardData.setData('text/html', envelope.html);
@@ -137,12 +141,12 @@ export class ClipboardCopy {
             this.remember(candidate.held, envelope);
             if (envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (candidate.held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
-            commitCut?.();
+            preparedCut?.commit();
             return true;
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
             return false;
-        } finally { commitCut?.release?.(); }
+        } finally { preparedCut?.release(); }
     }
 
     /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
@@ -185,10 +189,13 @@ export class ClipboardCopy {
             if (result.owner.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${result.owner.snapshot.skippedOpaque.join(', ')}`);
             if (commitCut) {
                 if (!this.host.isCurrent(result.owner.snapshot)) throw new Error('Source changed; content was copied but not cut.');
-                commitCut();
+                commitCut.commit();
             }
         } catch (error) { this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.'); }
-        finally { finished = true; controller.abort(); commitCut?.release?.(); if (held) release(held); }
+        finally {
+            finished = true; controller.abort();
+            try { commitCut?.release(); } finally { if (held) release(held); }
+        }
     }
 
     async copyMenu(cut = false): Promise<void> {
@@ -196,11 +203,11 @@ export class ClipboardCopy {
         if (!candidate) throw new Error('Nothing selected');
         const held = candidate.held;
         held.count++;
-        let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
+        let preparedCut: ClipboardCut | undefined;
         try {
             if (!this.host.isCurrent(held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${held.snapshot.skippedOpaque.join(', ')}`);
-            commitCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
+            preparedCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
             const envelope = candidate.envelope;
             await navigator.clipboard.write([new ClipboardItem({
                 'text/plain': new Blob([envelope.plain], { type: 'text/plain' }),
@@ -209,11 +216,11 @@ export class ClipboardCopy {
             this.remember(held, envelope);
             if (envelope.cacheOnly) this.host.notice('This copy works only in this app window.');
             if (held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${held.snapshot.skippedOpaque.join(', ')}`);
-            if (commitCut && !this.host.isCurrent(held.snapshot)) throw new Error('Source changed; content was copied but not cut.');
-            commitCut?.();
+            if (preparedCut && !this.host.isCurrent(held.snapshot)) throw new Error('Source changed; content was copied but not cut.');
+            preparedCut?.commit();
         } catch (error) {
             this.host.notice(error instanceof Error ? error.message : 'Could not copy selection.');
-        } finally { commitCut?.release?.(); release(held); }
+        } finally { try { preparedCut?.release(); } finally { release(held); } }
     }
 
     async duplicate(): Promise<void> {

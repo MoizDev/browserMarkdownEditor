@@ -8,9 +8,11 @@ export const PDF_EDITABLE_JSON_LIMIT = 32 * 1024 * 1024;
 // Retain the current assembler's structural profile; never substitute a small
 // arbitrary reader cap that would strand a previously annotatable scan.
 export const PDF_PRISTINE_LIMIT = 0x7fffffff;
-export type PdfRoleFailure = 'missing' | 'null' | 'corrupt' | 'limit' | 'timeout' | 'workerDeath' | 'schema' | 'encrypted';
-interface RoleIdentity { generation: string }
+export type PdfRoleFailure = 'missing' | 'null' | 'corrupt' | 'limit' | 'timeout' | 'workerDeath' | 'schema' | 'encrypted' | 'policy';
+export type PdfWriteSafety = { kind: 'safe' } | { kind: 'signed' | 'encrypted' | 'unknown'; reason?: string };
+interface RoleIdentity { generation: string; writeSafety?: PdfWriteSafety }
 interface WritablePdfRole extends RoleIdentity {
+    writeSafety: PdfWriteSafety;
     original: Uint8Array;
     snapshot: string;
     notebookSource: null;
@@ -22,13 +24,17 @@ export type PdfRole =
     | (RoleIdentity & { kind: 'unreadable'; attachment: string; attachmentId?: string; reason: PdfRoleFailure; detail?: string; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'ambiguous'; candidates: string[]; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'newer'; attachments: string[]; alreadyAnnotated: true });
+// Worker attachment classification precedes the independent outer/pristine policy pass.
+// Raw roles are data only and cannot pass the main-thread capability gates.
+type WithoutWriteSafety<T> = T extends unknown ? Omit<T, 'writeSafety'> : never;
+export type RawPdfRole = WithoutWriteSafety<PdfRole>;
 export type EditablePdfRole = Extract<PdfRole, { kind: 'plain' | 'annotated' }>;
 export interface PdfAnnotationPreflight { role: EditablePdfRole; version: DiskVersion }
 
 export function isEditablePdfRole(role: PdfRole): role is EditablePdfRole {
-    return role.kind === 'plain' || role.kind === 'annotated';
+    return (role.kind === 'plain' || role.kind === 'annotated') && role.writeSafety?.kind === 'safe';
 }
-export function canRotatePdfRole(role: PdfRole): boolean { return role.kind === 'plain'; }
+export function canRotatePdfRole(role: PdfRole): boolean { return role.kind === 'plain' && role.writeSafety?.kind === 'safe'; }
 
 // The canvas parks this exact Uint8Array in pdfRenderCache. Refused roles never
 // own an original at all, and cannot manufacture a save capability by name.
@@ -41,25 +47,35 @@ export function pdfOuterForSource(original: Uint8Array): Uint8Array | undefined 
     return outerSources.get(original);
 }
 export function authorizePdfRole(role: PdfRole): void {
+    // Attachment role alone says nothing about signatures or permissions. Missing
+    // inspection evidence must never mint the capability the disk funnel consumes.
+    if (role.kind !== 'plain' && role.kind !== 'annotated') return;
+    writableSources.delete(role.original);
     if (isEditablePdfRole(role) && (role.kind === 'plain' || role.writeMark.kind !== 'foreign')) writableSources.add(role.original);
 }
 
 /** App calls only after keeping the exact baseline bytes in Trash and checking
  *  the current document/owner again. This never blesses a different generation. */
 export function authorizeKeptPdfRole(role: PdfRole, generation: string): boolean {
-    if (role.kind !== 'annotated' || role.writeMark.kind !== 'foreign' || !generation || role.generation !== generation) return false;
+    if (!isEditablePdfRole(role) || role.kind !== 'annotated' || role.writeMark.kind !== 'foreign' || !generation || role.generation !== generation) return false;
     writableSources.add(role.original);
     return true;
 }
 export function revokePdfSource(original: Uint8Array): void { writableSources.delete(original); }
 export function revokePdfRole(role: PdfRole): void {
-    if (isEditablePdfRole(role)) revokePdfSource(role.original);
+    if (role.kind === 'plain' || role.kind === 'annotated') revokePdfSource(role.original);
 }
 export function canRebuildAnnotatedPdf(original: Uint8Array): boolean {
     return writableSources.has(original);
 }
 
 export function pdfRoleNotice(role: PdfRole): string | undefined {
+    if (role.kind === 'plain' || role.kind === 'annotated') {
+        if (role.writeSafety?.kind === 'signed') return 'This PDF or its embedded pristine source contains signature or certification data. Annotate is read-only; the signed original has not been changed. Save an explicitly unsigned copy to a different file where supported.';
+        if (role.writeSafety?.kind === 'encrypted') return 'This PDF or its embedded pristine source is encrypted. Annotate is read-only; it has not been changed.';
+        if (role.writeSafety?.kind !== 'safe') return 'The write safety of this PDF or its embedded pristine source could not be established. Annotate is read-only; it has not been changed.';
+    }
+    if (role.kind === 'unreadable' && role.reason === 'policy') return 'The write safety of this PDF could not be established. Annotate is read-only; it has not been changed.';
     if (role.kind === 'ambiguous') return 'This PDF contains conflicting embedded originals or annotations. It is read-only for Annotate; it has not been changed. Use recovery to choose the correct annotations.';
     if (role.kind === 'newer' || role.kind === 'unreadable' && role.reason === 'schema') return 'This PDF contains annotations written by a newer or unsupported version. It is read-only for Annotate; you can still read the PDF. Use a compatible version or recover the annotations before editing.';
     if (role.kind !== 'unreadable') return;

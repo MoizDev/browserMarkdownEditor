@@ -50,8 +50,9 @@ export interface NativeClipboardControllerOptions {
 /** Paste/drop own one serial session job; unsupported semantic converters remain explicit frontiers. */
 export function createNativeClipboardController(options: NativeClipboardControllerOptions) {
     const { runtime, identity, host } = options, session = runtime.session, doc = session.doc;
-    let disposed = false;
+    let disposed = false, pending = 0, retired: (() => void) | undefined;
     const lifetime = new AbortController();
+    const releaseRetired = () => { if (retired && pending === 0) { const done = retired; retired = undefined; disposed = true; lifetime.abort(); done(); } };
     const current = () => {
         const admitted = host.identity(identity.documentId);
         return !disposed && host.isCurrent(identity) && !!admitted && admitted.documentId === identity.documentId
@@ -86,6 +87,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) controller.abort();
         });
         const signal = AbortSignal.any([lifetime.signal, controller.signal]);
+        pending++;
         const work = runtime.jobs.run(async context => {
             const { target, zoom } = captured, revision = doc.rev;
             const check = () => { context.assertCurrent(); if (!targetCurrent(target) || doc.rev !== revision) throw new DOMException('Clipboard target changed', 'AbortError'); };
@@ -183,7 +185,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             if (classified.kind !== 'empty') throw new Error(`Clipboard ${classified.kind} conversion is not yet available`);
             options.notice('The clipboard has no supported board content.');
         }, { signal, deadlineMs: 120_000 });
-        return work.finally(() => { stop(); controller.abort(); });
+        return work.finally(() => { stop(); controller.abort(); pending--; releaseRetired(); });
     };
     const report = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
     const pasteEvent = (event: ClipboardEvent) => {
@@ -236,6 +238,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 const target = targetNow(point), input = captureTransfer(event.dataTransfer!); void execute(Promise.resolve(input), target, 'drop').catch(options.onError); });
             return true;
         },
+        retire(onIdle: () => void) { if (disposed) { onIdle(); return; } retired = onIdle; releaseRetired(); },
         dispose() { if (!disposed) { disposed = true; lifetime.abort(); } },
     };
 }

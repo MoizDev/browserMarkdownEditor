@@ -18,6 +18,7 @@ import { orient2d } from '../geom/predicates';
 import { boardFrameAncestors } from '../geom/ancestorFrames';
 import { createPolygonTriangulationJob } from '../geom/polygonTriangulation';
 import { createNonconvexContainmentJob } from '../geom/nonconvexContainmentJob';
+import { createClippedInkRegionJob } from '../geom/clippedInkJobs';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -174,7 +175,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
-                            if (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector) partialFrame = true;
+                            if (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector || prepared.ink) partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
@@ -193,22 +194,35 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     : { kind: 'swept', points: localPoints, localToSurface, radiusCss: query.radiusCss };
                 let hit = false, whole = false;
                 if (prepared.ink) {
-                    let uncertain = false, any = false, all = true;
+                    let uncertain = false, any = false, all = true, visible = false;
                     for (const coverage of prepared.ink) {
-                        const job = new InkRegionPickJob(coverage, localToSurface, localQuery, viewport.dpr);
-                        try {
-                            for (;;) {
-                                check(); const state = job.step({ deadline: performance.now() + 3, maxVisits: 128 });
-                                if (state.status === 'complete') {
-                                    const decision = state.result!.decision; any ||= decision === 'hit'; all &&= decision === 'hit'; uncertain ||= decision === 'uncertain'; break;
+                        if (partialFrame) {
+                            const job = createClippedInkRegionJob(coverage, localToSurface, localQuery, viewport.dpr, frameClips);
+                            try {
+                                for (;;) {
+                                    check(); const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (state.status === 'pending') { await cooperate(); continue; }
+                                    if (state.status !== 'empty') visible = true;
+                                    any ||= state.status === 'hit'; all &&= state.status === 'hit' || state.status === 'empty';
+                                    uncertain ||= state.status === 'uncertain'; break;
                                 }
-                                await cooperate();
-                            }
-                        } finally { job.cancel(); }
+                            } finally { job.cancel(); }
+                        } else {
+                            const job = new InkRegionPickJob(coverage, localToSurface, localQuery, viewport.dpr);
+                            try {
+                                for (;;) {
+                                    check(); const state = job.step({ deadline: performance.now() + 3, maxVisits: 128 });
+                                    if (state.status === 'complete') {
+                                        const decision = state.result!.decision; visible = true; any ||= decision === 'hit'; all &&= decision === 'hit'; uncertain ||= decision === 'uncertain'; break;
+                                    }
+                                    await cooperate();
+                                }
+                            } finally { job.cancel(); }
+                        }
                         if (query.kind === 'polygon' && query.containment ? !all && !uncertain : any) break;
                     }
                     const containment = query.kind === 'polygon' && query.containment;
-                    hit = containment ? all && prepared.ink.length > 0 : any;
+                    hit = containment ? all && visible : any;
                     if (!hit && uncertain) throw new BoardRegionUncertain('Ink region intersection is numerically ambiguous');
                 } else if (prepared.vector) {
                     let vector = prepared.vector;

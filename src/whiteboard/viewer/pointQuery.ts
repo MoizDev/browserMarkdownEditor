@@ -5,6 +5,7 @@ import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { createAttachmentPointJob } from '../geom/attachmentPointJob';
+import { createClippedInkPointJob } from '../geom/clippedInkJobs';
 import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
 import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
 import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
@@ -199,14 +200,29 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         if (!prepared.ink) throw new Error('Stroke picking geometry is unavailable');
                         let maybe = false;
                         for (const coverage of prepared.ink) {
-                            const job = new InkPickJob(coverage, localToSurface,
-                                { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr);
-                            try {
-                                while (job.step(64) === 'pending') await tick();
-                                check();
-                                if (job.result.decision === 'hit') { result = { hit: true, distanceCss: 0, part: 'body' }; break; }
-                                if (job.result.decision === 'uncertain') maybe = true;
-                            } finally { job.cancel(); }
+                            if (frameClips.length && clipUncertain) {
+                                const job = createClippedInkPointJob(coverage, localToSurface,
+                                    { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr, frameClips);
+                                try {
+                                    for (;;) {
+                                        const value = job.step({ deadline: performance.now() + 3, maxWork: 64 });
+                                        if (value.status === 'pending') { await tick(); continue; }
+                                        if (value.status === 'hit') { result = { hit: true, distanceCss: 0, part: 'body' }; clipUncertain = false; }
+                                        else if (value.status === 'uncertain') maybe = true;
+                                        break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else {
+                                const job = new InkPickJob(coverage, localToSurface,
+                                    { kind: 'point', x: surface.x, y: surface.y, pointer: input }, viewport.dpr);
+                                try {
+                                    while (job.step(64) === 'pending') await tick();
+                                    check();
+                                    if (job.result.decision === 'hit') result = { hit: true, distanceCss: 0, part: 'body' };
+                                    else if (job.result.decision === 'uncertain') maybe = true;
+                                } finally { job.cancel(); }
+                            }
+                            if (result.hit) break;
                         }
                         if (!result.hit && maybe) { result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = true; }
                         if (targetMode && result.hit) ambiguous = true;

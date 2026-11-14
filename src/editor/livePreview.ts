@@ -11,8 +11,8 @@ import { EditorSelection, Facet, Prec, RangeSet, RangeValue, StateField } from '
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
-import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
-import { containsRange, firstRangeEndingAfter, overlapsRange } from '../utils/rangeSearch';
+import { analyzeDoc, mathSkipsRange, latexSourceDecorations } from './latexSource';
+import { containsRange, firstRangeEndingAfter } from '../utils/rangeSearch';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
@@ -226,7 +226,7 @@ function externalLinkMark(href: string): Decoration {
 function linkTextMark(state: EditorState, url: SyntaxNode | null, readMode: boolean): Decoration {
     if (!readMode || !url) return LINK_MARK;
     // CommonMark allows an angle-bracket wrapper on the destination: [a](<b c>).
-    const dest = state.doc.sliceString(url.from, url.to).replace(/^<([^]*)>$/, '$1');
+    const dest = previewSlice(state, url.from, url.to).replace(/^<([^]*)>$/, '$1');
     const href = externalHref(dest);
     return href ? externalLinkMark(href) : LINK_MARK;
 }
@@ -363,16 +363,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // selection-only rebuild — which is every arrow key and click in edit mode
     // — reuses them instead of re-flattening the document and re-scanning it.
     const analysis = analyzeDoc(state);
-    const { codeRanges, mathRegions } = analysis;
-    const intersectsMath = (a: number, b: number) => overlapsMath(analysis, a, b);
-    // The same question asked of code, named for the same reason: four regex
-    // passes below need it, and a hand-copied half-open comparison at each is
-    // how the copies drift apart. The highlight pass is the evidence — it never
-    // had a copy at all, so `==x==` inside backticks rendered as a highlight and
-    // no note could print the syntax it was documenting. The table pass keeps
-    // its own CONTAINMENT test: a different question, and it says so where it
-    // asks it.
-    const intersectsCode = (a: number, b: number) => overlapsRange(codeRanges, a, b);
+    const { mathRegions } = analysis;
 
     syntaxTree(state).iterate({
         from: window.from, to: Math.min(state.doc.length, window.to),
@@ -841,22 +832,19 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // ($$, $$$$ — even) and stays plain while unbalanced ($, $$$ — odd), so
     // you can see whether the next keystroke lands inside math mode.
     if (editorMode !== 'read') {
-        for (const match of inWindow(analysis.lines.dollars, window)) {
+        for (const match of inWindow(analysis.dollarRuns, window)) {
             const { from, to } = match;
-            if ((to - from) % 2 !== 0) continue;
-            if (previewSlice(state, Math.max(0, from - 1), from) === '\\') continue; // \$ — literal dollar
-            if (intersectsMath(from, to)) continue;
-            if (intersectsCode(from, to)) continue;
+            if (!match.accepted) continue;
             decorations.push(LATEX_DELIM.range(from, to));
         }
     }
 
     // === HIGHLIGHTS (==text==) ===
     // Matches: ==highlighted text==
-    for (const match of inWindow(analysis.lines.highlights, window)) {
+    for (const match of inWindow(analysis.highlights, window)) {
         const { from, to } = match;
 
-        if (intersectsMath(from, to)) continue;
+        if (!match.accepted) continue;
         // The third regex pass that has to re-derive by hand what the parser
         // already knows: Lezer does not inline-parse inside a code span, so the
         // TREE branches get code-skipping for free, but a regex over the raw
@@ -864,7 +852,6 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // this, `==x==` written in code rendered as a highlight — so the one
         // note that most needs to print the syntax, the Help guide's own
         // Markdown reference, was the one note that could not.
-        if (intersectsCode(from, to)) continue;
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 
         // Hide ==
@@ -914,21 +901,19 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     // === WIKILINKS (Obsidian Syntax) ===
     // Matches: [[Note]], [[Note|alias]], [[Note#heading]]
     // The leading (!?) lets us skip image embeds ![[file.png]] (handled above).
-    for (const match of inWindow(analysis.lines.wikilinks, window)) {
-        if (match.groups[0] === '!') continue; // image embed, not a note link
+    for (const match of inWindow(analysis.wikilinks, window)) {
+        if (!match.accepted) continue;
 
         const { from, to } = match;
         const inner = match.groups[1];
         const pipeIndex = inner.indexOf('|');
         const target = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).split('#')[0].trim();
 
-        if (intersectsMath(from, to)) continue;
         // A wikilink written inside code is being QUOTED, not linked — the same
         // rule the image pass above applies, and for a weaker but real version
         // of the same reason: a note documenting the syntax (the Help guide is
         // one) would otherwise show the rendered link where the brackets it is
         // explaining ought to be, and the reader is never shown what to type.
-        if (intersectsCode(from, to)) continue;
         // While editing, reveal the raw syntax when the cursor is inside it.
         if (editorMode !== 'read' && cursorInRange(state, from, to)) continue;
 

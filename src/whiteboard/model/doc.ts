@@ -73,6 +73,13 @@ export interface BoardDocInput {
 }
 
 const EMPTY_CHILDREN: readonly Node[] = Object.freeze([]);
+// RV-22 asks whether a subtree is opaque, not for a mutable index. Strict
+// descendant counts are private to model; zero entries are absent. A million-node
+// frame under a one-child group must not be walked just to answer this guard.
+type OpaqueIndexedDoc = BoardDoc & { readonly opaqueDescendants: ReadonlyMap<ParentId, number> };
+export function hasOpaqueDescendant(doc: BoardDoc, parent: ParentId): boolean {
+    return ((doc as OpaqueIndexedDoc).opaqueDescendants.get(parent) ?? 0) > 0;
+}
 
 export function childrenOf(doc: BoardDoc, parent: ParentId): readonly Node[] {
     return doc.children.get(parent) ?? EMPTY_CHILDREN;
@@ -129,8 +136,9 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
     const byPage = new Map<number, Set<NodeId>>();
     const mediaRefs = new Map<MediaId, Set<NodeId>>();
     const preservedMediaRefs = new Map(input.preservedMediaRefs);
-    const doc: BoardDoc = {
-        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs, preservedMediaRefs,
+    const opaqueDescendants = new Map<ParentId, number>();
+    const doc: OpaqueIndexedDoc = {
+        kind: input.kind, sheets, nodes, media, sheetOrder, children, attachedTo, bySheet, byPage, mediaRefs, preservedMediaRefs, opaqueDescendants,
         ui: input.ui, view: input.view, host: input.host, preserved: input.preserved, rev: 0,
     };
     for (const record of input.sheets) {
@@ -153,6 +161,16 @@ export function createBoardDoc(input: BoardDocInput): BoardDoc {
         const sheet = sheetOf(doc, node.id);
         if (sheet !== undefined) addMember(bySheet, sheet, node.id);
         if (input.kind !== 'whiteboard' && isSheetParent(doc, node.parent)) addMember(byPage, node.page, node.id);
+        if (node.kind === 'opaque') {
+            let parent = node.parent;
+            for (let depth = 0; depth <= 64; depth++) {
+                opaqueDescendants.set(parent, (opaqueDescendants.get(parent) ?? 0) + 1);
+                if (isSheetParent(doc, parent)) break;
+                const container = nodes.get(parent);
+                if (!container) break;
+                parent = container.parent;
+            }
+        }
         if (node.kind === 'connector') {
             if (node.start.attach) addMember(attachedTo, node.start.attach.target, node.id);
             if (node.end.attach) addMember(attachedTo, node.end.attach.target, node.id);

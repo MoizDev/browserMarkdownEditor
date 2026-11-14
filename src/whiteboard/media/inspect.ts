@@ -1,15 +1,18 @@
-import { createWorkerClient } from '../../platform/workers';
+import { boardWorker } from '../workers/client';
+import type { BoardJobIdentity } from '../workers/protocol';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { MediaId, MediaMime } from '../model/media';
+import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import type { InspectedMedia } from './ingest';
 import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
+import { createSvgAdmissionProfile } from './svgProfile';
+import { svgFrameFactory } from './svgFrameHost';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
 // port deliberately cannot fall back to a detached parser in the vault origin.
 export interface SvgAdmissionProfile {
-    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number }>;
-    probe(blob: Blob, signal: AbortSignal): Promise<void>;
+    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number; readonly rgbaBytes: number }>;
+    probe(blob: Blob, width: number, height: number, signal: AbortSignal): Promise<void>;
 }
 interface WorkerInspection {
     readonly id: MediaId;
@@ -17,11 +20,9 @@ interface WorkerInspection {
     readonly width: number;
     readonly height: number;
     readonly animated: boolean;
+    readonly decodePixels: number;
 }
-const worker = createWorkerClient({
-    name: 'whiteboard-media-decode', protocol: 1,
-    spawn: () => new Worker(new URL('./decode.worker.ts', import.meta.url), { type: 'module' }),
-});
+const worker = boardWorker('decode');
 
 function validSize(width: number, height: number): boolean {
     return checkMediaDimensions(width, height).ok;
@@ -61,54 +62,66 @@ async function videoProbe(blob: Blob, header: WorkerInspection, signal: AbortSig
     }
 }
 
-export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator }): Promise<InspectedMedia> {
+export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator;
+    identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia> {
+    // File objects carry path-like metadata and are refused by the worker host;
+    // a Blob slice preserves the bytes without sending that metadata across.
+    blob = blob.slice(0, blob.size, blob.type);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
+    const call = <T>(op: string, payload: unknown, deadlineMs: number): Promise<T> =>
+        worker.request<T>(op, payload, options.identity, { priority: 1, deadlineMs, signal }, options.isCurrent);
     signal.throwIfAborted();
     if (!checkMediaBytes(blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
     const prefix = new Uint8Array(await blob.slice(0, 64).arrayBuffer());
     signal.throwIfAborted();
     if (sniffMedia(prefix) === 'image/svg+xml') {
         if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
-        if (!options.svg) throw new Error('SVG decoding is unavailable');
-        await worker.request<boolean>('svgPreflight', { blob }, { priority: 1, deadlineMs: 5000, signal });
+        const svg = options.svg ?? createSvgAdmissionProfile(svgFrameFactory, options.identity, options.isCurrent);
+        await call<boolean>('svgPreflight', { blob }, 5000);
         signal.throwIfAborted();
-        const size = await options.svg.header(blob, signal);
+        const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
         signal.throwIfAborted();
-        if (!validSize(size.width, size.height)) throw new RangeError('Invalid SVG dimensions');
-        const id = await worker.request<MediaId>('hash', { blob }, { priority: 1, deadlineMs: 10000, signal });
+        if (!validSize(size.width, size.height) || !Number.isSafeInteger(size.rgbaBytes)
+            || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
+        const id = await call<MediaId>('hash', { blob }, 10000);
         signal.throwIfAborted();
-        const lease = options.memory.reserve(4 * size.width * size.height);
+        if (typeof id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error('Invalid media worker reply');
+        const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
             const typed = blob.slice(0, blob.size, 'image/svg+xml');
             try {
-                await worker.request<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, { priority: 1, deadlineMs: 10000, signal });
+                await call<boolean>('probe', { blob: typed, width: size.width, height: size.height, animated: false, mime: 'image/svg+xml' }, 10000);
             } catch {
-                await worker.recycle('SVG worker probe failed', { lazy: true }).catch(() => undefined);
+                await worker.recycle('SVG worker probe failed').catch(() => undefined);
                 signal.throwIfAborted();
-                await options.svg.probe(typed, signal);
+                await svg.probe(typed, size.width, size.height, signal);
             }
         } finally { options.memory.release(lease); }
         signal.throwIfAborted();
         return { id, mime: 'image/svg+xml', width: size.width, height: size.height, animated: false, duration: null };
     }
-    const result = await worker.request<WorkerInspection>('inspect', { blob }, { priority: 1, deadlineMs: 10000, signal });
+    const result = await call<WorkerInspection>('inspect', { blob }, 10000);
     signal.throwIfAborted();
-    if (!/^sha256:[0-9a-f]{64}$/.test(result.id) || !validSize(result.width, result.height)) throw new Error('Invalid media worker reply');
-    const lease = options.memory.reserve(4 * result.width * result.height);
+    if (!result || typeof result !== 'object' || typeof result.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.id)
+        || !MEDIA_MIMES.includes(result.mime) || !validSize(result.width, result.height) || typeof result.animated !== 'boolean'
+        || !Number.isSafeInteger(result.decodePixels) || result.decodePixels < result.width * result.height || result.decodePixels > 2 ** 26) {
+        throw new Error('Invalid media worker reply');
+    }
+    const lease = options.memory.reserve(4 * result.decodePixels);
     if (!lease) throw new Error('Not enough memory to decode this media');
     try {
         const duration = result.mime.startsWith('video/') ? await videoProbe(blob, result, signal) : null;
         if (duration === null) {
             try {
-                await worker.request<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, { priority: 1, deadlineMs: 10000, signal });
+                await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);
             } catch (error) {
                 // A cancelled native decoder may still be running after its request settles.
-                await worker.recycle('cancelled image probe', { lazy: true }).catch(() => undefined);
+                await worker.recycle('cancelled image probe').catch(() => undefined);
                 throw error;
             }
         }
         signal.throwIfAborted();
-        return { ...result, duration };
+        return { id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration };
     } finally { options.memory.release(lease); }
 }

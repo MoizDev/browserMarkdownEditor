@@ -1,3 +1,4 @@
+import { parseJson } from '../../format/jsonRead';
 import type { MediaId } from '../../model/media';
 import type { Crop, Node, NodeBase } from '../../model/nodes';
 import { object, type LegacyObject } from './envelope';
@@ -47,8 +48,13 @@ export function readPictureShape(shape: LegacyShape, base: NodeBase, assets: Rea
             if (p.assetId !== null && !asset) throw new Error('Missing bookmark metadata');
             const props = object(asset?.props);
             if (asset && !props) throw new Error('Invalid bookmark metadata');
-            if (props && (text(props.image, 'bookmark image') || text(props.favicon, 'bookmark favicon'))) {
-                throw new Error('Remote bookmark preview images cannot yet be represented');
+            if (props) {
+                const image = text(props.image, 'bookmark image'), favicon = text(props.favicon, 'bookmark favicon');
+                if (image || favicon) {
+                    const fields = new Map(base.ext?.fields ?? []);
+                    fields.set('legacyBookmarkPreview', parseJson(JSON.stringify({ image, favicon })).raw());
+                    base = { ...base, ext: { fields, raw: base.ext?.raw ?? new Map() } };
+                }
             }
             return { ...base, kind: 'linkcard', w: number(p.w, 'width'), h: number(p.h, 'height'),
                 url: text(p.url, 'URL'), preview: props ? { title: text(props.title, 'title'),

@@ -5,6 +5,7 @@ import { hashMedia } from './sha256';
 import { sniffMedia } from './sniff';
 import { webmHeader } from './webmHeader';
 import { preflightSvgText } from './svgXmlRuntime';
+import { boardHandlers } from '../workers/protocol';
 
 interface DecoderTrack { readonly frameCount: number }
 interface DecoderInstance {
@@ -17,7 +18,7 @@ type DecoderConstructor = new (options: { data: ReadableStream<Uint8Array>; type
 serve({
     protocol: 1,
     buildId: 'whiteboard-media-1',
-    handlers: {
+    handlers: boardHandlers({
         async svgPreflight(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid SVG request');
             const blob = (args as { blob: Blob }).blob;
@@ -79,7 +80,8 @@ serve({
             await context.slice();
             const id = await hashMedia(blob, undefined, () => context.slice());
             await context.slice();
-            return { id, mime, width: header.width, height: header.height, animated: header.animated };
+            return { id, mime, width: header.width, height: header.height, animated: header.animated,
+                decodePixels: header.decodePixels ?? header.width * header.height };
         },
-    },
+    }),
 });

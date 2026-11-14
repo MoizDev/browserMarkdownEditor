@@ -3,6 +3,8 @@ import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
 import { CameraController } from './camera';
+import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
+import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
@@ -39,6 +41,10 @@ const unconstrained: CameraConstraint = {
 function sameDocument(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId &&
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+}
+
+function sameFrame(a: FrameToken, b: FrameToken): boolean {
+    return sameDocument(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
 
 /** View lifetime only: the session, its source and its mirrors survive disposal. */
@@ -151,6 +157,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);
+    let removeCapture = (): void => {};
     registerWebgl2PaneFactory();
     const candidate = new GpuPaneCandidate({
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
@@ -188,6 +195,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     prepareGpu: preparation => candidate.prepare(preparation),
                     onSurfaceZeroed: canvas => candidate.zeroed(canvas),
                     onGpuReady: grant => candidate.ready(grant),
+                    onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         gpu = null;
                         cpuPresented = false;
@@ -268,14 +276,17 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     presented = encoding?.submit();
                                     if (!presented) return null;
                                     const coverage = drawing.coverage(frame);
-                                    if (!coverage.presented) return null;
+                                    if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
-                                if (!complete || !current || !sameDocument(current, frame.token) || current.viewLease !== frame.token.viewLease ||
-                                    current.deviceGeneration !== frame.token.deviceGeneration || options.revision() !== revision) return null;
+                                const liveCamera = options.readCamera();
+                                const geometry = observer.current;
+                                if (!complete || !current || !sameFrame(current, frame.token) || options.revision() !== revision ||
+                                    (!frame.view.moving && (liveCamera.x !== frame.view.camera.x || liveCamera.y !== frame.view.camera.y || liveCamera.z !== frame.view.camera.z)) ||
+                                    geometry?.generation !== activeMetrics().current?.tags.geometryGeneration) return null;
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;
@@ -307,9 +318,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setInputEnabled: options.setInputEnabled, cancelViewWork: options.cancelViewWork,
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
+        removeCapture = registerCaptureGpu(options.paneId, () => {
+            if (disposed || !visible || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            const snapshot = lifecycle?.surface.snapshot();
+            if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
+            return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);
+        });
         runtime.start();
         observer.start();
     } catch (error) {
+        removeCapture(); lifecycle?.unmountPane();
         observer.dispose(); removeRuntime(); compositor.dispose();
         for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
         throw error;
@@ -377,6 +395,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             disposed = true;
             options.onPresentation(null);
             observer.dispose();
+            removeCapture();
             lifecycle?.unmountPane();
             surfaceHost.dispose();
             compositor.dispose();

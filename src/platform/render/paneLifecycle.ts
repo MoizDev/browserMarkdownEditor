@@ -1,4 +1,5 @@
 import { surfaceBroker } from './surfaceBroker';
+import type { DamageRecord } from './damage';
 import type { BrokerGpuOwner, GpuGrant, SurfaceLease, SurfaceRegistration, SurfaceView } from './surfaceBroker.types';
 import type { MemoryGovernor, MemoryPressureState, PaneMemoryGrant } from './memoryGovernor';
 import type { BorrowedMirror, MirrorBorrow, MirrorSet, MirrorView } from './mirrorSet';
@@ -10,7 +11,7 @@ export type RetainedReleaseReason = 'pressure' | 'freeze' | 'hidden-timeout';
 
 /** Structurally supplied by ScheduledPaneLease; the scheduler owns all timers, input and frames. */
 export interface PaneFrameBinding {
-    invalidate(reason: string): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
     setFocused(focused: boolean): void;
     dispose(): void;
 }
@@ -195,13 +196,13 @@ export class PaneLifecycle<T extends object> {
         this.binding?.setFocused(focused);
     }
 
-    invalidate(reason: string): void {
+    invalidate(reason: string, damage?: DamageRecord): void {
         if (!this.canDraw()) return;
         if (reason === 'input') {
             this.view = { ...this.view, lastInputAt: this.options.now() };
             this.surface.updateView(this.view);
         }
-        this.binding?.invalidate(reason);
+        this.binding?.invalidate(reason, damage);
     }
 
     hidePane(): void {
@@ -411,7 +412,10 @@ export class PaneLifecycle<T extends object> {
     /** A model-backed pane may have no raster mirrors: a complete ordinary 2D frame is its bridge. */
     note2DPresented(token: FrameToken, revision: string): void {
         const current = this.options.currentFrameToken();
-        if (!this.canDraw() || this.usingGpu || !current || !sameFrame(token, current) || revision !== this.options.currentRevision()) return;
+        if (!this.canDraw() || !current || !sameFrame(token, current) || revision !== this.options.currentRevision()) return;
+        // A resize may prepare CPU pixels while the old complete GPU frame remains selected.
+        // Select only now, after the detached CPU submission has actually completed.
+        if (this.usingGpu) this.begin2D();
         this.first2DPresented = true;
     }
 

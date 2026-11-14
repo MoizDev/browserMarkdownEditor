@@ -86,10 +86,11 @@ export interface NativeEditingChromeContext {
     readonly setInverted: (value: boolean) => void;
     readonly zoom: number;
 }
-export function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice, editingChrome }: {
+export function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice, editingChrome, editingWritable }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
     setInverted(value: boolean): void; notice: string | null; setNotice(message: string): void;
     editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
+    editingWritable?: boolean;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
@@ -155,7 +156,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
-        readOnly={editingChrome ? board.isReadOnly : true} externalAccessibility={!!editingChrome}
+        readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} externalAccessibility={!!editingChrome}
         readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
@@ -197,7 +198,7 @@ function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }:
     }, [host, identity, board, min, max, left, right, top, bottom, onError]);
     const renderView = useCallback((context: NativeEditingRenderContext) => <AttachedViewer props={props} identity={identity}
         lease={context.lease} inverted={context.inverted} setInverted={context.setInverted} notice={context.notice}
-        setNotice={context.setNotice} editingChrome={context.chrome} />, [props, identity]);
+        setNotice={context.setNotice} editingChrome={context.chrome} editingWritable={context.editable} />, [props, identity]);
     return <NativeCanvasEditing props={props} board={board} adapter={adapter} factory={host.createEditingCapabilities}
         createLease={createLease} renderView={renderView} onError={onError} onUnavailable={onUnavailable} />;
 }

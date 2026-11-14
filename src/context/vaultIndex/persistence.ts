@@ -39,6 +39,24 @@ export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
     });
 }
 
+export async function forgetIndex(vaultKey: string): Promise<void> {
+    try {
+        const channel = new BroadcastChannel('bme-index-layout');
+        channel.postMessage({ vaultId: vaultKey, forget: true });
+        channel.close();
+        await navigator.locks.request(`bme-index:${vaultKey}`, async () => {
+            const db = await openIndexDatabase();
+            const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts'], 'readwrite');
+            const keyRange = IDBKeyRange.bound([vaultKey, ''], [vaultKey, '\uffff']);
+            tx.objectStore('vaults').delete(vaultKey);
+            tx.objectStore('notes').delete(keyRange);
+            tx.objectStore('texts').delete(keyRange);
+            tx.objectStore('layouts').delete(vaultKey);
+            await transactionDone(tx);
+        });
+    } catch { /* Forgetting the recent entry must not fail on cache errors. */ }
+}
+
 function validLayout(value: unknown): value is IndexLayout {
     if (!value || typeof value !== 'object') return false;
     const layout = value as IndexLayout;
@@ -63,6 +81,9 @@ export async function loadLayout(vaultKey: string): Promise<IndexLayout | undefi
 export async function saveLayout(vaultKey: string, layout: IndexLayout): Promise<void> {
     if (!vaultKey || !validLayout(layout)) return;
     try {
+        const channel = new BroadcastChannel('bme-index-layout');
+        channel.postMessage({ vaultId: vaultKey, layout });
+        channel.close();
         await navigator.locks.request(`bme-index:${vaultKey}`, { ifAvailable: true }, async lock => {
             if (!lock) return;
             const db = await openIndexDatabase();

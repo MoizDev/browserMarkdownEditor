@@ -118,7 +118,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
             >
                 <div className="settings-header">
                     <h3 className="settings-title" id={titleId}>Settings</h3>
-                    <button className="settings-close-btn" onClick={onClose}>×</button>
+                    <button className="settings-close-btn" aria-label="Close settings" onClick={onClose}>×</button>
                 </div>
                 <div className="settings-body">
                     <h4 className="settings-section">Appearance</h4>
@@ -144,7 +144,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="setting-row">
                         <div className="setting-info">
                             <div className="setting-name">Code font size</div>
-                            <div className="setting-desc">Source files only (.py, .rkt, .c …), in Fira Code.</div>
+                            <div className="settings-hint">Source files only (.py, .rkt, .c …), in Fira Code.</div>
                         </div>
                         <div className="setting-control">
                             <span className="settings-value">{codeFontSize}px</span>
@@ -243,7 +243,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     </div>
 
                     <h4 className="settings-section">Reading</h4>
-                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
+                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="settings-hint">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
                     <button type="button" className="settings-reset-btn" onClick={resetReadingPreferences}>Reset reading preferences</button>
                     <h4 className="settings-section">Editing</h4>
 

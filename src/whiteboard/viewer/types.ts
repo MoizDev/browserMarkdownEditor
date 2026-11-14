@@ -57,6 +57,8 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** Immutable, identity-stable semantic hover/edit targets requiring exact paint. */
+    sensitiveNodeIds?(): ReadonlySet<string>;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.

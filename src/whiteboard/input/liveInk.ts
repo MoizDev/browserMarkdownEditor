@@ -8,8 +8,17 @@ export interface InkIdentity {
 }
 export interface DryInkIdentity extends InkIdentity { readonly nodeRevision: number }
 
+export interface InkPresentation {
+  readonly tool: 'pen' | 'highlighter'
+  readonly color: string
+  readonly width: number
+  readonly fairTol: number
+  readonly localToWorld: readonly [number, number, number, number, number, number]
+}
+
 export interface LiveInkContext {
   readonly identity: InkIdentity
+  readonly presentation: InkPresentation
   readonly builderOptions: SampleBuilderOptions
   readonly captureDeviceScale: number
   // Capture style, target sheet and local transform at down; implementations write
@@ -23,6 +32,7 @@ export interface LiveInkContext {
 
 export interface WetInkSnapshot {
   readonly identity: InkIdentity
+  readonly presentation: InkPresentation
   readonly samples: SampleSequence
   readonly dry: DryInkIdentity | null
 }
@@ -81,7 +91,7 @@ export class LiveInk implements GestureOwner {
     this.snapshot = this.builder.snapshot()
     this.builder.markPublished()
     this.dirty = false
-    this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: null })
+    this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, samples: this.snapshot, dry: null })
   }
 
   finish(reason: FinishReason): void {
@@ -91,7 +101,7 @@ export class LiveInk implements GestureOwner {
       if (this.dirty || !this.snapshot) this.snapshot = this.builder.snapshot()
       this.dry = this.context.commit(this.builder.finish(), this.context.identity, reason === 'undo')
       if (reason === 'undo') this.handover.clear(this.context.identity)
-      else this.handover.publish({ identity: this.context.identity, samples: this.snapshot, dry: this.dry })
+      else this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, samples: this.snapshot, dry: this.dry })
       this.context.invalidate()
     } catch (error) { this.context.error(error) }
   }

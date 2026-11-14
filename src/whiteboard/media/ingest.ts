@@ -7,6 +7,7 @@ import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
 import { checkMediaBytes, checkMediaDimensions, SECURITY_LIMITS } from '../security/limits';
 import type { JobAuthority, JobContext } from '../security/admission';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 export interface InspectedMedia {
     readonly id: MediaId;
@@ -20,7 +21,7 @@ export interface InspectedMedia {
 // The inspector is the bounded worker/isolated-profile admission boundary. The host
 // store is the sole authority that can write an asset or stage a PDF attachment.
 export interface MediaIngestHost {
-    inspectMedia(blob: Blob, options: { signal: AbortSignal }): Promise<InspectedMedia>;
+    inspectMedia(blob: Blob, options: { signal: AbortSignal; identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
     rememberMedia(id: MediaId, blob: Blob): void;
     isCurrent(): boolean;
@@ -95,16 +96,18 @@ export class MediaIngestor {
 
     private async runReplace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }, context: JobContext): Promise<void> {
         const signal = context.signal;
+        const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
+        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc.rev === identity.revision;
         const current = (): void => {
             context.assertCurrent();
-            if (!this.host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
+            if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
         current();
         const initial = this.session.doc.nodes.get(id);
         if (!initial || initial.kind !== 'picture' || initial.locked || !initial.media) throw new Error('Picture cannot be replaced');
         if (source.name.length > 10000) throw new RangeError('Media name is too long');
         if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-        const info = await this.host.inspectMedia(source.blob, { signal });
+        const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
         current();
         checkResult(info);
         if (!info.mime.startsWith('image/')) throw new Error('Replacement must be a picture');
@@ -137,9 +140,11 @@ export class MediaIngestor {
 
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
         const signal = context.signal;
+        const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
+        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc.rev === identity.revision;
         const current = (): void => {
             context.assertCurrent();
-            if (!this.host.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
+            if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
         const staged: Staged[] = [];
         {
@@ -147,7 +152,7 @@ export class MediaIngestor {
                 current();
                 if (source.name.length > 10000) throw new RangeError('Media name is too long');
                 if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-                const info = await this.host.inspectMedia(source.blob, { signal });
+                const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
                 current();
                 checkResult(info);
                 if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');

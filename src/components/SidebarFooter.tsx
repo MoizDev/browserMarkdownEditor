@@ -66,6 +66,7 @@ interface SidebarFooterProps {
      *  menu's "Open folder…" row. Reports the switch's outcome, which that row
      *  needs: the picker shares one gate with every other raiser. */
     onChangeVault: () => Promise<VaultOpenResult>;
+    onRebuildIndex: () => void;
     graphOpen: boolean;
     onToggleGraph: () => void;
     /** The AI agent panel docked on the right of the workspace. */
@@ -106,6 +107,7 @@ function SidebarFooter({
     onForgetRecentVault,
     onPinRecentVault,
     onChangeVault,
+    onRebuildIndex,
     graphOpen,
     onToggleGraph,
     agentOpen,
@@ -163,7 +165,7 @@ function SidebarFooter({
         if (vaultMenu) { setVaultMenu(null); return; }
         // Nothing to list (a first run, or the setting is off) — don't make the
         // user open an empty menu to get to the picker.
-        if (listedVaults.length === 0) { onChangeVault(); return; }
+        if (listedVaults.length === 0 && !currentVaultId) { onChangeVault(); return; }
         const switcher = e.currentTarget;
         setVaultMenu({ pos: vaultMenuPosFor(switcher), anchor: switcher });
     };
@@ -285,6 +287,7 @@ function SidebarFooter({
                     onForget={onForgetRecentVault}
                     onPin={onPinRecentVault}
                     onBrowse={browseForVault}
+                    onRebuildIndex={onRebuildIndex}
                     onClose={closeVaultMenu}
                 />
             )}

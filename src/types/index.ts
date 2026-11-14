@@ -217,9 +217,8 @@ export interface TabLayout {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * GRAPH MODEL
- * Built by buildGraph() (graph.js:71-142). Node objects are documented at
- * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117
- * (unresolved placeholder). Consumed by GraphView, BacklinksPanel, App,
+ * Built by the vault-index worker, with current tree nodes attached by the host
+ * (context/vaultIndex/graphView.ts). Consumed by GraphView, BacklinksPanel, App,
  * EditorPane (via getBacklinkNodes).
  * ───────────────────────────────────────────────────────────────────────── */
 
@@ -440,6 +439,7 @@ export interface FileSystemContextValue {
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
   /** Synchronous ownership token; A→B→A has three distinct activations. */
   getVaultActivation: () => number;
+  registerBeforeRootChange: (callback: () => Promise<void>) => () => void;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
@@ -498,6 +498,8 @@ export interface FileSystemContextValue {
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
   restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
+  /** Regrant only the activation that raised an index permission problem. */
+  requestIndexPermission: (root: FileSystemDirectoryHandle, activation: number) => Promise<boolean>;
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
   /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
    *  source. Resolves after close to its collision-free physical basename;

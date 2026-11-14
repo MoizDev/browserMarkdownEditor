@@ -17,7 +17,7 @@ import { defaultKeymap, history, historyKeymap, isolateHistory } from '@codemirr
 import { search, searchKeymap } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from '../editor/cmTheme';
-import { createLivePreviewPlugin } from '../editor/livePreview';
+import { createLivePreviewPlugin, livePreviewField } from '../editor/livePreview';
 import { markEditorModeRender } from '../editor/editorPerf';
 import type { ImageDeleteRequest, ImageEmbedActions } from '../editor/imageWidget';
 import { markdownFormatExtension } from '../editor/formatKeymap';
@@ -875,9 +875,13 @@ function DocumentPane({
      * rather than three copies, because the compartment is reconfigured on ⌘E and
      * on a cached state's re-adoption as well as being built here.
      */
+    const [imageContexts] = useState(() => ({
+        read: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: false },
+        edit: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: true },
+    }));
     const livePreviewFor = useCallback((forMode: EditorMode) =>
-        (isTex || isCode ? [] : createLivePreviewPlugin(stableGetAssetUrl, forMode, imageActions)),
-    [isTex, isCode, stableGetAssetUrl, imageActions]);
+        (isTex || isCode ? [] : createLivePreviewPlugin(imageContexts[forMode], imageActions)),
+    [isTex, isCode, imageContexts, imageActions]);
 
     /** The full extension list for this document. Every dynamic bit goes
      *  through a ref, so the view never has to be rebuilt. */
@@ -937,6 +941,7 @@ function DocumentPane({
             ...(isCode ? [] : [
                 tabIntoText,
                 wikiLinkAutocomplete(() => getTargetsRef.current()),
+                ...(isTex ? [] : [livePreviewField]),
                 livePreviewCompartment.of(livePreviewFor(mode)),
                 // Deliberately OUTSIDE livePreviewCompartment: ⌘E reconfigures
                 // that, which would forget every collapsed section (headingFold.ts).
@@ -1157,12 +1162,9 @@ function DocumentPane({
        these values — either by baking them into a fresh state or by
        reconfiguring an adopted one — and re-stating them is not free.
 
-       livePreviewCompartment is the expensive one. Each createLivePreviewPlugin
-       mints a NEW StateField, so reconfiguring it discards the field's value and
-       runs create() — a full buildDecorations pass over the document (tens of
-       thousands of ranges on a large note; see AGENTS.md). Ungated, every pane
-       mount paid for two of those instead of one, and a pane now mounts on every
-       tab switch: a five-pane split cost ten walks where five would do. */
+       The live-preview field now survives compartment reconfiguration; mode
+       changes still require a full render, while a context change touches only
+       the image widgets. */
     const settled = useRef(false);
 
     useEffect(() => {

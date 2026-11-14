@@ -3,12 +3,12 @@ import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { countEditorTransaction, measureEditorRender } from './editorPerf';
 import type { SyntaxNode } from '@lezer/common';
-import { EditorSelection, Facet, Prec, RangeSet, RangeValue } from '@codemirror/state';
+import { EditorSelection, Facet, Prec, RangeSet, RangeValue, StateField } from '@codemirror/state';
 import type { EditorState, Extension, Range, Transaction } from '@codemirror/state';
 import type { EditorMode } from '../types';
 import { MathWidget } from './mathWidget';
 import { analyzeDoc, mathSkipsRange, overlapsMath, latexSourceDecorations } from './latexSource';
-import { containsRange, firstRangeEndingAfter, overlapsRange } from './rangeSearch';
+import { containsRange, firstRangeEndingAfter, overlapsRange } from '../utils/rangeSearch';
 import { parseListMarker } from './lists';
 import type { ListMarker } from './lists';
 import { CopyCodeWidget } from './copyCodeWidget';
@@ -270,9 +270,6 @@ function insideLinkLabel(node: SyntaxNode): boolean {
     return false;
 }
 
-/** The single-argument, curried asset resolver the editor subsystem consumes. */
-type GetAssetUrl = (fileName: string) => Promise<string | null>;
-
 /** Structural shim for buildDecorations: the factory passes `{ state }`, not a full EditorView. */
 type StateView = { state: EditorState };
 
@@ -307,6 +304,7 @@ interface LivePreview {
     deco: DecorationSet;
     atoms: RangeSet<AtomicRange>;
     imageSelected: boolean;
+    images: readonly { from: number; to: number }[];
     tables: readonly { from: number; to: number }[];
     tableSelected: boolean;
 }
@@ -517,30 +515,28 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 if (opening.to > startLine.to) return false;
                 const closed = closing !== null && endLine.number > startLine.number && closing.to <= endLine.to;
 
-                const firstContent = startLine.number + 1;
-                const lastContent = closed ? endLine.number - 1 : endLine.number;
-                const code = firstContent <= lastContent
-                    ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to)
-                    : '';
-
                 // === MERMAID DIAGRAMS ===
                 // A closed mermaid fence renders as a diagram widget while
                 // the cursor is elsewhere; editing anywhere in it falls back
                 // to the ordinary code panel so the source stays editable.
                 const lang = startLine.text.trim().match(/^(?:`{3,}|~{3,})\s*(\S*)/)?.[1]?.toLowerCase() ?? '';
-                if (lang === 'mermaid' && closed && code.trim() &&
-                    (editorMode === 'read' || !cursorOnLine(state, from, to))) {
-                    decorations.push(
-                        Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
-                    );
-                    return false;
+                if (lang === 'mermaid' && closed && (editorMode === 'read' || !cursorOnLine(state, from, to))) {
+                    const firstContent = startLine.number + 1, lastContent = endLine.number - 1;
+                    const code = firstContent <= lastContent
+                        ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
+                    if (code.trim()) {
+                        decorations.push(
+                            Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
+                        );
+                        return false;
+                    }
                 }
 
                 // Copy button, pinned to the panel's top-right. The fence row
                 // hosts it in every state (hidden = padding row, revealed =
                 // the source fence line), so it never displaces code text.
                 decorations.push(
-                    Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
+                    Decoration.widget({ widget: new CopyCodeWidget(), side: -1 }).range(startLine.from)
                 );
 
                 // The panel is permanent — every line gets it, fence lines
@@ -879,6 +875,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
     const selection = state.selection.main;
     const editable = editorMode !== 'read';
     let imageSelected = false;
+    const images: { from: number; to: number }[] = [];
     const tables: { from: number; to: number }[] = [];
     let tableSelected = false;
     while ((match = imageRegex.exec(doc)) !== null) {
@@ -898,6 +895,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
 
         const selected = imageCtx.editable && selection.from === from && selection.to === to;
         imageSelected ||= selected;
+        images.push({ from, to });
         decorations.push(
             Decoration.replace({ widget: new ImageWidget(filename, width, imageCtx, selected) }).range(from, to)
         );
@@ -999,6 +997,7 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
         // claim that would make a later reader delete the `true`.)
         atoms: RangeSet.of(atoms, true),
         imageSelected,
+        images,
         tables,
         tableSelected,
     };
@@ -1165,28 +1164,18 @@ export function readingProseRuns(state: EditorState, from: number, to: number): 
     return result;
 }
 
-/**
- * Factory for creating the Live Preview CM6 extension.
- * Uses a StateField (not ViewPlugin) so that decorations are allowed
- * to replace ranges that span across line breaks (block math, images, code blocks).
- * Decorations are computed in update() and passively read via from() to avoid
- * viewport destabilization loops.
- */
-import { StateField } from '@codemirror/state';
+// The field survives compartment reconfiguration and cached-state adoption.
+// Context objects are stable per pane and mode; equal identities need no work.
+export const imageContextFacet = Facet.define<ImageContext, ImageContext | null>({
+    combine: values => values[0] ?? null,
+});
+const modeOf = (state: EditorState): EditorMode => state.facet(EditorView.editable) ? 'edit' : 'read';
 
-export function createLivePreviewPlugin(
-    getAssetUrl: GetAssetUrl,
-    editorMode: EditorMode,
-    actions: ImageEmbedActions,
-): Extension {
-    // One per plugin instance, and compared by identity inside ImageWidget.eq —
-    // which is why `getAssetUrl` and `actions` must themselves be stable for the
-    // life of the pane (see EditorPane).
-    const imageCtx: ImageContext = { getAssetUrl, actions, editable: editorMode !== 'read' };
-
-    const field = StateField.define<LivePreview>({
+export const livePreviewField = StateField.define<LivePreview>({
         create(state: EditorState) {
             const viewShim = { state };
+            const imageCtx = state.facet(imageContextFacet)!;
+            const editorMode = modeOf(state);
             if (__BME_BENCH__) {
                 return measureEditorRender(state, true, () => buildDecorations(viewShim, imageCtx, editorMode));
             }
@@ -1194,6 +1183,9 @@ export function createLivePreviewPlugin(
         },
         update(decorations: LivePreview, tr: Transaction) {
             if (__BME_BENCH__) { countEditorTransaction(tr.state); }
+            const imageCtx = tr.state.facet(imageContextFacet)!;
+            const editorMode = modeOf(tr.state);
+            const modeChanged = editorMode !== modeOf(tr.startState);
             // Markdown parses asynchronously: on a large document the tree only
             // covers a prefix when the file opens, and the parser keeps advancing
             // in idle time, dispatching otherwise-empty transactions as it goes.
@@ -1206,12 +1198,26 @@ export function createLivePreviewPlugin(
             // editorMode !== 'read' — so skip rebuilds from selection-only changes.
             // Restating the same selection cannot change a construct's reveal state.
             const selectionChanged = editorMode !== 'read' && !tr.state.selection.eq(tr.startState.selection);
-            if (tr.docChanged || treeAdvanced || selectionChanged) {
+            if (tr.docChanged || treeAdvanced || selectionChanged || modeChanged) {
                 const viewShim = { state: tr.state };
                 if (__BME_BENCH__) {
                     return measureEditorRender(tr.state, false, () => buildDecorations(viewShim, imageCtx, editorMode));
                 }
                 return buildDecorations(viewShim, imageCtx, editorMode);
+            }
+            if (imageCtx !== tr.startState.facet(imageContextFacet)) {
+                let deco = decorations.deco;
+                for (const span of decorations.images) {
+                    let image: ImageWidget | undefined;
+                    deco.between(span.from, span.to, (from, to, value) => {
+                        if (from === span.from && to === span.to && value.spec.widget instanceof ImageWidget) image = value.spec.widget;
+                    });
+                    if (!image) continue;
+                    const next = Decoration.replace({ widget: new ImageWidget(image.filename, image.width, imageCtx, image.selected) }).range(span.from, span.to);
+                    deco = deco.update({ filterFrom: span.from, filterTo: span.to,
+                        filter: (from, to, value) => !(from === span.from && to === span.to && value.spec.widget instanceof ImageWidget), add: [next] });
+                }
+                decorations = { ...decorations, deco };
             }
             if (tr.state.facet(readingEmphasisFacet) !== tr.startState.facet(readingEmphasisFacet)) {
                 // Preference-only changes reuse all image/math/link decorations.
@@ -1263,13 +1269,14 @@ export function createLivePreviewPlugin(
         }
     });
 
+export function createLivePreviewPlugin(imageCtx: ImageContext, actions: ImageEmbedActions): Extension {
     return [
-        field,
+        imageContextFacet.of(imageCtx),
         tableReadingSelection,
         imageEmbedActions.of(actions),
         imageEmbedKeymap,
-        tableEntryKeymap(field),
-        tableAdoptListener(field),
+        tableEntryKeymap(livePreviewField),
+        tableAdoptListener(livePreviewField),
     ];
 }
 

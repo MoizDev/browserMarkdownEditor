@@ -31,6 +31,7 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     changed(selection: EditSelection): void;
     reportError(error: unknown): void;
     autoScroll(x: number, y: number): void;
+    stopAutoScroll(): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
     openLink(url: string): void;
@@ -82,6 +83,7 @@ export class TextEditSession {
             word: offset => selectWord(services.plainText(), offset),
             block: offset => selectBlock(services.plainText(), offset),
             autoScroll: (x, y) => services.autoScroll(x, y),
+            stopAutoScroll: () => services.stopAutoScroll(),
             touchHandles: show => services.touchHandles(show),
             menu: (x, y) => services.menu(x, y),
             followLink: (x, y) => {

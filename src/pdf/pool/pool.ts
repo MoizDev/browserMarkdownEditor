@@ -81,6 +81,18 @@ function validGeometry(value: unknown, page: number): value is PageGeometry {
         Number.isFinite(matrix[0] * matrix[3] - matrix[1] * matrix[2]) && matrix[0] * matrix[3] - matrix[1] * matrix[2] !== 0;
 }
 
+function rememberGeometry(doc: Doc, value: unknown, page: number): Readonly<PageGeometry> {
+    if (!validGeometry(value, page)) throw new PdfEngineError('EngineBroken', 'Invalid PDF page geometry');
+    const previous = doc.geometry.get(page);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) {
+        throw new PdfEngineError('EngineBroken', 'PDF workers disagree about page geometry');
+    }
+    if (previous) return previous;
+    const result = Object.freeze({ ...value, toUserSpace: Object.freeze([...value.toUserSpace]) as PageGeometry['toUserSpace'] });
+    doc.geometry.set(page, result);
+    return result;
+}
+
 function validTile(value: unknown, args: PageTileArgs): value is PageTileResult {
     if (!value || typeof value !== 'object') return false;
     const tile = value as PageTileResult;
@@ -135,8 +147,16 @@ class Pool implements PdfPool {
             const event = value as { docKey?: string; geometry?: PageGeometry }, doc = event.docKey ? this.docs.get(event.docKey) : undefined;
             const page = event.geometry;
             if (!doc?.info || !page || !Number.isSafeInteger(page.index) || page.index < 0 || page.index >= doc.info.pageCount ||
-                !validGeometry(page, page.index)) return;
-            doc.geometry.set(page.index, Object.freeze({ ...page, toUserSpace: [...page.toUserSpace] as PageGeometry['toUserSpace'] }));
+                !slot.opens.has(doc.key)) {
+                void client.recycle('Invalid PDF geometry event').catch(() => {});
+                return;
+            }
+            try { rememberGeometry(doc, page, page.index); }
+            catch (error) {
+                this.failedDocs.add(doc.key);
+                for (const job of [...this.queue]) if (job.doc === doc) this.finish(job, error);
+                void client.recycle('Invalid PDF geometry event').catch(() => {});
+            }
         });
         this.slots.push(slot);
         this.timer ??= setInterval(() => this.maintain(), 1000);
@@ -409,10 +429,7 @@ class Lease implements PdfPoolDocument {
         const cached = this.doc.geometry.get(page);
         if (cached) return cached;
         const result = await this.request('page.geometry', { page }, options);
-        if (!validGeometry(result, page)) throw new PdfEngineError('EngineBroken', 'Invalid PDF page geometry');
-        const geometry = Object.freeze({ ...result, toUserSpace: [...result.toUserSpace] as PageGeometry['toUserSpace'] });
-        this.doc.geometry.set(page, geometry);
-        return geometry;
+        return rememberGeometry(this.doc, result, page);
     }
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>> {
         return this.pool.enqueue<PdfResult<K>>(this.doc, this, op, args as Record<string, unknown>, options);

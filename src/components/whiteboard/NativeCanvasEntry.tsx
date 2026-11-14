@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { ActiveFile, Theme } from '../../types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -36,22 +36,22 @@ function NativeViewer({ props, identity, board, onError }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; board: ComposedBoardSession; onError(error: unknown): void;
 }) {
     const latest = useRef(props);
-    latest.current = props;
+    useLayoutEffect(() => { latest.current = props; }, [props]);
     const [inverted, setInverted] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
     const [lease, setLease] = useState<NativeViewLease | null>(null);
-    const { nativeCanvasHost, zoomLimits, insets } = props;
+    const { nativeCanvasHost, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
     useEffect(() => {
         let view: NativeViewLease;
         try {
             const current = latest.current;
             view = createNativeViewLease({ host: nativeCanvasHost, identity, board,
                 parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
-                limits: zoomLimits, insets, onError, onNotice: setNotice });
+                limits: { min, max }, insets: { left, right, top, bottom }, onError, onNotice: setNotice });
         } catch (error) { onError(error); return; }
         setLease(view);
         return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
-    }, [board, identity, nativeCanvasHost, zoomLimits.min, zoomLimits.max, insets.left, insets.right, insets.top, insets.bottom, onError]);
+    }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError]);
     if (!lease) return <div role="status">Preparing canvas view…</div>;
     return <AttachedViewer props={props} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} />;
 }
@@ -65,8 +65,10 @@ function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
     const selection = lease.runtime.selection;
     const selected = useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
     const board = lease.runtime.session;
-    const onFocus = useCallback(() => props.onFocusPane(props.file.path), [props.onFocusPane, props.file.path]);
-    const register = useCallback((focus: () => void) => props.registerKeyboardTarget(props.file.path, focus), [props.registerKeyboardTarget, props.file.path]);
+    const { onFocusPane, registerKeyboardTarget } = props;
+    const path = props.file.path;
+    const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
+    const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
     const sheets = board.doc.sheetOrder;
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
@@ -91,26 +93,32 @@ function AttachedViewer({ props, lease, inverted, setInverted, notice }: {
 }
 
 export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
-    const latest = useRef(props);
-    latest.current = props;
-    const { identity: incoming, nativeCanvasHost, documentId } = props;
-    const identity = useMemo(() => incoming, [incoming.documentId, incoming.session, incoming.vaultActivation, incoming.bytesGeneration, incoming.kind]);
+    const { identity: incoming, nativeCanvasHost, documentId, attachCanvasSession: attach,
+        onNativeCanvasReady: ready, deadlineMs, zMax } = props;
+    const [identity, setIdentity] = useState(() => incoming);
+    useLayoutEffect(() => {
+        if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
+            || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
+            || identity.kind !== incoming.kind) setIdentity(incoming);
+    }, [identity, incoming]);
+    const [emergencyReadOnly] = useState(() => props.emergencyReadOnly);
+    const emergencyPolicy = useCallback(() => emergencyReadOnly, [emergencyReadOnly]);
     const [error, setError] = useState<string | null>(null);
     const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
-    const attach = useCallback<AttachCanvasSession>((id, create) => latest.current.attachCanvasSession(id, create), []);
-    const ready = useCallback<NativeCanvasReady>(value => latest.current.onNativeCanvasReady(value), []);
     const prepare = useCallback((signal: AbortSignal) => {
-        const current = latest.current;
         if (identity.documentId !== documentId || identity.kind === 'pdfInk') throw new Error('Canvas identity does not match this entry');
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: identity.kind, signal,
-            deadlineMs: current.deadlineMs, zMax: current.zMax, readOnlyReason: VIEW_REASON,
+            deadlineMs, zMax, readOnlyReason: VIEW_REASON,
             onError, onHistoryLimit: () => setError('The board history limit was reached.') });
-    }, [identity, documentId, nativeCanvasHost, onError]);
+    }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);
     const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,
         identity, attachCanvasSession: attach, onNativeCanvasReady: ready, prepare, onError,
-        emergencyReadOnly: () => latest.current.emergencyReadOnly, emergencyReadOnlyReason: VIEW_REASON,
-    }), [nativeCanvasHost, identity, attach, ready, prepare, onError]);
+        emergencyReadOnly: emergencyPolicy, emergencyReadOnlyReason: VIEW_REASON,
+    }), [nativeCanvasHost, identity, attach, ready, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
+    if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
+        || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
+        || identity.kind !== incoming.kind) return <div role="status">Preparing canvas…</div>;
     if (error) return <div role="alert">Could not open canvas: {error}</div>;
     if (!acquired) return <div role="status">Preparing canvas…</div>;
     if (!acquired.adapter.board.isReadOnly) return <div role="alert">This canvas cannot be opened safely in read-only mode.</div>;

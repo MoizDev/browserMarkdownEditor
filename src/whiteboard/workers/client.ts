@@ -34,7 +34,8 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
         disposeResult: (_op, result) => closeWorkerResult(result),
     });
     const client: BoardWorkerClient = {
-        async request<T>(op, payload, identity, options, isCurrent) {
+        async request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
+            isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T> {
             if (!validBoardIdentity(identity)) throw new TypeError('Invalid board worker identity');
             const pinned = Object.freeze({ session: identity.session, epoch: identity.epoch, revision: identity.revision });
             if (!isCurrent(pinned)) throw new DOMException('Board job is stale', 'AbortError');

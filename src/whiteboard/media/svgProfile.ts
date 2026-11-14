@@ -1,22 +1,27 @@
 import type { SvgAdmissionProfile } from './inspect';
+import type { BoardJobIdentity } from '../workers/protocol';
 
 // SEC-W2 supplies the opaque sandbox, fixed bootstrap, chunked channel and
 // exact-hash CSP. Separate profiles prevent XML parsing from gaining blob loads.
 export interface SvgContainedFrame {
-    request(operation: 'header' | 'probe', blob: Blob, signal: AbortSignal): Promise<unknown>;
+    request(operation: 'header' | 'probe', blob: Blob, signal: AbortSignal, size?: { readonly width: number; readonly height: number }): Promise<unknown>;
     dispose(): void;
 }
 export interface SvgFrameFactory {
-    open(profile: 'svg-xml' | 'svg-image', signal: AbortSignal): Promise<SvgContainedFrame>;
+    open(profile: 'svg-xml' | 'svg-image', signal: AbortSignal, identity: BoardJobIdentity): Promise<SvgContainedFrame>;
 }
 
-export function createSvgAdmissionProfile(frames: SvgFrameFactory): SvgAdmissionProfile {
-    const request = async (profile: 'svg-xml' | 'svg-image', op: 'header' | 'probe', blob: Blob, signal: AbortSignal): Promise<unknown> => {
+export function createSvgAdmissionProfile(frames: SvgFrameFactory, identity: BoardJobIdentity, isCurrent: (identity: BoardJobIdentity) => boolean): SvgAdmissionProfile {
+    const request = async (profile: 'svg-xml' | 'svg-image', op: 'header' | 'probe', blob: Blob, signal: AbortSignal, size?: { readonly width: number; readonly height: number }): Promise<unknown> => {
         signal.throwIfAborted();
-        const frame = await frames.open(profile, signal);
+        if (!isCurrent(identity)) throw new DOMException('Stale SVG job', 'AbortError');
+        const frame = await frames.open(profile, signal, identity);
         try {
             signal.throwIfAborted();
-            return await frame.request(op, blob, signal);
+            if (!isCurrent(identity)) throw new DOMException('Stale SVG job', 'AbortError');
+            const result = await frame.request(op, blob, signal, size);
+            if (!isCurrent(identity)) throw new DOMException('Stale SVG job', 'AbortError');
+            return result;
         } finally { frame.dispose(); }
     };
     return {
@@ -30,8 +35,8 @@ export function createSvgAdmissionProfile(frames: SvgFrameFactory): SvgAdmission
                 || rgbaBytes < width * height * 4 || rgbaBytes > 4 * (2 ** 26)) throw new Error('Invalid SVG decoder response');
             return { width, height, rgbaBytes };
         },
-        async probe(blob, signal) {
-            const result = await request('svg-image', 'probe', blob, signal);
+        async probe(blob, width, height, signal) {
+            const result = await request('svg-image', 'probe', blob, signal, { width, height });
             if (result !== true) throw new Error('This picture could not be read');
         },
     };

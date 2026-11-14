@@ -27,6 +27,7 @@ export interface EditSessionServices extends EditTransactions {
     inList(offset: number): boolean;
     undoTransformation(): boolean;
     changed(selection: EditSelection): void;
+    reportError(error: unknown): void;
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
@@ -52,6 +53,7 @@ export class TextEditSession {
     private lastActivity = performance.now();
     private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
     private compositionSelection: EditSelection | null = null;
+    private compositionRange: { from: number; to: number } | null = null;
     private closed = false;
 
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
@@ -75,9 +77,11 @@ export class TextEditSession {
             composition: change => {
                 if (change) {
                     this.compositionSelection ??= this.selection;
+                    this.compositionRange = { from: change.from, to: change.from + change.text.length };
                     this.selection = change.selection;
                 } else {
                     this.formats = [];
+                    this.compositionRange = null;
                     if (this.compositionSelection) this.selection = this.compositionSelection;
                     this.compositionSelection = null;
                 }
@@ -103,7 +107,8 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
         this.lastActivity = performance.now();
-        this.selection = this.controller.replace(change, kind, this.selection);
+        try { this.selection = this.controller.replace(change, kind, this.selection); }
+        catch (error) { this.services.reportError(error); return; }
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
@@ -161,11 +166,25 @@ export class TextEditSession {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
             move: (offset, direction) => this.move(offset, direction),
+            collapse: (selection, direction) => {
+                const index = this.services.layout().caret;
+                const a = index.caret({ offset: selection.anchor });
+                const b = index.caret({ offset: selection.focus, affinity: this.affinity });
+                const first = a.line < b.line || (a.line === b.line && a.x <= b.x) ? a : b;
+                const last = first === a ? b : a;
+                const stop = direction === 'left' ? first : last;
+                this.affinity = stop.affinity;
+                this.goalX = undefined;
+                return stop.offset;
+            },
             command: command => {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];
-                if (mark) { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.host.sync(); }
-                else this.services.command(command, this.selection);
+                if (mark) {
+                    try { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); }
+                    catch (error) { this.services.reportError(error); }
+                    this.host.sync();
+                } else this.services.command(command, this.selection);
             },
             inList: () => this.services.inList(this.selection.focus),
             undoTransformation: () => this.services.undoTransformation(),
@@ -192,7 +211,11 @@ export class TextEditSession {
         this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
     }
 
-    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): { selection: readonly Rect[]; caret: Rect | null; composition: readonly { rect: Rect; style: string; thickness: string }[] } {
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): {
+        selection: readonly Rect[]; caret: Rect | null;
+        composition: readonly { rect: Rect; style: string; thickness: string }[];
+        handles: { anchor: { x: number; y: number }; focus: { x: number; y: number } };
+    } {
         const layout = this.services.layout();
         const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
@@ -201,8 +224,12 @@ export class TextEditSession {
         const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
         const caret = visible && this.selection.anchor === this.selection.focus
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
-        const composition = this.formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
-        return { selection, caret, composition };
+        const formats = this.formats.length ? this.formats : this.compositionRange ? [{ ...this.compositionRange, style: 'solid', thickness: 'thin' }] : [];
+        const composition = formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        const anchor = layout.caret.caret({ offset: this.selection.anchor });
+        const focus = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        const handles = { anchor: point(layout.localToClient, anchor.x, anchor.bottom), focus: point(layout.localToClient, focus.x, focus.bottom) };
+        return { selection, caret, composition, handles };
     }
 
     getSelection(): EditSelection { return this.selection; }
@@ -216,12 +243,15 @@ export class TextEditSession {
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
         this.services.typing('boundary', this.selection, next);
-        this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+        try { this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] }); }
+        catch (error) { this.services.reportError(error); return; }
         this.select(next);
     }
 
     applyLink(url: string, selection: EditSelection): boolean {
-        const applied = this.controller.applyLink(url, selection);
+        let applied: boolean;
+        try { applied = this.controller.applyLink(url, selection); }
+        catch (error) { this.services.reportError(error); return false; }
         if (applied) { this.selection = selection; this.services.changed(selection); this.host.focus(); }
         return applied;
     }

@@ -1,3 +1,4 @@
+import type { Sheet } from '../model/doc';
 import type { Node } from '../model/nodes';
 import { backdropRole, type LegacyShape } from './records/common';
 
@@ -49,17 +50,17 @@ export function notebookPages(width: number, height: number, count: number): rea
 }
 
 export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
-export type LegacyBoundsPreparation = (nodes: readonly Node[]) => (node: Node) => LegacyWorldBounds;
+export type LegacyBoundsPreparation = (nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<(node: Node) => LegacyWorldBounds>;
 export type PageSource =
     | { readonly kind: 'notebook'; readonly width: number; readonly height: number; readonly count: number }
     | { readonly kind: 'pdf-ink'; readonly pages: readonly DisplayPage[] };
 
 export function createPagePreparation(source: PageSource, geometry: LegacyBoundsPreparation):
-    (shapes: readonly LegacyShape[], nodes: readonly Node[]) => ReturnType<typeof preparePageMapper<Node>> {
-    return (shapes, nodes) => {
+    (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<ReturnType<typeof preparePageMapper<Node>>> {
+    return async (shapes, nodes, sheets) => {
         const pages = source.kind === 'notebook' ? notebookPages(source.width, source.height, source.count)
             : legacyPdfPages(shapes, source.pages);
-        return preparePageMapper(pages, geometry(nodes));
+        return preparePageMapper(pages, await geometry(nodes, sheets));
     };
 }
 export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(

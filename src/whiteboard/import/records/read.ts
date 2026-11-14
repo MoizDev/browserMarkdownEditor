@@ -12,7 +12,7 @@ import { readBasicShape } from './basic';
 import { readBinding, resolveBinding, type LegacyBinding } from './bindings';
 import { backdropRole, readShape, shapeBase, type LegacyShape } from './common';
 import { readLegacyEnvelope, type LegacyEnvelope, type LegacyObject } from './envelope';
-import { unknownShapeProperties } from './fields';
+import { unknownShapeFields, unknownShapeProperties } from './fields';
 import { readLabelledShape, type RichTextReader } from './labelled';
 import { readInlineAsset, type AdmitLegacyMedia, type ImportedMedia } from './media';
 import { readPictureShape } from './pictures';
@@ -25,10 +25,11 @@ export interface LegacyRecordOptions {
     readonly rich: RichTextReader;
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
+    readonly assertCurrent: () => void;
     // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
-    readonly preparePages: (shapes: readonly LegacyShape[], nodes: readonly Node[]) => (node: Node) => {
+    readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<(node: Node) => {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
-    };
+    }>;
 }
 export interface LegacyRecordDraft {
     readonly source: string;
@@ -47,10 +48,19 @@ export interface LegacyRecordDraft {
 export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | null> {
     const report = new ReportBuilder(), envelope = readLegacyEnvelope(text, report);
     if (!envelope) return null;
-    const sheets: Sheet[] = [], shapes: LegacyShape[] = [], bindings: LegacyBinding[] = [];
+    const sheets: Sheet[] = [], shapes: LegacyShape[] = [], bindings: LegacyBinding[] = [], assets: LegacyObject[] = [];
     const media: ImportedMedia[] = [], assetIds = new Map<string, MediaId>(), leases: SampleLease[] = [];
     const bookmarks = new Map<string, LegacyObject>();
     const preservedRecords: { type: string; id: string; raw: RawJson }[] = [];
+    const preservedIds = new Set<string>();
+    const preserve = (record: LegacyObject, id: string, family: string) => {
+        const type = `legacy-${family}`;
+        let preservedId = id, suffix = 0;
+        while (preservedIds.has(`${type}\u0000${preservedId}`)) preservedId = `${id.slice(0, 100)}~duplicate${++suffix}`;
+        preservedIds.add(`${type}\u0000${preservedId}`);
+        const raw = parseJson(JSON.stringify({ type, id: preservedId, record })).raw();
+        preservedRecords.push({ type, id: preservedId, raw });
+    };
     try {
     for (const record of envelope.records) {
         options.signal?.throwIfAborted();
@@ -59,26 +69,51 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             switch (record.typeName) {
                 case 'page': sheets.push(readLegacySheet(record)); report.count('sheet'); break;
                 case 'shape': shapes.push(readShape(record, report)); break;
-                case 'binding': bindings.push(readBinding(record)); break;
-                case 'asset': {
-                    if (typeof record.id !== 'string') throw new Error('Asset has no identifier');
-                    // Generated page assets are host resources, not inline media.
-                    if (record.id === 'asset:notebook-paper' || /^asset:pdf-page-\d+$/.test(record.id)) break;
-                    if (record.type === 'bookmark') { bookmarks.set(record.id, record); break; }
-                    const imported = await readInlineAsset(record, options.admitMedia, options.signal);
-                    assetIds.set(record.id, imported.entry.id); media.push(imported); break;
-                }
+                case 'binding':
+                    bindings.push(readBinding(record));
+                    if (id) preserve(record, id, 'binding');
+                    break;
+                case 'asset': assets.push(record); break;
                 case 'document': case 'user': {
                     if (!id) throw new Error('Metadata record has no identifier');
-                    const type = `legacy-${String(record.typeName)}`;
-                    preservedRecords.push({ type, id, raw: parseJson(JSON.stringify({ type, id, record })).raw() });
+                    preserve(record, id, String(record.typeName));
                     break;
                 }
-                default: report.refuse(id, `Unsupported record type ${String(record.typeName)}`);
+                default:
+                    if (id) preserve(record, id, 'unknown-record');
+                    report.refuse(id, `Unsupported record type ${String(record.typeName)}`);
             }
         } catch (error) {
             options.signal?.throwIfAborted();
+            options.assertCurrent();
+            if (id) {
+                try { preserve(record, id, 'unreadable-record'); } catch { /* Original source remains available. */ }
+            }
             report.refuse(id, error instanceof Error ? error.message : 'Invalid record');
+        }
+    }
+    const backdropAssets = new Set<string>(), ordinaryAssets = new Set<string>();
+    for (const shape of shapes) {
+        if (typeof shape.props.assetId !== 'string') continue;
+        (backdropRole(shape, options.kind) === 'backdrop' ? backdropAssets : ordinaryAssets).add(shape.props.assetId);
+    }
+    for (const record of assets) {
+        options.signal?.throwIfAborted();
+        const id = typeof record.id === 'string' ? record.id : null;
+        try {
+            if (!id) throw new Error('Asset has no identifier');
+            if (backdropAssets.has(id) && !ordinaryAssets.has(id)) continue;
+            if (record.type === 'bookmark') { bookmarks.set(id, record); preserve(record, id, 'bookmark-asset'); continue; }
+            const imported = await readInlineAsset(record, options.admitMedia, options.signal);
+            options.assertCurrent();
+            assetIds.set(id, imported.entry.id); media.push(imported);
+        } catch (error) {
+            options.signal?.throwIfAborted();
+            options.assertCurrent();
+            if (id) {
+                try { preserve(record, id, 'unreadable-asset'); } catch { /* Original source remains available. */ }
+            }
+            report.refuse(id, error instanceof Error ? error.message : 'Invalid asset');
         }
     }
     if (!sheets.length) sheets.push({ id: sheetId('page:page'), name: 'Page 1', order: 'a1', ext: null });
@@ -100,8 +135,11 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             const role = backdropRole(shape, options.kind);
             if (role === 'backdrop') continue;
             if (role === 'ambiguous') report.repair(shape.id, 'Possible page backdrop retained as a picture');
-            const extras = unknownShapeProperties(shape);
-            if (extras.length) report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
+            const extras = [...unknownShapeFields(shape), ...unknownShapeProperties(shape).map(key => `props.${key}`)];
+            if (extras.length) {
+                preserve(shape.source, shape.id, 'shape');
+                report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
+            }
             const root = sheetIds.has(shape.parentId as SheetId);
             let base = shapeBase(shape, options.kind !== 'whiteboard' && root ? 0 : -1);
             if (shape.type === 'note' && shape.props.textLastEditedBy != null) {
@@ -135,12 +173,20 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                 node = readBasicShape(shape, base) ?? readPictureShape(shape, base, assetIds, bookmarks)
                     ?? readLabelledShape(shape, base, options.rich, endpoints);
             }
-            if (!node) report.refuse(shape.id, `Unsupported shape ${shape.type}`);
-            else { nodes.push(node); report.count(node.kind); }
-        } catch (error) { report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape'); }
+            if (!node) {
+                preserve(shape.source, shape.id, 'shape');
+                report.refuse(shape.id, `Unsupported shape ${shape.type}`);
+            } else { nodes.push(node); report.count(node.kind); }
+        } catch (error) {
+            try { preserve(shape.source, shape.id, 'shape'); } catch { /* Original source remains available. */ }
+            report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape');
+        }
     }
     if (options.kind !== 'whiteboard') {
-        const pageForRoot = options.preparePages(shapes, nodes);
+        if (!options.preparePages) throw new Error('Paged import requires page geometry');
+        const pageForRoot = await options.preparePages(shapes, nodes, sheets);
+        options.signal?.throwIfAborted();
+        options.assertCurrent();
         for (const node of nodes) {
             if (!sheetIds.has(node.parent as SheetId)) continue;
             try {
@@ -168,6 +214,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         }
         return node;
     });
+    options.assertCurrent();
     const result = report.finish();
     return { source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
         readOnly: result.unrepresentable.length > 0, converted: false };

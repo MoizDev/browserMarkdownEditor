@@ -18,8 +18,12 @@ export interface ItemizedBlock {
     readonly graphemes: readonly number[];
 }
 
+const cache = new WeakMap<Block, Omit<ItemizedBlock, 'offset'>>();
+
 /** Offsets in each item and breakpoint are block-relative, not projection-relative. */
 export function itemizeBlock(block: Block, offset: number): ItemizedBlock {
+    const cached = cache.get(block);
+    if (cached) return { ...cached, offset };
     const text = block.runs.map(run => run.text).join('');
     const bidi = resolveBidi(text, block.dir);
     const items: TextItem[] = [];
@@ -45,5 +49,8 @@ export function itemizeBlock(block: Block, offset: number): ItemizedBlock {
         }
         runStart = end;
     }
-    return { text, offset, bidi, items, breaks: lineBreaks(text), graphemes: graphemeBoundaries(text) };
+    const result = { text, bidi, items, breaks: lineBreaks(text), graphemes: graphemeBoundaries(text) };
+    // Huge edited blocks can be retained by history; caching each version would multiply their memory.
+    if (text.length <= 16_384) cache.set(block, result);
+    return { ...result, offset };
 }

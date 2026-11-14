@@ -5458,11 +5458,14 @@ export default function App() {
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
     const root = rootHandleRef.current;
     if (!root || currentVaultIdRef.current !== entry.vaultId) throw new Error('Return to the original vault first.');
+    const vault = recentVaults.find(item => item.id === entry.vaultId);
+    const relative = vault && await handleIO.relativeTo(root, vault.handle);
+    if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
     const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);
-  }, [writeConflictCopy, announce]);
+  }, [writeConflictCopy, announce, recentVaults, handleIO]);
 
   // The welcome screen can report a refused open too; returning before the
   // workspace's host used to hide the app notice on exactly that path.

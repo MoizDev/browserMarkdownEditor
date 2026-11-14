@@ -223,7 +223,61 @@ const fsAccess: Rule.RuleModule = {
   },
 }
 
+// P1-dev exports every public symbol; the worker adapter may use only the
+// canonical 136-export surface. An explicit dev import guard is also required
+// so a static import cannot silently carry its manifest into a shipping chunk.
+const pdfiumBoundaries: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array', items: { type: 'string' } }] },
+  create(context) {
+    const allowed = new Set((context.options[0] ?? []) as string[])
+    const file = rel(context.filename)
+    const checkNative = (node: Rule.Node, value: unknown) => {
+      if (typeof value !== 'string' || !/^_?(?:FPDF|FORM|FSDK)[A-Za-z0-9_]+$/.test(value)) return
+      if (!allowed.has(value.replace(/^_/, ''))) context.report({ node, message: `PDFium symbol ${value} is not in src/pdf/engine/pdfium/exports.json (02-engine-build section 3).` })
+    }
+    const enabled = (test: Node): boolean => {
+      const source = context.sourceCode.getText(test).replace(/\s+/g, '')
+      return source === 'import.meta.env.DEV||__BME_BENCH__' || source === '__BME_BENCH__||import.meta.env.DEV'
+    }
+    const guarded = (node: Node): boolean => {
+      let child = node
+      for (let parent = node.parent as Node; parent; parent = parent.parent as Node) {
+        if (parent.type === 'IfStatement' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'ConditionalExpression' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'LogicalExpression' && parent.operator === '&&' && parent.right === child && enabled(parent.left as Node)) return true
+        child = parent
+      }
+      return false
+    }
+    return {
+      ...onImport(context, (node, source) => {
+        const local = target(context.filename, source).local
+        if (!local || !under(local, 'src/pdf/engine/dev') || under(file, 'src/pdf/engine/dev')) return
+        const n = node as Node
+        if (n.importKind === 'type' || n.exportKind === 'type') return
+        if (n.type !== 'ImportExpression' || !guarded(n)) context.report({ node, message: 'Import the development PDFium loader dynamically inside if (import.meta.env.DEV || __BME_BENCH__), never statically or from its production branch.' })
+      }),
+      Identifier(raw) {
+        const n = raw as Node
+        const parent = n.parent as Node
+        if (typeof n.name === 'string' && (n.name.startsWith('_') || (parent.type === 'CallExpression' && parent.callee === n))) checkNative(n, n.name)
+      },
+      MemberExpression(raw) {
+        const n = raw as Node
+        const property = n.property as Node
+        if (!n.computed && property.type === 'Identifier') checkNative(property, property.name)
+      },
+      Literal(raw) { const n = raw as Node; checkNative(n, n.value) },
+      TemplateLiteral(raw) {
+        const n = raw as Node
+        const parts = n.quasis as unknown as { value: { cooked: string | null } }[]
+        if (parts.length === 1) checkNative(n, parts[0].value.cooked)
+      },
+    }
+  },
+}
+
 export const bmePlugin = {
   meta: { name: 'bme' },
-  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess },
+  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess, 'pdfium-boundaries': pdfiumBoundaries },
 }

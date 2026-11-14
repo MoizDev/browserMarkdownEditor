@@ -13,6 +13,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(a => {
     const at = a.indexOf('=');
     return [a.slice(2, at), a.slice(at + 1)];
 }));
+const requireStepMs = args['step-ms'] === 'require';
 const out = path.resolve(args.out ?? '/Users/adham/Developer/bme-impl/scratch/c-e/C-15d');
 const chrome = args.chrome ?? '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const fixture = {
@@ -25,10 +26,12 @@ const fixture = {
 const ids = Object.keys(fixture);
 const edges = [['A.md', 'B.md'], ['B.md', 'C.md'], ['C.md', 'D.md'], ['D.md', 'E.md']];
 const require = createRequire(import.meta.url);
-const report = { fixture, idbShim: false, dpr: 1, driver: require('playwright/package.json').version, expectedBrowser: '157.0.8103.39', expectedCommit: args.commit, arms: {} };
+const report = { gate: requireStepMs ? 'C-15d-step' : 'C-15d', fixture, idbShim: false, dpr: 1, driver: require('playwright/package.json').version, expectedBrowser: '157.0.8103.39', expectedCommit: args.commit, arms: {} };
 await mkdir(out, { recursive: true });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const anchors = /__perf|bme-perf-hooks-plant-7f3a|PERF_PLANT|get publications\s*\(/;
+report.fixtureSha256 = hash(Buffer.from(JSON.stringify(fixture)));
+if (requireStepMs) report.absoluteStepMs = { status: 'uncertified', instrumentCost: 'unknown', overheadCompanion: 'pending accepted window by v-c; functional clock observers are not timing data' };
+const anchors = /__perf|bme-perf-hooks-plant-7f3a|PERF_PLANT|get publications\s*\(|get stepMs\s*\(/;
 
 function fail(reason, detail) {
     const error = new Error(`FAIL ${reason} ${detail}`);
@@ -88,20 +91,35 @@ function observeScripts(context, manifest, url, name) {
                 check({ url: response.url(), bytes: await response.body(), status: response.status(), owner: 'supplemental' }, 'supplemental-browser-context-fetch');
             }
         }
-        if (name === 'benchmark' && !scanned.some(script => script.source === 'app-request' && script.anchor)) fail('B-control', 'no anchor in a script the app actually fetched');
+        if (['benchmark', 'scope'].includes(name) && !scanned.some(script => script.source === 'app-request' && script.anchor)) fail('B-control', 'no anchor in a script the app actually fetched');
     };
 }
 
-async function prepare(context, url) {
+async function prepare(context, url, scopeWitness = false) {
     await context.route('**/*', route => {
         const requested = new URL(route.request().url());
         return ['localhost', '127.0.0.1'].includes(requested.hostname) ? route.continue() : route.abort();
     });
-    await context.addInitScript(() => {
+    await context.addInitScript(({ stepMode, scopeWitness }) => {
         // Init scripts also run in initial/opaque frames without a storage API.
         if (typeof FileSystemDirectoryHandle === 'undefined') return;
         let perf;
-        window.__hookObservation = { rootWrites: 0, reports: 0 };
+        window.__hookObservation = { rootWrites: 0, reports: 0, graphNowCalls: 0 };
+        window.__scopeClock = { draws: 0, offset: 0, calls: [] };
+        if (stepMode) {
+            const now = performance.now.bind(performance);
+            performance.now = () => {
+                const raw = now();
+                const clock = window.__scopeClock;
+                const value = raw + (scopeWitness ? clock.offset : 0);
+                const caller = new Error().stack?.split('\n')[2] ?? '';
+                if (/GraphView(?:-[^/]+\.js|\.tsx)/.test(caller)) {
+                    window.__hookObservation.graphNowCalls++;
+                    if (scopeWitness && clock.calls.length < 4096) clock.calls.push({ value, offset: clock.offset });
+                }
+                return value;
+            };
+        }
         Object.defineProperty(window, '__perf', {
             configurable: true,
             get: () => perf,
@@ -126,7 +144,10 @@ async function prepare(context, url) {
         // the actual canvas arguments; the screenshot remains the pixel oracle.
         const clear = CanvasRenderingContext2D.prototype.clearRect;
         CanvasRenderingContext2D.prototype.clearRect = function (...a) {
-            if (this.canvas.closest('.graph-view')) window.__graphPaint = { arcs: [], edges: 0 };
+            if (this.canvas.closest('.graph-view')) {
+                window.__graphPaint = { arcs: [], edges: 0 };
+                if (scopeWitness) { window.__scopeClock.draws++; window.__scopeClock.offset += 1000; }
+            }
             return clear.apply(this, a);
         };
         const arc = CanvasRenderingContext2D.prototype.arc;
@@ -139,7 +160,7 @@ async function prepare(context, url) {
             if (this.canvas.closest('.graph-view') && window.__graphPaint) window.__graphPaint.edges++;
             return line.apply(this, a);
         };
-    });
+    }, { stepMode: requireStepMs, scopeWitness });
     const page = await context.newPage();
     await page.goto(url);
     await page.evaluate(async files => {
@@ -161,10 +182,20 @@ async function prepare(context, url) {
 }
 
 async function readGraph(page) {
-    return page.evaluate(() => {
+    return page.evaluate(stepMs => {
         const graph = window.__perf?.graph;
-        return graph ? { positions: graph.positions(), edges: graph.snapshot(), publications: graph.publications, steps: graph.steps } : null;
-    });
+        return graph ? { positions: graph.positions(), edges: graph.snapshot(), publications: graph.publications, steps: graph.steps,
+            ...(stepMs ? { stepMs: graph.stepMs } : {}) } : null;
+    }, requireStepMs);
+}
+
+function checkStepMs(data) {
+    assert(data.stepMs, 'stepMs is missing from the live benchmark graph');
+    assert.equal(data.stepMs.count, data.steps, 'stepMs count differs from completed working steps');
+    assert.equal(data.stepMs.samples.length, Math.min(4096, data.steps), 'wrong bounded stepMs sample count');
+    assert(data.stepMs.samples.every(value => Number.isFinite(value) && value >= 0), 'stepMs sample is not finite/nonnegative');
+    assert(Number.isFinite(data.stepMs.total) && data.stepMs.total >= 0, 'stepMs total is not finite/nonnegative');
+    if (data.steps <= 4096) assert.equal(data.stepMs.samples.reduce((sum, value) => sum + value, 0), data.stepMs.total, 'stepMs total disagrees with samples');
 }
 
 async function disk(page) {
@@ -218,25 +249,48 @@ async function saveOutsideApp(page) {
 }
 
 async function arm(browser, name, url, manifest) {
-    const benchmark = name === 'benchmark';
+    const benchmark = ['benchmark', 'scope'].includes(name);
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
     const scan = observeScripts(context, manifest, url, name);
     const errors = [];
     context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
     try {
-        const page = await prepare(context, url);
+        const page = await prepare(context, url, name === 'scope');
         const data = {};
         if (benchmark) {
             const first = await readGraph(page);
             assert(first, 'benchmark graph hook is missing after the real graph opened');
+            if (requireStepMs) checkStepMs(first);
             assert.deepEqual(first.edges, edges);
             assert.deepEqual(first.positions.ids, ids);
             await page.waitForTimeout(500);
             const later = await readGraph(page);
             assert(later.steps > first.steps, 'working simulation steps did not advance in 500 ms');
+            if (requireStepMs) {
+                checkStepMs(later);
+                assert.equal(later.stepMs.count - first.stepMs.count, later.steps - first.steps, 'stepMs interval count differs from working steps');
+            }
             await page.waitForFunction(() => window.__perf.graph.steps >= 300);
             const settled = await readGraph(page);
             assert.equal(settled.steps, 300, 'fresh layout did not settle after exactly 300 working steps');
+            if (requireStepMs) {
+                checkStepMs(settled);
+                data.stepMs = settled.stepMs;
+                data.positions = settled.positions;
+                data.nativeClockCalls = await page.evaluate(() => window.__hookObservation.graphNowCalls);
+                if (data.nativeClockCalls < 2 * settled.steps) fail('setup', 'direct GraphView performance.now observer did not see the timer calls');
+            }
+            if (name === 'scope') {
+                data.scopeWitness = await page.evaluate(() => window.__scopeClock);
+                const clock = data.scopeWitness;
+                if (!clock.draws || clock.offset < 1000 || clock.calls.length < 2 * settled.steps) fail('setup', 'scope clock wrapper did not fire');
+                for (let i = 0; i < settled.steps; i++) {
+                    const start = clock.calls[2 * i], end = clock.calls[2 * i + 1];
+                    assert.equal(settled.stepMs.samples[i], end.value - start.value, 'stepMs sample does not match its observed clock pair');
+                    assert.equal(start.offset, end.offset, 'stepMs includes the draw clock marker (whole-frame timer mutant)');
+                }
+                data.scopeLoss = 'Scope witness, not timing: GraphView uses fixed per-working-step alpha/cooling, no elapsed dt. Only stamp placement relative to clearRect is proved, not exclusion of every other operation.';
+            }
             assert.equal(settled.positions.ring.length, 300);
             assert.deepEqual(settled.positions.ring.map(frame => frame.step), Array.from({ length: 300 }, (_, i) => i + 1));
             for (const frame of settled.positions.ring) {
@@ -245,11 +299,12 @@ async function arm(browser, name, url, manifest) {
             }
             await page.waitForTimeout(1000);
             assert.deepEqual(await readGraph(page), settled, 'steps/positions keep changing after physics rests (frame-count mutant)');
-            await page.evaluate(() => {
+            await page.evaluate(stepMode => {
                 const positions = window.__perf.graph.positions();
                 positions.ids.reverse(); positions.ring[0].x[0] = 123456;
                 window.__perf.graph.snapshot().pop();
-            });
+                if (stepMode) window.__perf.graph.stepMs.samples[0] = -123;
+            }, requireStepMs);
             assert.deepEqual(await readGraph(page), settled, 'a caller can mutate simulation/hook data through a read');
             const png = await page.locator('.graph-canvas-wrap canvas').screenshot({ path: path.join(out, `${name}-settled.png`) });
             // A.md hashes to palette index 1, violet #8b5cf6 (hand counted).
@@ -283,6 +338,7 @@ async function arm(browser, name, url, manifest) {
             const changed = await readGraph(page);
             assert.equal(changed.publications, publications + 1, 'one saved topology edit did not publish exactly once');
             assert.deepEqual(changed.edges, [...edges, ['E.md', 'A.md']]);
+            if (requireStepMs) checkStepMs(changed);
             data.afterPublications = changed.publications;
         }
         data.finalDom = await page.locator('.graph-view').innerText();
@@ -295,9 +351,10 @@ async function arm(browser, name, url, manifest) {
             assert.deepEqual(empty.edges, [], 'unmounted graph retains edges');
             assert.equal(empty.steps, 0, 'unmounted graph retains step count');
             assert.equal(empty.publications, 0, 'unmounted graph retains publications');
+            if (requireStepMs) assert.deepEqual(empty.stepMs, { samples: [], total: 0, count: 0 }, 'unmounted graph retains stepMs');
         } else {
             data.hooks = await page.evaluate(() => ({ rootUndefined: window.__perf === undefined, keyUndefined: window.__perf?.graph === undefined, ...window.__hookObservation }));
-            if (!data.hooks.rootUndefined || !data.hooks.keyUndefined || data.hooks.rootWrites || data.hooks.reports) fail(name === 'dev' ? 'D-hook' : 'P-hook', JSON.stringify(data.hooks));
+            if (!data.hooks.rootUndefined || !data.hooks.keyUndefined || data.hooks.rootWrites || data.hooks.reports || data.hooks.graphNowCalls) fail(name === 'dev' ? 'D-hook' : 'P-hook', JSON.stringify(data.hooks));
         }
         await scan();
         Object.assign(report.arms[name], data);
@@ -307,7 +364,7 @@ async function arm(browser, name, url, manifest) {
         // would also fail. A setup/identity error is never a mutant kill.
         if (!error.reason || ['P-hook', 'D-hook'].includes(error.reason)) await scan();
         if (error.code === 'ERR_ASSERTION') fail(benchmark ? 'hand-count' : name === 'dev' ? 'D-render' : 'P-render', error.message);
-        if (error.name === 'TimeoutError') fail(`${name === 'benchmark' ? 'B' : name === 'dev' ? 'D' : 'P'}-flow`, error.message);
+        if (error.name === 'TimeoutError') fail(`${benchmark ? 'B' : name === 'dev' ? 'D' : 'P'}-flow`, error.message);
         throw error;
     } finally {
         await context.close();
@@ -337,9 +394,18 @@ try {
     await arm(browser, 'production', args['prod-url'], production);
     await arm(browser, 'benchmark', args['bench-url'], benchmark);
     await arm(browser, 'dev', args['dev-url'], null);
+    if (requireStepMs) {
+        report.arms.scope = { identity: benchmark, scripts: [] };
+        await arm(browser, 'scope', args['bench-url'], benchmark);
+    }
     const b = report.arms.benchmark, p = report.arms.production;
     try {
         assert.deepEqual(b.paint, p.paint, 'benchmark hook perturbs the drawn positions');
+        if (requireStepMs) {
+            assert.deepEqual(b.positions, report.arms.scope.positions, 'scope clock changed the graph computation');
+            assert.deepEqual(b.paint, report.arms.scope.paint, 'scope clock changed the graph drawing');
+            assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'scope-settled.png')), 'scope clock changed painted pixels');
+        }
         for (const key of ['initialDom', 'initialDisk', 'finalDom', 'finalDisk']) assert.deepEqual(b[key], p[key], `benchmark changes ${key}`);
         assert.deepEqual(await readFile(path.join(out, 'benchmark-settled.png')), await readFile(path.join(out, 'production-settled.png')), 'settled canvas screenshots differ');
     } catch (error) {
@@ -347,7 +413,7 @@ try {
         throw error;
     }
     report.result = 'PASS';
-    console.log('PASS C-15d P/B/D');
+    console.log(requireStepMs ? 'PASS C-15d-step P/B/D/scope (overhead pending window)' : 'PASS C-15d P/B/D');
 } catch (error) {
     report.result = 'FAIL'; report.error = error.stack;
     report.reason = error.reason ?? 'setup';

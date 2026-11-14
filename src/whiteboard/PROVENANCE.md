@@ -364,6 +364,7 @@ third-party code included (normally "none") · date.
 | `input/revealTypes.ts` | lane w-f | WB-D33; RV-56; E-INPUT-28 | input §8.4 | Public camera-reveal contracts; no tldraw source | none | 2026-11-13 |
 | `input/reveal.ts` | lane w-f | WB-D33; RV-56; E-INPUT-28 | input §8.4 | Independent minimum-pan calculation and C1 controller; no tldraw source | none | 2026-11-13 |
 | `input/keyboardCursorTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard cursor contracts; no tldraw source | none | 2026-11-13 |
+| `input/keyboardCursor.ts` | lane w-f | F-A11Y-002; R-19 | input §8.3 | Keyboard cursor uses the same tool command route; no tldraw source | none | 2026-11-13 |
 | `input/scrollKeysTypes.ts` | lane w-f | F-A11Y-002 | input §8.3 | Public keyboard navigation contracts; no tldraw source | none | 2026-11-13 |
 | `input/navigation.ts` | lane w-f | F-INPUT-002/003/004/005; F-CAM-001/009 | input §§5–6 | Input design and public platform CameraController; no tldraw source | none | 2026-11-13 |
 

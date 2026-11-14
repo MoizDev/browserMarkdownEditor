@@ -135,6 +135,7 @@ third-party code included (normally "none") · date.
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink/TX-3 public types; direct consumer agreement; own ordered two-band emission with TEXT fragments retained for Canvas/PNG, SVG/PDF-only outline boundary, no second scene or stroker | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 | `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4; C-19 | rendering §§2,10,12; integration §2 | Public synchronous PlatformLayerDefinition and App-owned BoardSession; w-b accessibility agreement; view-only attachment, no second mutable doc, lifecycle-owned layer disposal | none | 2026-11-13 |
+| `scene/columns.ts` | lane w-e | W-E3 dense scene storage | rendering §§2,6,7 | Own Float64 matrix/ink/selectable columns and typed inherited/index metadata, capacity doubling and reserved-byte accounting; no per-node wrapper allocation | none | 2026-11-13 |
 | `scene/types.ts` | lane w-e | Scene snapshot/capture/view interfaces | rendering §§2,6,12; C7 | Public model/render/query types and direct export/host/agent/pick agreements; synchronous immutable pin lease independent of later live edits, bounded geometry/capture preparation, no implementation stub | none | 2026-11-13 |
 
 ## Canvas 2D path (lane v-b)
@@ -236,6 +237,7 @@ third-party code included (normally "none") · date.
 | `text/caretIndex.ts` | lane w-n | T-4, T-5 | text §§5.3–5.6 | Independent reference-size prefix measurement and grapheme-index geometry | none | 2026-11-13 |
 | `text/edit/bindingTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Session, shared layout, composition paint and pane-view binding contract | none | 2026-11-13 |
 | `text/edit/managerTypes.ts` | lane w-n | T-4, T-5 | text §§5–6 | Pane-owned editing manager, text tool creation, select/enter/type and lifecycle contracts | none | 2026-11-13 |
+| `text/edit/manager.ts` | lane w-n | T-4, T-5 | text §§5–6; spec/text F-TEXT-004 | Pane-owned text editing entry and session-history creation; no tldraw source | none | 2026-11-13 |
 | `text/edit/binding.ts` | lane w-n | T-4, T-5 | text §§5–6 | W-i's edit session and rich adapter, shared history/layout, IME overlay and pane transforms; frame name as plain text | none | 2026-11-13 |
 | `text/layoutWorkerHandler.ts` | lane w-n | T-1, T-2, T-6 | text §§2–3, 7.2 | OffscreenCanvas, worker-local FontFaceSet and platform shared-worker protocol; w-d coordinated parse-worker integration | none | 2026-11-13 |
 | `text/layoutClient.ts` | lane w-n | T-1, T-2, T-4 | text §§2–3, 7.2; threading §§2–3 | Main/worker layout compatibility selection, worker-host interface, vault/session and node-revision stale reply rejection | none | 2026-11-13 |
@@ -270,6 +272,7 @@ third-party code included (normally "none") · date.
 | `geom/translation.ts` | lane w-g | GE-4; F-XFORM-001/002/003/011 | geometry §6.1–6.2 | Design; model world-pose/page conversion, immutable gesture snapshots and ordinary transaction ops | none | 2026-11-13 |
 | `geom/resizeKinds.types.ts` | lane w-g | GE-4 | geometry §6.4 | Design; injected text, connector, frame, media and group geometry contracts and single/multi scope | none | 2026-11-13 |
 | `geom/resizePlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; immutable target geometry and page-aware placement service contracts | none | 2026-11-13 |
+| `geom/resizePlacement.types.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected local centre and page-aware placement service contract | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
 | `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |
 | `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres and per-kind transaction planning | none | 2026-11-13 |
@@ -290,6 +293,7 @@ third-party code included (normally "none") · date.
 | `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | ViewerAccessibilitySource with revision consistency and bounded viewport/selection union | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; indexed opaque preflight, locked-node retention and w-c's shared deletion command | none | 2026-11-13 |
 | `session/createBoardSession.ts` | lane w-g | H-1; C7 | change-and-history §§2–4 | Session initialization binding made constant; no semantic changes | none | 2026-11-13 |
+| `text/edit/binding.ts` | lane w-g | T-5 | text §5 | Preserve construction-time callback behaviour with a stable editor holder | none | 2026-11-13 |
 | `clipboard/encode.ts` | lane w-g | CB-1 | clipboard §2 | DOM serialization for clipboard output without a restricted HTML sink | none | 2026-11-13 |
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |

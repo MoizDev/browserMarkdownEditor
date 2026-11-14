@@ -61,9 +61,10 @@ class PdfiumDocument implements BackendDoc {
             permissions: runtime.call('FPDF_GetDocPermissions', document) >>> 0, signatureCount: signatures,
             tagged: runtime.call('FPDFCatalog_IsTagged', document) !== 0, hasForms: type !== 0,
             attachments, pdfVersion: version, repairStatus: 'unknown', formType,
-            attachmentInventory: 'name-tree-params-only', javascript: 'unknown', actions: 'unknown' } as DocInfo;
+            attachmentInventory: 'name-tree-params-only', javascript: 'unknown', actions: 'unknown' };
         this.forms = createPdfiumForms(runtime, document, index => this.pages.get(index)?.handle ?? 0,
-            () => this.pages.get(this.current)?.handle ?? 0);
+            () => this.pages.get(this.current)?.handle ?? 0,
+            handle => ([...this.pages.values()].find(page => page.handle === handle)?.geometry.rotate ?? 0) / 90);
         try { this.checkAccess(); } catch (error) { this.forms.close(); throw error; }
     }
 
@@ -105,7 +106,7 @@ class PdfiumDocument implements BackendDoc {
             const descMarker = item.description?.startsWith('local-vault-pdf/') ? item.description.split('\n', 1)[0] : undefined;
             const marker = descMarker && item.paramsMarker && descMarker !== item.paramsMarker ? undefined : descMarker ?? item.paramsMarker;
             return { index: item.index, name: item.name, size: null, ...(item.description ? { desc: item.description } : {}),
-                ...(marker ? { localVaultMarker: marker } : {}) } as unknown as PdfAttachmentInfo;
+                ...(marker ? { localVaultMarker: marker } : {}) };
         });
     }
     info(): DocInfo { this.ensure(); return this.documentInfo; }

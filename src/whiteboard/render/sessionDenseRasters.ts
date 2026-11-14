@@ -37,6 +37,16 @@ export class SessionDenseRasters {
     private liveBytes = 0;
     private retiringBytes = 0;
     private ended = false;
+    private currentRevision: number | null = null;
+
+    get revision(): number | null { return this.currentRevision; }
+    /** A source revision advance invalidates each interval once for the shared session. */
+    advanceRevision(revision: number): boolean {
+        if (this.ended || !Number.isSafeInteger(revision) || revision < 0) return false;
+        if (this.currentRevision !== null && revision < this.currentRevision) return false;
+        if (this.currentRevision !== null && revision > this.currentRevision) this.invalidateAll(revision);
+        this.currentRevision = revision; return true;
+    }
 
     bindMemory(allocator: MemoryAllocator): void {
         if (this.ended) throw new Error('Dense raster cache disposed');
@@ -45,6 +55,7 @@ export class SessionDenseRasters {
     begin(interval: string, address: TileAddress, revision: number): DenseRasterTicket | null {
         if (this.ended) throw new Error('Dense raster cache disposed');
         if (!interval) throw new TypeError('Dense raster interval is required');
+        if (this.currentRevision !== null && revision !== this.currentRevision) return null;
         const owner = this.allocator;
         if (!owner) return null;
         const lease = owner.reserve(METADATA_BYTES);
@@ -123,7 +134,7 @@ export class SessionDenseRasters {
     }
     memory(): Readonly<{ live: number; retiring: number }> { return { live: this.liveBytes, retiring: this.retiringBytes }; }
     get memoryBytes(): number { return this.liveBytes + this.retiringBytes; }
-    clear(): void { this.hierarchy.clear(); this.retireTickets(); this.intervals.clear(); }
+    clear(): void { this.hierarchy.clear(); this.retireTickets(); this.intervals.clear(); this.currentRevision = null; }
     dispose(): void { if (!this.ended) { this.ended = true; this.clear(); this.allocator = null; } }
     private retireTickets(interval?: string): void {
         for (const state of this.pending.values()) {

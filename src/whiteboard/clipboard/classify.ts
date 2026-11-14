@@ -41,7 +41,24 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (intent === 'drop') {
         if (input.files.length) return { kind: 'files', files: input.files };
         const dropped = input.uriList ? firstUri(input.uriList, host.appOrigin) : null;
-        return dropped ? { kind: 'url', url: dropped } : { kind: 'empty' };
+        if (dropped) return { kind: 'url', url: dropped };
+        if (input.svg !== null) return { kind: 'svg', text: input.svg };
+        if (input.html !== null) {
+            if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) throw new RangeError('Clipboard HTML is too large');
+            return { kind: 'html', html: input.html };
+        }
+        if (input.text !== null) {
+            if (input.text.trimStart().startsWith('{') || input.text.trimStart().startsWith('[')) {
+                const kind = await host.jsonKind(input.text, signal);
+                signal.throwIfAborted();
+                if (kind) return { kind, text: input.text };
+            }
+            const address = url(input.text, host.appOrigin);
+            if (address) return { kind: 'url', url: address };
+            if (svgText(input.text)) return { kind: 'svg', text: input.text };
+            return plain(input.text);
+        }
+        return { kind: 'empty' };
     }
     const plainOnly = intent === 'paste-plain' || intent === 'paste-plain-inverted';
     if (plainOnly) {
@@ -51,10 +68,7 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     }
     let markers: HtmlClipboardMarkers | null = null;
     if (input.html !== null) {
-        if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) {
-            if (input.text !== null && new Blob([input.text]).size <= 1024 * 1024) return plain(input.text);
-            throw new RangeError('Clipboard HTML is too large');
-        }
+        if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) throw new RangeError('Clipboard HTML is too large');
         markers = await host.markers(input.html, signal);
         signal.throwIfAborted();
         if (markers.hasPrivate) return { kind: 'private', encoded: markers.privatePayload ?? '' };

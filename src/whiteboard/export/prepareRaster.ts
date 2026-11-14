@@ -1,7 +1,7 @@
 import type { PathCommand } from '../../platform/types'
 import type { PaintFrame, PaintItem } from '../render/paintStream'
 import type { PaintImageLease, PaintImageProvider } from '../render/resources'
-import { InkPath2dJob, Path2dJob } from '../render/reference/coverage2d'
+import { InkCoverageUnionPath2dJob, Path2dJob } from '../render/reference/coverage2d'
 import type { PaintResources2d, PreparedPath2d } from '../render/reference/paint2d'
 
 export interface PreparedRaster {
@@ -13,7 +13,7 @@ function origin(commands: readonly PathCommand[]): readonly [number, number] {
   const first = commands[0]
   return first && first[0] !== 'Z' ? [first[1], first[2]] : [0, 0]
 }
-async function finishPath(job: Path2dJob | InkPath2dJob, signal: AbortSignal): Promise<PreparedPath2d> {
+async function finishPath(job: Path2dJob | InkCoverageUnionPath2dJob, signal: AbortSignal): Promise<PreparedPath2d> {
   try {
     while (job.step(1024) === 'pending') {
       signal.throwIfAborted()
@@ -66,7 +66,7 @@ export async function prepareRaster(
         let path = geometry.get(key)
         if (!path) {
           const job = item.kind === 'ink'
-            ? new InkPath2dJob(item.coverage, itemScale, [item.coverage.boundsLocal.x, item.coverage.boundsLocal.y], Number.MAX_SAFE_INTEGER)
+            ? new InkCoverageUnionPath2dJob(item.coverage, itemScale, Number.MAX_SAFE_INTEGER)
             : new Path2dJob(item.d, origin(item.d))
           path = await finishPath(job, signal)
           geometry.set(key, path)

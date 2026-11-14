@@ -25,7 +25,8 @@ export class ToolState {
   private readonly listeners = new Set<() => void>()
   private snapshot: ToolStateSnapshot
   private lastStroke: NodeId | null = null
-  private lastPolyline: NodeId | null = null
+  private lastPolyline: Readonly<{ id: NodeId; epoch: number; tiny: boolean }> | null = null
+  private keepToolEpoch: number | null = null
   private inkSequence = 0
   private inputOwner: symbol | null = null
   private penModeValue = false
@@ -98,8 +99,12 @@ export class ToolState {
   releaseInput(owner: symbol): void { if (this.inputOwner === owner) this.inputOwner = null }
   getLastStroke(): NodeId | null { return this.lastStroke }
   rememberStroke(id: NodeId): void { this.lastStroke = id }
-  getLastPolyline(): NodeId | null { return this.lastPolyline }
-  rememberPolyline(id: NodeId): void { this.lastPolyline = id }
+  getLastPolyline(): Readonly<{ id: NodeId; epoch: number; tiny: boolean }> | null { return this.lastPolyline }
+  rememberPolyline(id: NodeId, epoch: number, tiny: boolean): void { this.lastPolyline = { id, epoch, tiny } }
+  extendedPolyline(id: NodeId, epoch: number): void {
+    if (this.lastPolyline?.id === id && this.lastPolyline.epoch === epoch) this.lastPolyline = { id, epoch, tiny: false }
+  }
+  keepToolOnce(epoch: number): void { this.keepToolEpoch = epoch }
   nextInkSequence(): number {
     const next = this.inkSequence + 1
     if (!Number.isSafeInteger(next)) throw new RangeError('Ink gesture sequence exhausted')
@@ -133,7 +138,9 @@ export class ToolState {
 
   // A stale completion must not switch away from a tool chosen during the gesture.
   complete(start: ToolStateSnapshot): void {
-    if (this.snapshot.selectionEpoch !== start.selectionEpoch || this.snapshot.locked) return
+    const keep = this.keepToolEpoch === start.selectionEpoch
+    this.keepToolEpoch = null
+    if (this.snapshot.selectionEpoch !== start.selectionEpoch || this.snapshot.locked || keep) return
     if (this.registry.get(start.active.id)?.persistence === 'single-use') this.setTool(this.selectId)
   }
 

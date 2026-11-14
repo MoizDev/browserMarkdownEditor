@@ -9,6 +9,8 @@ export interface PolylineHandleOptions {
     readonly id: NodeId;
     readonly index: number;
     readonly insert?: boolean;
+    readonly onFinishUp?: () => void;
+    readonly onCommit?: () => void;
     readonly current: () => boolean;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -50,7 +52,7 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
                 if (cleaned || request.signal.aborted || turn !== sequence) return;
                 if (!options.current()) { cancel(); return; }
                 options.armCommit();
-                try { result.commit(); result = undefined; options.finishCommit(); }
+                try { result.commit(); result = undefined; options.finishCommit(); options.onCommit?.(); }
                 catch (error) { options.cancelCommit(); throw error; }
                 cleanup();
             } else { preview = result; result = undefined; options.show(preview.ops); }
@@ -70,7 +72,7 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
         finish(reason: FinishReason) {
             if (ended || cleaned) return;
             if (reason !== 'up' || !options.current()) { cancel(); return; }
-            ended = true; void render(true);
+            options.onFinishUp?.(); ended = true; void render(true);
         },
         cancel(_reason: CancelReason) { cancel(); },
     };

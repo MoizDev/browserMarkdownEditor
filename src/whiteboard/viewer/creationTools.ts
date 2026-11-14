@@ -46,6 +46,7 @@ class CreationGesture implements GestureOwner {
     readonly pointerIds: ReadonlySet<number>;
     private readonly controller = new AbortController();
     private readonly revision: number;
+    private readonly toolEpoch: number;
     private readonly document: BoardRuntime['session']['doc'];
     private readonly owner: BoardRuntime['session']['owner'];
     private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
@@ -71,7 +72,8 @@ class CreationGesture implements GestureOwner {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
-        this.revision = doc.rev; this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
+        this.revision = doc.rev; this.toolEpoch = context.runtime.tools.getSnapshot().selectionEpoch;
+        this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
         const stack = boardPageStack(doc.host);
@@ -96,6 +98,10 @@ class CreationGesture implements GestureOwner {
     private local(point: { x: number; y: number }) {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         return { x: c * dx + s * dy, y: -s * dx + c * dy };
+    }
+    private isClick(): boolean {
+        const surface = sampleSurface(this.sample, this.context.sampleToSurface);
+        return Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4;
     }
     private node(sample = this.sample, modifiers = this.modifiers): Node {
         const p = this.local(sample), style = this.style;
@@ -184,6 +190,7 @@ class CreationGesture implements GestureOwner {
         this.ended = true;
         this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
+        if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
         void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
     }
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
@@ -278,7 +285,7 @@ class CreationGesture implements GestureOwner {
                     const applied = builder.commit(); applied.release(); this.context.preview.finishCommit();
                 } catch (error) { builder.abort(); this.context.preview.cancelCommit(); throw error; }
                 runtime.selection.replace([node.id]);
-                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id);
+                if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id, this.toolEpoch, this.isClick());
             } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
@@ -294,12 +301,18 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
     return { id, begin(sample, modifiers, context) {
         if (id === 'polyline' && modifiers.shift) {
             const { runtime } = context, session = runtime.session, doc = session.doc;
-            const prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior) : undefined;
+            const choice = runtime.tools.getSnapshot(), prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior.id) : undefined;
             // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
-            if (node?.kind === 'polyline' && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
+            if (prior && choice.active.id === 'polyline' && choice.selectionEpoch === prior.epoch && node?.kind === 'polyline'
+                && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
                 && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
-                // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
-                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,
+                const first = node.points[0], last = node.points[node.points.length - 1];
+                const replaceTiny = prior.tiny && node.points.length === 2
+                    && Math.hypot(last.x - first.x, last.y - first.y) * context.camera.camera.z < 2;
+                // A click-created tiny endpoint is replaced; subsequent Shift clicks append in the same active tool flow.
+                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id,
+                    index: replaceTiny ? node.points.length - 1 : node.points.length, insert: !replaceTiny,
+                    onFinishUp: () => runtime.tools.keepToolOnce(prior.epoch), onCommit: () => runtime.tools.extendedPolyline(node.id, prior.epoch),
                     current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
                     show: ops => context.preview.showOps(ops), waitUntilReady: context.preview.waitUntilReady,
                     armCommit: context.preview.armCommit, finishCommit: context.preview.finishCommit, cancelCommit: context.preview.cancelCommit,

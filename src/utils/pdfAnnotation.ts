@@ -22,7 +22,7 @@ import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
-import { classicAnnotationHealth, recordClassicRenderFailure } from './pdfClassicHealth';
+import { createClassicPdfHealth, recordClassicRenderFailure, type ClassicPdfHealth } from './pdfClassicHealth';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
 // Role extraction uses the build worker's read-only inventory operation; this
@@ -83,6 +83,8 @@ export interface PdfPageSize {
 }
 
 export interface PdfPageSource {
+    /** Owned by this acquisition, never shared with a cancelled predecessor. */
+    readonly health: ClassicPdfHealth;
     /** Every page's geometry, known without rasterizing anything. */
     sizes: PdfPageSize[];
     /**
@@ -92,7 +94,7 @@ export interface PdfPageSource {
      * page is re-rendered sharp.
      */
     renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
-    /** Tear down the pdf.js worker. */
+    /** Release this source; a healthy shared worker remains warm. */
     close(): Promise<void>;
 }
 
@@ -110,10 +112,11 @@ export interface PdfPageSource {
  * show strokes baked into the backdrop while the editable copies of those same
  * strokes load on top, i.e. everything doubled.
  */
-export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
-    // The render task must outlive this call so pages can be rasterized on
-    // demand. Unlike the short role-read job, its close() belongs to the caller.
-    const diagnostics = classicAnnotationHealth(original);
+export async function openPdfPages(original: Uint8Array, onRenderHealth?: (health: ClassicPdfHealth) => void): Promise<PdfPageSource> {
+    // StrictMode can open the same bytes twice before the first task settles.
+    // Its late close must not retire the replacement's diagnostics or subscriber.
+    const diagnostics = createClassicPdfHealth();
+    onRenderHealth?.(diagnostics);
     const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop', diagnostic: diagnostics.record, progress: diagnostics.progress });
     let doc: PDFDocumentProxy;
     const sizes: PdfPageSize[] = [];
@@ -131,6 +134,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
     }
 
     return {
+        health: diagnostics,
         sizes,
         async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
             const page = await diagnostics.guard(doc.getPage(index + 1), signal);
@@ -164,6 +168,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                     canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
                 signal?.throwIfAborted();
                 if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
+                diagnostics.assertComplete(index);
                 return URL.createObjectURL(blob);
             } catch (error) {
                 recordClassicRenderFailure(diagnostics, error, index);

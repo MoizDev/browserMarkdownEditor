@@ -141,10 +141,13 @@ Progress/completion clears that notice. Healthy Retry reopens only its document;
 of an unresponsive/tainted/failed worker creates one replacement. Other affected PDFs retry
 separately. Chrome worker crashes can take the renderer down too; do not promise crash isolation.
 
-Annotation health belongs to the editable pristine source, while refused Annotate uses the outer
-viewer's session health. A renderer Retry cannot clear a tagged role refusal. Never remount an
-annotation canvas or replace its snapshot to retry: preserve unflushed ink and direct the reader
-to View until source replacement and its `onRenderHealth` handoff can land atomically.
+Each `openPdfPages` acquisition owns independent `source.health` and publishes it through
+`onRenderHealth` BEFORE awaiting startup. Pane subscribes to that actual source and never closes
+its health; only the source's close does. A byte-keyed memo/shared health races StrictMode's late
+cancelled acquisition. Captures and thumbnails use the same actual-source health. Refused Annotate
+uses the outer viewer's session health; renderer Retry cannot clear a tagged role refusal.
+Never remount an annotation canvas or replace its snapshot to retry: preserve unflushed ink and
+direct the reader to View until an in-place source/image replacement transaction exists.
 
 ## Deliberate module fragmentation is for bundle size — do not collapse it
 

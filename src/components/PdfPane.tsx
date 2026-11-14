@@ -5,7 +5,7 @@ import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
 import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
-import { ClassicPdfError, classicAnnotationHealth, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
+import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
 import { createPdfTextReader, pdfTextAnchor } from '../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
@@ -154,22 +154,21 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
     const [idleHealth] = useState(createClassicPdfHealth);
+    const [annotationRender, setAnnotationRender] = useState<{ original: Uint8Array; health: ClassicPdfHealth } | null>(null);
+    const reportRenderHealth = useCallback((health: ClassicPdfHealth) => {
+        if (editableSource) setAnnotationRender({ original: editableSource.original, health });
+    }, [editableSource]);
     const [retryEpoch, setRetryEpoch] = useState(0);
     const [retryBusy, setRetryBusy] = useState(false);
     const retryInFlight = useRef(false);
     // Role inspection has its own build worker. A refused edit displays the
     // outer PDF, so its renderer health must belong to that viewer, not a source.
-    const renderHealth = useMemo(() => annotationMode ? editableSource ? classicAnnotationHealth(editableSource.original) : idleHealth : session?.health ?? idleHealth,
-        [annotationMode, editableSource, session, idleHealth]);
+    const annotationHealth = annotationRender && annotationRender.original === editableSource?.original ? annotationRender.health : idleHealth;
+    const renderHealth = annotationMode ? annotationHealth : session?.health ?? idleHealth;
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
     const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
     const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
     const documentRenderIssue = renderDiagnostics.find(issue => issue.incomplete && (annotationMode || issue.pageIndex === undefined));
-    useEffect(() => {
-        if (!annotationMode || !editableSource) return;
-        const health = classicAnnotationHealth(editableSource.original);
-        return () => health.close();
-    }, [annotationMode, editableSource]);
     useEffect(() => {
         if (!annotationMode && fatalRenderIssue && session) void session.dispose().catch(console.error);
     }, [annotationMode, fatalRenderIssue, session]);
@@ -570,6 +569,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         key={file.path}
                         filePath={file.path}
                         original={editableSource.original}
+                        onRenderHealth={reportRenderHealth}
                         emphasisEnabled={reading?.emphasisEnabled ?? false}
                         onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
                         // Only an unsaved buffer outranks this fresh role read.

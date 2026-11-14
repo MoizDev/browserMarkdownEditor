@@ -134,12 +134,3 @@ export function recordClassicRenderFailure(health: ClassicPdfHealth, error: unkn
     if (isClassicPdfCancellation(error)) return;
     health.record(error instanceof ClassicPdfError ? error.diagnostic : { code: 'render-failed', pageIndex, incomplete: true });
 }
-
-// The annotation source is opened inside the whiteboard host, but its owning
-// PdfPane must show a warning without remounting that host (and losing ink).
-const annotationHealth = new WeakMap<Uint8Array, ClassicPdfHealth>();
-export function classicAnnotationHealth(bytes: Uint8Array): ClassicPdfHealth {
-    let health = annotationHealth.get(bytes);
-    if (!health || health.closed) { health = createClassicPdfHealth(); annotationHealth.set(bytes, health); }
-    return health;
-}

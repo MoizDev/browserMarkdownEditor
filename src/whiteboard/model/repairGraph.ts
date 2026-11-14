@@ -159,6 +159,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         const parentIndex = parentChildren?.indexOf(item) ?? -1;
         const child = direct[0];
         if (child) {
+            if (child.node.kind === 'opaque') return result(items, 'Repair would move an opaque record');
             const c = Math.cos(group.rotation), s = Math.sin(group.rotation);
             const angle = (group.rotation + child.node.rotation) % (Math.PI * 2);
             child.node = { ...child.node, parent: group.parent, order: group.order,

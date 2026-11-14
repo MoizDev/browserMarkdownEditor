@@ -60,6 +60,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
     let lastInputAt = performance.now();
+    let lastFrameInterval: number | null = null;
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
@@ -153,6 +154,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
         inputHealthy: () => false,
+        frameInterval: () => lastFrameInterval,
         onEvict: () => {
             const surface = lifecycle?.surface;
             if (surface && gpu) surface.failGpu(surface.stamp, gpu.grant.generation, 'out-of-budget');
@@ -230,6 +232,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         if (drawing === compositor && mirror && options.session.mirrors) lifecycle?.prepare2D(mirror, budget);
                     },
                     encode: (frame: ScheduledFrame) => {
+                        lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
                         const encoding = drawing.encode(frame);

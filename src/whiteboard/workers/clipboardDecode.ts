@@ -118,9 +118,7 @@ async function selected(span: JsonSpan, names: readonly string[], context: Worke
     }
     return found;
 }
-async function externalAttachment(end: JsonSpan | undefined, context: WorkerContext): Promise<Attachment | undefined> {
-    if (!end) return undefined;
-    const data = await selected(end, ['attach'], context), span = data.get('attach');
+async function attachmentValue(span: JsonSpan | undefined, context: WorkerContext): Promise<Attachment | undefined> {
     if (!span || span.kind === 'null') return undefined;
     const item = await fields(span, ['target', 'anchor', 'exact', 'precise', 'snap'], context), anchorSpan = item.get('anchor');
     if (!anchorSpan) throw new TypeError('Missing clipboard attachment anchor');
@@ -132,6 +130,11 @@ async function externalAttachment(end: JsonSpan | undefined, context: WorkerCont
     if (!target) throw new TypeError('Invalid clipboard attachment target');
     return { target: target as NodeId, anchor: { x, y }, exact: exact.text() === 'true', precise: precise.text() === 'true',
         snap: snap as Attachment['snap'] };
+}
+async function externalAttachment(end: JsonSpan | undefined, context: WorkerContext): Promise<Attachment | undefined> {
+    if (!end) return undefined;
+    const data = await selected(end, ['attach'], context);
+    return attachmentValue(data.get('attach'), context);
 }
 async function inlineBlob(encoded: string, context: WorkerContext): Promise<Blob> {
     if (encoded.length > 4 * Math.ceil(SECURITY_LIMITS.mediaBytes / 3) || encoded.length % 4 !== 0) throw new RangeError('Clipboard media exceeds its limit');
@@ -177,15 +180,16 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
         const length = measured.value;
         const record = await parseJsonIncremental(line, context.slice);
         if (record.kind !== 'object') throw new TypeError('Clipboard record must be a JSON object');
-        const row = await selected(record, ['type', 'kind', 'id', 'start', 'end'], context);
+        const row = await selected(record, ['type', 'kind', 'id', 'start', 'end', 'startAttach', 'endAttach'], context);
         const rowType = row.get('type');
         if (rowType?.kind === 'string' && await text(rowType, 32, context) === 'node') {
             const id = await text(row.get('id'), SECURITY_LIMITS.idCharacters, context) as NodeId;
             if (!id || nodeIds.has(id)) throw new TypeError('Duplicate clipboard node id');
             nodeIds.add(id);
-            const kind = row.get('kind');
-            if (kind?.kind === 'string' && await text(kind, 64, context) === 'connector') {
-                const start = await externalAttachment(row.get('start'), context), end = await externalAttachment(row.get('end'), context);
+            const kind = row.get('kind'), nodeKind = kind?.kind === 'string' ? await text(kind, 64, context) : null;
+            if (nodeKind === 'connector' || nodeKind === 'polyline') {
+                const start = nodeKind === 'connector' ? await externalAttachment(row.get('start'), context) : await attachmentValue(row.get('startAttach'), context);
+                const end = nodeKind === 'connector' ? await externalAttachment(row.get('end'), context) : await attachmentValue(row.get('endAttach'), context);
                 if (start || end) pending.push({ id, ...(start ? { start } : {}), ...(end ? { end } : {}) });
             }
         }

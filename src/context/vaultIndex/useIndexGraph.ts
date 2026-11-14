@@ -23,6 +23,7 @@ export function useIndexGraph(options: {
     vaultId: string | null;
     activation: number;
     getActivation(): number;
+    autoStart: boolean;
     tree: FileTreeNode[];
     resolve(path: string): Promise<FileSystemFileHandle | null>;
     stat(handle: FileSystemFileHandle): Promise<{ lastModified: number; size: number } | null>;
@@ -32,7 +33,7 @@ export function useIndexGraph(options: {
     onTimes?(changes: [string, number, number][], sweepComplete: boolean): void;
     onProblem(problem: unknown): void;
 }) {
-    const { root, vaultId, activation, getActivation, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
+    const { root, vaultId, activation, getActivation, autoStart, tree, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem } = options;
     const active = useRef<ActiveIndexGraph | null>(null);
     const startRef = useRef<(() => Promise<ActiveIndexGraph>) | null>(null);
     const latestTree = useRef(tree);
@@ -89,12 +90,10 @@ export function useIndexGraph(options: {
             return starting;
         };
         startRef.current = start;
-        const cancelIdle = onIdle(() => { void start().catch(() => {}); });
         return () => {
             live = false;
             pendingMoves.current.clear();
             if (startRef.current === start) startRef.current = null;
-            cancelIdle();
             const owner = active.current;
             if (owner?.root === root && owner.activation === activation) {
                 active.current = null;
@@ -103,6 +102,18 @@ export function useIndexGraph(options: {
             }
         };
     }, [root, vaultId, activation, getActivation, resolve, stat, publish, onSnapshot, onStatus, onTimes, onProblem]);
+    useEffect(() => {
+        if (!root || !autoStart) return;
+        let second = 0;
+        let cancelIdle = () => {};
+        // Two frames let the restored pane paint before even fetching the worker chunk.
+        const first = requestAnimationFrame(() => {
+            second = requestAnimationFrame(() => {
+                cancelIdle = onIdle(() => { void startRef.current?.().catch(() => {}); });
+            });
+        });
+        return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); cancelIdle(); };
+    }, [root, activation, autoStart]);
     useLayoutEffect(() => {
         const owner = active.current;
         if (!owner || owner.root !== root || owner.activation !== activation) return;

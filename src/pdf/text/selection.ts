@@ -40,8 +40,8 @@ export function wordRange(text: string, lineFrom: number, lineTo: number, offset
         const segment = segments.containing(at - from);
         if (segment) return { from: from + segment.index, to: from + segment.index + segment.segment.length };
     } catch { /* Conservative fallback preserves the source text. */ }
-    const codepoint = text.codePointAt(at);
     const start = at > from && /[\uDC00-\uDFFF]/u.test(text[at]) && /[\uD800-\uDBFF]/u.test(text[at - 1]) ? at - 1 : at;
+    const codepoint = text.codePointAt(start);
     return { from: start, to: Math.min(to, start + (codepoint !== undefined && codepoint > 0xffff ? 2 : 1)) };
 }
 export function lineRange(charU16: Uint32Array, lines: Uint32Array, line: number): { from: number; to: number } | undefined {

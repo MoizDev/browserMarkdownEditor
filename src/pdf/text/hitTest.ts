@@ -23,9 +23,16 @@ function gridFor(g: HitGeometry): number[][] {
     const cells: number[][] = Array.from({ length: GRID * GRID }, () => []);
     if (!(g.width > 0 && g.height > 0)) return cells;
     const cell = (v: number, size: number) => Math.max(0, Math.min(GRID - 1, Math.floor(v / size * GRID)));
+    let memberships = 0;
     for (let line = 0; line * 2 + 1 < g.lines.length; line++) {
         const p = line * 4, x0 = cell(g.lineBox[p], g.width), x1 = cell(g.lineBox[p + 2], g.width);
         const y0 = cell(g.lineBox[p + 1], g.height), y1 = cell(g.lineBox[p + 3], g.height);
+        memberships += (x1 - x0 + 1) * (y1 - y0 + 1);
+        if (memberships > 1_000_000) {
+            const fallback: number[][] = Array.from({ length: GRID * GRID }, () => []);
+            grids.set(g, fallback);
+            return fallback;
+        }
         for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) cells[y * GRID + x].push(line);
     }
     grids.set(g, cells);

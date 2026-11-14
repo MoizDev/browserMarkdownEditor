@@ -13,6 +13,9 @@ export function finishTextSteps<T>(steps: Generator<void, T>): T {
     }
 }
 
+/** The default host yield: one macrotask, so input and paint run between slices of text work. */
+export const yieldToHost = (): Promise<void> => new Promise<void>(resolve => setTimeout(resolve, 0));
+
 /** Cancellation closes the traversal before its unpublished fragments can outlive the caller. */
 export async function finishTextStepsCooperative<T>(steps: Generator<void, T>, options: PlainTextOptions): Promise<T> {
     const budget = options.sliceMilliseconds ?? 3;

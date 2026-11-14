@@ -16,6 +16,7 @@ export interface PointerSelectionServices {
     word(offset: number): EditSelection;
     block(offset: number): EditSelection;
     autoScroll(x: number, y: number): void;
+    stopAutoScroll(): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
     followLink(x: number, y: number): boolean;
@@ -82,7 +83,7 @@ export class TextPointerSelection {
     }
 
     up(id: number): void { if (id === this.active) this.cancel(); }
-    cancel(): void { this.clearHold(); this.active = null; this.handle = null; }
+    cancel(): void { this.clearHold(); this.active = null; this.handle = null; this.services.stopAutoScroll(); }
     dispose(): void { this.cancel(); }
     private clearHold(): void { if (this.hold !== null) clearTimeout(this.hold); this.hold = null; }
 }

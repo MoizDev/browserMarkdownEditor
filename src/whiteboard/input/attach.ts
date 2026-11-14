@@ -48,7 +48,10 @@ export interface BoardInputServices {
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
   error(error: unknown): void
+  pointerChanged?(sample: RealSample): void
+  hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
+  linkAt?(sample: RealSample): (() => void) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
@@ -113,6 +116,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
+    sampleChanged: services.pointerChanged,
+    hover: services.hover,
     claim() {
       if (gestureOwner.has(session) || session.isGestureActive) return false
       gestureOwner.set(session, owner)
@@ -132,6 +137,30 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (zoomHeld) {
         const context = services.zoomBrush()
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
+      }
+      if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {
+        const open = services.linkAt?.(sample)
+        if (open) {
+          const origin = view.sampleToSurface(sample)
+          const fallback = mode === 'view' ? { tool: hand, context: undefined } : services.resolveTool(choice, sample, modifiers, event)
+          const link: Tool<unknown> = { id: 'view-link', begin: (_point, keys) => {
+            let dragged = false
+            let owner: GestureOwner | null = null
+            return {
+              kind: mode === 'view' ? 'pan' : 'node-edit', pointerIds: new Set([sample.pointerId]),
+              update: (samples, nextKeys) => { for (const point of samples) {
+                const next = view.sampleToSurface(point)
+                if (!dragged && Math.hypot(next.x - origin.x, next.y - origin.y) >= 4) {
+                  dragged = true
+                  owner = fallback?.tool.begin(sample, keys, fallback.context) ?? null
+                }
+                if (dragged) owner?.update([point], nextKeys)
+              } },
+              finish: reason => { if (reason === 'up' && !dragged) open(); owner?.finish(reason) }, cancel: reason => owner?.cancel(reason),
+            }
+          } }
+          return { tool: link, context: undefined }
+        }
       }
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null

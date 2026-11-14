@@ -1,6 +1,7 @@
 import { childrenOf, sheetOf } from './model/doc';
 import type { BoardDoc } from './model/doc';
 import type { NodeId, ParentId, SheetId } from './model/ids';
+import { compareOrder } from './model/orderKey';
 
 export interface SelectionSnapshot {
     readonly sheet: SheetId;
@@ -68,6 +69,27 @@ export function selectableAtFocus(doc: BoardDoc, id: NodeId, focus: ParentId, sh
 export function selectAllAtFocus(doc: BoardDoc, sheet: SheetId, focus: ParentId): readonly NodeId[] {
     if (sheetOf(doc, focus) !== sheet && focus !== sheet) return [];
     return childrenOf(doc, focus).filter(node => selectableAtFocus(doc, node.id, focus, sheet) === node.id).map(node => node.id);
+}
+
+// Return false at either end so the input router can leave ordinary Tab navigation alone.
+export function selectNext(doc: BoardDoc, selection: SelectionState, direction: 1 | -1, reveal: (id: NodeId) => void): boolean {
+    const state = selection.getSnapshot(), siblings = childrenOf(doc, state.focus);
+    const active = state.active ? doc.nodes.get(state.active) : undefined;
+    let index = direction > 0 ? -1 : siblings.length;
+    if (active?.parent === state.focus) {
+        let lo = 0, hi = siblings.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (compareOrder(siblings[mid], active) < 0) lo = mid + 1; else hi = mid;
+        }
+        if (siblings[lo]?.id === active.id) index = lo;
+    }
+    for (index += direction; index >= 0 && index < siblings.length; index += direction) {
+        const id = siblings[index].id;
+        if (selectableAtFocus(doc, id, state.focus, state.sheet) !== id) continue;
+        selection.replace([id]); reveal(id); return true;
+    }
+    return false;
 }
 
 export function enterGroup(doc: BoardDoc, selection: SelectionState, group: NodeId, child: NodeId): boolean {

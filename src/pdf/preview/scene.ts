@@ -75,6 +75,15 @@ export class PreviewScene {
             this.requests.set(page.index, next);
             void this.layer.bitmaps.publish(page.index, key, page.canvas, page.canvasRect,
                 () => !this.disposed && this.visible && this.requests.get(page.index) === next && page.current(), interest)
+                .then(copied => {
+                    if (copied || this.requests.get(page.index) !== next || !page.current()) return;
+                    // Replacement can exceed the grant while the old crop is still held.
+                    // Fall back to the classic canvas, free it and retry once without it.
+                    if (!this.layer.bitmaps.entries.has(page.index)) return;
+                    this.requests.delete(page.index);
+                    this.layer.bitmaps.remove(page.index);
+                    this.sync(this.snapshotValue);
+                })
                 .catch(error => console.error('Could not copy PDF platform preview:', error))
                 .finally(() => { if (this.requests.get(page.index) === next) this.requests.delete(page.index); });
         }

@@ -33,6 +33,7 @@ export interface LegacyRecordOptions {
     }>;
 }
 export interface LegacyRecordDraft {
+    readonly kind: 'draft';
     readonly source: string;
     readonly envelope: LegacyEnvelope;
     readonly sheets: readonly Sheet[];
@@ -46,9 +47,9 @@ export interface LegacyRecordDraft {
 }
 
 // IMP-1/5: produces an ordered draft; loading/repair must not first deduplicate it into a Map.
-export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | null> {
+export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | { readonly kind: 'failure'; readonly report: ImportReport }> {
     const report = new ReportBuilder(), envelope = readLegacyEnvelope(text, report);
-    if (!envelope) return null;
+    if (!envelope) return { kind: 'failure', report: report.finish() };
     const sheets: Sheet[] = [], shapes: LegacyShape[] = [], bindings: LegacyBinding[] = [], assets: LegacyObject[] = [];
     const media: ImportedMedia[] = [], assetIds = new Map<string, MediaId>(), leases: SampleLease[] = [];
     const bookmarks = new Map<string, LegacyObject>();
@@ -217,7 +218,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     });
     options.assertCurrent();
     const result = report.finish();
-    return { source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
+    return { kind: 'draft', source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
         readOnly: result.unrepresentable.length > 0, converted: false };
     } catch (error) {
         for (const lease of leases) lease.release();

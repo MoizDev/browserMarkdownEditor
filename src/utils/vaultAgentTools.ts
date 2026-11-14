@@ -30,7 +30,7 @@
 // from their JSON (canvasFileSummary.ts), and changes go through the live
 // canvas the host opens.
 
-import { MAX_TOOL_TEXT_CHARS, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
+import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
 import type { AgentChange, HostResult, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
@@ -541,6 +541,19 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
             notebook ? COORDS_PAGED : COORDS_DRAWING];
         return { head, lines: shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result') };
     }
+    if (ctx.host.canvasShapePage) {
+        const result = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+        } });
+        ctx.ensureLive();
+        if (ctx.signal?.aborted) throw new ToolError('Canvas read cancelled.');
+        if (result) {
+            const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, read from the board session`,
+                `${result.total} shape${result.total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`,
+                notebook ? COORDS_PAGED : COORDS_DRAWING];
+            return { head, lines: shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result') };
+        }
+    }
     assertSupportedCanvasFormat(path);
     const text = await readableCanvasText(ctx, path);
     const budget = MAX_TOOL_TEXT_CHARS - 1500;
@@ -626,7 +639,7 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
 
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
-    if (!getView(path)?.canvas?.shapePage) assertSupportedCanvasFormat(path);
+    if (!getView(path)?.canvas?.shapePage && !ctx.host.canvasShapePage) assertSupportedCanvasFormat(path);
     await requireFile(ctx, path);
     const name = baseName(path);
     const page = typeof a.page === 'number' ? a.page : undefined;
@@ -668,6 +681,7 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             ctx.ensureLive();
         }
         if (!view) throw new ToolError(`"${path}" could not be opened to look at (it did not finish loading).`);
+        if (isNativeDrawingFile(name) && !view.canvas?.shapePage) throw new ToolError(`"${path}" is not open as a native board.`);
         if (isNotebookFile(name) && view.renderPage) {
             const info = await describe(view);
             const count = info.kind === 'notebook' ? info.pageCount : 1;
@@ -914,8 +928,8 @@ async function vaultTrash(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
 /* ───────────────────────── canvas ───────────────────────── */
 
-function assertCanvasPath(path: string): void {
-    if (isNativeDrawingFile(path) && getView(path)?.canvas?.shapePage) return;
+function assertCanvasPath(path: string, supportsNative: boolean): void {
+    if (isNativeDrawingFile(path) && (supportsNative || getView(path)?.canvas?.shapePage)) return;
     assertSupportedCanvasFormat(path);
     const name = baseName(path);
     if (!isCanvasFile(name) && !isPdfFile(name)) {
@@ -925,6 +939,13 @@ function assertCanvasPath(path: string): void {
 
 async function liveCanvas(ctx: Ctx, path: string): Promise<ViewReporter & { canvas: NonNullable<ViewReporter['canvas']> }> {
     let view = getView(path);
+    // Native boards are admitted by their session, never by the legacy text
+    // sniffer. A session-backed reporter then fences its own SourceOwner.
+    if (isNativeDrawingFile(path) && !view?.canvas?.shapePage) {
+        view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;
+        ctx.ensureLive();
+        if (!view?.canvas?.shapePage) throw new ToolError(`"${path}" could not be opened as a native board.`);
+    }
     // Legacy reporters need the loaded representation check; new session
     // reporters instead fence their live SourceOwner immediately before edits.
     if (!isPdfFile(path) && !view?.canvas?.shapePage) await readableCanvasText(ctx, path);
@@ -940,9 +961,38 @@ async function liveCanvas(ctx: Ctx, path: string): Promise<ViewReporter & { canv
 
 async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
-    assertCanvasPath(path);
+    assertCanvasPath(path, !!ctx.host.canvasShapePage);
     await requireFile(ctx, path);
     const page = typeof a.page === 'number' ? a.page : undefined;
+    if (a.offset !== undefined || a.limit !== undefined || a.revision !== undefined) {
+        const query = { page, offset: a.offset as number | undefined, limit: a.limit as number | undefined,
+            revision: a.revision as number | undefined };
+        const view = getView(path);
+        let result = view?.canvas?.shapePage?.(query);
+        if (!result && !isPdfFile(path) && ctx.host.canvasShapePage) {
+            result = (await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } })) ?? undefined;
+            ctx.ensureLive();
+        }
+        if (ctx.signal?.aborted) throw new ToolError('Canvas read cancelled.');
+        if (!result) throw new ToolError(isPdfFile(path)
+            ? 'Open the PDF in annotation mode to page its shapes.' : 'Shape paging is unavailable for this board.');
+        const offset = result.revisionChanged ? 0 : query.offset ?? 0;
+        const lines: string[] = [];
+        let used = 0;
+        for (const shape of result.shapes) {
+            const line = formatShape(shape);
+            if (used + line.length + 1 > MAX_TOOL_TEXT_CHARS - 1500) break;
+            lines.push(line); used += line.length + 1;
+        }
+        const next = offset + lines.length;
+        const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`,
+            ...(result.revisionChanged ? ['Revision changed; restarted at offset 0.'] : []),
+            ...(next < result.total ? [`nextOffset: ${next}`] : []),
+            isPdfFile(path) || isNotebookFile(path) ? COORDS_PAGED : COORDS_DRAWING];
+        return ok([...head, '', ...lines].join('\n'));
+    }
     if (isPdfFile(baseName(path))) {
         // A PDF's annotations live inside the PDF; only its annotate view
         // reads them out, so this one does open it (beside the user).
@@ -974,7 +1024,7 @@ function canvasSummary(ops: CanvasOp[], r: CanvasApplyResult): string {
 
 async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.writablePath(a.path);
-    assertCanvasPath(path);
+    assertCanvasPath(path, !!ctx.host.canvasShapePage);
     await requireFile(ctx, path);
     const ops = a.ops as CanvasOp[];
     const view = await liveCanvas(ctx, path);
@@ -1026,7 +1076,7 @@ export async function executeTool(
     name: string,
     args: Record<string, unknown>,
     host: VaultToolHost,
-    run: { vaultToken: object | null; signal?: AbortSignal },
+    run: { vaultToken: object | null; signal?: AbortSignal; helperVersion?: string },
 ): Promise<ToolExecution> {
     const def = TOOL_DEFS.get(name);
     if (!def) return fail(`unknown tool "${name}". Available: ${VAULT_TOOLS.map(t => t.name).join(', ')}.`);
@@ -1034,6 +1084,11 @@ export async function executeTool(
         const ctx = makeCtx(host, run);
         ctx.ensureLive();
         const clean = dropNulls(args ?? {});
+        if (name === 'canvas_shapes' && clean !== null && typeof clean === 'object'
+            && ('offset' in clean || 'limit' in clean || 'revision' in clean)
+            && (!run.helperVersion || compareVersions(run.helperVersion, CANVAS_PAGING_VERSION) < 0)) {
+            return fail('canvas_shapes paging requires a newer VaultAgent helper.');
+        }
         const problems = validateAgainstSchema(def.inputSchema, clean);
         if (problems.length) return fail(`invalid arguments for ${name}:\n- ${problems.join('\n- ')}`);
         const out = await HANDLERS[def.name](clean as Args, ctx);

@@ -1,6 +1,8 @@
 import { runReaderHostCommand } from './utils/documentReading';
 import { watchForNewVersion } from './utils/versionPoll';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
+import { getSessionIdentity } from './utils/sessionIdentity';
+import type { NativeCanvasReady } from './types/reading';
 import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
 import { fingerprintSnapshot } from './utils/snapshotFingerprint';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
@@ -1007,6 +1009,33 @@ export default function App() {
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
+  const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
+    const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
+    const live = () => {
+      const identity = getSessionIdentity(owner.documentId);
+      return getVaultActivation() === vaultActivation && identity?.serial === owner.session && identity.bytesGeneration === bytesGeneration;
+    };
+    const tab = tabsRef.current.find(t => t.id === owner.documentId);
+    if (!live() || !tab || tab.readError || tab.representation.status !== 'ready') return null;
+    if (kind === 'pdfInk' ? tab.representation.loadedKind !== 'pdf'
+      : kind === 'notebook' ? !isNotebookFile(tab.file.name)
+        : !isCanvasFile(tab.file.name) || isNotebookFile(tab.file.name)) return null;
+    const prior = nativePoliciesRef.current.get(owner.documentId);
+    const emergencyReadOnly = prior && prior.session === owner.session && prior.generation === bytesGeneration && prior.activation === vaultActivation
+      ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
+    nativePoliciesRef.current.set(owner.documentId, { session: owner.session, generation: bytesGeneration, activation: vaultActivation, emergencyReadOnly });
+    const digest = acquisition.legacyOriginalSha256;
+    const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    setTabs(previous => previous.map(current => current.id === owner.documentId && live()
+      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
+      : current));
+    return { emergencyReadOnly };
+  }, [getVaultActivation]);
+  useEffect(() => {
+    const open = new Set(tabs.map(tab => tab.id));
+    for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
+  }, [tabs]);
   useEffect(() => {
     layoutRef.current = layout;
     visiblePathsRef.current = visiblePaths(layout);
@@ -1974,7 +2003,7 @@ export default function App() {
       }
       const name = await restoreConversionCopy({ root: rootHandle, parent: node.parentHandle, owner: node.handle,
         hash: digest, signal: controller.signal, isCurrent: current }, match);
-      if (current()) notify(`Restored a copy as "${name}". The converted file and Trash backup are unchanged.`);
+      if (current()) announce(`Restored a copy as "${name}". The converted file and Trash backup are unchanged.`);
     } catch (error) {
       console.error('Could not restore pre-conversion copy:', error);
       if (current()) notify('Could not restore the pre-conversion copy. Nothing was replaced.');
@@ -1982,7 +2011,7 @@ export default function App() {
       controller.abort();
       trashInFlightRef.current = false;
     }
-  }, [getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  }, [announce, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
   useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
 
   // Shared destination transaction for a staged notebook PDF. The source owner
@@ -4287,12 +4316,12 @@ export default function App() {
     try {
       await reconcileQueueRef.current;
       const name = await copyTrashFile(item, rootHandle, current);
-      if (current()) notify(`Restored a copy as "${name}". The Trash original remains.`);
+      if (current()) announce(`Restored a copy as "${name}". The Trash original remains.`);
     } catch (error) {
       console.error('Could not copy from Trash:', error);
       if (current()) notify('Could not restore the copy. Nothing was replaced.');
     } finally { trashInFlightRef.current = false; }
-  }, [copyTrashFile, getVaultActivation, notify, rootHandle]);
+  }, [announce, copyTrashFile, getVaultActivation, notify, rootHandle]);
 
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
     if (trashInFlightRef.current) return false;
@@ -5667,6 +5696,7 @@ export default function App() {
             onPaneForward={paneForward}
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
+            onNativeCanvasReady={onNativeCanvasReady}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}

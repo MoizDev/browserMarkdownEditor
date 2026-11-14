@@ -174,10 +174,13 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'canvas_shapes',
         mutates: false,
-        description: 'List the shapes on a .tldraw drawing, a .notebook, or a PDF\'s annotation layer: id, type, position and size, text, colour and style. On notebooks and PDFs coordinates are page-relative: x/y in page units from that page\'s top-left corner, with `page` saying which page.',
+        description: 'List the shapes on a drawing, notebook, or PDF annotation layer: id, type, position and size, text, colour and style. Notebook/PDF coordinates are page-relative. For a revision-fenced listing, start with offset 0, then pass nextOffset and revision from the reply; changes restart at offset 0.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
-            properties: { path: PATH, page: { ...PAGE, description: 'Only this page (notebooks/PDFs).' } },
+            properties: { path: PATH, page: { ...PAGE, description: 'Only this page (notebooks/PDFs).' },
+                offset: { type: 'integer', minimum: 0, description: 'Zero-based shape offset.' },
+                limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum shapes to return.' },
+                revision: { type: 'integer', minimum: 0, description: 'Revision from the previous page; changes restart at offset zero.' } },
         },
     },
     {

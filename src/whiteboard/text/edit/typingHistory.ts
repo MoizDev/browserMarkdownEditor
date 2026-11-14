@@ -10,6 +10,7 @@ export class TypingHistory {
     private count = 0;
     private timer: ReturnType<typeof setTimeout> | null = null;
     private rule: { mark: number; before: EditSelection } | null = null;
+    private readonly tokens: number[] = [];
 
     constructor(private readonly history: HistoryController, private readonly restore: (selection: EditSelection) => void) {}
 
@@ -52,9 +53,13 @@ export class TypingHistory {
     close(): void {
         if (this.timer !== null) clearTimeout(this.timer);
         this.timer = null;
-        if (this.open) this.history.close();
+        if (this.open) {
+            const token = this.history.close();
+            if (token !== null) this.tokens.push(token);
+        }
         this.open = false; this.lastCaret = null; this.count = 0; this.rule = null;
     }
+    get stepTokens(): readonly number[] { return this.tokens; }
     dispose(): void { this.close(); }
     private resetTimer(): void {
         if (this.timer !== null) clearTimeout(this.timer);

@@ -26,6 +26,7 @@ import {
     selectVersion as selectVersionIn, type ChatNode, type ChatTree, type StoredTool,
 } from '../../utils/chatTree';
 import { readOpenChat, rememberOpenChat } from './openChatMemory';
+import { writeJSON } from '../../utils/storage';
 
 /* ───────────────────────── shapes ───────────────────────── */
 
@@ -159,7 +160,7 @@ function writeChoice(config: ChatConfig): void {
     const current = readChoice();
     current.agent = config.agent;
     current.perAgent[config.agent] = { model: config.model, effort: config.effort };
-    try { localStorage.setItem(CHOICE_KEY, JSON.stringify(current)); } catch { /* not remembered */ }
+    writeJSON(CHOICE_KEY, current);
 }
 
 function draftFor(agent: AgentId): ChatConfig {

@@ -35,6 +35,8 @@ export interface CanvasPaneProps {
     representation: DocumentRepresentation;
     /** Called by a native host on session acquisition, before it enables edits. */
     onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    /** Attaches the native adapter to App's current document session. */
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     /** Is this document some column's showing tab right now? */
     isVisible: boolean;
     /** The column it stands over: the index addresses the editor's CSS

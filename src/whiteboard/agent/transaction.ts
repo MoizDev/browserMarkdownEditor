@@ -59,7 +59,7 @@ export async function applyAgentOperations(host: AgentApplyHost, ops: readonly C
         if (signal.aborted || !host.isCurrent()) throw new AgentApplyCancelled();
         const reason = host.readOnlyReason();
         if (reason !== null || host.session.isReadOnly) throw new AgentApplyReadOnly(reason ?? 'Board is read-only');
-        const batch = runAgentBatch(host.session, ops, (op, context) => {
+        const batch = runAgentBatch<CanvasOp, AgentOpResult>(host.session, ops, (op, context) => {
             const validated = validateAgentOp(op);
             const staged = host.stage(validated.op, { builder: context.builder,
                 resolve: reference => lookup(host.session, context.prior, reference) });

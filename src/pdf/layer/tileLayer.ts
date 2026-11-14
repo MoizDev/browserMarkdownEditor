@@ -289,6 +289,14 @@ export class PdfTileLayer implements Layer {
         if (reason === 'hidden') this.hide();
     }
 
+    /** Expiry drops old GPU pixels immediately, even if a hidden window suspends frames (C1.3). */
+    expireBridge(): void {
+        for (const texture of this.bridgeTextures.values()) texture.device.destroy(texture.handle);
+        this.bridgeTextures.clear();
+        this.bridgeReady.clear();
+        this.host.invalidate('pdf-bridge-expired');
+    }
+
     /** Explicit retry is the only way a failed tile is requested again. */
     retry(): void { this.failed.clear(); this.host.invalidate('pdf-tile-retry'); }
 

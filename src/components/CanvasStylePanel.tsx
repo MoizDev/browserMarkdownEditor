@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react';
+import { writeStoredValue } from '../utils/storage';
 import { DefaultColorStyle, useEditor, useValue } from 'tldraw';
 import type { Editor, TLDefaultColorStyle, TLShapePartial } from 'tldraw';
 import {
@@ -43,7 +44,7 @@ const getCollapsed = () => collapsed;
 function setCollapsed(next: boolean): void {
     if (next === collapsed) return;
     collapsed = next;
-    try { localStorage.setItem(COLLAPSED_KEY, String(next)); } catch { /* this session only */ }
+    writeStoredValue(COLLAPSED_KEY, String(next));
     for (const listener of collapseListeners) listener();
 }
 function subscribeCollapsed(listener: () => void): () => void {

@@ -1,18 +1,12 @@
 import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
-import type { ClientState, ContainedPort, CpuPermit, CpuPermits, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
+import { cpuGovernor } from './governor';
+import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
 const clients = new Map<string, Client>();
 const silence = [20000, 20000, 60000, 60000];
 const backoff = [0, 250, 1000, 4000];
 const marker = 'bme-worker-host-v1';
-const immediatePermits: CpuPermits = {
-    acquire(admission) {
-        let held = true;
-        admission.start();
-        return { get held() { return held; }, reprioritise() {}, release() { held = false; } };
-    },
-};
 
 type Job = {
     id: number;
@@ -184,7 +178,7 @@ class Client implements WorkerClient {
                             if (job.options.cpu === 'light') job.admitted = true;
                             else {
                                 const admission = job.admission = {};
-                                job.permit = (this.spec.permits ?? immediatePermits).acquire({
+                                job.permit = (this.spec.permits ?? cpuGovernor).acquire({
                                     name: this.spec.name, id: job.id, priority: job.options.priority,
                                     start: () => {
                                         if (job.admission !== admission) return;

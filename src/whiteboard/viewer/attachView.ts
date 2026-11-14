@@ -16,6 +16,21 @@ import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
 import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerSnapshot, ViewerViewParams } from './types';
 
+class SelectionIds implements ReadonlySet<string> {
+    readonly [Symbol.toStringTag] = 'SelectionIds';
+    constructor(private readonly ids: readonly NodeId[], private readonly current: () => readonly NodeId[],
+        private readonly selected: (id: NodeId) => boolean) {}
+    get size(): number { return this.ids.length; }
+    has(id: string): boolean { return this.current() === this.ids ? this.selected(id as NodeId) : this.ids.includes(id as NodeId); }
+    *values(): SetIterator<string> { yield* this.ids; }
+    keys(): SetIterator<string> { return this.values(); }
+    *entries(): SetIterator<[string, string]> { for (const id of this.ids) yield [id, id]; }
+    [Symbol.iterator](): SetIterator<string> { return this.values(); }
+    forEach(fn: (value: string, key: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const id of this.ids) fn.call(thisArg, id, id, this);
+    }
+}
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -27,6 +42,7 @@ export const attachView: AttachView = options => {
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
+    let lastSensitive: ReadonlySet<string> | undefined;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -82,7 +98,19 @@ export const attachView: AttachView = options => {
             && a.session === b.session ? preview.nodeIds : null;
     };
     const omitPreview = (dry: PaintFrame) => union(previewOmission(dry), view.visible ? embedPort?.inlineNodeIds(dry.sceneRevision) : null);
-    const liveNodeIds = () => union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null) ?? undefined;
+    const selections = new WeakMap<readonly NodeId[], ReadonlySet<string>>();
+    const selectionIds = (): ReadonlySet<string> => {
+        const ids = runtime.selection.getSnapshot().selected;
+        let result = selections.get(ids);
+        if (!result) {
+            result = new SelectionIds(ids, () => runtime.selection.getSnapshot().selected, id => runtime.selection.has(id));
+            selections.set(ids, result);
+        }
+        return result;
+    };
+    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(
+        selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
+    const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         liveNodeIds,
         onDrawn(revision, _frame, context) {
@@ -92,9 +120,11 @@ export const attachView: AttachView = options => {
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
             if (runtime.scene && !runtime.scene.ready) runtime.scene.step(8, budget.prepareDeadline);
-            if (!lastView || current.epoch !== lastView.epoch) {
+            const sensitive = interaction?.sensitiveNodeIds?.();
+            const changed = sensitive !== lastSensitive;
+            if (!lastView || current.epoch !== lastView.epoch || changed) {
                 lastView = { ...current, camera: { ...current.camera }, viewport: { ...current.viewport } };
-                requestPaint();
+                requestPaint(sensitive);
             }
         },
         onPresented(revision, token, frame, context) {
@@ -134,7 +164,7 @@ export const attachView: AttachView = options => {
         snapshot = makeSnapshot(); accessibility.invalidate();
         for (const listener of listeners) listener();
     }
-    function requestPaint(): void {
+    function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
@@ -143,8 +173,8 @@ export const attachView: AttachView = options => {
         const current = lastView;
         const world: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
             width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
-        const sensitiveNodes = new Set(runtime.selection.getSnapshot().selected);
-        for (const id of liveNodeIds() ?? []) sensitiveNodes.add(id as NodeId);
+        lastSensitive = sensitive;
+        const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
         void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {

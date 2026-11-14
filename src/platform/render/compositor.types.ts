@@ -6,6 +6,7 @@ import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
 import type { PageStack } from './pageStack';
 import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics';
+import type { GpuGrant } from './surfaceBroker.types';
 import type { ScheduledEncoding, ScheduledFrame } from './scheduler';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from './types';
 
@@ -163,6 +164,9 @@ export interface Compositor2DOptions<T extends object> {
     currentToken(): FrameToken | null;
     invalidate(reason: string): void;
     recordUpload(bytes: number, actualCallMs: number): void;
+    /** Presenter selection delegates to the actor's existing backend selector; no second state machine. */
+    select2D(compositor: PaneCompositor): void;
+    selectGpu(grant: GpuGrant): void;
     mirrorQuad(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;
     mirrorCoverage(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
     readonly browserBuild?: string;

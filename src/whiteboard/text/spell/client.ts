@@ -174,7 +174,7 @@ export class BoardSpellClient {
         }, Number.isFinite(delay) ? Math.max(0, Math.min(delay, 10_000)) : 300);
     }
 
-    /** Drop the worker when the editing pane is hidden; retain downloaded dictionary bytes. */
+    /** A hidden pane must release both the worker and its parsed dictionary source strings. */
     suspend(): void {
         this.cancelCheck();
         const host = this.host;
@@ -182,6 +182,7 @@ export class BoardSpellClient {
         this.dictionaryBarrier = Promise.resolve();
         host?.dispose();
         this.abortDictionaryFetch();
+        this.dictionary = null;
     }
 
     dispose(): void {

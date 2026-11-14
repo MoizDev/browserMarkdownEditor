@@ -3,6 +3,7 @@ import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { normalizeRichText, type Block, type Marks, type RichText, type Run } from './richText';
 import type { RichImportResult } from './rich';
+import { repairLegacyCharacters } from './repair';
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue | null {
@@ -29,21 +30,6 @@ function validLink(value: unknown): value is string {
         return !url.username && !url.password && (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:');
     } catch { return false; }
 }
-function repairCharacters(text: string): { text: string; surrogates: number; controls: number } {
-    let out = '', surrogates = 0, controls = 0, last = 0;
-    for (let i = 0; i < text.length; i++) {
-        const c = text.charCodeAt(i);
-        if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { i++; continue; }
-        const surrogate = c >= 0xd800 && c <= 0xdfff;
-        const control = c < 32 && c !== 9 && c !== 10 && c !== 13;
-        if (surrogate || control) {
-            out += text.slice(last, i) + '\ufffd'; last = i + 1;
-            if (surrogate) surrogates++; else controls++;
-        }
-    }
-    return { text: surrogates || controls ? out + text.slice(last) : text, surrogates, controls };
-}
-
 /** Data-only ProseMirror mapping; unrepresentable input must keep its legacy source read-only. */
 export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
     const repairs: string[] = [], unrepresentable: string[] = [], blocks: Block[] = [];
@@ -53,14 +39,11 @@ export function convertLegacyRichText(input: unknown, originals?: WeakMap<object
         if (++visited > 200_000 || depth > 64) fail('Rich text structure exceeds safe limits');
     };
     const clean = (text: string): string => {
-        const fixed = repairCharacters(text); replaced += fixed.surrogates; controls += fixed.controls;
-        const normalized = fixed.text.replace(/\r\n?/g, '\n');
-        let separators = 0;
-        for (let index = 0; index < normalized.length; index++) if (normalized.charCodeAt(index) === 10) separators++;
+        const fixed = repairLegacyCharacters(text, MAX_TEXT_LENGTH - total);
+        replaced += fixed.surrogates; controls += fixed.controls;
         // Each emitted block contributes its separator in push(), not here as well.
-        total += normalized.length - separators;
-        if (total > MAX_TEXT_LENGTH) fail('Rich text exceeds 1000000 UTF-16 units');
-        return normalized;
+        total += fixed.contentLength;
+        return fixed.text;
     };
     const push = (block: Block) => {
         if (blocks.length >= MAX_TEXT_BLOCKS) fail('Rich text exceeds 100000 blocks');

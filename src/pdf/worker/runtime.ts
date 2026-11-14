@@ -52,6 +52,23 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         while (item.raw.size > 4) item.raw.delete(item.raw.keys().next().value!);
         return raw;
     };
+    const verifyClone = (plain: RawPageText, clone: RawPageText): void => {
+        const arrays: Array<[ArrayLike<number>, ArrayLike<number>]> = [
+            [plain.codepoints, clone.codepoints], [plain.flags, clone.flags], [plain.object, clone.object],
+            [plain.origin, clone.origin], [plain.tight, clone.tight], [plain.matrix, clone.matrix],
+            [plain.textMatrix, clone.textMatrix], [plain.fontSize, clone.fontSize],
+            [plain.objects.renderMode, clone.objects.renderMode], [plain.objects.fill, clone.objects.fill],
+            [plain.objects.font, clone.objects.font], [plain.objects.sourceFontSize, clone.objects.sourceFontSize],
+            [plain.objects.opacity, clone.objects.opacity], [plain.objects.hasTransparency, clone.objects.hasTransparency],
+            [plain.fontAscent, clone.fontAscent], [plain.fontDescent, clone.fontDescent],
+        ];
+        if (plain.n !== clone.n || plain.truncated || clone.truncated ||
+            JSON.stringify(plain.fontNames) !== JSON.stringify(clone.fontNames) || arrays.some(([a, b]) => {
+                if (a.length !== b.length) return true;
+                for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+                return false;
+            })) throw bad('EngineBroken', 'PDF emphasis clone metadata mismatch');
+    };
     const geometry = (key: string, item: OpenDoc, page: number, ctx: WorkerContext) => {
         const result = item.doc.page(page); ctx.emit('page.geometry', { docKey: key, geometry: result }); return result;
     };
@@ -93,13 +110,16 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 const off = await runPdfRenderJob(item.doc.render(req), bounds, hooks);
                 let pixels = off.pixels, emphasisResult: { eligibleGlyphs: number; changedPixels: number } | undefined;
                 if (request.variant === 'emphasis') {
-                    const plan = buildEmphasisPlan(rawPage(item, page), { locale: request.emphasis.locale ?? 'en', deviceScale: request.scale });
+                    const raw = rawPage(item, page);
+                    const plan = buildEmphasisPlan(raw, { locale: request.emphasis.locale ?? 'en', deviceScale: request.scale });
                     let changedPixels = 0;
                     if (plan.eligibleGlyphs) {
                         item.clone ??= item.doc.openEmphasisClone?.();
                         if (!item.clone?.emphasisStroked) throw new PdfEngineError('NotSupported', 'PDF emphasis is unavailable');
+                        item.clone.releasePage(page);
                         const cloneGeometry = item.clone.page(page);
                         if (JSON.stringify(cloneGeometry) !== JSON.stringify(pageGeometry)) throw bad('EngineBroken', 'PDF clone geometry mismatch');
+                        verifyClone(raw, item.clone.text(page));
                         const on = await runPdfRenderJob(item.clone.emphasisStroked(req, plan.objectIndexes, request.emphasis.strokeEm), bounds, hooks);
                         const composed = compositeEmphasis(new Uint8Array(off.pixels), new Uint8Array(on.pixels), plan.cells,
                             { x: off.originX, y: off.originY, width: off.w, height: off.h, pageX: 0, pageY: 0, scale: req.scale });
@@ -128,7 +148,10 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 const hooks = { signal: ctx.signal, heartbeat: () => ctx.heartbeat(), cooperate: () => ctx.slice() };
                 const off = await runPdfRenderJob(item.doc.render(req), bounds, hooks);
                 item.clone ??= item.doc.openEmphasisClone?.();
-                if (!item.clone?.emphasisStroked || JSON.stringify(item.clone.page(page)) !== JSON.stringify(g)) throw bad('EngineBroken', 'PDF emphasis clone mismatch');
+                if (!item.clone?.emphasisStroked) throw bad('EngineBroken', 'PDF emphasis clone unavailable');
+                item.clone.releasePage(page);
+                if (JSON.stringify(item.clone.page(page)) !== JSON.stringify(g)) throw bad('EngineBroken', 'PDF emphasis clone mismatch');
+                verifyClone(raw, item.clone.text(page));
                 const on = await runPdfRenderJob(item.clone.emphasisStroked(req, plan.objectIndexes, 0.035), bounds, hooks);
                 const composed = compositeEmphasis(new Uint8Array(off.pixels), new Uint8Array(on.pixels), plan.cells,
                     { x: -1, y: -1, width: off.w, height: off.h, pageX: 0, pageY: 0, scale: p.scale });

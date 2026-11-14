@@ -1,5 +1,6 @@
 import type { SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
+import type { JournalCapture } from '../../utils/recoveryFunnel';
 import type { Applied, TouchedSet, Transaction } from '../change/ops';
 import type { ChangeGeometry } from '../change/coordinates';
 import type { HistoryController, HistorySnapshot, HistoryStepInfo } from '../change/historyTypes';
@@ -20,7 +21,7 @@ import type { BoardSession } from './BoardSession';
 export interface BoardJournalPort {
     record(applied: Applied, revision: number): void;
     capture(): () => void | Promise<void>;
-    delta(): unknown;
+    delta(): JournalCapture | undefined;
     recover(payload: unknown, apply: (transaction: Transaction) => Applied): void | Promise<void>;
     acknowledge(revision: number): void;
     drain(): Promise<void>;

@@ -48,6 +48,8 @@ function trim() {
     }
 }
 
+export function discardParsedPage(entry: ParsedPageCacheEntry) { idle.delete(entry); }
+
 export function parsedPageBusy(entry: ParsedPageCacheEntry) {
     idle.delete(entry);
     entry.lastUsed = ++clock;

@@ -127,6 +127,7 @@ interface PageState {
     pagePromise?: Promise<PDFPageProxy>;
     pageLease?: Promise<PdfPageLease>;
     renderTask?: RenderTask;
+    renderAbort?: AbortController;
     /** What the bitmap in this page's canvas actually shows. */
     rendered?: RenderTarget;
     /** What the in-flight render will produce, so the window pass can tell
@@ -161,6 +162,8 @@ interface PageState {
 function cancelPageRender(st: PageState): RenderTask | undefined {
     const task = st.renderTask;
     // Revoke ownership before cancel: eviction/hide can hit the same task.
+    st.renderAbort?.abort();
+    st.renderAbort = undefined;
     st.renderTask = undefined;
     task?.cancel();
     return task;
@@ -1094,10 +1097,12 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 let ownedTask: RenderTask | undefined;
                 let pendingWork: Promise<unknown> | undefined;
                 let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
+                const controller = new AbortController();
+                st.renderAbort = controller;
                 st.rendering = target;
                 try {
                     await getPage(i);
-                    renderLease = await session.acquireRender(i);
+                    renderLease = await session.acquireRender(i, controller.signal);
                     const page = renderLease.page;
                     if (!current()) continue;
                     session.markRendered(i);
@@ -1166,6 +1171,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     if (pendingWork) await pendingWork.catch(() => {});
                     emphasis?.dispose();
                     renderLease?.release();
+                    if (st.renderAbort === controller) st.renderAbort = undefined;
                     if (st.renderTask === ownedTask) st.renderTask = undefined;
                     if (st.rendering === target) st.rendering = undefined;
                     if (work) { work.width = 0; work.height = 0; }

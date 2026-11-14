@@ -3,7 +3,7 @@ import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpe
 import { createClassicPdfHealth } from './pdfClassicHealth';
 import type { ClassicPdfHealth } from './pdfClassicHealth';
 import { mapPool } from './pool';
-import { forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
+import { discardParsedPage, forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
 export interface PdfDocumentSession {
@@ -57,6 +57,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
             },
         };
         void entry.promise.then(page => { entry.page = page; }, () => {
+            discardParsedPage(entry);
             if (pages.get(index) === entry) pages.delete(index);
         });
         return entry;
@@ -164,7 +165,21 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
             const gate = new Promise<void>(resolve => { unlock = resolve; });
             const tail = previous.then(() => gate);
             renderQueues.set(index0, tail);
-            await previous;
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    const abort = () => { signal?.removeEventListener('abort', abort); reject(aborted()); };
+                    if (signal?.aborted) { abort(); return; }
+                    signal?.addEventListener('abort', abort, { once: true });
+                    void previous.then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+                });
+            } catch (error) {
+                // The next waiter must still follow the previous active render,
+                // but this cancelled waiter no longer owns a page lease.
+                void previous.then(unlock);
+                lease.release();
+                void tail.then(() => { if (renderQueues.get(index0) === tail) renderQueues.delete(index0); });
+                throw error;
+            }
             if (closing || signal?.aborted) {
                 unlock();
                 lease.release();

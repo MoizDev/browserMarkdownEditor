@@ -81,6 +81,26 @@ export function* drawSegment(start: Vec2, end: Vec2, segment: number, style: Dra
     }
 }
 
+export class DotWalker {
+    private remaining: number;
+    constructor(readonly spacing: number, phase = 0) {
+        if (!Number.isFinite(spacing) || spacing <= 0 || !Number.isFinite(phase)) throw new RangeError('Invalid dot spacing');
+        const offset = ((phase % spacing) + spacing) % spacing;
+        this.remaining = offset === 0 ? 0 : spacing - offset;
+    }
+    *consume(length: number): Generator<number> {
+        if (!Number.isFinite(length) || length < 0) throw new RangeError('Invalid path length');
+        let position = 0;
+        while (this.remaining <= length - position) {
+            const next = position + this.remaining;
+            if (this.remaining > 0 && next <= position) throw new RangeError('Dot step is below numeric resolution');
+            position = next; this.remaining = this.spacing;
+            yield position;
+        }
+        this.remaining -= length - position;
+    }
+}
+
 function tangent(curve: Cubic, t: number): Vec2 {
     const u = 1 - t;
     return { x: 3 * (u * u * (curve.p1.x - curve.p0.x) + 2 * u * t * (curve.p2.x - curve.p1.x) + t * t * (curve.p3.x - curve.p2.x)),
@@ -156,5 +176,93 @@ export function* drawPath(ops: readonly PathOp[], style: DrawVariant, lengthErro
             yield piece;
         }
         current = op.p;
+    }
+}
+
+/** Split by the shared arc-length table once; paint and hit testing consume the same output. */
+export function* dashPath(ops: readonly PathOp[], walker: DashWalker, lengthError: number,
+    maxPieces: number): Generator<PathOp> {
+    if (!Number.isFinite(lengthError) || lengthError <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) {
+        throw new RangeError('Invalid dashed path budget');
+    }
+    let current: Vec2 | undefined, start: Vec2 | undefined, penDown = false, pieces = 0;
+    for (const op of ops) {
+        if (op.op === 'M') { current = start = op.p; penDown = false; continue; }
+        if (!current || !start) throw new RangeError('Dashed path must start with M');
+        const from = current, to = op.op === 'Z' ? start : op.p;
+        let curve: Cubic | undefined, length: number;
+        if (op.op === 'C') {
+            curve = { p0: from, p1: op.c1, p2: op.c2, p3: op.p };
+            const spans = cubicLengthTable(curve, lengthError);
+            let lower = 0, upper = 0;
+            for (const span of spans) { lower += span.lower; upper += span.upper; }
+            length = lower + (upper - lower) / 2;
+        } else length = Math.hypot(to.x - from.x, to.y - from.y);
+        if (!Number.isFinite(length)) throw new RangeError('Dashed path length overflows');
+        for (const interval of walker.consume(length)) {
+            if (!interval.painted) { penDown = false; continue; }
+            if (++pieces > maxPieces) throw new RangeError('Dashed path budget exhausted');
+            let begin: Vec2, finish: Vec2, sliced: Cubic | undefined;
+            if (curve) {
+                const at = (distance: number): number => {
+                    if (distance <= 0) return 0;
+                    if (distance >= length) return 1;
+                    const bracket = invertCubicLength(curve!, distance, lengthError);
+                    return (bracket.lower + bracket.upper) / 2;
+                };
+                const t0 = at(interval.from), t1 = Math.max(t0, at(interval.to));
+                const prefix = splitCubicAt(curve, t1)[0];
+                sliced = t1 === 0 ? prefix : splitCubicAt(prefix, t0 / t1)[1];
+                begin = sliced.p0; finish = sliced.p3;
+            } else {
+                const position = (distance: number): Vec2 => ({ x: from.x + (to.x - from.x) * distance / length,
+                    y: from.y + (to.y - from.y) * distance / length });
+                begin = position(interval.from); finish = position(interval.to);
+            }
+            if (!penDown) yield { op: 'M', p: begin };
+            if (sliced) yield { op: 'C', c1: sliced.p1, c2: sliced.p2, p: finish };
+            else yield { op: 'L', p: finish };
+            penDown = true;
+        }
+        current = to;
+        if (op.op === 'Z') penDown = false;
+    }
+}
+
+/** Round caps on these zero-length subpaths are the dot motifs, not tiny painted dashes. */
+export function* dotPath(ops: readonly PathOp[], walker: DotWalker, lengthError: number,
+    maxDots: number): Generator<PathOp> {
+    if (!Number.isFinite(lengthError) || lengthError <= 0 || !Number.isSafeInteger(maxDots) || maxDots < 1) {
+        throw new RangeError('Invalid dotted path budget');
+    }
+    let current: Vec2 | undefined, start: Vec2 | undefined, dots = 0;
+    for (const op of ops) {
+        if (op.op === 'M') { current = start = op.p; continue; }
+        if (!current || !start) throw new RangeError('Dotted path must start with M');
+        const from = current, to = op.op === 'Z' ? start : op.p;
+        let curve: Cubic | undefined, length: number;
+        if (op.op === 'C') {
+            curve = { p0: from, p1: op.c1, p2: op.c2, p3: op.p };
+            const spans = cubicLengthTable(curve, lengthError);
+            let lower = 0, upper = 0;
+            for (const span of spans) { lower += span.lower; upper += span.upper; }
+            length = lower + (upper - lower) / 2;
+        } else length = Math.hypot(to.x - from.x, to.y - from.y);
+        if (!Number.isFinite(length)) throw new RangeError('Dotted path length overflows');
+        for (const distance of walker.consume(length)) {
+            if (++dots > maxDots) throw new RangeError('Dotted path budget exhausted');
+            let p: Vec2;
+            if (curve) {
+                const bracket = distance <= 0 ? { lower: 0, upper: 0 } : distance >= length ? { lower: 1, upper: 1 }
+                    : invertCubicLength(curve, distance, lengthError);
+                const t = (bracket.lower + bracket.upper) / 2;
+                p = splitCubicAt(curve, t)[0].p3;
+            } else {
+                const t = length === 0 ? 0 : distance / length;
+                p = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+            }
+            yield { op: 'M', p }; yield { op: 'L', p };
+        }
+        current = to;
     }
 }

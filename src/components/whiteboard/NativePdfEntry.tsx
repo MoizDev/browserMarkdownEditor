@@ -31,11 +31,14 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     const [error, setError] = useState<string | null>(null);
     const onError = useCallback((cause: unknown) => {
         const message = cause instanceof Error ? cause.message : String(cause);
+        // Once the session owns a PDF source, rebind/view errors belong to
+        // that mounted view; dropping it would also drop its camera and cover.
+        if (getPdfInkSourceState(documentId)) { latest.current.onNotice(message); return; }
         if (latest.current.legacyConversion && latest.current.onLegacyConversionRefused) {
             latest.current.onLegacyConversionRefused(message); return;
         }
         setError(message);
-    }, []);
+    }, [documentId]);
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
         const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;
@@ -44,7 +47,7 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
             readLegacyDigest: readPdfInkLegacyDigest, pinHost: pinPdfInkHostForSave, rebind: rebindPdfInkSource,
             // The acquisition adapter owns the temporary viewing seal. Source,
             // emergency and C5/D10 restrictions remain independent of that seal.
-            currentReadOnly: () => null, onReadOnly: reason => setError(reason), onError,
+            currentReadOnly: () => null, onReadOnly: reason => latest.current.onNotice(reason), onError,
             onHistoryLimit: () => setError('The board history limit was reached.') });
         if (result.kind === 'read-only') {
             try {

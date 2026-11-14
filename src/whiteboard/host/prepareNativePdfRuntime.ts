@@ -67,13 +67,23 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     let serializer: ReturnType<typeof createSerializerSession> | undefined, owned: OwnedBoardRuntime | undefined;
     const creators: MediaLease[] = [];
     const verifiedMedia = new WeakMap<Blob, MediaId>();
-    let disposed = false, transferred = false;
+    let disposed = false, transferred = false, cleanup: Promise<void> | undefined;
     const releaseCreators = () => { for (const lease of creators.splice(0)) lease.release(); };
-    const dispose = () => {
-        if (disposed || transferred) return;
+    const close = () => {
+        if (cleanup) return cleanup;
         disposed = true;
-        releaseCreators(); serializer?.dispose(); render?.dispose(); media?.clear(); acquired?.dispose(); sources.dispose();
+        cleanup = (async () => {
+            const failures: unknown[] = [];
+            const run = (action: () => void) => { try { action(); } catch (error) { failures.push(error); } };
+            run(() => owned?.dispose());
+            run(releaseCreators); run(() => serializer?.dispose()); run(() => render?.dispose());
+            run(() => media?.clear()); run(() => acquired?.dispose()); run(() => sources.dispose());
+            try { await sources.drain(); } catch (error) { failures.push(error); }
+            if (failures.length) throw new AggregateError(failures, 'PDF runtime cleanup failed');
+        })();
+        return cleanup;
     };
+    const dispose = () => transferred ? Promise.resolve() : close();
     const check = () => {
         signal.throwIfAborted();
         if (!host.isCurrent(identity) || !accepted.isCurrent()) throw new DOMException('PDF canvas session ended', 'AbortError');
@@ -151,7 +161,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                 try {
                     check();
                     if (owner.documentId !== identity.documentId || owner.session !== identity.session || !isLiveOwner(owner)) throw new DOMException('PDF session ended', 'AbortError');
-                } catch (error) { dispose(); throw error; }
+                } catch (error) { void dispose(); throw error; }
                 const current = () => isLiveOwner(owner) && host.isCurrent(identity);
                 const build = createPdfInkBuildCapture({ runtime: () => {
                     if (!owned) throw new Error('PDF runtime is not ready'); return owned.runtime;
@@ -220,16 +230,12 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                     }, pinPdf: build.pinPdf } });
                     releaseCreators(); acquired?.dispose();
                     transferred = true;
-                    let closed = false;
-                    return { board: owned.board, sources, dispose() {
-                        if (closed) return; closed = true;
-                        try { owned?.dispose(); } finally { try { services.dispose(); } finally { sources.dispose(); } }
-                    } };
+                    return { board: owned.board, sources, dispose: close };
                 } catch (error) {
-                    try { owned?.dispose(); } finally { try { journal?.dispose(); } finally { dispose(); } }
+                    try { journal?.dispose(); } finally { void close(); }
                     throw error;
                 }
             }, dispose,
         };
-    } catch (error) { dispose(); throw error; }
+    } catch (error) { await dispose(); throw error; }
 }

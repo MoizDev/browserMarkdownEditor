@@ -1,6 +1,8 @@
 import type { PageGeometry } from '../../platform/types';
+import type { PdfiumJbig2Regions } from '../engine/pdfium/imageRegions.types';
 import type { MainMessage, WorkerMessage } from '../../platform/workers/envelope';
-import type { BackendInfo, DocInfo, EngineLimits, FontSpec, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
+import type { PdfFontId } from '../fonts/catalogue';
+import type { BackendInfo, DocInfo, EngineLimits, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
 import type { FigureTag, Schema2PageText, LineTable } from '../text/types';
 import type { TileEmphasisArgs, PageProbeArgs, PageProbeResult } from '../emphasis/types';
 export type { EmphasisSpec, PageProbeArgs, PageProbeResult } from '../emphasis/types';
@@ -101,13 +103,15 @@ export interface PdfEngineOps {
     'doc.close': { args: { docKey: PdfDocKey }; result: Record<string, never> };
     'page.tile': { args: PageTileArgs; result: PageTileResult };
     'page.text': { args: PageArgs & { detail: PdfTextDetail }; result: PageTextReply };
+    'page.geometry': { args: PageArgs; result: PageGeometry };
     'page.links': { args: PageArgs; result: RawPdfLink[] };
     'page.emphasisProbe': { args: PageProbeArgs; result: PageProbeResult };
     'page.complexity': { args: PageArgs; result: PageComplexity };
+    'page.imageRegions': { args: PageArgs; result: PdfiumJbig2Regions };
     'page.release': { args: PageArgs; result: Record<string, never> };
     'doc.outline': { args: { docKey: PdfDocKey }; result: RawOutlineNode[] };
     'doc.attachment': { args: { docKey: PdfDocKey; index: number; maxBytes: number }; result: ArrayBuffer };
-    'font.provide': { args: { spec: FontSpec; bytes: ArrayBuffer }; result: Record<string, never> };
+    'font.provide': { args: { id: PdfFontId; bytes: ArrayBuffer }; result: { fontEpoch: number } };
     'worker.stats': { args: Record<string, never>; result: PdfWorkerStats };
 }
 export type PdfEngineOp = keyof PdfEngineOps;
@@ -116,6 +120,6 @@ export type PdfResult<K extends PdfEngineOp> = PdfEngineOps[K]['result'];
 export type PdfMainMessage = MainMessage;
 export type PdfWorkerMessage = WorkerMessage;
 export interface PdfEngineEvents {
-    'font.needed': { spec: FontSpec; docKey: PdfDocKey; page: number };
+    'font.needed': { ids: PdfFontId[]; docKey: PdfDocKey; page?: number };
     'page.geometry': { docKey: PdfDocKey; geometry: PageGeometry };
 }

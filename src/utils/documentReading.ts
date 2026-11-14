@@ -1,4 +1,5 @@
 import type { OpenTab, EditorMode } from '../types';
+import type { ContentSource } from './documentBuffers';
 import type { DocumentRepresentation, LoadedDocumentKind, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import { isCanvasFile,isCodeFile,isDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
 import { isTextFile } from './vaultSearch';
@@ -25,25 +26,30 @@ export function representationFor(name:string,isHelp=false,generation=0,unavaila
 }
 // Every App tab transition passes here, including restore, disk reload and
 // retarget. Guarding just the pane would still let a clean Cmd+S replace bytes.
-export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[]): OpenTab[] {
+const canvasSniffs = new Map<string, { source: ContentSource; name: string; sniff: ReturnType<typeof sniffCanvas> }>();
+export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[], sourceForDocument: (id: string) => ContentSource | undefined): OpenTab[] {
  if (next === previous) return next;
- const byId = new Map(previous.map(tab => [tab.id, tab]));
+ const ids = new Set(next.map(tab => tab.id));
+ for (const id of canvasSniffs.keys()) if (!ids.has(id)) canvasSniffs.delete(id);
  return next.map(tab => {
   const r = tab.representation;
   if (r.loadedKind !== 'drawing' && r.loadedKind !== 'notebook') return tab;
-  const before = byId.get(tab.id);
-  // Other documents' keystrokes and this tab's dirty/selection changes must
-  // not lex an unchanged multi-megabyte canvas again.
-  const unchanged = before && before.content === tab.content && before.file.name === tab.file.name
-   && before.representation.loadedKind === r.loadedKind && before.representation.status === 'ready'
-   && before.representation.bufferKind === 'text' && !before.readError;
-  const sniff = unchanged ? undefined : sniffCanvas(tab.content, tab.file.name);
+  const source = sourceForDocument(tab.id);
+  let cached = canvasSniffs.get(tab.id);
+  if (source === undefined) { cached = undefined; canvasSniffs.delete(tab.id); }
+  else if (!cached || cached.source !== source || cached.name !== tab.file.name) {
+   let data: ReturnType<Exclude<ContentSource, string>['read']> | undefined;
+   try { data = typeof source === 'string' ? source : source.read(); } catch { data = undefined; }
+   cached = typeof data === 'string' ? { source, name: tab.file.name, sniff: sniffCanvas(data, tab.file.name) } : undefined;
+   if (cached) canvasSniffs.set(tab.id, cached); else canvasSniffs.delete(tab.id);
+  }
+  const sniff = cached?.sniff;
   const policy = sniff?.format === 'native' && !r.nativeCanvasKind
    ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
   const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
-   && !policy.emergencyReadOnly && (unchanged || (sniff?.format === 'native' && !sniff.kindMismatch));
+   && !policy.emergencyReadOnly && sniff?.format === 'native' && !sniff.kindMismatch;
   const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
-   && (admittedNative || (unchanged ? before.representation.contentWritable : !canvasReadOnlyReason(sniff!)));
+   && !!sniff && (admittedNative || !canvasReadOnlyReason(sniff));
   return policy === r && r.contentWritable === writable ? tab : {...tab, representation: {...policy, contentWritable: writable}};
  });
 }

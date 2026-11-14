@@ -13,7 +13,7 @@
 //
 // Two hooks, because the hazards are not obvious and were each paid for once.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 
 /**
@@ -38,7 +38,7 @@ import type { CSSProperties } from 'react';
  */
 export function useFloatingSlot(isVisible: boolean, index: number, left: number, width: number): CSSProperties {
     const [shown, setShown] = useState({ index, left, width });
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (isVisible) setShown(prev =>
             prev.index === index && prev.left === left && prev.width === width
                 ? prev

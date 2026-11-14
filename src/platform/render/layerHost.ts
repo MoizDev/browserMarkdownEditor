@@ -9,6 +9,8 @@ export interface LayerHostBindings {
     /** Qualified rebuilding GPU, even while the selected presentation is still CPU. */
     gpuResources(): CompositorResources | null;
     compositor(): PaneCompositor | null;
+    /** The scheduled candidate can differ from the currently selected display. */
+    preparationCompositor(): PaneCompositor | null;
     invalidate(reason: string): void;
     wakeAt(deadlineMs: number | null): void;
 }
@@ -38,7 +40,11 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         device: () => bindings.gpuResources()?.device ?? null,
         get generation() { return bindings.generation(); },
         allocator: bindings.allocator,
-        reserveIsolation: reservation => (bindings.gpuResources() ?? compositor().resources).reserveIsolation(reservation),
+        reserveIsolation: reservation => {
+            const preparing = bindings.preparationCompositor();
+            if (!preparing) throw new Error('The preparing compositor is unavailable');
+            preparing.resources.reserveIsolation(reservation);
+        },
         paintIsolation: paintCanvasIsolation,
         invalidate: reason => bindings.invalidate(reason),
         wakeAt: deadline => bindings.wakeAt(deadline),

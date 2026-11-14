@@ -51,6 +51,7 @@ function sameFrame(a: FrameToken, b: FrameToken): boolean {
 /** View lifetime only: the session, its source and its mirrors survive disposal. */
 export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => {
     if (!cpuFactory) throw new Error('Register the 2D compositor before attaching a platform pane');
+    const backendPreference = options.backendPreference ?? 'auto';
     const runtime = getPlatformRuntime();
     const surfaceHost = new PaneBackendSwitch(createPaneSurfaceHost(host));
     const cpuMetrics = new SurfaceMetricsCommitter();
@@ -152,14 +153,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             surfaceHost.select(cpu);
         },
         selectGpu: grant => {
-            if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
+            if (!gpu || gpu.grant.generation !== grant.generation) return false;
+            const memoryGrant = runtime.governor.grant(options.paneId);
+            const memory = runtime.governor.readout().gpu;
+            if (!memoryGrant || gpu.backing.reservedBytes > memoryGrant.pixelGrant * RENDER_CONSTANTS.surfaceReserveBytesPerPixel ||
+                memory.chargedBytes > memory.targetBytes) {
+                lifecycle?.invalidate('budget');
+                return false;
+            }
             created.presenter.releaseSurface();
             if (!gpu.backing.promote()) {
                 const surface = lifecycle?.surface;
                 surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
-                throw new Error('GPU backing promotion was refused');
+                return false;
             }
             surfaceHost.select(gpu.bundle.compositor);
+            return true;
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
         mirrorCoverage: (view, entries) => options.mirrorCoverage?.(view, entries) ?? { complete: false, sharp: false },
@@ -245,7 +254,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
     });
     const requestGpu = (): void => {
-        if (disposed || !visible || !cpuPresented || gpuRequested || !lifecycle) return;
+        if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || gpuRequested || !lifecycle) return;
         gpuRequested = true;
         const canvas = host.ownerDocument.createElement('canvas');
         canvas.width = 0; canvas.height = 0;
@@ -428,7 +437,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
         removeCapture = registerCaptureGpu(options.paneId, () => {
-            if (disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
             const snapshot = lifecycle?.surface.snapshot();
             if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
             return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);

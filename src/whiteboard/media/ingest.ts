@@ -28,6 +28,7 @@ export interface MediaIngestHost {
     finishGesture(): void;
     isCurrent(): boolean;
     select(ids: readonly NodeId[]): void;
+    noticeRefused(files: readonly { readonly name: string; readonly reason: string }[]): void;
 }
 export interface MediaSource { readonly blob: Blob; readonly name: string }
 export interface MediaPlacement {
@@ -172,26 +173,34 @@ export class MediaIngestor {
             if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
         const staged: Staged[] = [];
+        const refused: { name: string; reason: string }[] = [];
         {
             for (const source of sources) {
                 current();
-                if (source.name.length > 10000) throw new RangeError('Media name is too long');
-                if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-                const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
-                current();
-                checkResult(info);
-                if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
-                const old = this.session.doc.media.get(info.id);
-                const entry: MediaEntry = old ?? {
-                    id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
-                    duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
-                };
-                const file = await this.host.storeMedia(entry, source.blob, signal);
-                current();
-                if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
-                staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
+                try {
+                    if (source.name.length > 10000) throw new RangeError('Media name is too long');
+                    if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
+                    const info = await this.host.inspectMedia(source.blob, { signal, identity, isCurrent });
+                    current();
+                    checkResult(info);
+                    if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
+                    const old = this.session.doc.media.get(info.id);
+                    const entry: MediaEntry = old ?? {
+                        id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
+                        duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
+                    };
+                    const file = await this.host.storeMedia(entry, source.blob, signal);
+                    current();
+                    if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
+                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file });
+                } catch (error) {
+                    current();
+                    refused.push({ name: source.name, reason: error instanceof Error ? error.message : 'Media could not be read' });
+                }
             }
             current();
+            if (refused.length) this.host.noticeRefused(refused);
+            if (!staged.length) return [];
             const { parent, page, x, y } = options.placement;
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
             const sizes = staged.map(item => box(item.info));

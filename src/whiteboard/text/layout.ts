@@ -4,6 +4,7 @@ import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from 
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
 import { CaretLineCache, makeCaretIndex } from './caretIndex';
+import { clearLongAsciiCaretIndex } from './asciiCaretIndex';
 import { wrapBlock } from './wrap';
 import type { Face, FaceTable, InkRef, PaintFragment, PaintLine, PaintRect, TextLayoutEngine, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 import type { Marks, RichText } from './richText';
@@ -261,5 +262,5 @@ export class BoardTextLayout implements TextLayoutEngine {
     measure(request: TextLayoutRequest): TextMeasurement { return this.build(request).measurement; }
     layout(request: TextLayoutRequest): TextPaint { return this.build(request).paint; }
     caretIndex(request: TextLayoutRequest, paint: TextPaint) { return makeCaretIndex(request, paint, this.faceTable, this.measurer, this.caretLines); }
-    releaseEditingCache(): void { this.caretLines.clear(); }
+    releaseEditingCache(): void { this.caretLines.clear(); clearLongAsciiCaretIndex(this.measurer); }
 }

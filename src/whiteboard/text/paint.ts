@@ -96,10 +96,13 @@ export interface CaretIndex {
     hitTest(x: number, y: number): CaretStop;
     /** Resolve affinity at wraps and bidi boundaries; use paragraph-direction primary caret otherwise. */
     caret(position: CaretPosition): CaretStop;
+    /** The painted grapheme actually under a point, or null outside text ink. */
+    clusterAt(x: number, y: number): TextCluster | null;
     /** Selection boxes in visual order, including line-break extension where applicable. */
     selection(start: number, end: number): readonly Rect[];
     /** Character boxes for an EditContext UTF-16 range, one box per code unit. */
     characterBounds(start: number, end: number): readonly Rect[];
+    navigate?(position: CaretPosition, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end', goalX?: number): CaretStop;
 }
 
 export interface TextPadding { readonly top: number; readonly right: number; readonly bottom: number; readonly left: number }

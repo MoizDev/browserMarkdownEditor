@@ -1,6 +1,7 @@
 import type { Rect } from '../../platform/types';
 import { graphemeBoundaries } from './graphemes';
 import { projectionLength, projectionSlice } from './projection';
+import { longAsciiCaretIndex } from './asciiCaretIndex';
 import type { ReferenceMeasurer } from './measure';
 import type { CaretIndex, CaretLine, CaretPosition, CaretStop, FaceTable, TextCluster, TextLayoutRequest, TextPaint } from './paint';
 
@@ -32,6 +33,8 @@ export class CaretLineCache {
 
 /** Prefix measurements use the same face and reference-size canvas as the paint. */
 export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer, cache?: CaretLineCache): CaretIndex {
+    const sparse = longAsciiCaretIndex(request, paint, table, measurer);
+    if (sparse) return sparse;
     const length = projectionLength(request.text);
     const buildLine = (lineIndex: number): CaretLine => {
         const line = paint.lines[lineIndex];
@@ -228,5 +231,15 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         }
         return result;
     }
-    return { paintKey: paint.key, lines, hitTest, caret, selection, characterBounds };
+    function clusterAt(x: number, y: number): TextCluster | null {
+        if (!lines.length) return null;
+        const line = lines[hitTest(x, y).line];
+        if (y < line.top || y > line.bottom) return null;
+        for (const cluster of line.clusters) {
+            const box = cluster.bounds;
+            if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) return cluster;
+        }
+        return null;
+    }
+    return { paintKey: paint.key, lines, hitTest, caret, clusterAt, selection, characterBounds };
 }

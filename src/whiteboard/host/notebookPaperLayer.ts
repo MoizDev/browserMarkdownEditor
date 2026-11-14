@@ -1,14 +1,16 @@
 import type { PageGeometry, Rect, ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
-import type { LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
-import type { ByteLease } from '../../platform/render/gfx/api';
+import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
+import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from '../../platform/render/types';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
-import type { PaintPathItem } from '../render/paintStream';
+import type { PaintFrame, PaintPathItem } from '../render/paintStream';
+import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
+import type { CanvasPaintAdapter, PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
@@ -69,7 +71,17 @@ class NotebookPaperLayer implements Layer {
         clip: () => { throw new Error('Notebook paper has no independent clips'); },
         image: () => { throw new Error('Notebook paper has no image resources'); },
     };
-    constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {}
+    private gpuPrepared: PreparedPaint2d | null = null;
+    private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
+    private readonly gpuReference: CanvasPaintAdapter = {
+        prepare: () => {}, readyFrame: () => this.gpuPrepared?.frame ?? null,
+        borrowPrepared: () => this.gpuPrepared, draw2d: () => {}, release: () => {},
+        needsFrame: () => false, memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
+    };
+    private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
+    constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
+        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error));
+    }
     private report(error: unknown): void { try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ } }
     private dropStaged(): void {
         const old = this.staged; this.staged = null;
@@ -84,7 +96,7 @@ class NotebookPaperLayer implements Layer {
     private snapshot(): NotebookPaperSnapshot {
         const value = this.options.read(); checkSnapshot(value); return value;
     }
-    prepare(_view: ViewState, budget: FrameBudget): void {
+    private preparePaper(budget: FrameBudget): void {
         if (this.disposed) return;
         let attemptedRevision: number | null = null;
         try {
@@ -141,7 +153,51 @@ class NotebookPaperLayer implements Layer {
             this.report(error);
         }
     }
-    drawGpu(): void { throw new Error('Notebook paper layer is Canvas2D-only'); }
+    prepare(view: ViewState, budget: FrameBudget): void {
+        this.preparePaper(budget);
+        if (this.disposed || !this.host.device()) return;
+        try {
+            this.prepareGpuSource(view, budget.token);
+            this.gpu.prepare(view, budget);
+        } catch (error) { this.report(error); }
+    }
+    private prepareGpuSource(view: ViewState, token: FrameToken): void {
+        const ready = this.ready;
+        if (!ready || !sameToken(ready.token, token) || !Number.isFinite(view.camera.z) || view.camera.z <= 0) {
+            this.gpuPrepared = null; this.gpuSource = null; return;
+        }
+        const first = pageAt(ready.stack, view.camera.y);
+        const last = pageAt(ready.stack, view.camera.y + view.viewport.height / view.camera.z);
+        const previous = this.gpuSource;
+        if (previous && previous.ready === ready && previous.first === first && previous.last === last && sameToken(previous.token, token)) return;
+        const paths = new WeakMap<PaintPathItem, PreparedPath2d>();
+        const clips = new Map<string, PreparedPath2d>();
+        const items: PaintPathItem[] = [];
+        for (let page = first; page <= last; page++) {
+            const box = ready.stack.rects[page];
+            const clipKey = `notebook-page/${page}/${box.x}/${box.y}/${box.width}/${box.height}`;
+            const d: PaintPathItem['d'] = [['M', 0, 0], ['L', box.width, 0], ['L', box.width, box.height], ['L', 0, box.height], ['Z']];
+            const clipPath = new Path2D(); clipPath.rect(0, 0, box.width, box.height);
+            clips.set(clipKey, { path: clipPath, origin: [0, 0] });
+            for (const source of ready.items) {
+                const [a, b, c, d0, e, f] = source.item.localToWorld;
+                const item: PaintPathItem = { ...source.item, key: `${source.item.key}/page/${page}`,
+                    nodeId: `paper/${page}`, localToWorld: [a, b, c, d0, e + box.x, f + box.y],
+                    clips: [...source.item.clips, { key: clipKey, d, fillRule: 'nonzero', localToWorld: [1, 0, 0, 1, box.x, box.y] }] };
+                paths.set(item, source.path); items.push(item);
+            }
+        }
+        const frame: PaintFrame = { token: { vaultEpoch: token.vaultEpoch, documentId: token.documentId,
+            bytesGeneration: token.bytesGeneration, session: token.session }, sceneRevision: ready.revision,
+        inkNodeIds: new Set(), underlay: [], content: items };
+        this.gpuPrepared = { frame, resources: {
+            path: item => { const path = paths.get(item as PaintPathItem); if (!path) throw new Error('Notebook GPU path unavailable'); return path; },
+            clip: key => { const clip = clips.get(key); if (!clip) throw new Error('Notebook GPU clip unavailable'); return clip; },
+            image: () => { throw new Error('Notebook paper has no image resources'); },
+        } };
+        this.gpuSource = { ready, first, last, token: { ...token } };
+    }
+    drawGpu(pass: GpuPass, view: ViewState): void { this.gpu.drawGpu(pass, view, 'content'); }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         const ready = this.ready;
         if (!ready || this.disposed) return;
@@ -163,30 +219,39 @@ class NotebookPaperLayer implements Layer {
             }
         });
     }
-    releaseGpu(_reason: GpuReleaseReason): void {
+    releaseGpu(reason: GpuReleaseReason): void {
+        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null;
         try { this.dropStaged(); } catch (error) { this.report(error); }
         try { this.dropReady(); } catch (error) { this.report(error); }
         this.desired = null; this.denied = false; this.failedRevision = null;
     }
-    memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: 0, cpuBytes: (this.ready?.lease.bytes ?? 0) + (this.staged?.lease.bytes ?? 0) }; }
+    memory(): { gpuBytes: number; cpuBytes: number } {
+        const gpu = this.gpu.memory();
+        return { gpuBytes: gpu.gpuBytes, cpuBytes: gpu.cpuBytes + (this.ready?.lease.bytes ?? 0) + (this.staged?.lease.bytes ?? 0) };
+    }
     needsFrame(): boolean {
         if (this.disposed || this.denied) return false;
         const revision = this.options.read().revision;
-        return !Object.is(this.failedRevision, revision) && (this.staged !== null || this.ready?.revision !== revision);
+        return !Object.is(this.failedRevision, revision) && (this.staged !== null || this.ready?.revision !== revision ||
+            (!!this.host.device() && !!this.gpuPrepared && this.gpu.needsFrame()));
     }
-    dispose(): void { if (!this.disposed) { this.disposed = true; this.releaseGpu('hidden'); } }
+    dispose(): void { if (!this.disposed) { this.disposed = true; this.releaseGpu('hidden'); this.gpu.dispose(); } }
     currentRevision(): number { return this.snapshot().revision; }
     demand(): number {
         const snapshot = this.snapshot(), stack = boardPageStack(snapshot.host);
         if (!stack) throw new RangeError('Notebook page stack unavailable');
-        return this.memory().cpuBytes + (this.ready?.revision === snapshot.revision || this.staged?.snapshot.revision === snapshot.revision ? 0 : workingBytes(snapshot, stack));
+        return this.memory().cpuBytes + (this.host.device() ? this.gpu.cpuWorkingSet().mandatoryBytes : 0) +
+            (this.ready?.revision === snapshot.revision || this.staged?.snapshot.revision === snapshot.revision ? 0 : workingBytes(snapshot, stack));
     }
     critical(): boolean { return !this.ready; }
-    coverage(frame: ScheduledFrame, layer: Layer): LayerCoverage {
+    coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const ready = this.ready, requested = frame.layers.find(entry => entry.layer === layer)?.sceneRevision;
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
-        return current ? { complete: true, sharp: true } : { complete: false, sharp: false, staleVersion: true };
+        if (!current) return { complete: false, sharp: false, staleVersion: true };
+        if (backend === 'canvas2d') return { complete: true, sharp: true };
+        if (this.gpu.readyFrame() !== this.gpuPrepared?.frame) return { complete: false, sharp: false, staleVersion: true };
+        return this.gpu.coverage(frame.view);
     }
 }
 
@@ -198,6 +263,6 @@ export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): Pl
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
         critical: layer => (layer as NotebookPaperLayer).critical(),
-        coverage: (layer, frame) => (layer as NotebookPaperLayer).coverage(frame, layer),
+        coverage: (layer, frame, backend) => (layer as NotebookPaperLayer).coverage(frame, layer, backend),
     };
 }

@@ -150,6 +150,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; deniedFrame = p.frame; deniedProjection = p.projection; report(error); throw error; }
         },
         readyFrame(): PaintFrame | null { return disposed ? null : ready?.frame ?? null; },
+        coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
+            if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
+            const complete = ready.projection === projection(view);
+            return { complete, sharp: complete && ready.scale >= view.camera.z * view.viewport.dpr,
+                ...(ready.frame !== reference.readyFrame() ? { staleVersion: true } : {}) };
+        },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
             if (!ready || !validDevice(ready)) return;
             const factor = view.camera.z * view.viewport.dpr / ready.scale;

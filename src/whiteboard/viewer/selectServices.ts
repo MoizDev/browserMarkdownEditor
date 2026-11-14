@@ -200,7 +200,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
         const delta = direction[key], selection = runtime.selection.getSnapshot();
         if (!mutable() || !delta || !selection.selected.length) return false;
-        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected], scale = coarse ? 10 : 1;
+        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        const scale = doc.view.grid ? (coarse ? 50 : 10) : (coarse ? 10 : 1);
         // Repeated key presses queue individual history steps rather than racing immutable snapshots.
         nudgeTail = nudgeTail.catch(() => {}).then(async () => {
             if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
@@ -223,9 +224,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return true;
     };
     const transform = (command: string): boolean => {
-        // Default: coarse rotation is 15°, fine rotation is 1°, and scale steps are 10%.
+        // Fine rotation is one sixteenth of the 15° keyboard step.
         const angles: Record<string, number> = { 'rotate.clockwise': Math.PI / 12, 'rotate.counterclockwise': -Math.PI / 12,
-            'rotate.fineClockwise': Math.PI / 180, 'rotate.fineCounterclockwise': -Math.PI / 180 };
+            'rotate.fineClockwise': Math.PI / 192, 'rotate.fineCounterclockwise': -Math.PI / 192 };
         const flip = command === 'flip.horizontal' ? 'x' : command === 'flip.vertical' ? 'y' : null;
         const stretch = command === 'stretch.horizontal' ? 'x' : command === 'stretch.vertical' ? 'y' : null;
         const factor = command === 'scale.enlarge' ? 1.1 : command === 'scale.shrink' ? 1 / 1.1 : null;

@@ -209,5 +209,16 @@ export class EditHost {
     }
 
     focus(): void { this.element.focus({ preventScroll: true }); this.sync(); }
+    finishComposition(commit: boolean): void {
+        if (!this.composing) return;
+        if (!commit) {
+            this.composing = false;
+            this.pending = null;
+            this.compositionBase = null;
+            this.callbacks.composition(null);
+            return;
+        }
+        this.endComposition();
+    }
     dispose(): void { for (const remove of this.cleanup) remove(); this.element.remove(); }
 }

@@ -52,9 +52,12 @@ export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyE
     const records: LegacyObject[] = [];
     for (const [key, value] of entries) {
         const record = object(value);
-        if (!record || typeof record.id !== 'string' || record.id !== key || typeof record.typeName !== 'string') {
+        if (!record || typeof record.id !== 'string' || typeof record.typeName !== 'string') {
             report.refuse(key, 'Invalid record identity');
-        } else records.push(record);
+        } else {
+            if (record.id !== key) report.repair(record.id, `Record key ${key} did not match its identifier`);
+            records.push(record);
+        }
     }
     return { records, session: object(root.session), ui: object(root.ui), paper: object(root.paper) };
 }

@@ -47,6 +47,19 @@ export function notebookPages(width: number, height: number, count: number): rea
     }));
 }
 
+export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
+export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(
+    pages: readonly LegacyPageMapping[], bounds: (shape: T) => LegacyWorldBounds):
+    (shape: T) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
+    return shape => {
+        const box = bounds(shape);
+        if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {
+            throw new Error(`Invalid world bounds for ${shape.id}`);
+        }
+        return locateLegacyPage(pages, shape.x, shape.y, box.y + box.h / 2);
+    };
+}
+
 export function locateLegacyPage(pages: readonly LegacyPageMapping[], x: number, y: number, centreY: number): {
     readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean;
 } {

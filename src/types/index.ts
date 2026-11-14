@@ -411,6 +411,16 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
+export interface BoardAssetAccess {
+  root: FileSystemDirectoryHandle;
+  parent: FileSystemDirectoryHandle;
+  owner: FileSystemFileHandle;
+  hash: string;
+  preferredName?: string | null;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+}
+
 export interface VaultHandleIO {
   file: (handle: FileSystemFileHandle) => Promise<File>;
   fileIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemFileHandle>;
@@ -476,6 +486,9 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
+  /** Board media are content-addressed but retain their actual collision-free leaf name. */
+  readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;

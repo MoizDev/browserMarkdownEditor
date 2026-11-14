@@ -1,12 +1,10 @@
-import type { Sheet } from '../../whiteboard/model/doc';
-import type { SheetId } from '../../whiteboard/model/ids';
 
 export interface SheetShortcutActions {
-    readonly sheets: readonly Sheet[];
-    readonly current: SheetId;
+    readonly sheets: readonly { readonly id: string }[];
+    readonly current: string;
     readonly readOnly: boolean;
-    readonly hasContent: (sheet: SheetId) => boolean;
-    readonly select: (sheet: SheetId) => void;
+    readonly hasContent: (sheet: string) => boolean;
+    readonly select: (sheet: string) => void;
     readonly create: () => void;
 }
 

@@ -26,6 +26,7 @@ export class PlatformRuntime {
     private readonly slowGpu = new Set<string>();
     private readonly stalledFence = new Set<string>();
     private readonly capabilityFailures = new Map<string, number>();
+    private readonly deniedCpuFloor = new Set<string>();
     private memoryAdvanceQueued = false;
     private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     private motion: MediaQueryList | null = null;
@@ -88,12 +89,21 @@ export class PlatformRuntime {
             this.slowGpu.delete(paneId);
             this.stalledFence.delete(paneId);
             this.capabilityFailures.delete(paneId);
+            this.deniedCpuFloor.delete(paneId);
             this.refresh();
         };
     }
 
     refresh(): void {
-        this.governor.updatePanes([...this.panes.values()].map(pane => pane.demand()));
+        const demands = [...this.panes.values()].map(pane => pane.demand());
+        this.governor.updatePanes(demands);
+        for (const demand of demands) {
+            const denied = demand.visible && (this.governor.grant(demand.paneId)?.cpuBytes ?? 0) < (demand.cpuMandatoryBytes ?? 0);
+            if (denied && !this.deniedCpuFloor.has(demand.paneId)) {
+                this.deniedCpuFloor.add(demand.paneId);
+                this.panes.get(demand.paneId)?.notice('memory-pressure');
+            } else if (!denied) this.deniedCpuFloor.delete(demand.paneId);
+        }
         this.advance();
     }
 

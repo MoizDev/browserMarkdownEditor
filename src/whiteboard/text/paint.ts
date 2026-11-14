@@ -54,6 +54,8 @@ export interface PaintLine {
 export interface TextPaint {
     readonly key: string;
     readonly fontEpoch: number;
+    /** The immutable face table whose indices this layout uses. */
+    readonly faceTable?: FaceTable;
     readonly box: { readonly w: number; readonly h: number };
     /** Conservative ink bounds, including the box and possible overhang. */
     readonly ink: Rect;

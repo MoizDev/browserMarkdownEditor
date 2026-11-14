@@ -133,7 +133,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
-| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, asynchronous geometry preparation, notebook layout and saved PDF backdrop layout contract | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, sheet-aware asynchronous geometry preparation, notebook and saved PDF backdrop layout | none | 2026-11-13 |
 | `import/worldBounds.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1; text §6 | Public text layout and geometry bounds interfaces; recursive parent transforms and group bounds | none | 2026-11-13 |
 | `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
 | `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2/4 | import §§2,6; current-format §§1–3 | Observed envelopes, schema counters, metadata retention and mismatched-record recovery | none | 2026-11-13 |
@@ -152,8 +152,8 @@ third-party code included (normally "none") · date.
 | `import/repair.ts` | w-o | IMP-1, E-IMP-4/5 | document-model §9.2; import §6 | Load-only parent, group, id, order and attachment repair rules | none | 2026-11-13 |
 | `import/sheets.ts` | w-o | IMP-1, E-IMP-4 | document-model §§4,9.2 | Sheet naming and key model | none | 2026-11-13 |
 | `import/admit.ts` | w-o | IMP-1, IMP-5 | document-model §§9–10; import §§1,6 | Public model validation and apply controller | none | 2026-11-13 |
-| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-7 | import §§1–3,6 | Documented record families; bounded media admission, inert legacy-record retention, async page bounds and job identity checks | none | 2026-11-13 |
-| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source/metadata retention, job identity checks, ordered draft and model admission | none | 2026-11-13 |
+| `import/records/read.ts` | w-o | IMP-1/3/5, E-IMP-7 | import §§1–3,6 | Documented record families; bounded media admission, inert legacy-record retention, sheet-aware async page bounds and job identity checks | none | 2026-11-13 |
+| `import/import.ts` | w-o | IMP-1/3/5 | import §§1–3,6 | In-memory source/metadata retention, job identity checks, text/geometry page preparation and model admission | none | 2026-11-13 |
 | `import/conversion.ts` | w-o | IMP-6, E-IMP-10/11/16, E-DEL-11/12 | import §4; delivery M4 | Conversion ordering, versioned host callbacks, SHA-256 backup reuse, durable digest and collision-safe restore contracts | none | 2026-11-13 |
 | `import/conversionMetadata.ts` | w-o | IMP-6, E-IMP-16 | import §4; delivery M4 | Native header extension stores original-byte digest so restore survives rename/move | none | 2026-11-13 |
 

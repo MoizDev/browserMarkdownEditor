@@ -9,6 +9,7 @@ import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { polylinePath } from '../geom/polylines';
+import { preparePolylineControl } from '../geom/polylineControls';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import { connectorEndHandleGesture } from '../input/connectorHandles';
@@ -51,6 +52,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
+    let controlPending: AbortController | undefined;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; options.invalidate(); };
     const refresh = () => {
@@ -135,6 +137,35 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
         },
+        remove(hit: ShapeHandleHit): boolean {
+            if (!current() || !selected || hit.kind !== 'polyline-vertex') return false;
+            const node = doc.nodes.get(selected);
+            if (!node || node.kind !== 'polyline') return false;
+            if (node.points.length <= 2) { options.error(new Error('A line must retain at least two vertices')); return true; }
+            if (controlPending) return true;
+            const id = node.id, request = new AbortController(), release = options.hold();
+            controlPending = request; let unregister: (() => void) | undefined;
+            try { unregister = options.registerPending(() => request.abort()); }
+            catch (error) { controlPending = undefined; release(); throw error; }
+            void (async () => {
+                const preview = await preparePolylineControl({ runtime, id, action: { kind: 'delete', index: hit.index },
+                    current, signal: request.signal, cooperate: options.cooperate });
+                try {
+                    request.signal.throwIfAborted(); if (!current()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    options.show(preview.ops); await options.waitUntilReady(request.signal);
+                    request.signal.throwIfAborted(); if (!current()) throw new DOMException('Polyline edit became stale', 'AbortError');
+                    options.armCommit();
+                    try { preview.commit(); options.finishCommit(); }
+                    catch (error) { options.cancelCommit(); throw error; }
+                } finally { preview.release(); }
+            })().catch(error => {
+                if (!request.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+            }).finally(() => {
+                if (controlPending === request) controlPending = undefined;
+                try { options.clear(); } finally { try { unregister?.(); } finally { release(); } }
+            }).catch(options.error);
+            return true;
+        },
         write(frame: ScheduledFrame) {
             if (!current() || !handles.length) { svg?.remove(); svg = undefined; return; }
             if (!svg) {
@@ -149,7 +180,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
             path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.replaceChildren(path);
         },
-        hide() { generation++; controller?.abort(); clear(); },
-        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null; },
+        hide() { generation++; controller?.abort(); controlPending?.abort(); clear(); },
+        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null; },
     };
 }

@@ -58,6 +58,7 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
+  keyboardHandleCommand?(id: string, sample: RealSample): boolean
   keyboardNavigation?(keyboardCursorActive: boolean): KeyboardNavigationPriority
   ownsWheel(event: WheelEvent): boolean
   cameraChanged(): void
@@ -391,6 +392,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (cursor.active && router.activeOwner) { cursor.escape(); return true }
         if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
         services.history.redo(); return true
+      }
+      if (id === 'delete' && editable()) {
+        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+        if (router.activeOwner) {
+          if (cursor.active && router.activeOwner.pointerIds.has(-1)) cursor.escape(); else pointer.interrupt('os-cancel')
+          return true
+        }
+        if (cancelled || continuationCancelled) return true
+        const sample = cursor.currentSample()
+        if (sample && services.keyboardHandleCommand?.(id, sample)) return true
       }
       if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
       if (id.startsWith('style.')) flush()

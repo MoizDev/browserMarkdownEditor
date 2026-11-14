@@ -402,6 +402,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         void stickyHandles.activate(direction, true).finally(() => { try { unregister?.(); } finally { release(); } });
         return true;
     };
+    const handleCommand = (id: string, sample: RealSample): boolean => {
+        if (id !== 'delete' || sample.source !== 'keyboard' || !mutable()) return false;
+        const hit = shapeHandles.hit(physicalSurface(sample));
+        return hit ? shapeHandles.remove(hit) : false;
+    };
     const command = (id: string): boolean => {
         if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true);
         if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false);
@@ -412,7 +417,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, handleCommand, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

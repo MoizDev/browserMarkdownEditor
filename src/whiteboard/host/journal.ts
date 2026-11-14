@@ -3,7 +3,7 @@ import type { ContentSource } from '../../utils/documentBuffers';
 import type { SerializerPrime } from '../format/serializerProtocol';
 import type { SampleStore } from '../ink/samples';
 import type { BoardDoc } from '../model/doc';
-import type { MediaEntry } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import type { BoardJournalPort } from '../session/factoryTypes';
 import { createBoardRecoveryCapture } from './recoveryCapture';
 import { recoverBoardJournal } from './recoveryReplay';
@@ -17,6 +17,8 @@ export interface BoardJournalOptions {
     readonly signal?: AbortSignal;
     append(capture: JournalCapture, source: ContentSource): Promise<void>;
     projectMedia?: (entry: MediaEntry) => MediaEntry;
+    prepareMedia?: (payload: unknown, signal: AbortSignal, isCurrent: () => boolean) => Promise<{ readonly files: ReadonlyMap<MediaId, string>; release(): void }>;
+    isCurrent?: () => boolean;
     onError(error: unknown): void;
     cooperate?: () => Promise<void>;
 }
@@ -63,8 +65,17 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             if (disposed) throw new Error('Board journal disposed');
             if (replay) throw new Error('Board recovery is already in progress');
             signal.throwIfAborted();
-            const work = recoverBoardJournal(payload, { doc: options.doc, samples: options.samples, apply, signal,
-                cooperate: options.cooperate, projectMedia: options.projectMedia });
+            const revision = options.doc.rev;
+            const current = () => !disposed && !signal.aborted && options.doc.rev === revision && (options.isCurrent?.() ?? true);
+            const work = (async () => {
+                if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                const media = await options.prepareMedia?.(payload, signal, current);
+                try {
+                    if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
+                    await recoverBoardJournal(payload, { doc: options.doc, samples: options.samples, apply, signal,
+                        cooperate: options.cooperate, projectMedia: options.projectMedia, mediaFiles: media?.files, isCurrent: current });
+                } finally { media?.release(); }
+            })();
             replay = work;
             try { await work; }
             catch (error) { report(error); throw error; }

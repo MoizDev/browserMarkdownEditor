@@ -28,6 +28,7 @@ export interface CoverageFrameRecord {
     readonly standin: number;
     readonly current: number;
     readonly invalid: number;
+    readonly countMs?: number;
 }
 
 export type CoverageFrameTag = Pick<CoverageFrameRecord, 'frameId' | 'token' | 'cameraEpoch' | 'sceneRevision' | 'backend' | 'width' | 'height'>;

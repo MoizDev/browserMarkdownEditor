@@ -1,4 +1,5 @@
 import type { ViewState } from '../types';
+const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
 import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../renderStatus';
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
@@ -420,7 +421,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const grant = runtime.governor.grant(options.paneId);
                         return {
                             memory: { gpuChargedBytes: memory.gpu.chargedBytes, cpuChargedBytes: memory.cpu.chargedBytes,
-                                gpuRetiringBytes: memory.gpu.retiringBytes, cpuRetiringBytes: memory.cpu.retiringBytes },
+                                gpuRetiringBytes: memory.gpu.retiringBytes, cpuRetiringBytes: memory.cpu.retiringBytes,
+                                ...benchmarkMemory!.readMeasurementMemory(options.paneId) },
                             grants: { pixelGrant: grant?.pixelGrant ?? 0, gpuCacheBytes: grant?.gpuCacheBytes ?? 0,
                                 cpuBytes: grant?.cpuBytes ?? 0 },
                         };

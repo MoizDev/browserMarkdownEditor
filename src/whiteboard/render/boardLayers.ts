@@ -16,8 +16,23 @@ export interface BoardLayersOptions {
     readonly images: PaintImageProvider;
     readonly onError: (error: unknown) => void;
     readonly requestedRevision: () => number;
+    /** View-only suppression, evaluated against the actual ready preview frame. */
+    readonly omitNodes?: (frame: PaintFrame) => ReadonlySet<string> | null;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
-    readonly onPresented?: (revision: number, token: RenderToken) => void;
+    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame) => void;
+}
+class FilteredInk implements ReadonlySet<string> {
+    readonly [Symbol.toStringTag] = 'FilteredInk';
+    constructor(private readonly source: ReadonlySet<string>, private readonly omitted: ReadonlySet<string>) {}
+    get size(): number { let count = 0; for (const _ of this) count++; return count; }
+    has(id: string): boolean { return this.source.has(id) && !this.omitted.has(id); }
+    *values(): SetIterator<string> { for (const id of this.source) if (!this.omitted.has(id)) yield id; }
+    keys(): SetIterator<string> { return this.values(); }
+    *entries(): SetIterator<[string, string]> { for (const id of this) yield [id, id]; }
+    [Symbol.iterator](): SetIterator<string> { return this.values(); }
+    forEach(fn: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
+        for (const id of this) fn.call(thisArg, id, id, this);
+    }
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -73,12 +88,25 @@ function estimateStep(state: Estimate): void {
 }
 
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
-export function createBoardLayers(options: BoardLayersOptions): readonly [PlatformLayerDefinition, PlatformLayerDefinition] & { invalidate(reason?: string): void } {
+export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
+    invalidate(reason?: string): void;
+    readyFrame(): PaintFrame | null;
+}
+export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
-    let presented: PaintFrame | null = null, ackFrame: PaintFrame | null = null, ackMask = 0;
-    const drawn = new Map<PaintBand, PaintFrame>();
+    let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null;
+    let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackMask = 0;
+    const drawn = new Map<PaintBand, { frame: PaintFrame; omit: ReadonlySet<string> | null }>();
+    const filtered = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
+    const presentedFrame = (frame: PaintFrame, omit: ReadonlySet<string> | null): PaintFrame => {
+        if (!omit?.size) return frame;
+        let versions = filtered.get(frame); if (!versions) { versions = new WeakMap(); filtered.set(frame, versions); }
+        let result = versions.get(omit);
+        if (!result) { result = { ...frame, inkNodeIds: new FilteredInk(frame.inkNodeIds, omit) }; versions.set(omit, result); }
+        return result;
+    };
     const reservations = new Map<PaintFrame, ByteLease[]>(), known = new Set<PaintFrame>();
     let reserved = 0;
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
@@ -94,7 +122,7 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
         // explicitly evict them before returning its CPU leases for any release.
         adapter?.release(reason === 'context-lost' ? 'pressure' : reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); ackFrame = null; ackMask = 0;
+        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); ackFrame = null; ackOmit = null; ackMask = 0;
         if (reason === 'hidden') { options.frames.clear(); known.clear(); presented = null; }
     };
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
@@ -113,7 +141,7 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
     };
     const prune = (requested: PaintFrame, ready: PaintFrame | null) => {
         for (const frame of known) {
-            if (frame !== requested && frame !== ready && frame !== presented && frame !== drawn.get('underlay') && frame !== drawn.get('content')) {
+            if (frame !== requested && frame !== ready && frame !== presented && frame !== drawn.get('underlay')?.frame && frame !== drawn.get('content')?.frame) {
                 options.frames.retire(frame); releaseFrame(frame); known.delete(frame);
             }
         }
@@ -143,17 +171,17 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
         } catch (error) { report(error); }
     };
     const acknowledge = (band: PaintBand, revision: number, token: RenderToken) => {
-        const frame = drawn.get(band);
+        const drawnBand = drawn.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null;
         if (!frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
-        if (ackFrame !== frame) { ackFrame = frame; ackMask = 0; }
+        if (ackFrame !== frame || ackOmit !== omit) { ackFrame = frame; ackOmit = omit; ackMask = 0; }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
-        if (presented === frame) { ackFrame = null; ackMask = 0; return; }
+        if (presented === frame && presentedOmit === omit) { ackFrame = null; ackOmit = null; ackMask = 0; return; }
         try {
             options.frames.presented(frame);
-            const previous = presented; presented = frame; ackFrame = null; ackMask = 0;
+            const previous = presented; presented = frame; presentedOmit = omit; ackFrame = null; ackOmit = null; ackMask = 0;
             if (previous && previous !== frame) { options.frames.retire(previous); releaseFrame(previous); known.delete(previous); }
-            options.onPresented?.(revision, token);
+            options.onPresented?.(revision, token, presentedFrame(frame, omit));
         } catch (error) { report(error); }
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
@@ -168,8 +196,9 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
                     if (!frame) return;
-                    drawn.set(band, frame);
-                    adapter!.draw2d(ctx, view, band);
+                    const omit = options.omitNodes?.(frame) ?? null;
+                    drawn.set(band, { frame, omit });
+                    adapter!.draw2d(ctx, view, band, omit ?? undefined);
                 },
                 releaseGpu(reason) { clearResources(reason); },
                 memory() { return { gpuBytes: 0, cpuBytes: allocatorHost === host ? reserved : 0 }; },
@@ -200,7 +229,8 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
             return current ? { complete: true, sharp: true } : { complete: false, sharp: false, staleVersion: true };
         },
     });
-    const pair = [definition('underlay'), definition('content')] as unknown as [PlatformLayerDefinition, PlatformLayerDefinition] & { invalidate(reason?: string): void };
+    const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.readyFrame = () => disposed ? null : adapter?.readyFrame() ?? null;
     return Object.freeze(pair);
 }

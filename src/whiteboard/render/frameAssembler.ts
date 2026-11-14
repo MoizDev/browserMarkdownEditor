@@ -8,6 +8,7 @@ interface Staging {
     readonly job: PaintStreamJob;
     readonly underlay: PaintItem[];
     readonly content: PaintItem[];
+    readonly inkNodeIds: Set<string>;
 }
 interface Published { readonly pin: PinnedPaintSource; readonly frame: PaintFrame }
 
@@ -42,9 +43,12 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         request(pin) {
             if (disposed) { pin.release(); return; }
             dropStaging();
-            const underlay: PaintItem[] = [], content: PaintItem[] = [];
-            const job = new PaintStreamJob(pin.source, (item, band) => (band === 'underlay' ? underlay : content).push(item));
-            staging = { pin, job, underlay, content };
+            const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
+            const job = new PaintStreamJob(pin.source, (item, band) => {
+                (band === 'underlay' ? underlay : content).push(item);
+                if (item.kind === 'ink') inkNodeIds.add(item.nodeId);
+            });
+            staging = { pin, job, underlay, content, inkNodeIds };
             invalidate();
         },
         prepare(budget) {
@@ -56,7 +60,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (status === 'pending') continue;
                     if (status !== 'complete') { dropStaging(); return; }
                     const frame: PaintFrame = Object.freeze({ token: work.pin.source.token, sceneRevision: work.pin.source.sceneRevision,
-                        underlay: Object.freeze(work.underlay), content: Object.freeze(work.content) });
+                        underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
                     const published: Published = { pin: work.pin, frame };
                     retained.set(frame, published); latest = published; staging = null; invalidate(); return;
                 }

@@ -71,7 +71,7 @@ export function createBoardRenderServices(options: {
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const textIds = new Set<NodeId>();
-    let serial = 0, disposed = false;
+    let serial = 0, disposed = false, ownerReleased = false, holders = 1;
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
@@ -81,6 +81,10 @@ export function createBoardRenderServices(options: {
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (disposed) throw new DOMException('Board rendering services disposed', 'AbortError');
+    };
+    const releaseHolder = () => {
+        if (--holders !== 0) return;
+        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -177,6 +181,23 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
+    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
+        const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
+        return prepareScenePaintSource(doc, options.token, request, {
+            cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
+            // Physical-page capture owns its final clip. A stored pg is an
+            // origin, not a certificate that overflowing geometry is invisible.
+            intersectsPage: () => true,
+            async resolve(node, context, itemSignal) {
+                if (node.kind === 'group') return { content: [] };
+                const geometry = await prepare(node, doc, itemSignal);
+                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
+                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
+                return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
+                    { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+            },
+        }, signal);
+    };
     const requireLoadedText = (value: PreparedBoardText | null) => {
         if (!value) return;
         if (!text.fonts.isLoaded({ family: value.request.style.font, bold: false, italic: false })
@@ -190,14 +211,14 @@ export function createBoardRenderServices(options: {
         const key = `${options.token.session}:${node.id}:change:${++serial}`;
         if (node.kind !== 'opaque') requireLoadedText(text.prepareNow(node, { revision: key }));
         const hit = cached.get(node.id);
-        if (hit?.signature === signature(node, doc) && hit.vector) return hit.vector;
+        if (hit && sameGeometrySignature(hit.signature, signature(node, doc)) && hit.vector) return hit.vector;
         return node.kind === 'opaque' ? undefined : prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
     };
     const changeGeometry = createBoardChangeGeometry({ vector: changeVector,
         local(doc, node) {
             if (node.kind === 'stroke') {
                 const hit = cached.get(node.id);
-                return hit?.signature === signature(node, doc) ? hit.bounds : undefined;
+                return hit && sameGeometrySignature(hit.signature, signature(node, doc)) ? hit.bounds : undefined;
             }
             const vector = changeVector(doc, node);
             return vector ? geometrySceneBounds(vector) : undefined;
@@ -210,6 +231,16 @@ export function createBoardRenderServices(options: {
     });
     return {
         text, bounds, changeGeometry,
+        /** A save/export pin may finish after its App session closes. Releasing
+         * the runtime owner must not invalidate that pin's geometry/fonts. */
+        retainRenderer() {
+            check();
+            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+            holders++;
+            let held = true;
+            return { release() { if (held) { held = false; releaseHolder(); } } };
+        },
+        prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
         /** Preflight actual font/ink inputs outside the synchronous writer.
          * Staged transforms still resolve through the doc passed by apply. */
         async prepareChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal): Promise<void> {
@@ -270,24 +301,11 @@ export function createBoardRenderServices(options: {
         },
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        async preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) {
-            const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-            return prepareScenePaintSource(doc, options.token, request, {
-                cooperate: options.cooperate,
-                // The output/capture owner clips to the physical page; retaining
-                // cross-page nodes here prevents stored page ownership culling.
-                intersectsPage: () => true,
-                async resolve(node, context, itemSignal) {
-                    if (node.kind === 'group') return { content: [] };
-                    const geometry = await prepare(node, doc, itemSignal);
-                    if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                    if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                    return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
-                },
-            }, signal);
+        preparePaint: paint,
+        prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
+            return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        dispose() { if (!disposed) { disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); } },
+        dispose() { if (!ownerReleased) { ownerReleased = true; releaseHolder(); } },
     };
 }

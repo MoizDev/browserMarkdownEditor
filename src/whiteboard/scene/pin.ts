@@ -36,6 +36,7 @@ export function createSceneSnapshot(options: {
     records: SceneRecordPin;
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
+    renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) => Promise<PaintNodeSource>;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
@@ -71,6 +72,12 @@ export function createSceneSnapshot(options: {
             if (released || !records.get(id)) return null;
             return options.bounds?.get(id) ?? { revision, quality: BoundsQuality.Pending, ink: null, selectable: null };
         },
+        async readDocument(signal) {
+            check(); signal?.throwIfAborted();
+            const doc = await waitFor(document(), signal);
+            check(); signal?.throwIfAborted();
+            return doc;
+        },
         async paintSource(request, signal) {
             check();
             if (signal?.aborted) throw signal.reason ?? cancelled();
@@ -90,7 +97,7 @@ export function createSceneSnapshot(options: {
             if (released) return;
             released = true;
             controller.abort(cancelled());
-            records.release();
+            try { records.release(); } finally { options.renderer?.release(); }
         },
     };
     return snapshot;

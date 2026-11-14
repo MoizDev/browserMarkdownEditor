@@ -48,10 +48,26 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
   let nextClip = 0
   const definitions: string[] = [], body: string[] = []
+  const definitionBlobs: Blob[] = [], bodyBlobs: Blob[] = []
   const clips = new Map<string, string>()
   const clipCacheLimit = 2 * 1024 * 1024
-  let clipCacheBytes = 0
+  let clipCacheBytes = 0, pendingDefinitions = 0, pendingBody = 0
   let finished = false, poisoned = false, busy = false, written = 256
+  function compact(target: string[], blobs: Blob[], added: number): void {
+    if (target === body) pendingBody += added
+    else pendingDefinitions += added
+    const pending = target === body ? pendingBody : pendingDefinitions
+    if (target.length < 1024 && pending < 4 * 1024 * 1024) return
+    blobs.push(new Blob(target))
+    target.length = 0
+    if (target === body) pendingBody = 0
+    else pendingDefinitions = 0
+    if (blobs.length >= 1024) {
+      const combined = new Blob(blobs)
+      blobs.length = 0
+      blobs.push(combined)
+    }
+  }
   function clipKey(clip: NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>): string | null {
     // Exported text fragments repeat their enclosing frame clips. Keep this cache bounded even
     // for arbitrary user paths; large, unique clips still serialize normally.
@@ -118,6 +134,7 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
         if (written + value.length > SVG_LIMIT) throw new ExportTooLarge(0)
         written += value.length
         target.push(value)
+        compact(target, target === body ? bodyBlobs : definitionBlobs, value.length)
       }
       const path = async (target: string[], commands: readonly PathCommand[]) => {
         for (let i = 0; i < commands.length; i += 512) {
@@ -188,16 +205,20 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
         const before = definitions.length
         const part = emit(item, 0)
         written += part.length
-        for (let i = before; i < definitions.length; i++) written += definitions[i].length
+        let addedDefinitions = 0
+        for (let i = before; i < definitions.length; i++) addedDefinitions += definitions[i].length
+        written += addedDefinitions
         if (written > SVG_LIMIT) throw new ExportTooLarge(0)
+        compact(definitions, definitionBlobs, addedDefinitions)
         body.push(part)
+        compact(body, bodyBlobs, part.length)
       } catch (error) { poisoned = true; throw error }
     },
     finish() {
       if (finished || poisoned || busy) throw new Error('SVG writer is unavailable')
       finished = true
       return new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${number(bounds.width)}" height="${number(bounds.height)}" viewBox="${number(bounds.x)} ${number(bounds.y)} ${number(bounds.width)} ${number(bounds.height)}"><defs>`,
-        ...definitions, '</defs>', ...body, '</svg>'], { type: 'image/svg+xml' })
+        ...definitionBlobs, ...definitions, '</defs>', ...bodyBlobs, ...body, '</svg>'], { type: 'image/svg+xml' })
     },
   }
 }

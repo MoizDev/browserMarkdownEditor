@@ -839,7 +839,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;
         if (__BME_BENCH__) {
             benchmarkCanvas?.coverageKinds.set(this, options.coverage ?? 'none');
-            benchmarkCanvas?.scaleRatios.set(this, (options as TexturedQuadOptions & { standInRatio?: number }).standInRatio ?? 1);
+            const ratio = (options as TexturedQuadOptions & { standInRatio?: number }).standInRatio;
+            benchmarkCanvas?.scaleRatios.set(this, options.coverage === 'standin'
+                ? ratio ?? Math.min(1, sourceRect.width / destRect.width, sourceRect.height / destRect.height) : 1);
         }
         ctx.save();
         try {

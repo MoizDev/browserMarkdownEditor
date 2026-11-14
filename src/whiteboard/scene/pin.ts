@@ -4,6 +4,7 @@ import type { NodeId } from '../model/ids';
 import { createLoadedBoardDoc } from '../model/loadDocument';
 import { boardPageStack } from '../model/pages';
 import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintNodeOrder } from '../render/paintOrder';
 import { BoundsQuality } from './bounds';
 import { createPinnedPaintDoc } from './paintDoc';
 import type { SceneRecordPin } from './recordStore';
@@ -38,7 +39,7 @@ export function createSceneSnapshot(options: {
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
     renderer?: { release(): void };
-    prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => Promise<PaintNodeSource>;
+    prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
 }): SceneSnapshot {
@@ -56,14 +57,18 @@ export function createSceneSnapshot(options: {
         return promise;
     };
     const paintDocument = (): BoardDoc => { check(); return paintDoc ??= createPinnedPaintDoc(records, metadata, revision, check); };
-    const ordered = function* (request: ScenePaintRequest): Generator<NodeId> {
+    const ordered = function* (request: ScenePaintRequest): Generator<NodeId | null> {
         check();
+        let visited = 0, started = performance.now();
         const world = request.world;
         const cull = world && [world.x, world.y, world.width, world.height, world.x + world.width, world.y + world.height]
             .every(Number.isFinite) && world.width >= 0 && world.height >= 0 ? world : undefined;
         const stack: Iterator<import('../model/nodes').Node>[] = [records.children(request.sheetId)[Symbol.iterator]()];
         while (stack.length) {
             check();
+            if (++visited >= 64 || performance.now() - started >= 0.25) {
+                yield null; check(); visited = 0; started = performance.now();
+            }
             const next = stack[stack.length - 1].next();
             if (next.done) { stack.pop(); continue; }
             const node = next.value, bounds = cull ? options.bounds?.get(node.id) : undefined;

@@ -7,6 +7,7 @@ import type { Node } from '../model/nodes';
 import type { SceneMetadata } from './snapshotDoc';
 import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
+import type { PaintNodeOrder } from '../render/paintOrder';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
@@ -34,6 +35,12 @@ export interface ScenePaintRequest {
     readonly allowInkLod?: boolean;
 }
 
+export interface ScenePaintBinding {
+    readonly token: RenderToken;
+    readonly preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => Promise<PaintNodeSource>;
+    readonly retainRenderer?: () => { release(): void };
+}
+
 /** Pin is synchronous. Its canonical values/geometry/sample leases never follow later edits.
  * paintSource may await exact offscreen layout/media, but only for this captured revision.
  * isCurrent on the resulting source means "this lease remains valid", NOT live-doc equality.
@@ -59,6 +66,8 @@ export interface SceneSpatial {
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery;
     /** Adapter for GE-3 pick: resume(deadline/maxVisits, visit(ref)), same generation guards. */
     spatialCursor(options: SceneQueryOptions): SpatialCursor;
+    /** Future snapshots only; the host supplies an actual replacement-source binding. */
+    setPaintBinding?(binding: ScenePaintBinding): void;
     /** Includes swept tests: pass the conservative swept world AABB, then exact narrow phase. */
     pin(): SceneSnapshot;
 }

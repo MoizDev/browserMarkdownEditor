@@ -99,7 +99,7 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
         }
         if (classification.kind === 'empty') { host.notice('The clipboard has no supported content.'); return []; }
         let legacy: LegacyClipboardDecodeLease | undefined, draft: FinalExcalidrawDraft | undefined;
-        let acquisition: BoardClipboardAcquisition | undefined;
+        let wire: Awaited<ReturnType<typeof readExcalidrawClipboard>> | undefined, acquisition: BoardClipboardAcquisition | undefined;
         try {
             let external: ExternalClipboardSource;
             if (classification.kind === 'native-records') external = { kind: 'native-records', bytes: new Blob([classification.text], { type: 'application/json' }) };
@@ -108,17 +108,15 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                     identity, memory: host.memory, isCurrent: current, signal: context.signal }); check();
                 external = { kind: 'legacy', decoded: legacy };
             } else {
-                const wire = await readExcalidrawClipboard({ bytes: new Blob([classification.text], { type: 'application/json' }),
+                wire = await readExcalidrawClipboard({ bytes: new Blob([classification.text], { type: 'application/json' }),
                     identity, memory: host.memory, isCurrent: current, signal: context.signal });
-                try {
-                    check();
-                    const sheet = newSheetId(doc), cooperate = host.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-                    const shapes = await convertExcalidrawShapes(wire.elements, { sheet, signal: context.signal, cooperate }); check();
-                    draft = await finalizeExcalidrawDraft(shapes, { elements: wire.elements, files: wire.files, sheet, signal: context.signal,
-                        current: () => current(identity), cooperate, resolveBinding: host.resolveBinding,
-                        inspectImage: (file, imageSignal) => inspectMedia(file.blob, { memory: host.memory, identity, isCurrent: current, signal: imageSignal }) });
-                    check();
-                } finally { wire.release(); }
+                check();
+                const sheet = newSheetId(doc), cooperate = host.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+                const shapes = await convertExcalidrawShapes(wire.elements, { sheet, signal: context.signal, cooperate }); check();
+                draft = await finalizeExcalidrawDraft(shapes, { elements: wire.elements, files: wire.files, sheet, signal: context.signal,
+                    current: () => current(identity), cooperate, resolveBinding: host.resolveBinding,
+                    inspectImage: (file, imageSignal) => inspectMedia(file.blob, { memory: host.memory, identity, isCurrent: current, signal: imageSignal }) });
+                check();
                 if (draft.skipped) host.notice(`${draft.skipped} unsupported or unavailable clipboard item(s) were skipped.`);
                 if (!draft.nodes.length) return [];
                 external = { kind: 'excalidraw', draft };
@@ -141,6 +139,6 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                 return await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target: captured,
                     current: host.current, signal: context.signal, cooperate: host.cooperate });
             } finally { media.release(); }
-        } finally { acquisition?.dispose(); draft?.release(); legacy?.release(); }
+        } finally { acquisition?.dispose(); draft?.release(); wire?.release(); legacy?.release(); }
     }, { signal, deadlineMs: 120_000 });
 }

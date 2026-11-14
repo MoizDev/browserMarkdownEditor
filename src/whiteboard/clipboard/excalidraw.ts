@@ -207,6 +207,7 @@ export interface ExcalidrawBindingRequest {
     readonly binding: Readonly<Record<string, unknown>>;
 }
 export interface FinalExcalidrawDraft {
+    readonly sheet: SheetId;
     readonly nodes: readonly Node[];
     readonly samples: SampleStore;
     readonly media: readonly MediaEntry[];
@@ -298,7 +299,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 const base = { id, parent: options.sheet, order: orders[index], page: -1, x: pos.x, y: pos.y,
                     rotation: pos.rotation, opacity: pos.opacity, ext: null };
                 if (element.type === 'freedraw') {
-                    const pressures = element.pressures, real = element.simulatePressure === false && Array.isArray(pressures);
+                    const pressures = element.pressures, real = Array.isArray(pressures) && pressures.length > 0;
                     if (element.simulatePressure === false && !real || real && pressures.length !== points.length) throw new TypeError('Invalid Excalidraw pressure count');
                     const builder = new SampleBuilder({ pressure: real, declaredMaxScale: 1, precision: 'float64' });
                     for (let i = 0; i < points.length; i++) {
@@ -374,6 +375,6 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
         }
         const output = retainedNodes.map(node => replacements.get(node.id) ?? node);
         check();
-        return { nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
+        return { sheet: options.sheet, nodes: Object.freeze(output), samples, media: Object.freeze([...media.values()]), blobs, skipped, release };
     } catch (error) { release(); throw error; }
 }

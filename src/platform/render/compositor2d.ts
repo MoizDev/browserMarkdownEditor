@@ -58,6 +58,14 @@ interface Snapshot {
     readonly metrics: ReadySurfaceMetrics | null;
     readonly serial: number;
 }
+interface MirrorJob {
+    readonly key: string;
+    readonly token: FrameToken;
+    readonly buffer: Buffer2D;
+    stage: 'upload' | 'colour' | 'copy';
+    colour: ColourGroup2d | null;
+    timer: ReturnType<typeof setTimeout> | null;
+}
 interface ColourJob {
     readonly key: string;
     readonly snapshot: Snapshot;
@@ -124,6 +132,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private serial = 0;
     private generation = allocateSurfaceGeneration();
     private job: ColourJob | null = null;
+    private mirrorJob: MirrorJob | null = null;
+    private lastFrame: ScheduledFrame | null = null;
     private report: CompositorCoverage | null = null;
     private presentedKey = '';
     private missing = false;
@@ -138,11 +148,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const display = this.surface.getContext('2d', { alpha: false, colorSpace: 'srgb' });
         if (!display) throw new Error('Canvas 2D is unavailable');
         this.display = display;
-        const compositor = this;
+        const resizeSurface = (width: number, height: number) => this.resize(width, height);
         this.target = Object.freeze({
             get generation() { return options.currentToken()?.deviceGeneration ?? 0; },
             limits: CANVAS2D_LIMITS,
-            resizeSurface(width: number, height: number) { return compositor.resize(width, height); },
+            resizeSurface,
         });
         this.resources = Object.freeze({ owner: this, device: null,
             uniforms: () => { throw new Error('Uniforms require an active GPU draw scope'); },
@@ -225,6 +235,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             }
             const job = this.job;
             if (job?.stage === 'colour' && job.timer === null) this.scheduleColour(job);
+            if (this.mirrorJob?.stage === 'colour' && this.mirrorJob.timer === null) this.scheduleMirrorColour(this.mirrorJob);
             if (job?.stage === 'ready' && !budget.shouldYield() && budget.claimUpload(job.band.canvas.width * job.band.canvas.height * 4)) {
                 job.admission = budget;
             }
@@ -233,6 +244,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     encode(frame: ScheduledFrame): ScheduledEncoding | null {
         this.check();
+        this.lastFrame = frame;
         const snapshot = this.scene;
         const budget = this.budget;
         const back = this.buffers.get('back');
@@ -281,12 +293,20 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void { paintWorldScope(ctx, view, paint); }
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void { paintPageScope(ctx, this.page(view, index), paint); }
 
-    /** Mirror admission belongs to lifecycle. This bridge never selects a canvas or owns GPU truth. */
+    /** Mirror admission belongs to lifecycle. Partial admitted uploads may warm a detached target,
+     * never the display: otherwise a multi-tile frame larger than one admission could never progress.
+     */
     prepareMirror(frame: MirrorFrame<T>): PreparedMirrorPresentation {
         const back = this.buffers.get('back');
         const generation = this.generation;
+        const key = JSON.stringify([frame.revision, frame.view, this.serial, generation]);
+        if (this.mirrorJob?.key !== key) this.cancelMirror();
+        const buffer = back ? this.requested('mirror', back.canvas.width, back.canvas.height, true) : null;
+        if (!buffer) this.options.invalidate('2d-mirror-buffer');
+        if (buffer && !this.mirrorJob) this.mirrorJob = { key, token: frame.budget.token, buffer, stage: 'upload', colour: null, timer: null };
+        const job = this.mirrorJob;
         const selected: { entry: BorrowedMirror<T>; quad: NonNullable<ReturnType<Compositor2DOptions<T>['mirrorQuad']>> }[] = [];
-        for (const entry of frame.entries) {
+        if (job?.stage === 'upload') for (const entry of frame.entries) {
             const quad = this.options.mirrorQuad(entry, frame.view);
             if (quad && validRect(quad.sourceRect) && validRect(quad.destRect) && frame.claimImplicit(entry.entry.id)) selected.push({ entry, quad });
         }
@@ -296,27 +316,48 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             submit: () => {
                 if (done) throw new Error('Mirror preparation already consumed');
                 done = true;
-                if (!back || this.disposed || this.generation !== generation ||
-                    !sameToken(this.options.currentToken(), frame.budget.token) || selected.some(item => !frame.mayDrawImplicit(item.entry.entry.id))) return noMirror;
-                const available = this.options.mirrorCoverage(frame.view, selected.map(item => item.entry));
-                if (!available.complete) return noMirror;
-                opaque(back.native, this.appearance);
-                const drawn: BorrowedMirror<T>[] = [];
-                for (const { entry, quad } of selected) {
-                    if (!frame.mayDrawImplicit(entry.entry.id)) return noMirror;
-                    const start = performance.now();
-                    let succeeded = false;
-                    try {
-                        const s = quad.sourceRect, d = quad.destRect;
-                        back.native.drawImage(quad.image, s.x, s.y, s.width, s.height, d.x, d.y, d.width, d.height);
-                        succeeded = true; drawn.push(entry);
-                    } finally { frame.recordImplicit(entry.entry.id, performance.now() - start, succeeded); }
-                }
-                const actual = this.options.mirrorCoverage(frame.view, drawn);
-                // Never read the display to reconstruct a capture/mirror or publish a partial bridge.
-                if (!actual.complete || this.appearance.inverted || !this.metrics || !this.publish(back, this.metrics)) return noMirror;
-                this.presentedKey = '';
-                return { presented: true, complete: actual.complete, sharp: actual.sharp, usedMirror: true };
+                if (!back || !job || this.mirrorJob !== job || this.disposed || this.generation !== generation ||
+                    !sameToken(this.options.currentToken(), frame.budget.token)) return noMirror;
+                this.busy++;
+                try {
+                    if (job.stage === 'upload') {
+                        this.clear(job.buffer, 0, 0);
+                        const drawn: BorrowedMirror<T>[] = [];
+                        for (const { entry, quad } of selected) {
+                            if (!frame.mayDrawImplicit(entry.entry.id)) break;
+                            const start = performance.now();
+                            let succeeded = false;
+                            try {
+                                const s = quad.sourceRect, d = quad.destRect;
+                                job.buffer.native.drawImage(quad.image, s.x, s.y, s.width, s.height, d.x, d.y, d.width, d.height);
+                                succeeded = true; drawn.push(entry);
+                            } finally { frame.recordImplicit(entry.entry.id, performance.now() - start, succeeded); }
+                        }
+                        const actual = this.options.mirrorCoverage(frame.view, drawn);
+                        if (!actual.complete) { this.options.invalidate('2d-mirror-upload-deferred'); return noMirror; }
+                        if (this.appearance.inverted) {
+                            job.colour = createColourGroup2d(job.buffer.native, { x: 0, y: 0, width: job.buffer.canvas.width, height: job.buffer.canvas.height });
+                            job.stage = 'colour'; this.scheduleMirrorColour(job); return noMirror;
+                        }
+                        job.stage = 'copy';
+                    }
+                    if (job.stage !== 'copy' || !this.metrics) return noMirror;
+                    this.activeKey = `mirror:${key}`; this.missing = false;
+                    opaque(back.native, this.appearance);
+                    const full = { x: 0, y: 0, width: back.canvas.width, height: back.canvas.height };
+                    this.image(back, job.buffer.canvas, full, full);
+                    const current = this.lastFrame;
+                    const scene = this.scene;
+                    if (!current || current.frameId !== frame.budget.frameId || !scene) return noMirror;
+                    const chrome = scene.layers.filter(layer => layer.group === 'chrome');
+                    if (chrome.some(layer => !layer.coverage(current, this.backend).complete)) return noMirror;
+                    this.paintBindings(chrome, back, scene, current);
+                    if (this.missing) { this.options.invalidate('2d-mirror-copy-prepare'); return noMirror; }
+                    const actual = this.options.mirrorCoverage(frame.view, frame.entries);
+                    if (!actual.complete || !this.publish(back, this.metrics)) return noMirror;
+                    this.presentedKey = '';
+                    return { presented: true, complete: true, sharp: actual.sharp, usedMirror: true };
+                } finally { this.busy--; }
             },
         };
     }
@@ -337,7 +378,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
 
     private check(): void { if (this.disposed) throw new Error('Canvas compositor is disposed'); }
-    private changed(): void { this.serial++; this.cancelJob(); this.report = null; }
+    private changed(): void { this.serial++; this.cancelJob(); this.cancelMirror(); this.report = null; }
     private key(snapshot: Snapshot, frame: ScheduledFrame): string {
         const t = frame.token, v = frame.view;
         return JSON.stringify([t.vaultEpoch, t.documentId, t.bytesGeneration, t.session, t.viewLease, t.deviceGeneration,
@@ -516,6 +557,28 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             } finally { this.releaseCpuLease(scratch); this.busy--; }
         }, 0);
     }
+    private scheduleMirrorColour(job: MirrorJob): void {
+        if (job.timer !== null) return;
+        job.timer = setTimeout(() => {
+            job.timer = null;
+            if (this.disposed || this.mirrorJob !== job || !sameToken(this.options.currentToken(), job.token)) return;
+            const deadline = performance.now() + 2;
+            let scratch: ByteLease | null = null;
+            let denied = false;
+            this.busy++;
+            try {
+                const complete = job.colour!.step({ shouldYield: () => performance.now() >= deadline,
+                    claim: bytes => { this.releaseCpuLease(scratch); scratch = this.reserveCpu(bytes); denied ||= !scratch; return !!scratch; } });
+                if (complete) { job.stage = 'copy'; this.options.invalidate('2d-mirror-colour-ready'); }
+                else if (denied) this.options.invalidate('2d-mirror-colour-memory');
+                else this.scheduleMirrorColour(job);
+            } finally { this.releaseCpuLease(scratch); this.busy--; }
+        }, 0);
+    }
+    private cancelMirror(): void {
+        if (this.mirrorJob?.timer !== null && this.mirrorJob?.timer !== undefined) clearTimeout(this.mirrorJob.timer);
+        this.mirrorJob = null;
+    }
     private cancelJob(): void {
         if (this.job?.timer !== null && this.job?.timer !== undefined) clearTimeout(this.job.timer);
         this.job = null;
@@ -639,7 +702,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         }
     }
     private dropWork(): void {
-        this.asyncEpoch++; this.cancelJob();
+        this.asyncEpoch++; this.cancelJob(); this.cancelMirror();
         for (const [key, buffer] of this.buffers) this.closeBuffer(key, buffer);
         for (const source of this.sources.values()) this.closeSource(source);
         this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = '';

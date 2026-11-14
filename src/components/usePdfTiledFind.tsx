@@ -76,7 +76,7 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
         setStored({ session, document, reader, geometry, layer, highlights });
         return () => { highlights.dispose(); geometry.dispose(); };
     }, [session, document]);
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (!resource) return;
         resource.reader.setVisible(options.isVisible);
         resource.geometry.setVisible(options.isVisible);

@@ -15,6 +15,7 @@ import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
 import { EdgeScroll } from './edgeScroll'
 import { TouchDoubleTap } from './touchDoubleTap'
+import { DelegatedInkBridge, type PresentedWetSample } from './delegatedBridge'
 import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
@@ -28,6 +29,8 @@ export type Detach = () => void
 export interface BoardWetLayer {
   attach(handover: WetInkHandover): Detach
   onInputFrame(callback: () => void): Detach
+  /** Fires only after this exact real wet curve has been presented. */
+  onRealPresented?(callback: (sample: PresentedWetSample) => void): Detach
   invalidate(): void
 }
 export interface BoardInputView {
@@ -154,12 +157,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   })
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
+  const delegated = session.doc.kind === 'whiteboard' && view.wet.onRealPresented ? new DelegatedInkBridge({
+    surface: view.surface, mappings: view.mappings, current, onRealPresented: callback => view.wet.onRealPresented!(callback),
+  }) : null
   const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
     mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged,
     onInputFrame: callback => view.wet.onInputFrame(callback), invalidate: () => view.wet.invalidate() })
   const pointer = new PointerRouter<unknown>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
+    realEvent: (sample, event) => delegated?.observe(event, sample),
     penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
     settled: signal => session.enqueueAfterGesture(signal, () => undefined),
     cancelPending: services.cancelPendingGestures,
@@ -222,6 +229,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       return services.resolveTool(choice, sample, modifiers, event)
     },
     ended(reason) {
+      delegated?.clear()
       if (reason === 'up' && start && completeTool) services.tools.complete(start)
       completeTool = false
       temporaryPan = false
@@ -232,7 +240,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     prediction(id, event) {
       if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk)
         || !router.activeOwner.allowsPrediction || !router.activeOwner.pointerIds.has(id)) return
-      pendingPrediction = event ? predictedTail(event, view.predictionMapping(), 16) : []
+      pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
     contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
@@ -358,6 +366,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (current() && router.activeOwner instanceof LiveInk) {
       if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
       else router.activeOwner.publish()
+      delegated?.submittedCurve(router.activeOwner.delegatedCandidate)
     } else if (current() && router.activeOwner instanceof InkContinuationGesture) {
       const owner = router.activeOwner
       try { owner.publish() }
@@ -542,7 +551,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); delegated?.dispose(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)

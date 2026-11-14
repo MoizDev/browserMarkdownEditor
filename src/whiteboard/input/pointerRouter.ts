@@ -14,6 +14,7 @@ export interface PointerRouterOptions<Context> {
   claim(): boolean
   releaseClaim(): void
   sampleChanged?(sample: RealSample): void
+  realEvent?(sample: RealSample, event: PointerEvent): void
   penTransitions?(sample: RealSample): boolean
   settled?(signal: AbortSignal): Promise<void>
   cancelPending?(): void
@@ -36,7 +37,7 @@ export class PointerRouter<Context> {
     const sink: PointerSink = {
       down: (sample, modifiers, event) => {
         if (!options.current()) return false
-        options.sampleChanged?.(sample)
+        options.sampleChanged?.(sample); options.realEvent?.(sample, event)
         if (!options.claim()) return false
         try {
           const route = options.resolve(sample, modifiers, event)
@@ -78,7 +79,7 @@ export class PointerRouter<Context> {
       },
       move: (id, samples, modifiers, event) => {
         if (!options.current()) return
-        if (samples.length) options.sampleChanged?.(samples[samples.length - 1])
+        if (samples.length) { options.sampleChanged?.(samples[samples.length - 1]); options.realEvent?.(samples[samples.length - 1], event) }
         if (this.pen?.pointerId === id) this.pen.move(samples, modifiers, event)
         else options.router.update(options.token, id, samples, modifiers)
       },

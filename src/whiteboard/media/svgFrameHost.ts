@@ -61,7 +61,8 @@ export const svgFrameFactory: SvgFrameFactory = {
         } catch (error) { dispose(); throw error; }
         return {
             async request(operation, blob, requestSignal, size) {
-                if (used || (profile === 'svg-xml' ? operation !== 'header' : operation !== 'probe' && operation !== 'raster')) throw new Error('Invalid SVG frame operation');
+                if (used || (profile === 'svg-xml' ? operation !== 'header' : operation !== 'probe' && operation !== 'raster' && operation !== 'full-frame')) throw new Error('Invalid SVG frame operation');
+                if (operation === 'full-frame' && (!size || size.raster !== undefined)) throw new Error('Invalid SVG full-frame request');
                 if (blob.size > LIMIT) throw new RangeError('SVG files must be at most 5 MiB');
                 used = true;
                 const cancel = () => fail(requestSignal.reason ?? new DOMException('SVG job cancelled', 'AbortError'));
@@ -77,7 +78,9 @@ export const svgFrameFactory: SvgFrameFactory = {
                         if ((await ack).seq !== sequence++) throw new Error('Invalid SVG chunk acknowledgement');
                     }
                     const reply = wait('result');
-                    frame.port.postMessage({ v: 1, token, identity, type: 'finish', seq: sequence, size });
+                    frame.port.postMessage({ v: 1, token, identity, type: 'finish', seq: sequence,
+                        size: operation === 'full-frame' ? { width: size!.width, height: size!.height, fullFrame: true }
+                            : size ? { width: size.width, height: size.height, ...(size.raster === undefined ? {} : { raster: size.raster }) } : undefined });
                     return (await reply).result;
                 } finally { requestSignal.removeEventListener('abort', cancel); }
             },

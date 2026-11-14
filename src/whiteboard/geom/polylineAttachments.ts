@@ -68,8 +68,8 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
         if (!entry.exact) {
             const body = connectorBody(point, world[neighbour], 0, options.tolerance);
             const crossings = await bodyCrossings(body, surfaces.get(entry.target)!, options.tolerance, 65_536, options.cooperate, options.signal);
-            options.check(); const exit = crossings.find(value => !value.entering);
-            if (exit) point = pointAtLength(body, exit.distance);
+            options.check(); const exit = crossings[0];
+            if (exit && !exit.entering) point = pointAtLength(body, exit.distance);
         }
         points[index] = worldToLocal(doc, node, point);
     }

@@ -131,16 +131,28 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
         }
         return result;
     };
-    let startBoundary = 0, endBoundary = total;
-    if (startTarget && !node.start.attach!.exact) startBoundary = (yield* crossings(startTarget)).find(hit => !hit.entering)?.distance ?? 0;
+    let startBoundary = 0, endBoundary = total, startConnected = false, endConnected = false;
+    if (startTarget && !node.start.attach!.exact) {
+        const values = yield* crossings(startTarget), first = values[0];
+        startConnected = startProbe!.contains(a);
+        // Only the component connected to the terminal may be removed.
+        if (first && !first.entering) { startBoundary = first.distance; startConnected = true; }
+        else if (!values.length && total > 0 && startConnected && startProbe!.contains(point(total / 2))) {
+            startBoundary = total; startConnected = true;
+        }
+    }
     if (endTarget && !node.end.attach!.exact) {
-        const values = yield* crossings(endTarget);
-        for (let i = values.length - 1; i >= 0; i--) if (values[i].entering) { endBoundary = values[i].distance; break; }
+        const values = yield* crossings(endTarget), last = values[values.length - 1];
+        endConnected = endProbe!.contains(b);
+        if (last?.entering) { endBoundary = last.distance; endConnected = true; }
+        else if (!values.length && total > 0 && endConnected && endProbe!.contains(point(total / 2))) {
+            endBoundary = 0; endConnected = true;
+        }
     }
     const span = Math.max(0, endBoundary - startBoundary);
     // v1 uses the recorded default rectangular gap, scaled only by actual width.
-    let startGap = startTarget && !node.start.attach!.exact ? 6 * node.width : 0;
-    let endGap = endTarget && !node.end.attach!.exact ? 6 * node.width : 0;
+    let startGap = startConnected ? 6 * node.width : 0;
+    let endGap = endConnected ? 6 * node.width : 0;
     const gapScale = startGap + endGap > span ? span / (startGap + endGap) : 1;
     startGap *= gapScale; endGap *= gapScale;
     const from = Math.min(total, startBoundary + startGap), to = Math.max(from, endBoundary - endGap);

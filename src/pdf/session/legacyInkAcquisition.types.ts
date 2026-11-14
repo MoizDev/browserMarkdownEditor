@@ -1,6 +1,7 @@
 import type { PageGeometry } from '../../platform/types';
 import type { TrashItem } from '../../types';
 import type { PdfWriteMarkCheck } from '../../utils/pdfWriteMark';
+import type { PdfWriteSafety } from '../../utils/pdfRole';
 import type { WriterSource } from '../writing/protocol';
 import type { TypedPdfWriter } from '../writing/writerClient';
 import type { PdfInkAcquisitionOptions } from './inkAcquisition.types';
@@ -14,6 +15,7 @@ export interface PdfLegacyPrepareOptions {
 }
 export interface PdfLegacyConversionReady {
     readonly kind: 'legacy-conversion';
+    readonly writeSafety: Readonly<Extract<PdfWriteSafety, { kind: 'safe' }>>;
     readonly source: WriterSource;
     readonly snapshot: Blob;
     readonly pages: readonly Readonly<PageGeometry>[];
@@ -27,6 +29,7 @@ export interface PdfLegacyConversionReady {
 }
 export interface PdfLegacyInkCandidate {
     readonly kind: 'conversion-required';
+    readonly writeSafety: Readonly<Extract<PdfWriteSafety, { kind: 'safe' }>>;
     readonly snapshot: Blob;
     readonly pages: readonly Readonly<PageGeometry>[];
     readonly writeMark: PdfWriteMarkCheck;

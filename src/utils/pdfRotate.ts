@@ -19,6 +19,8 @@ import { LOAD_WITHOUT_TICKS, SAVE_WITHOUT_TICKS } from './pdfBuild';
 import { asQuarter, turn } from './pdfRotation';
 import { inspectPdfRole } from './pdfAttachmentInventory';
 import { canRotatePdfRole } from './pdfRole';
+import { inspectPdfBytesWriteSafety } from './pdfWriteSafety';
+import { PdfBuildRefused } from './pdfBuildRefusal';
 
 /**
  * Turn `delta` degrees: every page, or just `pageIndex` when one is named.
@@ -36,6 +38,8 @@ export async function rotatePdfPages(
     if (!Number.isFinite(delta) || delta % 90 !== 0) throw new Error('PDF rotation requires a whole quarter turn.');
     if (pageIndex !== undefined && (!Number.isInteger(pageIndex) || pageIndex < 0)) throw new Error('Invalid PDF page to rotate.');
     const role = await inspectPdfRole(bytes, '');
+    const safety = await inspectPdfBytesWriteSafety(bytes);
+    if (safety.kind !== 'safe') throw new PdfBuildRefused({ reason: 'unsafe-pdf', safety: safety.kind });
     if (!canRotatePdfRole(role)) throw new Error('This PDF cannot be safely rotated: its embedded annotations or attachments require recovery.');
     // No defensive copy: the worker owns these bytes outright (App TRANSFERS
     // them), and pdf-lib's load() only reads its input — see the ownership note

@@ -377,6 +377,7 @@
     "paper.deleteContents": "Questa pagina contiene {items}.",
     "paper.deleteConfirm": "Elimina pagina",
     "paper.cancel": "Annulla",
-    "paper.keepProtected": "Il contenuto bloccato verrà mantenuto."
+    "paper.keepProtected": "Il contenuto bloccato verrà mantenuto.",
+    "chrome.readOnly": "Questa bacheca è di sola lettura."
   }
 }

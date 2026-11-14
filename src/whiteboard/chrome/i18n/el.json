@@ -377,6 +377,7 @@
     "paper.deleteContents": "Αυτή η σελίδα περιέχει {items}.",
     "paper.deleteConfirm": "Διαγραφή σελίδας",
     "paper.cancel": "Ακύρωση",
-    "paper.keepProtected": "Το κλειδωμένο περιεχόμενο θα διατηρηθεί."
+    "paper.keepProtected": "Το κλειδωμένο περιεχόμενο θα διατηρηθεί.",
+    "chrome.readOnly": "Αυτός ο πίνακας είναι μόνο για ανάγνωση."
   }
 }

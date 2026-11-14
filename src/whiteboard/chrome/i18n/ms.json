@@ -377,6 +377,7 @@
     "paper.deleteContents": "Halaman ini mengandungi {items}.",
     "paper.deleteConfirm": "Padam halaman",
     "paper.cancel": "Batal",
-    "paper.keepProtected": "Kandungan berkunci akan disimpan."
+    "paper.keepProtected": "Kandungan berkunci akan disimpan.",
+    "chrome.readOnly": "Papan ini adalah baca sahaja."
   }
 }

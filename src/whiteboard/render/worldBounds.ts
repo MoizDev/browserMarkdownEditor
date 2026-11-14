@@ -59,19 +59,13 @@ function* curves(path: readonly PathOp[], fill: boolean): Generator<TubeCurve> {
 /** Measures the canonical immutable paint producer, not Scene slots, native b,
  * an unclipped node box, or a temporary viewport raster. The source's lease is
  * the caller's responsibility and remains held through every cooperative await. */
-export async function measureBoardPaintBounds(source: PaintNodeSource, options: BoardPaintBoundsOptions): Promise<BoardPaintBounds> {
+function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions): Generator<void, BoardPaintBounds> {
     const tolerance = options.toleranceWorld ?? 0.01;
     if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isSafeInteger(source.nodeCount) || source.nodeCount < 0) throw new RangeError('Invalid board paint bounds input');
-    const cooperate = options.cooperate ?? (() => {
-        const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-        return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
-    });
     const current = () => { options.signal?.throwIfAborted(); if (!source.isCurrent()) throw new DOMException('Board paint source expired', 'AbortError'); };
-    const pause = async () => { current(); await cooperate(); current(); };
-    let sliceEnd = performance.now() + 4, rows = 0;
-    const checkpoint = async () => { current(); if (++rows % 128 === 0 || performance.now() >= sliceEnd) { await pause(); sliceEnd = performance.now() + 4; } };
-    const finishJob = async <T>(job: { step(budget: { deadline: number; maxWork: number }): { done: false } | { done: true; result: T } }): Promise<T> => {
-        for (;;) { current(); const step = job.step({ deadline: performance.now() + 4, maxWork: 256 }); if (step.done) return step.result; await pause(); }
+    const checkpoint = function* (): Generator<void, void> { current(); yield; };
+    const finishJob = function* <T>(job: { step(budget: { deadline: number; maxWork: number }): { done: false } | { done: true; result: T } }): Generator<void, T> {
+        for (;;) { current(); const step = job.step({ deadline: performance.now() + 4, maxWork: 256 }); if (step.done) return step.result; yield; }
     };
     const allocations = new Set<ByteLease>();
     const reserve = (bytes: number) => {
@@ -80,17 +74,22 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         allocations.add(lease); return lease;
     };
     const release = (lease: ByteLease) => { if (allocations.delete(lease)) options.memory.release(lease); };
+    const releaseAll = () => {
+        let failure: unknown;
+        for (const lease of allocations) try { options.memory.release(lease); } catch (error) { failure ??= error; }
+        if (failure) throw failure;
+    };
     const paths = new Map<readonly PathCommand[], { path: readonly PathOp[]; lease: ByteLease }>();
-    const readPath = async (commands: readonly PathCommand[]): Promise<readonly PathOp[]> => {
+    const readPath = function* (commands: readonly PathCommand[]): Generator<void, readonly PathOp[]> {
         const cached = paths.get(commands); if (cached) return cached.path;
         const lease = reserve(commands.length * 160 + 1024);
         const result: PathOp[] = [];
-        for (const command of commands) { result.push(pathOperation(command)); await checkpoint(); }
+        for (const command of commands) { result.push(pathOperation(command)); yield* checkpoint(); }
         for (const prior of paths.values()) release(prior.lease);
         paths.clear(); paths.set(commands, { path: result, lease }); return result;
     };
     const clipCache = new Map<readonly PaintClip[], { value: ClipRegion | 'empty'; lease?: ByteLease }>();
-    const clipEnvelope = async (clips: readonly PaintClip[]): Promise<ClipRegion | 'empty' | null> => {
+    const clipEnvelope = function* (clips: readonly PaintClip[]): Generator<void, ClipRegion | 'empty' | null> {
         if (!clips.length) return null;
         const cached = clipCache.get(clips); if (cached) return cached.value;
         const innerPolygons: ConvexClipPolygon[] = [], outerPolygons: ConvexClipPolygon[] = [], temporary: ByteLease[] = [];
@@ -105,7 +104,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                     if (command[0] === 'C') throw new BoardBoundsUncertified('Curved exclusion contour requires its own certified partition');
                     if (command[0] === 'Z') open = false;
                     else { if (!contour || !open) throw new BoardBoundsUncertified('Invalid exclusion contour'); contour.push({ x: command[1], y: command[2] }); }
-                    await checkpoint();
+                    yield* checkpoint();
                 }
                 if (open || contours.length !== 2) throw new BoardBoundsUncertified('Exclusion must have its actual two closed contours');
                 const operands = [];
@@ -117,7 +116,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                     if (!winding) throw new BoardBoundsUncertified('Degenerate exclusion contour');
                     if (winding < 0) edges = edges.map(flipLine);
                     for (const edge of edges) for (const point of world) {
-                        if (exactSide(edge, point) < 0) throw new BoardBoundsUncertified('Non-convex exclusion contour'); await checkpoint();
+                        if (exactSide(edge, point) < 0) throw new BoardBoundsUncertified('Non-convex exclusion contour'); yield* checkpoint();
                     }
                     operands.push({ polygon: { points, localToWorld: clip.localToWorld }, edges });
                 }
@@ -130,7 +129,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                 if (command[0] === 'Z') closed = true;
                 else if (command[0] === 'C') curved = true;
                 else points.push({ x: command[1], y: command[2] });
-                await checkpoint();
+                yield* checkpoint();
             }
             if (!closed) throw new BoardBoundsUncertified(`Open clip ${clip.key}`);
             if (curved) {
@@ -138,7 +137,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                 // control hull is a superset. Never turn a flattened ellipse's
                 // midpoint error into an exact clipping authority.
                 hasCurve = true; temporary.push(reserve(32768 * 1024));
-                const envelope = await finishJob(createConvexPathEnvelopeJob(await readPath(clip.d), clip.localToWorld,
+                const envelope = yield* finishJob(createConvexPathEnvelopeJob((yield* readPath(clip.d)), clip.localToWorld,
                     tolerance / 4, { maxLeaves: 4096, maxPoints: 32768 }));
                 if (envelope.status === 'uncertain') throw new BoardBoundsUncertified(envelope.reason);
                 innerPolygons.push(envelope.inner); outerPolygons.push(envelope.outer);
@@ -159,7 +158,7 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
                     next.push({ inner: [...plan.inner, positive.polygon], outer: [...plan.outer, positive.polygon],
                         planes: [...plan.planes, ...negative.edges.slice(0, edge), flipLine(negative.edges[edge])] });
                     if (next.length > 256) throw new BoardBoundsUncertified('Exclusion partition exceeds its work budget');
-                    await checkpoint();
+                    yield* checkpoint();
                 }
             }
             plans = next;
@@ -168,16 +167,16 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         const lease = reserve(plans.reduce((n, plan) => n + count(plan.outer) + (hasCurve ? count(plan.inner) : 0) + plan.planes.length, 0) * 8192 + 1024 * 1024);
         const pieces: ClippedTubeClip[] = [];
         for (const plan of plans) {
-            const result = await finishJob(createConvexClipJob(plan.outer, tolerance / 32, plan.planes));
+            const result = yield* finishJob(createConvexClipJob(plan.outer, tolerance / 32, plan.planes));
             if (result.status === 'uncertain') throw new BoardBoundsUncertified(result.reason);
             if (result.status === 'empty') continue;
             if (!hasCurve) pieces.push({ inner: result.inner, outer: result.outer });
             else {
-                const inside = await finishJob(createConvexClipJob(plan.inner, tolerance / 32, plan.planes));
+                const inside = yield* finishJob(createConvexClipJob(plan.inner, tolerance / 32, plan.planes));
                 if (inside.status === 'uncertain') throw new BoardBoundsUncertified(inside.reason);
                 pieces.push({ inner: inside.status === 'empty' ? [] : inside.inner, outer: result.outer });
             }
-            await checkpoint();
+            yield* checkpoint();
         }
         const value: ClipRegion | 'empty' = pieces.length ? pieces : 'empty';
         for (const allocation of temporary) release(allocation);
@@ -191,20 +190,20 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
     const visible = (color: Rgba | undefined) => !!color && (options.includeInvisible || color[3] > 0);
     let bounds: Box | null = null, errorWorld = 0;
     const accept = (value: BoardPaintBounds) => { if (value.bounds) bounds = union(bounds, value.bounds); errorWorld = Math.max(errorWorld, value.errorWorld); };
-    const tube = async (curve: TubeCurve, radius: number | readonly [number, number], matrix: Affine, clip: ClippedTubeClip): Promise<BoardPaintBounds> => {
+    const tube = function* (curve: TubeCurve, radius: number | readonly [number, number], matrix: Affine, clip: ClippedTubeClip): Generator<void, BoardPaintBounds> {
         const lease = reserve((clipPoints(clip, 'inner').length + clipPoints(clip, 'outer').length) * 4096 + 512 * 1024);
         try {
-            const result = await finishJob(createClippedTubeBoundsJob(curve, radius, clip, tolerance / 2, { localToWorld: matrix }));
+            const result = yield* finishJob(createClippedTubeBoundsJob(curve, radius, clip, tolerance / 2, { localToWorld: matrix }));
             if (result.status === 'uncertain') throw new BoardBoundsUncertified(result.reason);
             return result.status === 'empty' ? { bounds: null, errorWorld: 0 } : { bounds: result.bounds, errorWorld: result.errorWorld };
         } finally { release(lease); }
     };
-    const unboundedClip = async (commands: readonly PathOp[], matrix: Affine, pad: number): Promise<ClippedTubeClip> => {
+    const unboundedClip = function* (commands: readonly PathOp[], matrix: Affine, pad: number): Generator<void, ClippedTubeClip> {
         let box: Box | null = null;
         for (const op of commands) {
             if (op.op !== 'Z') for (const p of op.op === 'C' ? [op.c1, op.c2, op.p] : [op.p]) {
                 const exact = exactPointIntervals(exactAffinePoint(matrix, p));
-                box = union(box, [exact.x.lo, exact.y.lo, exact.x.hi, exact.y.hi]); await checkpoint();
+                box = union(box, [exact.x.lo, exact.y.lo, exact.x.hi, exact.y.hi]); yield* checkpoint();
             }
         }
         if (!box) throw new BoardBoundsUncertified('Paint path contains no coordinates');
@@ -213,14 +212,14 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         if (![x0, y0, x1, y1].every(Number.isFinite)) throw new BoardBoundsUncertified('Paint control enclosure overflow');
         return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
     };
-    const fillPoint = async (path: readonly PathOp[], matrix: Affine, point: Vec2, rule: 'nonzero' | 'evenodd') => {
+    const fillPoint = function* (path: readonly PathOp[], matrix: Affine, point: Vec2, rule: 'nonzero' | 'evenodd'): Generator<void, 'inside' | 'outside' | 'uncertain'> {
         const lease = reserve(256 * 1024);
         try {
             const job = createFillPointJob([path], point, rule, { localToWorld: matrix });
-            for (;;) { current(); const result = job.step({ deadline: performance.now() + 4, maxWork: 256 }); if (result.status !== 'pending') return result.status; await pause(); }
+            for (;;) { current(); const result = job.step({ deadline: performance.now() + 4, maxWork: 256 }); if (result.status !== 'pending') return result.status; yield; }
         } finally { release(lease); }
     };
-    const fill = async (path: readonly PathOp[], matrix: Affine, clip: ClippedTubeClip, rule: 'nonzero' | 'evenodd', rectangleSource = false): Promise<BoardPaintBounds> => {
+    const fill = function* (path: readonly PathOp[], matrix: Affine, clip: ClippedTubeClip, rule: 'nonzero' | 'evenodd', rectangleSource = false): Generator<void, BoardPaintBounds> {
         // These paths are constructed here from positive-size image/text rects.
         // Their closed boundary is genuine filled area, not a heuristic winding
         // answer at a curve boundary (which remains uncertain in fillPoint).
@@ -228,8 +227,8 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         const edges = corners.map((point, i) => exactLineBetween(point, corners[(i + 1) % corners.length]));
         const winding = corners.length >= 3 ? exactSide(edges[0], corners[2]) : 0;
         if (rectangleSource && !winding) return { bounds: null, errorWorld: 0 };
-        const classify = async (point: Vec2) => {
-            if (!rectangleSource) return fillPoint(path, matrix, point, rule);
+        const classify = function* (point: Vec2): Generator<void, 'inside' | 'outside' | 'uncertain'> {
+            if (!rectangleSource) return yield* fillPoint(path, matrix, point, rule);
             const exact = exactPoint(point);
             return edges.every(edge => exactSide(edge, exact) * winding >= 0) ? 'inside' : 'outside';
         };
@@ -237,40 +236,40 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         const witness = (box: Box, error: number) => { minX = Math.min(minX, nextUp(box[0] + error)); minY = Math.min(minY, nextUp(box[1] + error));
             maxX = Math.max(maxX, nextDown(box[2] - error)); maxY = Math.max(maxY, nextDown(box[3] - error)); };
-        for (const point of clipPoints(clip, 'inner')) { if (await classify(point) === 'inside') witness(pointBox(point), 0); await checkpoint(); }
+        for (const point of clipPoints(clip, 'inner')) { if ((yield* classify(point)) === 'inside') witness(pointBox(point), 0); yield* checkpoint(); }
         let entireClip: Box | null = null;
-        for (const point of clipPoints(clip, 'outer')) { entireClip = union(entireClip, pointBox(point)); await checkpoint(); }
+        for (const point of clipPoints(clip, 'outer')) { entireClip = union(entireClip, pointBox(point)); yield* checkpoint(); }
         if (entireClip) {
             const gap = nextUp(Math.max(0, minX - entireClip[0], minY - entireClip[1], entireClip[2] - maxX, entireClip[3] - maxY));
             if (Number.isFinite(gap) && gap <= tolerance) return { bounds: entireClip, errorWorld: gap };
         }
         for (const curve of curves(path, true)) {
-            const value = await tube(curve, 0, matrix, clip);
+            const value = yield* tube(curve, 0, matrix, clip);
             if (value.bounds) { upper = union(upper, value.bounds); witness(value.bounds, value.errorWorld); }
-            await checkpoint();
+            yield* checkpoint();
         }
         // Boundary curves alone miss a filled shape that completely contains the
         // clip. Inner vertices are real witnesses; ambiguous OUTER vertices only
         // enlarge the enclosure and can never authorize a false inner extremum.
-        for (const point of clipPoints(clip, 'outer')) { if (await classify(point) !== 'outside') upper = union(upper, pointBox(point)); await checkpoint(); }
+        for (const point of clipPoints(clip, 'outer')) { if ((yield* classify(point)) !== 'outside') upper = union(upper, pointBox(point)); yield* checkpoint(); }
         if (!upper) return { bounds: null, errorWorld: 0 };
         const error = nextUp(Math.max(0, minX - upper[0], minY - upper[1], upper[2] - maxX, upper[3] - maxY));
         if (!Number.isFinite(error) || error > tolerance) throw new BoardBoundsUncertified('Filled path and frame enclosure did not converge');
         return { bounds: upper, errorWorld: error };
     };
-    const measureItemInClip = async (item: PaintItem, envelope: ClippedTubeClip | null) => {
+    const measureItemInClip = function* (item: PaintItem, envelope: ClippedTubeClip | null): Generator<void, void> {
         if (item.kind === 'ink') {
             if (!visible(item.material.color)) return;
             for (const coverage of inkCoverageChunks(item.coverage)) {
                 const base = coverage.boundsLocal;
-                const clip = envelope ?? await unboundedClip(await readPath(rectangle({ x: base.x, y: base.y, width: base.w, height: base.h })), item.localToWorld, 1);
+                const clip = envelope ?? (yield* unboundedClip((yield* readPath(rectangle({ x: base.x, y: base.y, width: base.w, height: base.h }))), item.localToWorld, 1));
                 for (let i = 0; i < coverage.segments.length; i += 6) {
                     const s = coverage.segments;
-                    accept(await tube([{ x: s[i], y: s[i + 1] }, { x: s[i + 3], y: s[i + 4] }], [s[i + 2], s[i + 5]], item.localToWorld, clip)); await checkpoint();
+                    accept(yield* tube([{ x: s[i], y: s[i + 1] }, { x: s[i + 3], y: s[i + 4] }], [s[i + 2], s[i + 5]], item.localToWorld, clip)); yield* checkpoint();
                 }
                 for (let i = 0; i < coverage.discs.length; i += 3) {
                     const d = coverage.discs, p = { x: d[i], y: d[i + 1] };
-                    accept(await tube([p, p], d[i + 2], item.localToWorld, clip)); await checkpoint();
+                    accept(yield* tube([p, p], d[i + 2], item.localToWorld, clip)); yield* checkpoint();
                 }
             }
             return;
@@ -280,38 +279,73 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
             if (item.kind === 'text' && !options.includeInvisible) {
                 let painted = false;
                 for (const colors of [item.material.glyphs, item.material.backgrounds, item.material.decorations]) {
-                    for (const color of colors) { if (color[3] > 0) { painted = true; break; } await checkpoint(); }
+                    for (const color of colors) { if (color[3] > 0) { painted = true; break; } yield* checkpoint(); }
                     if (painted) break;
                 }
                 if (!painted) return;
             }
             const rect = item.kind === 'image' ? item.rect : item.paint.ink;
             if (rect.width <= 0 || rect.height <= 0) return;
-            const path = await readPath(rectangle(rect));
-            const clip = envelope ?? await unboundedClip(path, item.localToWorld, 0);
-            accept(await fill(path, item.localToWorld, clip, 'nonzero', true)); return;
+            const path = yield* readPath(rectangle(rect));
+            const clip = envelope ?? (yield* unboundedClip(path, item.localToWorld, 0));
+            accept(yield* fill(path, item.localToWorld, clip, 'nonzero', true)); return;
         }
-        const path = await readPath(item.d), stroke = item.material.stroke;
-        const clip = envelope ?? await unboundedClip(path, item.localToWorld, stroke?.width ?? 0);
-        if (visible(item.material.fill)) accept(await fill(path, item.localToWorld, clip, item.fillRule));
+        const path = yield* readPath(item.d), stroke = item.material.stroke;
+        const clip = envelope ?? (yield* unboundedClip(path, item.localToWorld, stroke?.width ?? 0));
+        if (visible(item.material.fill)) accept(yield* fill(path, item.localToWorld, clip, item.fillRule));
         if (stroke && stroke.width > 0 && visible(stroke.color)) {
             if (stroke.cap !== 'round' || stroke.join !== 'round') throw new BoardBoundsUncertified('Non-round path stroke requires its actual join/cap boundary');
-            for (const curve of curves(path, false)) { accept(await tube(curve, stroke.width / 2, item.localToWorld, clip)); await checkpoint(); }
+            for (const curve of curves(path, false)) { accept(yield* tube(curve, stroke.width / 2, item.localToWorld, clip)); yield* checkpoint(); }
         }
     };
-    const measureItem = async (item: PaintItem) => {
-        const region = await clipEnvelope(item.clips);
+    const measureItem = function* (item: PaintItem): Generator<void, void> {
+        const region = yield* clipEnvelope(item.clips);
         if (region === 'empty') return;
-        if (region === null) await measureItemInClip(item, null);
-        else for (const piece of region) { await measureItemInClip(item, piece); await checkpoint(); }
+        if (region === null) yield* measureItemInClip(item, null);
+        else for (const piece of region) { yield* measureItemInClip(item, piece); yield* checkpoint(); }
     };
     try {
         current();
         for (let index = 0; index < source.nodeCount; index++) {
             const node = source.readNode(index);
-            for (const item of node.underlay ?? []) { await measureItem(item); await checkpoint(); }
-            for (const item of node.content) { await measureItem(item); await checkpoint(); }
+            for (const item of node.underlay ?? []) { yield* measureItem(item); yield* checkpoint(); }
+            for (const item of node.content) { yield* measureItem(item); yield* checkpoint(); }
         }
         current(); return { bounds, errorWorld };
-    } finally { for (const lease of allocations) options.memory.release(lease); allocations.clear(); paths.clear(); clipCache.clear(); }
+    } finally {
+        try { releaseAll(); } finally { allocations.clear(); paths.clear(); clipCache.clear(); }
+    }
+}
+
+/** Both entry points consume exactly the same measured geometry and clip jobs. */
+export async function measureBoardPaintBounds(source: PaintNodeSource, options: BoardPaintBoundsOptions): Promise<BoardPaintBounds> {
+    const steps = measureSteps(source, options);
+    const cooperate = options.cooperate ?? (() => {
+        const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+        return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
+    });
+    let complete = false, count = 0, started = performance.now();
+    const check = () => { options.signal?.throwIfAborted(); if (!source.isCurrent()) throw new DOMException('Board paint source expired', 'AbortError'); };
+    try {
+        for (;;) {
+            check(); const result = steps.next();
+            if (result.done) { complete = true; return result.value; }
+            if (++count >= 128 || performance.now() - started >= 4) {
+                check(); await cooperate(); check(); count = 0; started = performance.now();
+            }
+        }
+    } finally { if (!complete) steps.return(undefined as never); }
+}
+
+/** Used only where a browser event requires its exact result synchronously. */
+export function measureBoardPaintBoundsNow(source: PaintNodeSource, options: BoardPaintBoundsOptions): BoardPaintBounds {
+    const steps = measureSteps(source, options); let complete = false;
+    try {
+        for (;;) {
+            options.signal?.throwIfAborted();
+            if (!source.isCurrent()) throw new DOMException('Board paint source expired', 'AbortError');
+            const result = steps.next();
+            if (result.done) { complete = true; return result.value; }
+        }
+    } finally { if (!complete) steps.return(undefined as never); }
 }

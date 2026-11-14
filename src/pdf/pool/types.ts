@@ -55,6 +55,8 @@ export interface PdfPoolDocument {
     /** Highest-priority live waiter wins, including already queued/running extraction. */
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     setVisible(visible: boolean): void;
+    /** Explicitly clear failures for this lease's document without replacing its source. */
+    retry(): Promise<void>;
     close(): Promise<void>;
 }
 

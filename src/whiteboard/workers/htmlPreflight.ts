@@ -21,7 +21,7 @@ export async function htmlPreflight(blob: Blob, context: WorkerContext): Promise
     }
     const text = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
     context.signal.throwIfAborted();
-    const stack: string[] = []; let elements = 0, i = 0, work = 0, started = performance.now();
+    const stack: string[] = []; let elements = 0, i = 0, work = 0, started = performance.now(), stackRevision = 0, rawRevision = -1, rawForeign = false;
     const tick = async () => {
         context.signal.throwIfAborted(); work = 0;
         if (performance.now() - started < 3) return;
@@ -29,14 +29,21 @@ export async function htmlPreflight(blob: Blob, context: WorkerContext): Promise
     };
     const close = (names: readonly string[], barriers: readonly string[] = []) => {
         for (let index = stack.length - 1; index >= 0; index--) {
-            if (names.includes(stack[index])) { stack.length = index; return; }
+            if (names.includes(stack[index])) { stack.length = index; stackRevision++; return; }
             if (barriers.includes(stack[index])) return;
         }
     };
     while (i < text.length) {
         if (++work >= 4096) await tick();
         const raw = stack.at(-1);
-        if (raw && RAW.has(raw)) {
+        if (raw && RAW.has(raw) && rawRevision !== stackRevision) {
+            rawRevision = stackRevision; rawForeign = false;
+            for (let index = stack.length - 2; index >= 0; index--) {
+                if (stack[index] === 'foreignobject' || stack[index] === 'desc' || stack[index] === 'title') break;
+                if (stack[index] === 'svg' || stack[index] === 'math') { rawForeign = true; break; }
+            }
+        }
+        if (raw && RAW.has(raw) && !rawForeign) {
             if (raw === 'plaintext') break;
             if (text[i] !== '<' || text[i + 1] !== '/' || text.slice(i + 2, i + 2 + raw.length).toLowerCase() !== raw
                 || nameChar(text.charCodeAt(i + 2 + raw.length))) { i++; continue; }
@@ -94,7 +101,7 @@ export async function htmlPreflight(blob: Blob, context: WorkerContext): Promise
         }
         const foreign = name === 'svg' || name === 'math' || foreignParent;
         if (foreign ? selfClosing : VOID.has(name)) continue;
-        stack.push(name);
+        stack.push(name); stackRevision++;
         if (stack.length > SECURITY_LIMITS.htmlDepth) throw new RangeError('Clipboard HTML nesting is too deep');
     }
     context.signal.throwIfAborted(); return true;

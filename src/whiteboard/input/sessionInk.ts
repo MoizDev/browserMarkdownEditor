@@ -8,6 +8,7 @@ import type { Swatch } from '../model/styles'
 import type { SampleBuilder } from '../ink/samples'
 import type { BoardSession } from '../session/BoardSession'
 import { LiveInk, type LiveInkContext, WetInkHandover } from './liveInk'
+import { rememberAuthoredStroke } from './continueInk'
 import type { RealSample, Tool } from './tool'
 
 export interface SessionInkServices {
@@ -67,6 +68,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
           if (!applied.recorded) throw new Error('Ink transaction was not recorded')
           nodeRevision = session.doc.rev
           if (undoImmediately) session.history.undo()
+          else if (tool === 'pen') rememberAuthoredStroke(session, id)
         } finally { applied.release() }
         const transferred = wet; wet = undefined
         return { ...identity, nodeRevision, ...(transferred ? { release: () => transferred.release() } : {}) }

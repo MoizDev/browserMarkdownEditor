@@ -165,6 +165,13 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
         throw new RangeError('Rich-text slice must use grapheme boundaries');
     const first = locate(text, from);
     const last = locate(text, to);
+    if (from === to) {
+        const source = text.blocks[first.block], run = emptyRun(text, first.block, first.offset, false);
+        const { tail: _tail, carriers: _carriers, ...block } = source;
+        const { x: _x, ...marks } = run.marks;
+        // A caret contains no unknown data to copy; the original anchors stay in place.
+        return { blocks: [{ ...block, runs: [{ text: '', marks }] }] };
+    }
     const blocks: Block[] = [];
     for (let i = first.block; i <= last.block; i++) {
         if (((i - first.block) & 255) === 255) yield;

@@ -67,6 +67,15 @@ export interface AgentHostDeps {
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
+    /** App-owned immutable closed source; projection and format classification stay in the consumer. */
+    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook',
+        guard: { readonly signal: AbortSignal; isCurrent(): boolean }) => Promise<import('./closedCanvasSource').ClosedCanvasSourceLease>;
+    /** Resolve or acquire the open tab's one canonical runtime, without attaching a view. */
+    ensureNativeAgentRuntime?: (path: string, signal: AbortSignal) => Promise<{
+        readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
+        readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
+        isCurrent(): boolean;
+    }>;
     /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
     canvasShapePage?: VaultToolHost['canvasShapePage'];
     /** The App-lifetime, path-explicit readable buffer accessor. */

@@ -41,6 +41,7 @@ const handleIO: FileSystemContextValue['handleIO'] = {
     entries: dir => dir.entries(),
     remove: (dir, name) => dir.removeEntry(name),
     relativeTo: (dir, handle) => dir.resolve(handle),
+    sameEntry: (a, b) => a.isSameEntry(b),
 };
 
 async function resolveVaultDir(root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle> {
@@ -54,6 +55,15 @@ async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
     const name = segments.pop()!;
     const parentHandle = await resolveVaultDir(root, segments.join('/'));
     return { handle: await parentHandle.getFileHandle(name), parentHandle };
+}
+
+async function verifyVaultFileIdentity(root: FileSystemDirectoryHandle, path: string, handle: FileSystemFileHandle): Promise<boolean> {
+    if (!path || path.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\') || part.includes('\0'))) return false;
+    try { return await (await resolveVaultFile(root, path)).handle.isSameEntry(handle); }
+    catch (error) {
+        if (error instanceof DOMException && error.name === 'NotFoundError') return false;
+        throw error;
+    }
 }
 
 async function vaultDirExists(root: FileSystemDirectoryHandle, path: string): Promise<boolean> {
@@ -2887,6 +2897,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         registerBeforeRootChange,
         resolveVaultDir,
         resolveVaultFile,
+        verifyVaultFileIdentity,
         vaultDirExists,
         nameTaken: entryExists,
         fileTree,

@@ -7,6 +7,8 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly legacyOriginalSha256: string | null;
     readonly conversionPending?: boolean;
+    /** Commit a captured dirty cold input only after the bridge owns this board. */
+    acceptPinnedSource?(source: DeferredSource): boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: S;
         readonly pdfWriteAuthority?: { canWrite(): boolean };

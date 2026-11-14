@@ -3,6 +3,7 @@ import { acquireBoardGeometryScope } from './geometryScope';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
+import { nextDown, nextUp } from '../geom/numeric';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
@@ -56,14 +57,10 @@ export function createBoardKeyboardTransforms(options: BoardKeyboardTransformOpt
                     if (![centre.x, centre.y].every(Number.isFinite)) throw new RangeError('Invalid rotation centre');
                 } finally { scope.release(); }
                 const radians = (clockwise ? 1 : -1) * Math.PI / (fine ? 192 : 12);
-                const radius = Math.max(1, Math.abs(centre.x) * Number.EPSILON * 256, Math.abs(centre.y) * Number.EPSILON * 256);
-                const down = { x: centre.x + radius, y: centre.y }, pointer = { x: centre.x + radius * Math.cos(radians), y: centre.y + radius * Math.sin(radians) };
-                const realised = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
-                if (![down.x, down.y, pointer.x, pointer.y].every(Number.isFinite) || Math.abs(realised - radians) > 1e-6 * Math.abs(radians))
-                    throw new RangeError('Keyboard rotation cannot be represented at this coordinate magnitude');
+                const adjacent = nextUp(centre.x), down = { x: Number.isFinite(adjacent) ? adjacent : nextDown(centre.x), y: centre.y };
                 const plan = await createBoardRotationPlan({ runtime, ids: selected, centre, down, orientation: 0,
                     current: stable, signal, cooperate: options.cooperate });
-                try { const preview = await plan.preview(pointer, false, signal); plan.commit(preview); }
+                try { const preview = await plan.previewAngle(radians, signal); plan.commit(preview); }
                 finally { plan.cancel(); }
             });
         },

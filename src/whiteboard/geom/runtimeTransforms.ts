@@ -28,6 +28,7 @@ export interface BoardRotationPreview {
 }
 export interface BoardRotationPlan {
     preview(pointer: Vec2, shift: boolean, signal?: AbortSignal): Promise<BoardRotationPreview>;
+    previewAngle(delta: number, signal?: AbortSignal): Promise<BoardRotationPreview>;
     commit(preview: BoardRotationPreview): void;
     cancel(): void;
 }
@@ -98,13 +99,9 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         closed = true; generation++;
         try { releaseLatest(); } finally { base.release(); }
     };
-    return {
-        async preview(pointer, shift, requestSignal) {
-            check(requestSignal);
-            if (![pointer.x, pointer.y].every(Number.isFinite) || (pointer.x === centre.x && pointer.y === centre.y)) throw new RangeError('Invalid rotation pointer');
-            const pointerAngle = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
-            angle = unwrapRotation(angle, lastPointer, pointerAngle); lastPointer = pointerAngle;
-            const resolved = snapRotation(orientation + angle, shift) - orientation, turn = ++generation;
+    const render = async (resolved: number, requestSignal?: AbortSignal): Promise<BoardRotationPreview> => {
+            check(requestSignal); if (!Number.isFinite(resolved)) throw new RangeError('Invalid rotation angle');
+            const turn = ++generation;
             const active = () => current() && turn === generation && !requestSignal?.aborted;
             const assert = () => { check(requestSignal); if (turn !== generation) throw new DOMException('Rotation preview superseded', 'AbortError'); };
             const desired = new Map<NodeId, WorldPose>(), initial: NodeSetOp[] = [];
@@ -151,7 +148,16 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
                     releaseLatest(); latest = { value, scope: finalScope, generation: turn, signal: requestSignal }; published = true; return value;
                 } finally { if (!published) finalScope.release(); }
             } finally { staged.release(); }
+    };
+    return {
+        preview(pointer, shift, requestSignal) {
+            check(requestSignal);
+            if (![pointer.x, pointer.y].every(Number.isFinite) || (pointer.x === centre.x && pointer.y === centre.y)) throw new RangeError('Invalid rotation pointer');
+            const pointerAngle = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
+            angle = unwrapRotation(angle, lastPointer, pointerAngle); lastPointer = pointerAngle;
+            return render(snapRotation(orientation + angle, shift) - orientation, requestSignal);
         },
+        previewAngle(delta, requestSignal) { return render(delta, requestSignal); },
         commit(value) {
             try {
                 check();

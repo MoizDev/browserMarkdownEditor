@@ -204,7 +204,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const pendingPresentation = useRef<PlatformPresentation | null>(null);
     const presentationPort = useRef({ sourceHash, onPresentation });
     presentationPort.current = { sourceHash, onPresentation };
-    useEffect(() => { if (sourceHash) paneRef.current?.current?.invalidate('pdf-version-ready'); }, [sourceHash]);
+    useEffect(() => { if (sourceHash && onPresentation) paneRef.current?.current?.invalidate('pdf-presentation-ready'); }, [sourceHash, onPresentation]);
     const touchHandler = useRef<(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent) => void>(() => {});
     const autoScroll = useRef({ x: 0, y: 0, time: 0 });
     const copyRef = useRef<ReturnType<typeof usePdfTiledCopyMenu> | null>(null);

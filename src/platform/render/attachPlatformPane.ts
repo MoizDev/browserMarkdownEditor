@@ -58,9 +58,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
 
     const token = (): FrameToken | null => {
         const current = options.currentToken();
-        const active = compositorRef.current;
-        if (disposed || !current || !sameDocument(current, options.documentToken) || !active) return null;
-        return { ...current, viewLease: options.viewLease, deviceGeneration: active.target.generation };
+        if (disposed || !current || !sameDocument(current, options.documentToken) || !compositorRef.current) return null;
+        return { ...current, viewLease: options.viewLease, deviceGeneration: compositorRef.current.target.generation };
     };
     const mirrorView = (): MirrorView | null => {
         const current = options.currentToken();

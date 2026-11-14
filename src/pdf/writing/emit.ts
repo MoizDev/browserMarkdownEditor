@@ -58,7 +58,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 class Resources {
     readonly objects = new PdfObjects();
-    private readonly entries = new Map<string, { ref: number; kind: 'XObject' | 'ExtGState' }>();
+    private readonly entries = new Map<string, { ref: number; kind: 'XObject' | 'ExtGState'; signature: string }>();
     private readonly images = new Map<string, string>();
     private readonly states = new Map<string, string>();
     private readonly papers = new Map<string, string>();
@@ -71,7 +71,7 @@ class Resources {
         let name = this.states.get(key);
         if (!name) {
             name = `G${this.states.size + 1}`;
-            this.entries.set(name, { kind: 'ExtGState', ref: this.objects.add(`<< /Type /ExtGState /ca ${n(fill)} /CA ${n(stroke)} /BM /${blend === 'multiply' ? 'Multiply' : 'Normal'} >>`) });
+            this.entries.set(name, { kind: 'ExtGState', signature: `state:${key}`, ref: this.objects.add(`<< /Type /ExtGState /ca ${n(fill)} /CA ${n(stroke)} /BM /${blend === 'multiply' ? 'Multiply' : 'Normal'} >>`) });
             this.states.set(key, name);
         }
         return name;
@@ -85,7 +85,7 @@ class Resources {
             const mask = decoded.alpha && this.objects.stream(`/Type /XObject /Subtype /Image /Width ${decoded.width} /Height ${decoded.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode`, decoded.alpha);
             const ref = this.objects.stream(`/Type /XObject /Subtype /Image /Width ${decoded.width} /Height ${decoded.height} /ColorSpace /${decoded.colorSpace} /BitsPerComponent 8 /Filter /${decoded.filter}${mask ? ` /SMask ${mask} 0 R` : ''}`, decoded.color);
             name = `I${this.images.size + 1}`;
-            this.entries.set(name, { kind: 'XObject', ref });
+            this.entries.set(name, { kind: 'XObject', ref, signature: `image:${key}` });
             this.images.set(key, name);
         }
         return name;
@@ -99,24 +99,35 @@ class Resources {
         }
         return `<< /XObject << ${parts.XObject.join(' ')} >> /ExtGState << ${parts.ExtGState.join(' ')} >> >>`;
     }
-    form(bounds: string, stream: Stream, isolated: boolean): string {
+    private semantic(content: string): string {
+        return content.replace(/\/(?:I|G|F)\d+\b/g, token => {
+            const entry = this.entries.get(token.slice(1));
+            if (!entry) throw new Error('Missing generated PDF resource');
+            return `/${entry.signature}`;
+        });
+    }
+    async pageHash(width: number, height: number, stream: Stream): Promise<string> {
+        return digest(ascii(`page-v1 ${n(width)} ${n(height)}\n${this.semantic(stream.content)}`));
+    }
+    async form(bounds: string, stream: Stream, isolated: boolean): Promise<string> {
         const dictionary = this.dictionary(stream.used);
         const key = `${bounds}\n${isolated}\n${dictionary}\n${stream.content}`;
         const existing = this.forms.get(key);
         if (existing) return existing;
+        const signature = await digest(ascii(`form-v1 ${bounds} ${isolated}\n${this.semantic(stream.content)}`));
         const name = `F${this.nextForm++}`;
         const group = isolated ? ' /Group << /S /Transparency /I true /K false >>' : '';
         const ref = this.objects.stream(`/Type /XObject /Subtype /Form /FormType 1 /BBox [${bounds}] /Resources ${dictionary}${group}`, ascii(stream.content));
-        this.entries.set(name, { kind: 'XObject', ref });
+        this.entries.set(name, { kind: 'XObject', ref, signature: `form:${signature}` });
         this.forms.set(key, name);
         return name;
     }
-    paper(width: number, height: number, stream: Stream): string {
+    async paper(width: number, height: number, stream: Stream): Promise<string> {
         // The stream is deterministic and resource names are document-local, so
         // identical paper lists share the same Form even if page objects differ.
         const key = `${n(width)} ${n(height)}\n${stream.content}\n${[...stream.used].join(' ')}`;
         let name = this.papers.get(key);
-        if (!name) { name = this.form(`0 0 ${n(width)} ${n(height)}`, stream, false); this.papers.set(key, name); }
+        if (!name) { name = await this.form(`0 0 ${n(width)} ${n(height)}`, stream, false); this.papers.set(key, name); }
         return name;
     }
 }
@@ -135,7 +146,7 @@ async function list(items: PageDisplayItem[], resources: Resources, budget: Budg
             const bounds = groupBounds(combined, width, height);
             const child = await list(item.items, resources, budget, context, width, height, combined, depth + 1);
             if (item.clip) child.content = `${path(item.clip.d, budget)}${evenOdd(item.clip.fillRule) ? 'W*' : 'W'} n\n${child.content}`;
-            const form = resources.form(bounds, child, !!item.isolation);
+            const form = await resources.form(bounds, child, !!item.isolation);
             used.add(form);
             let state = '';
             if (item.isolation) {
@@ -175,11 +186,12 @@ async function list(items: PageDisplayItem[], resources: Resources, budget: Budg
     return { content: output.join(''), used };
 }
 
-export async function emitDocument(pages: readonly DisplayPdfPage[], context: WorkerContext): Promise<Uint8Array> {
+export async function emitDocument(pages: readonly DisplayPdfPage[], context: WorkerContext): Promise<{ bytes: Uint8Array; hashes: string[] }> {
     if (!Array.isArray(pages) || pages.length < 1 || pages.length > MAX_PAGES) throw new RangeError('Invalid page count');
     const resources = new Resources(), objects = resources.objects;
     const root = objects.reserve(), tree = objects.reserve();
     const built: Array<{ page: number; stream: number; used: Set<string> }> = [];
+    const hashes: string[] = [];
     for (let i = 0; i < pages.length; i++) {
         await context.slice();
         const { width, height, displayList, paper } = pages[i];
@@ -188,10 +200,11 @@ export async function emitDocument(pages: readonly DisplayPdfPage[], context: Wo
         if (!displayList || displayList.page !== i || (paper && paper.page !== i)) throw new Error('Display list does not belong to this page');
         const budget = { items: 0, commands: 0 };
         const paperStream = paper ? await list(paper.items, resources, budget, context, width, height) : null;
-        const paperName = paperStream ? resources.paper(width, height, paperStream) : null;
+        const paperName = paperStream ? await resources.paper(width, height, paperStream) : null;
         const ink = await list(displayList.items, resources, budget, context, width, height);
         if (paperName) ink.used.add(paperName);
         const content = `q\n0 0 ${n(width)} ${n(height)} re W n\n1 0 0 -1 0 ${n(height)} cm\n${paperName ? `/${paperName} Do\n` : ''}${ink.content}Q\n`;
+        hashes.push(await resources.pageHash(width, height, { content, used: ink.used }));
         built.push({ page: objects.reserve(), stream: objects.stream('', ascii(content)), used: ink.used });
     }
     for (let i = 0; i < pages.length; i++) {
@@ -200,5 +213,5 @@ export async function emitDocument(pages: readonly DisplayPdfPage[], context: Wo
     }
     objects.set(tree, `<< /Type /Pages /Count ${built.length} /Kids [${built.map(p => `${p.page} 0 R`).join(' ')}] >>`);
     objects.set(root, `<< /Type /Catalog /Pages ${tree} 0 R >>`);
-    return objects.finish(root);
+    return { bytes: objects.finish(root), hashes };
 }

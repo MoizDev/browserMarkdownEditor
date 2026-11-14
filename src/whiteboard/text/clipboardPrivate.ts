@@ -1,5 +1,5 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { ClipboardCopy } from '../clipboard/copy';
+import type { ClipboardCachePin } from '../clipboard/copy';
 import { acquireBoardClipboard } from '../host/clipboardAcquisition';
 import { decodeBoardClipboard } from '../host/clipboardDecode';
 import type { BoardJobIdentity } from '../workers/protocol';
@@ -8,7 +8,7 @@ import type { RichFragment } from './richText';
 export interface PrivateTextClipboardOptions {
     readonly identity: BoardJobIdentity;
     readonly memory: MemoryAllocator;
-    readonly cache: ClipboardCopy;
+    readonly cache: ClipboardCachePin | null;
     isCurrent(identity: BoardJobIdentity): boolean;
 }
 
@@ -22,7 +22,7 @@ export async function readPrivateClipboardText(encoded: string, plain: string | 
     const decoded = await decodeBoardClipboard({ encoded: new Blob([encoded]), identity, memory: options.memory,
         isCurrent: options.isCurrent, signal });
     try {
-        const cached = plain === null ? null : options.cache.match(encoded, plain);
+        const cached = plain === null ? null : options.cache?.match(encoded, plain) ?? null;
         const acquired = await acquireBoardClipboard({ decoded, identity, isCurrent: options.isCurrent, signal,
             ...(cached && plain !== null ? { cache: { match: cached, encoded, plain } } : {}) });
         try {

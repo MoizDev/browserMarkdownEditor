@@ -1,5 +1,5 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { ClipboardCopy } from '../clipboard/copy';
+import type { ClipboardCachePin, ClipboardCopy } from '../clipboard/copy';
 import type { ClipboardClassifierHost } from '../clipboard/classify';
 import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
 import type { CopySnapshot } from '../clipboard/snapshot';
@@ -22,7 +22,8 @@ export interface TextClipboardAdapterOptions {
     identity(): BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     /** Core owns the OS event and forwards non-text content after editing has ended. */
-    pasteBoard(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal): Promise<void>;
+    /** The pin is borrowed until the returned board paste settles; Core must not reacquire the window cache. */
+    pasteBoard(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<void>;
 }
 
 /** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
@@ -69,20 +70,23 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             };
         },
         /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */
-        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal): Promise<boolean> {
-            if (disposed) return false;
-            cancel();
-            const before = options.editor.clipboardContext();
-            if (!before) return false;
-            const owner = { node: before.node.id, revision: before.revision, selection: { ...before.selection } };
-            const identity = { ...options.identity() }, controller = new AbortController(), generation = serial;
-            pending = controller;
-            const combined = AbortSignal.any([signal, controller.signal]);
+        /** A Core-supplied pin transfers to this call; otherwise capture synchronously at paste entry. */
+        async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, captured?: ClipboardCachePin | null): Promise<boolean> {
+            const cache = captured === undefined ? options.copy.pin() : captured;
+            let controller: AbortController | undefined;
             try {
+                if (disposed) return false;
+                cancel();
+                const before = options.editor.clipboardContext();
+                if (!before) return false;
+                const owner = { node: before.node.id, revision: before.revision, selection: { ...before.selection } };
+                const identity = { ...options.identity() }, generation = serial;
+                controller = new AbortController(); pending = controller;
+                const combined = AbortSignal.any([signal, controller.signal]);
                 const plain = intent === 'paste-plain' || intent === 'paste-plain-inverted';
                 const content = await classifyTextPaste(input, plain, { classifier: options.classifier, html: options.html,
                     privateText: (encoded, text, requestSignal) => readPrivateClipboardText(encoded, text, requestSignal,
-                        { identity, memory: options.memory, cache: options.copy, isCurrent: options.isCurrent }) }, combined);
+                        { identity, memory: options.memory, cache, isCurrent: options.isCurrent }) }, combined);
                 combined.throwIfAborted();
                 const after = options.editor.clipboardContext();
                 if (disposed || generation !== serial || !options.isCurrent(identity) || !after || after.node.id !== owner.node
@@ -92,10 +96,13 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
                 if (pending === controller) pending = null;
                 options.editor.manager.close();
-                await options.pasteBoard(input, intent, combined);
+                await options.pasteBoard(input, intent, combined, cache);
                 combined.throwIfAborted();
                 return true;
-            } finally { if (pending === controller) pending = null; }
+            } finally {
+                if (pending === controller) pending = null;
+                cache?.release();
+            }
         },
         cancel,
         dispose() { if (!disposed) { disposed = true; cancel(); } },

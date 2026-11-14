@@ -2,7 +2,8 @@
   position: absolute;
   top: var(--pdf-top-gap, 16px);
   right: 14px;
-  z-index: 7;
+  /* The features disclosure must not cover Next/Previous/Close while finding. */
+  z-index: 14;
   width: min(510px, calc(100% - 28px));
   padding: 6px;
   border: 1px solid var(--background-modifier-border);

@@ -39,6 +39,7 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
     let flushing = false;
     let queuedJournal: ((() => void | Promise<void>) & { cancel?: () => void }) | undefined;
     let journalWork: Promise<void> | undefined;
+    let currentJournal: typeof queuedJournal;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let journalTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -63,10 +64,12 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
         if (journalWork || !queuedJournal) return;
         const append = queuedJournal;
         queuedJournal = undefined;
+        currentJournal = append;
         // The append is serialized, but capture was synchronous: hide/pagehide never waits for
         // a previous write before pinning its own data. Each snapshot covers the whole dirty set.
         journalWork = Promise.resolve().then(append).catch(error => callbacks.journalError(error)).finally(() => {
             journalWork = undefined;
+            currentJournal = undefined;
             drainJournal();
         });
     }
@@ -124,7 +127,13 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
             if (disposed) return;
             journalPending = active;
             if (active) scheduleJournal();
-            else clearJournal();
+            else {
+                clearJournal();
+                // A durable checkpoint supersedes a captured but unstarted delta.
+                queuedJournal?.cancel?.();
+                currentJournal?.cancel?.();
+                queuedJournal = undefined;
+            }
         },
         pageHide() { journal(); },
         hidden() { journal(); },

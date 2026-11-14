@@ -1,4 +1,5 @@
 import type { BoardRuntime } from '../host/runtime';
+import { SECURITY_LIMITS } from '../security/limits';
 import { pngCrc32 } from './pngDensity';
 
 // Provenance: clipboard §2.4 capture formats and PNG density convention;
@@ -50,6 +51,30 @@ export async function copyBoardPng(runtime: BoardRuntime, capture: (signal: Abor
     catch { check(); await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]); }
     check();
 }
-/** The caller supplies the real escaped/exported SVG; the clipboard holds plain text only. */
-export function copyBoardSvg(svg: string): Promise<void> { return navigator.clipboard.writeText(svg); }
+/** Capture supplies the real escaped/exported SVG and its C2 resource lease. */
+export async function copyBoardSvg(options: {
+    readonly runtime: BoardRuntime; readonly signal?: AbortSignal; current(): boolean;
+    capture(signal: AbortSignal): Promise<{ readonly svg: Blob; release(): void }>;
+}): Promise<void> {
+    const { runtime } = options, session = runtime.session, controller = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    const check = () => { signal.throwIfAborted(); if (runtime.session !== session || !options.current()) throw new DOMException('Clipboard capture became stale', 'AbortError'); };
+    check();
+    let finished = false, owned: { release(): void } | undefined;
+    const captured = runtime.jobs.run(async context => {
+        const result = await options.capture(context.signal);
+        try {
+            context.assertCurrent(); check();
+            if (!(result.svg instanceof Blob) || result.svg.size > SECURITY_LIMITS.clipboardExpandedBytes) throw new RangeError('Invalid clipboard SVG capture');
+            return result;
+        } catch (error) { result.release(); throw error; }
+    }, { signal, deadlineMs: 120_000 });
+    const text = captured.then(result => {
+        if (finished) { result.release(); throw new DOMException('Clipboard operation ended', 'AbortError'); }
+        owned = result; return new Blob([result.svg], { type: 'text/plain' });
+    });
+    void text.catch(() => undefined);
+    try { await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]); check(); }
+    finally { finished = true; controller.abort(); owned?.release(); }
+}
 export { copyBoardJsonFresh as copyBoardJson } from './copyJson';

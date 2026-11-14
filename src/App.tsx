@@ -3,7 +3,7 @@ import { createDocumentBuffers, type ContentSource } from './utils/documentBuffe
 import { createDocumentSessions } from './utils/documentSessions';
 import type { MarkdownSessionAdapter, MarkdownSessionHost } from './editor/markdownSession.types';
 import { attachCanvasSession, createCanvasSessionBridge } from './utils/canvasSessionBridge';
-import type { AttachCanvasSession } from './utils/canvasSessionBridge';
+import type { AttachCanvasSession, CanvasSessionBridge } from './utils/canvasSessionBridge';
 import { awaitSessionDisposals, installSessionIdentity, prepareBytesChange } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
@@ -372,13 +372,6 @@ interface PdfRebuildEntry {
   baseline: DiskVersion;
   copyName?: string;
   approved: boolean;
-}
-
-async function materializeRecoveryEntry(entry: RecoveryEntry, signal: AbortSignal) {
-  if (typeof entry.copy === 'object' && entry.copy !== null && 'kind' in entry.copy && entry.copy.kind === 'recipe') {
-    await import('./whiteboard/host/recoveryCopy');
-  }
-  return materializeRecoveryCopy(entry, signal);
 }
 
 export default function App() {
@@ -1206,6 +1199,10 @@ export default function App() {
           vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
       },
       isCurrent: identity => !!current(identity),
+      session(id) {
+        const adapter = documentSessions.get(id)?.adapter;
+        return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;
+      },
       async acquireBytes(identity, signal) {
         await awaitSessionDisposals(identity.documentId);
         signal.throwIfAborted();
@@ -2518,7 +2515,7 @@ export default function App() {
    * would be the silent loss this whole mechanism exists to prevent.
    */
   const keepClosingEdits = useCallback(async (
-    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array,
+    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob,
   ) => {
     try {
       if (__BME_BENCH__) {
@@ -2558,7 +2555,7 @@ export default function App() {
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
-    if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
+    if (!initial || initial.file.isHelp || !initial.file.handle || initial.representation.emergencyReadOnly) return 'skipped';
     // Save captures immediately. Only leaving the document awaits unfinished
     // work; legacy serializers retain their migration fallback until attached.
     const initialSource = documentBuffers.get(initial.id)?.source;
@@ -2656,7 +2653,7 @@ export default function App() {
         const data = isPdf && !nativeSource
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
-        if (!await keepClosingEdits(rootAtCall, path, file.name, data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data)) return 'failed';
+        if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
       } catch (error) {
         if (error instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(error.message); return 'skipped'; }
@@ -2699,7 +2696,7 @@ export default function App() {
         }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data)) return 'failed'; }
+          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }
@@ -2834,7 +2831,6 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
-  const agentContentReportRef = useRef(false);
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
     const target = tabsRef.current.find(t => t.file.path === path);
     const policy = target && nativePoliciesRef.current.get(target.id);
@@ -2848,15 +2844,14 @@ export default function App() {
     if (__BME_BENCH__) {
       try {
         const kind = target?.representation.loadedKind ?? 'unknown';
-        const caller = options?.fromDisk ? 'disk' : agentContentReportRef.current ? 'agent'
+        const caller = options?.fromDisk ? 'disk'
           : `pane:${['markdown', 'text', 'code', 'tex'].includes(kind) ? 'note' : kind}`;
         const root = perfRoot();
         const funnel = (root.funnel ??= { reports: {}, rejected: {}, ownerlessReports: {}, reads: 0 }) as {
           reports: Record<string, number>; rejected: Record<string, number>; ownerlessReports: Record<string, number>;
         };
         funnel.reports[caller] = (funnel.reports[caller] ?? 0) + 1;
-        // Today's string reporters have no session owner, including refusals.
-        funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
+        if (typeof content === 'string') funnel.ownerlessReports[caller] = (funnel.ownerlessReports[caller] ?? 0) + 1;
         if (!accepted) funnel.rejected[caller] = (funnel.rejected[caller] ?? 0) + 1;
       } catch { /* Measurement must not interrupt a content report. */ }
     }
@@ -3162,7 +3157,7 @@ export default function App() {
       documentSessions.release(doc.id, 'tab-close');
       editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
-      void documentSessions.settled(doc.id).then(() => documentBuffers.remove(doc.id));
+      void documentSessions.settled(doc.id).then(() => { documentBuffers.remove(doc.id); syncExitGuard(); });
       bytesGenerationsRef.current.delete(doc.id);
       void recoveryEvent({ type: 'release', documentId: doc.id });
       syncExitGuard();
@@ -5506,22 +5501,36 @@ export default function App() {
     const isPdf = isPdfFile(file.name);
     resolvingRef.current.add(id);
     const shortName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
-    /** The reader's version, pending canvas strokes included. Null for a PDF
-     *  with no annotations to rebuild it from. */
-    const mine = async (): Promise<string | Uint8Array | null> => {
-      await getView(path)?.flushPending?.();
+    /** Capture before any asynchronous build; later edits belong to another revision. */
+    const captureMine = () => {
+      const session = documentSessions.get(id);
+      const checkpoint = documentSessions.checkpoint(id);
+      const prior = documentBuffers.get(id)?.source;
+      if (checkpoint && typeof checkpoint !== 'string') {
+        if (!documentSessions.isLiveOwner(id, checkpoint.owner)) throw new Error('The document session changed.');
+        if (typeof prior === 'string' || !prior || prior.owner.session !== checkpoint.owner.session || checkpoint.revision > prior.revision) {
+          sessionReportRef.current(id, checkpoint);
+        }
+      }
+      const source = documentBuffers.get(id)?.source;
+      if (checkpoint && typeof checkpoint !== 'string' && (typeof source === 'string' || !source
+        || source.owner.session !== checkpoint.owner.session || source.revision < checkpoint.revision)) {
+        throw new Error('The current document revision could not be captured.');
+      }
       const snapshot = documentBuffers.snapshotForDocument(id);
       if (!snapshot) throw new Error('The document buffer is unavailable.');
-      let content = snapshot.data;
-      if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
-        content = await content.run(new AbortController().signal);
-      }
-      if (content instanceof Blob) content = new Uint8Array(await content.arrayBuffer());
-      if (!isPdf || typeof content !== 'string') return content;
-      const data = getPdfRenderData(path);
-      if (!data) return null;
-      const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
-      return buildAnnotatedPdfAsync(data.original, content, data.overlays);
+      const sourceRevision = typeof source === 'string' ? undefined : source?.revision;
+      const pdf = isPdf && typeof snapshot.data === 'string' ? getPdfRenderData(path) : undefined;
+      return { revision: snapshot.revision, sourceRevision, session, build: async (): Promise<string | Uint8Array | Blob | null> => {
+        let content = snapshot.data;
+        if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
+          content = await content.run(new AbortController().signal);
+        }
+        if (!isPdf || typeof content !== 'string') return content;
+        if (!pdf) return null;
+        const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
+        return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
+      } };
     };
     try {
       if (action === 'close') {
@@ -5537,8 +5546,9 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
-        const data = await mine();
+        const captured = captureMine();
+        const dataRevision = captured.revision;
+        const data = await captured.build();
         if (data === null) {
           void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
           return;
@@ -5559,15 +5569,19 @@ export default function App() {
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
         diskStateRef.current.delete(id);
-        if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
+        documentBuffers.markSaved(id, dataRevision);
+        if (captured.sourceRevision !== undefined && captured.session && documentSessions.get(id) === captured.session) {
+          captured.session.adapter.acknowledge(captured.sourceRevision, 'written');
+        }
+        void recoveryEvent({ type: 'written', documentId: id, revision: dataRevision, fingerprint: result.version.hash });
         syncExitGuard();
-        if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
+        if (documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
         recordFileWritten(path, result.version.lastModified);
         notifySearchChanges();
         setTabs(prev => prev.map(t => (t.id === id ? {
           ...t,
           file: { ...t.file, handle: result.handle, parentHandle },
-          dirty: dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision ? false : t.dirty,
+          dirty: documentBuffers.isDirty(id),
           disk: undefined,
         } : t)));
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.activation === getVaultActivation()) {
@@ -5585,8 +5599,8 @@ export default function App() {
 
       if (action === 'reload') {
         await drain(id);
-        if (documentSessions.get(id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
-        const keep = await mine();
+        const captured = captureMine();
+        const keep = await captured.build();
         const read = isPdf
           ? { text: '', version: (await readBytesVersioned(handle)).version }
           : await readFileVersioned(handle);
@@ -5598,6 +5612,11 @@ export default function App() {
         const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
         const now = tabsRef.current.find(t => t.id === id);
         if (!now) return;
+        const latest = documentSessions.checkpoint(id);
+        if (documentBuffers.revisionForDocument(id)?.revision !== captured.revision || documentSessions.get(id) !== captured.session
+          || (latest && typeof latest !== 'string' && latest.revision !== captured.sourceRevision)) {
+          throw new Error('The document changed while its earlier version was being preserved. Keep this tab open and retry.');
+        }
         reloadFromDisk(now, read.text, read.version);
         if (copy) announce(`Your version was kept as “${shortName(copy)}”.`);
         return;
@@ -5618,7 +5637,7 @@ export default function App() {
       // 'keep': theirs goes beside the file, then mine is saved through the
       // one save funnel — against the version just read, so a disk that moved
       // AGAIN in between raises the conflict again rather than being overwritten.
-      await getView(path)?.flushPending?.();
+      await drain(id);
       const disk = await readBytesVersioned(handle);
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path, caller: 'disk-keep-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
@@ -5647,7 +5666,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -5983,9 +6002,9 @@ export default function App() {
       try {
         const version = await snapshot.fingerprint();
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
-        const copy = await materializeRecoveryEntry(entry, new AbortController().signal);
-        const bytes = typeof copy === 'string' ? new TextEncoder().encode(copy) : copy instanceof Blob ? new Uint8Array(await copy.arrayBuffer()) : copy;
-        const copyHash = await hashBytes(bytes);
+        const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
+        const copyHash = copy instanceof Blob ? await fingerprintSnapshot(copy)
+          : await hashBytes(typeof copy === 'string' ? new TextEncoder().encode(copy) : copy);
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
         if (copyHash === version.hash) return 'equal';
         return version.hash === entry.fingerprint ? 'match' : 'copy';
@@ -6019,8 +6038,8 @@ export default function App() {
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
     if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
-    const copyData = await materializeRecoveryEntry(entry, new AbortController().signal);
-    const data = copyData instanceof Blob ? new Uint8Array(await copyData.arrayBuffer()) : copyData;
+    const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
+    const data = copyData;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);

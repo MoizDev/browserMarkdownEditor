@@ -541,10 +541,10 @@ export interface FileSystemContextValue {
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
-  writeConflictCopy: (filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
   /** Re-create a file deleted outside the app (and any missing parent folders)
    *  only if nothing is at `filePath` now. */
-  recreateFile: (filePath: string, data: string | Uint8Array) => Promise<
+  recreateFile: (filePath: string, data: string | Uint8Array | Blob) => Promise<
     { status: 'written'; version: DiskVersion; handle: FileSystemFileHandle } | { status: 'exists' }>;
   /** A fresh handle for a vault path, resolved from the root; null if missing. */
   resolveFileHandle: (filePath: string) => Promise<FileSystemFileHandle | null>;

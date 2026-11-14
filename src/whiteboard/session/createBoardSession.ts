@@ -235,11 +235,13 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         hasPendingEdits: pendingState,
         onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
         checkpoint() {
-            // Acquisition pins the pristine source before view promotion; a clean read must not require that promotion.
-            // Pending edits still require write authority: never flush a gesture or encode dirty work through this branch.
-            if (readonlyReason() && !pendingState()) { guardLive(); return capture(); }
-            guard();
-            try { scheduler.flushNow(); return capture(); } finally { notifyPending(); }
+            guardLive();
+            if (recovering) throw new ApplyFailed('read-only', 'Recovery is in progress');
+            // Capturing committed content is not an edit: native acquisition needs
+            // its R0 checkpoint while the temporary admission seal is still set.
+            // Read-only capture must not try to finish an uncommitted user gesture.
+            try { if (!readonlyReason()) scheduler.flushNow(); return capture(); }
+            finally { notifyPending(); }
         },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');

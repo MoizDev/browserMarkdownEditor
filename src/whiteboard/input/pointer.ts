@@ -151,8 +151,8 @@ export class PointerAcquisition {
     this.sink.prediction?.(event.pointerId, null)
     try {
       const samples = this.batch(contact, event)
-      this.contacts.delete(event.pointerId)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
+      this.contacts.delete(event.pointerId)
     } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
@@ -165,5 +165,5 @@ export class PointerAcquisition {
   private got = (event: PointerEvent): void => { if (this.contacts.has(event.pointerId)) this.sink.captured?.(event.pointerId) }
   private lost = (event: PointerEvent): void => { this.end(event.pointerId, 'capture-lost') }
   private hover = (event: PointerEvent): void => { this.sink.hover?.(event) }
-  private menu = (event: MouseEvent): void => { this.sink.contextMenu?.(event) }
+  private menu = (event: MouseEvent): void => { if (this.sink.contextMenu) { event.preventDefault(); this.sink.contextMenu(event) } }
 }

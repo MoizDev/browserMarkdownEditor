@@ -42,10 +42,27 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     options.overlay.append(cursor);
     const rows = new Map<NodeId, { item: HTMLLIElement; button: HTMLButtonElement }>();
     let disposed = false, scheduled: (() => void) | undefined, activate: (() => void) | undefined;
-    let lastTool = '', lastSelection = '', lastCursorActive = false;
+    let lastTool = '', lastSelection = '', lastCursorActive = false, lastAnnouncement = '', announcementVersion = 0;
+    let repeated: (() => void) | undefined;
     const active = () => !disposed && options.current() && options.visible();
     const report = (error: unknown) => { try { options.error(error); } catch { /* A reporting failure cannot block cleanup. */ } };
-    const announce = (message: string) => { if (active()) status.textContent = message; };
+    const announce = (message: string): boolean => {
+        if (!active() || !message) return false;
+        repeated?.(); repeated = undefined; announcementVersion++;
+        lastAnnouncement = message; status.textContent = message;
+        return true;
+    };
+    const repeat = (): boolean => {
+        if (!active() || !lastAnnouncement) return false;
+        repeated?.();
+        const message = lastAnnouncement, version = ++announcementVersion;
+        status.textContent = '';
+        repeated = options.schedule(() => {
+            repeated = undefined;
+            if (active() && version === announcementVersion) status.textContent = message;
+        });
+        return true;
+    };
     const cursorClick = () => { if (active()) activate?.(); };
     cursorButton.addEventListener('click', cursorClick);
     const dropRows = () => { for (const row of rows.values()) row.item.remove(); rows.clear(); };
@@ -93,7 +110,7 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     };
     const refresh = () => {
         if (disposed) return;
-        if (!active()) { scheduled?.(); scheduled = undefined; sync(); return; }
+        if (!active()) { scheduled?.(); scheduled = undefined; repeated?.(); repeated = undefined; announcementVersion++; sync(); return; }
         if (!scheduled) scheduled = options.schedule(sync);
     };
     const unsubscribe = options.engine.accessibility.subscribe(refresh);
@@ -119,10 +136,12 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     refresh();
     return {
         a11y,
+        announce, repeat,
         refresh,
         dispose() {
             if (disposed) return;
-            disposed = true; scheduled?.(); scheduled = undefined; unsubscribe(); activate = undefined;
+            disposed = true; scheduled?.(); scheduled = undefined; repeated?.(); repeated = undefined;
+            announcementVersion++; lastAnnouncement = ''; unsubscribe(); activate = undefined;
             cursorButton.removeEventListener('click', cursorClick); dropRows(); cursor.remove(); root.remove();
         },
     };

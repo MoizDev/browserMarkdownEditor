@@ -274,6 +274,8 @@ export class ClipboardCopy {
             return blobs.get(id) ?? await read(id, signal);
         } };
         windowWritten = entry;
+        // A large asset prefetch must not queue a user paste behind a vault-sized read.
+        if (held.snapshot.media.reduce((total, item) => total + item.bytes, 0) > 32 * 1024 * 1024) return;
         // Retain Blob references while the source is alive; no decoded pixels or whole-batch byte copies.
         held.count++;
         try { void this.host.runtime.jobs.run(async context => {

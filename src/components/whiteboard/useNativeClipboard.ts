@@ -4,6 +4,7 @@ import { surfaceToWorld } from '../../platform/render/camera';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { openContextMenu } from '../../utils/contextMenu';
+import { downloadBlob } from '../../utils/downloadBlob';
 import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCommands';
 import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrome/preferences';
 import type { Op } from '../../whiteboard/change/ops';
@@ -20,58 +21,6 @@ import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
-import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
-import type { BoardPrintSource } from '../../whiteboard/export/print';
-import { pinNativeNotebookPrint } from '../../whiteboard/export/notebookPrint';
-import { pinPagedPrintSource } from '../../whiteboard/export/pagedPrintSnapshot';
-import { pinNativeWhiteboardPrint } from '../../whiteboard/export/whiteboardPrint';
-import { boardPageStack } from '../../whiteboard/model/pages';
-import { printBoard } from './printBoard';
-
-export interface FocusedBoardPrintOptions {
-    readonly runtime: BoardRuntime;
-    readonly memory: MemoryAllocator;
-    readonly kind: NativeCanvasIdentity['kind'];
-    readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    /** True only while this board is still the same live document it was when printing started. */
-    valid(): boolean;
-    notice(message: string): void;
-    onError(error: unknown): void;
-}
-
-/** Pins the focused board's own source (its paper, sheets and ink) for a single print. */
-function pinFocusedBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
-    const { runtime, memory, readMedia, onError, kind } = options;
-    const media = async (entry: Readonly<MediaEntry>, signal: AbortSignal): Promise<Blob> => {
-        const blob = await readMedia(entry as MediaEntry, signal);
-        if (!blob) throw new Error('A picture on this board is unavailable for printing.');
-        return blob;
-    };
-    if (kind === 'drawing') return pinNativeWhiteboardPrint({ runtime, memory, readMedia: media, onError });
-    if (kind === 'notebook') return pinNativeNotebookPrint({ runtime, memory, readMedia: media, onError });
-    const stack = boardPageStack(runtime.session.doc.host);
-    if (!stack) throw new Error('Print pages are unavailable for this board.');
-    const pin = createBoardExportSnapshot({ runtime, request: { sheetId: runtime.selection.getSnapshot().sheet, theme: 'light' },
-        readMedia: media, onError });
-    return pinPagedPrintSource(pin, stack.rects);
-}
-
-/** Mod-P on the focused native board: one pinned source, printed through the app's print helper. */
-async function printFocusedBoard(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted();
-    const source = pinFocusedBoard(options);
-    try {
-        const pdf = await source.pdf(signal);
-        await printBoard({ pdf, valid: options.valid, signal,
-            renderFallback: async (limit, pageSignal) => {
-                const count = Math.min(limit, source.pageCount), pages: Blob[] = [];
-                for (let page = 0; page < count; page++) pages.push(await source.pngPage(page, pageSignal));
-                return { pages, total: source.pageCount };
-            },
-            noticeTruncated: (printed, total) => options.notice(`Printing ${printed} of ${total} pages; export to PDF to print all`),
-            onError: options.onError });
-    } finally { source.release(); }
-}
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -186,8 +135,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 void text.catch(() => {});
                 return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]);
             },
-            download(blob, name) { const url = URL.createObjectURL(blob), link = document.createElement('a');
-                link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); },
+            download: downloadBlob,
+            boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {
@@ -228,13 +177,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 }
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
-                }
-                // Mod-P belongs to the focused board only: the browser's page print of the app is never reached from here.
-                if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
-                    event.preventDefault(); event.stopPropagation();
-                    void printFocusedBoard({ runtime, memory, kind: identity.kind, readMedia, valid: () => current() && bindings.has(binding),
-                        notice: report, onError: fail }, new AbortController().signal).catch(fail);
-                    return;
                 }
                 if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {

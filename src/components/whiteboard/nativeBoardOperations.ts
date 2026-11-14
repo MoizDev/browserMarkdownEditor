@@ -38,7 +38,7 @@ export function createNativeBoardOperations(options: {
         return state.enabled && !runtime.selection.getSnapshot().selected.length ? no('Select content first') : state;
     };
     const op = (state: () => CommandState, run: () => void | Promise<void>): NativeCommandOperation => ({ state, run });
-    const clipboard = (action: 'copy' | 'cut' | 'duplicate' | 'copyAsPng' | 'copyAsSvg' | 'copyAsJson' | 'exportPng' | 'exportSvg',
+    const clipboard = (action: 'copy' | 'cut' | 'duplicate' | 'copyAsPng' | 'copyAsSvg' | 'copyAsJson' | 'exportPng' | 'exportSvg' | 'exportJson',
         selection = false) => op(selection ? selected : attached, () => {
             const active = binding(); if (!active) throw new Error('The board input is not attached');
             return active.commands[action]();
@@ -55,7 +55,7 @@ export function createNativeBoardOperations(options: {
         copy: clipboard('copy', true), cut: clipboard('cut', true), duplicate: clipboard('duplicate', true),
         paste: op(attached, () => { const active = binding(); if (!active) throw new Error('The board input is not attached'); active.controller.paste(); }),
         copyAsPng: clipboard('copyAsPng'), copyAsSvg: clipboard('copyAsSvg'), copyAsJson: clipboard('copyAsJson'),
-        exportPng: clipboard('exportPng'), exportSvg: clipboard('exportSvg'),
+        exportPng: clipboard('exportPng'), exportSvg: clipboard('exportSvg'), exportJson: clipboard('exportJson'),
         flatten: options.flatten, editLink: options.editLink,
         stretchHorizontal: transform('stretch.horizontal', 2), stretchVertical: transform('stretch.vertical', 2),
         rotateClockwise: transform('rotate.clockwise', 1), rotateCounterclockwise: transform('rotate.counterclockwise', 1),

@@ -30,6 +30,16 @@
       "key": "commands.exportPng",
       "text": "PNG",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Llum",
     "chrome.system": "Sistema",
     "chrome.language": "Llengua",
+    "chrome.print": "Imprimeix",
     "chrome.uploadMedia": "Carrega multimèdia...",
     "chrome.insertEmbed": "Insereix una inserció...",
     "chrome.unlockAll": "Desbloqueja-ho tot",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Suprimeix la pàgina",
     "paper.cancel": "Cancel·la",
     "paper.keepProtected": "El contingut bloquejat es mantindrà.",
-    "chrome.readOnly": "Aquest tauler és només de lectura."
+    "chrome.readOnly": "Aquest tauler és només de lectura.",
+    "shortcuts.file.print": "Imprimeix",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -7,7 +7,7 @@ export type BoardCommand =
     | 'stretchHorizontal' | 'stretchVertical' | 'distributeHorizontal' | 'distributeVertical'
     | 'stackHorizontal' | 'stackVertical' | 'pack' | 'sendBack' | 'sendBackward'
     | 'bringForward' | 'bringFront' | 'rotateCounterclockwise' | 'rotateClockwise'
-    | 'copyAsPng' | 'copyAsSvg' | 'copyAsJson' | 'exportPng' | 'exportSvg';
+    | 'copyAsPng' | 'copyAsSvg' | 'copyAsJson' | 'exportPng' | 'exportSvg' | 'exportJson';
 
 export type CommandState =
     | { readonly enabled: true }
@@ -84,7 +84,7 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
     ] : [];
     return [
         ...selected, ...(source.extraEntries ?? []), ...common, copyAs,
-        ...(source.selectedCount ? [menu('exportAs', rows(['exportPng', 'exportSvg']))] : []),
+        ...(source.selectedCount ? [menu('exportAs', rows(['exportPng', 'exportSvg', 'exportJson']))] : []),
         ...rows(['selectAll']),
     ];
 }

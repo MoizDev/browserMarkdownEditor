@@ -11,7 +11,7 @@ import type { RegionQuery } from './types';
 
 export type ClippedInkResult = Readonly<{ status: 'pending' | 'hit' | 'miss' | 'empty' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: ClippedInkResult = Object.freeze({ status: 'pending' });
-type Primitive = Readonly<{ coverage: InkCoverage; bounds: CertifiedClipBox }>;
+type Primitive = Readonly<{ coverage: InkCoverage; bounds: CertifiedClipBox; kind: 'segment' | 'disc' | 'centreline'; depth: number }>;
 
 /** Geometry enclosures are transformed before frame classification; a source
  * enclosure outside any frame cannot contribute, including its error margin. */
@@ -38,17 +38,40 @@ function primitives(coverage: InkCoverage, matrix: Affine, includeCentreline: bo
             const d = coverage.segments;
             if (![d[i + 2], d[i + 5]].every(value => Number.isFinite(value) && value >= 0)) throw new RangeError('Invalid clipped ink radius');
             const bounds = primitiveBounds(matrix, d[i], d[i + 1], d[i + 3], d[i + 4], Math.max(d[i + 2], d[i + 5]), error);
-            yield { bounds, coverage: { ...coverage, segments: d.subarray(i, i + 6), discs: emptyDiscs, centreline: emptyCentre } };
+            yield { bounds, kind: 'segment', depth: 0, coverage: { ...coverage, segments: d.subarray(i, i + 6), discs: emptyDiscs, centreline: emptyCentre } };
         }
         for (let i = 0; i < coverage.discs.length; i += 3) {
             const d = coverage.discs, bounds = primitiveBounds(matrix, d[i], d[i + 1], d[i], d[i + 1], d[i + 2], error);
-            yield { bounds, coverage: { ...coverage, segments: emptySegments, discs: d.subarray(i, i + 3), centreline: emptyCentre } };
+            yield { bounds, kind: 'disc', depth: 0, coverage: { ...coverage, segments: emptySegments, discs: d.subarray(i, i + 3), centreline: emptyCentre } };
         }
         if (includeCentreline) for (let i = 0; i < coverage.centreline.length; i += 4) {
             const d = coverage.centreline, bounds = primitiveBounds(matrix, d[i], d[i + 1], d[i + 2], d[i + 3], 0, coverage.centreErrorWorld);
-            yield { bounds, coverage: { ...coverage, segments: emptySegments, discs: emptyDiscs, centreline: d.subarray(i, i + 4) } };
+            yield { bounds, kind: 'centreline', depth: 0, coverage: { ...coverage, segments: emptySegments, discs: emptyDiscs, centreline: d.subarray(i, i + 4) } };
         }
     })();
+}
+function splitPrimitive(source: Primitive, matrix: Affine): readonly [Primitive, Primitive] | null {
+    if (source.kind === 'disc' || source.depth >= 16) return null;
+    const coverage = source.coverage, segment = source.kind === 'segment', data = segment ? coverage.segments : coverage.centreline;
+    const ax = data[0], ay = data[1], bx = data[segment ? 3 : 2], by = data[segment ? 4 : 3];
+    const r0 = segment ? data[2] : 0, r1 = segment ? data[5] : 0;
+    if (ax === bx && ay === by && r0 === r1) return null;
+    const x = ax / 2 + bx / 2, y = ay / 2 + by / 2, radius = r0 / 2 + r1 / 2;
+    const roundoff = 16 * Number.EPSILON * Math.max(1, Math.abs(ax), Math.abs(ay), Math.abs(bx), Math.abs(by), r0, r1);
+    if (![x, y, radius, roundoff].every(Number.isFinite)) return null;
+    const left = data.slice(), right = data.slice();
+    if (segment) { left[3] = x; left[4] = y; left[5] = radius; right[0] = x; right[1] = y; right[2] = radius; }
+    else { left[2] = x; left[3] = y; right[0] = x; right[1] = y; }
+    const centreErrorWorld = add(interval(coverage.centreErrorWorld), interval(roundoff)).hi;
+    const radiusErrorWorld = segment ? add(interval(coverage.radiusErrorWorld), interval(roundoff)).hi : coverage.radiusErrorWorld;
+    const make = (values: typeof data, sx: number, sy: number, ex: number, ey: number, r: number): Primitive => {
+        const next: InkCoverage = segment
+            ? { ...coverage, centreErrorWorld, radiusErrorWorld, segments: values as typeof coverage.segments }
+            : { ...coverage, centreErrorWorld, radiusErrorWorld, centreline: values as typeof coverage.centreline };
+        const error = segment ? outwardError(next) : centreErrorWorld;
+        return { kind: source.kind, depth: source.depth + 1, coverage: next, bounds: primitiveBounds(matrix, sx, sy, ex, ey, r, error) };
+    };
+    return [make(left, ax, ay, x, y, Math.max(r0, radius)), make(right, x, y, bx, by, Math.max(radius, r1))];
 }
 function clipRelation(box: CertifiedClipBox, frames: ReturnType<typeof preparePointClip>[]): 'inside' | 'outside' | 'overlap' {
     let overlap = false;
@@ -67,7 +90,8 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
     if (query.kind !== 'point' || !matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid clipped ink point query');
     const clips = frames.map(preparePointClip), iterator = primitives(coverage, matrix, true);
-    let active: InkPickJob | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside', uncertain = false;
+    let active: InkPickJob | undefined, current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside', uncertain = false;
+    const pending: Primitive[] = [];
     let spent = 0, cancelled = false, finished: ClippedInkResult | undefined;
     const finish = (value: ClippedInkResult): ClippedInkResult => { finished = Object.freeze(value); return finished; };
     return {
@@ -79,17 +103,25 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
                 for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                     if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped ink point work limit exhausted' });
                     if (!active) {
-                        const next = iterator.next();
-                        if (next.done) return finish(uncertain ? { status: 'uncertain', reason: 'Ink point witness intersects a frame boundary' } : { status: 'miss' });
-                        relation = clipRelation(next.value.bounds, clips); if (relation === 'outside') continue;
-                        active = new InkPickJob(next.value.coverage, matrix, query, dpr);
+                        current = pending.pop();
+                        if (!current) {
+                            const next = iterator.next();
+                            if (next.done) return finish(uncertain ? { status: 'uncertain', reason: 'Ink point witness intersects a frame boundary' } : { status: 'miss' });
+                            current = next.value;
+                        }
+                        relation = clipRelation(current.bounds, clips); if (relation === 'outside') { current = undefined; continue; }
+                        active = new InkPickJob(current.coverage, matrix, query, dpr);
                     }
                     const state = active.step(1);
                     if (state === 'pending') continue;
                     if (state === 'cancelled') return finish({ status: 'uncertain', reason: 'Clipped ink point cancelled' });
                     const result = active.result; active.cancel(); active = undefined;
                     if (result.decision === 'hit' && relation === 'inside') return finish({ status: 'hit' });
-                    if (result.decision !== 'miss') uncertain = true;
+                    if (result.decision !== 'miss') {
+                        const pieces = relation === 'overlap' ? splitPrimitive(current!, matrix) : null;
+                        if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
+                    }
+                    current = undefined;
                 }
                 return PENDING;
             } catch (error) { if (!(error instanceof RangeError)) throw error; return finish({ status: 'uncertain', reason: error.message }); }
@@ -105,8 +137,9 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
     if (!matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid clipped ink region query');
     const clips = frames.map(preparePointClip), iterator = primitives(coverage, matrix, false), containment = query.kind === 'polygon' && query.containment;
-    let active: InkRegionPickJob | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside';
-    let seen = false, uncertain = false, spent = 0, cancelled = false, finished: ClippedInkResult | undefined;
+    let active: InkRegionPickJob | undefined, current: Primitive | undefined, relation: 'inside' | 'outside' | 'overlap' = 'outside';
+    const pending: Primitive[] = [];
+    let seen = false, uncertain = false, possibleContained = false, spent = 0, cancelled = false, finished: ClippedInkResult | undefined;
     const finish = (value: ClippedInkResult): ClippedInkResult => { finished = Object.freeze(value); return finished; };
     return {
         step(budget) {
@@ -117,13 +150,17 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
                 for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                     if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped ink region work limit exhausted' });
                     if (!active) {
-                        const next = iterator.next();
-                        if (next.done) {
-                            if (uncertain) return finish({ status: 'uncertain', reason: 'Ink region meets a frame boundary' });
-                            return finish(containment ? { status: seen ? 'hit' : 'empty' } : { status: 'miss' });
+                        current = pending.pop();
+                        if (!current) {
+                            const next = iterator.next();
+                            if (next.done) {
+                                if (uncertain || (containment && !seen && possibleContained)) return finish({ status: 'uncertain', reason: 'Ink region meets a frame boundary' });
+                                return finish(containment ? { status: seen ? 'hit' : 'empty' } : { status: 'miss' });
+                            }
+                            current = next.value;
                         }
-                        relation = clipRelation(next.value.bounds, clips); if (relation === 'outside') continue;
-                        active = new InkRegionPickJob(next.value.coverage, matrix, query, dpr);
+                        relation = clipRelation(current.bounds, clips); if (relation === 'outside') { current = undefined; continue; }
+                        active = new InkRegionPickJob(current.coverage, matrix, query, dpr);
                     }
                     const state = active.step({ deadline: budget.deadline, maxVisits: 1 });
                     if (state.status === 'pending') continue;
@@ -133,7 +170,12 @@ export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine,
                         if (containment && decision === 'miss') return finish({ status: 'miss' });
                         if (!containment && decision === 'hit') return finish({ status: 'hit' });
                         if (decision === 'uncertain') uncertain = true;
-                    } else if (containment || decision !== 'miss') uncertain = true;
+                    } else if (containment && decision === 'hit') possibleContained = true;
+                    else if (containment || decision !== 'miss') {
+                        const pieces = splitPrimitive(current!, matrix);
+                        if (pieces) pending.push(pieces[1], pieces[0]); else uncertain = true;
+                    }
+                    current = undefined;
                 }
                 return PENDING;
             } catch (error) { if (!(error instanceof RangeError)) throw error; return finish({ status: 'uncertain', reason: error.message }); }

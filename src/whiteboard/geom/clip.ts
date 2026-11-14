@@ -97,7 +97,7 @@ export class ContourClipper {
             const ys = controls(curve, p => p.y - point.y), knots = breaks(ys);
             if (!straight) {
                 const xs = controls(curve, p => p.x - point.x);
-                const tolerance = 64 * Number.EPSILON * Math.max(1, Math.abs(point.x), Math.abs(point.y),
+                const tolerance = 8 * Number.EPSILON * Math.max(Number.MIN_VALUE, Math.abs(point.x), Math.abs(point.y),
                     ...[curve.p0, curve.p1, curve.p2, curve.p3].flatMap(p => [Math.abs(p.x), Math.abs(p.y)]));
                 if (ys.every(y => y === 0)) {
                     const values = breaks(xs).map(t => scalar(xs, t));

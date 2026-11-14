@@ -141,7 +141,11 @@ export class LiveInk implements GestureOwner {
         catch (error) { this.dry.release?.(); throw error }
       }
       this.context.invalidate()
-    } catch (error) { this.context.error(error) }
+    } catch (error) {
+      // A failed seal has no dry revision that can ever acknowledge its wet prefix.
+      if (!this.dry) { this.handover.clear(this.context.identity); this.context.invalidate() }
+      this.context.error(error)
+    }
   }
 
   cancel(): void { this.finish('os-cancel') }

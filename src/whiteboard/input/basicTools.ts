@@ -25,7 +25,8 @@ class EraserGesture implements GestureOwner {
     this.last = sample
     this.release = context.hold()
     this.queue = new SweepQueue(context)
-    this.collect(sample, modifiers)
+    try { this.collect(sample, modifiers) }
+    catch (error) { try { this.queue.cancel() } finally { this.release() }; throw error }
   }
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
     if (this.ended) return
@@ -34,7 +35,12 @@ class EraserGesture implements GestureOwner {
   finish(): void {
     if (this.ended) return
     this.ended = true
-    this.unregister = this.context.registerPending(() => this.cancel())
+    try { this.unregister = this.context.registerPending(() => this.cancel()) }
+    catch (error) {
+      this.cancelled = true
+      try { this.queue.cancel(); this.context.clearPreview() } finally { this.release() }
+      throw error
+    }
     void this.queue.finish().then(ids => {
       if (!this.cancelled && ids.size) this.context.commit(ids)
     }).catch(error => {

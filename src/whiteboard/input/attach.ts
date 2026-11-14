@@ -158,7 +158,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
   const delegated = session.doc.kind === 'whiteboard' && view.wet.onRealPresented ? new DelegatedInkBridge({
-    surface: view.surface, mappings: view.mappings, current, onRealPresented: callback => view.wet.onRealPresented!(callback),
+    surface: view.surface, mappings: view.mappings, camera: () => view.camera.camera, current,
+    onRealPresented: callback => view.wet.onRealPresented!(callback),
   }) : null
   const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
     mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged,

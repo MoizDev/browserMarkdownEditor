@@ -186,6 +186,34 @@
     outline-offset: 2px;
 }
 
+.board-debug-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+}
+
+.board-debug-outline {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px dashed #ed4da5;
+}
+
+.board-debug-values {
+    position: absolute;
+    inset-inline-start: 8px;
+    bottom: 64px;
+    margin: 0;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font: 12px var(--font-monospace);
+}
+
+.board-debug-values > div { display: flex; gap: 8px; }
+.board-debug-values dd { margin: 0; }
+
 .board-shortcuts-backdrop {
     position: fixed;
     inset: 0;

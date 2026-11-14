@@ -36,6 +36,12 @@ third-party code included (normally "none") · date.
 | `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/5/6 | change-and-history §§2–4; contracts C7 | Design; core save-funnel §2; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
 
+## Agent adapter (lane w-p)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `agent/shapes.ts` | w-p | F-AGENT-001, WB-D11, WB-D12, C8 | integration §9 | Agent specification, C8, public model interfaces; authoritative geometry supplied by shared projection; no tldraw or old canvas source | none | 2026-11-13 |
+
 ## Formats, importer, save and agent adapter (lane w-d)
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
@@ -83,6 +89,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
+| `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -110,3 +117,4 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract; no tldraw source | none | 2026-11-13 |
+| `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/005/006, F-NB-006/008, R-11, R-24 | document-model §6; change-and-history §2 | Specs and own model/apply interfaces; no tldraw source | none | 2026-11-13 |

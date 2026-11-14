@@ -49,6 +49,8 @@ import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
 import { useFileSystem } from '../context/FileSystemContext';
+import { ASSETS_DIR } from '../utils/assets';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { readRecord, flushRecord, scopedKey } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
@@ -998,6 +1000,7 @@ function DocumentPane({
 
                             // Into the .Assets folder beside THIS pane's note.
                             const parentHandle = fileRef.current.parentHandle || null;
+                            const assetFolder = joinVaultPath(parentVaultPath(fileRef.current.path), ASSETS_DIR);
                             saveAsset(filename, blob!, parentHandle).then(() => {
                                 // Insert the markdown at cursor
                                 const insertText = `![[${filename}]]\n`;
@@ -1011,7 +1014,7 @@ function DocumentPane({
                                 }
                             }).catch(err => {
                                 console.error('Failed to save pasted image:', err);
-                                alert('Failed to save image to .Assets folder.');
+                                onNotify(`Could not save the pasted image to “${assetFolder}”. Check that this is a writable folder, then try again.`);
                             });
 
                             return true; // We handled the paste

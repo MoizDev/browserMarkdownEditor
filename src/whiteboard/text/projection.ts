@@ -5,6 +5,7 @@ export interface TextProjectionPosition {
     readonly index: number;
     readonly start: number;
     readonly offset: number;
+    readonly length: number;
 }
 interface ProjectionIndex {
     readonly starts: readonly number[];
@@ -42,7 +43,7 @@ export function projectionPosition(text: RichText, offset: number): TextProjecti
         const mid = (lo + hi) >>> 1;
         if (index.starts[mid] <= offset) lo = mid; else hi = mid;
     }
-    return { block: text.blocks[lo], index: lo, start: index.starts[lo], offset: offset - index.starts[lo] };
+    return { block: text.blocks[lo], index: lo, start: index.starts[lo], offset: offset - index.starts[lo], length: index.lengths[lo] };
 }
 export function projectionLength(text: RichText): number { return indexFor(text).length; }
 /** Read only intersecting blocks; newline separators are projection characters. */

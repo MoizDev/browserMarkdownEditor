@@ -17,14 +17,17 @@ annotations drawn onto them (vector paths, see below) + two embedded attachments
 as live tldraw shapes.
 
 - **No `(annotated)` sibling, and no name test anywhere.** `readPdfRole` reads a PDF's role from its
-  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a union inventory of every attachment
-  name tree), never from one attachment's presence: `utils/pdfRole.ts` returns one of six tags.
-  The inventory is read-only and independent of the classic renderer. `plain` (no attachments of ours: the file's own bytes are the pristine original) and `annotated`
-  (the supported legacy pair, `original.pdf` + a valid `tldraw-snapshot.json`) are the only EDITABLE
-  roles; `notebookExport`, `unreadable`, `ambiguous` and `newer` open Annotate read-only with
-  `pdfRoleNotice`'s text in the outer view. An `original.pdf` alone does NOT make a file ours. The
-  first save of a `plain` PDF is what adds the attachments. Only `plain` may be rotated
-  (`canRotatePdfRole`).
+  CONTENT, in the existing build worker (`pdfBuild.worker.ts`, a read-only union inventory of every
+  attachment name tree; never the classic renderer), never from one attachment's presence:
+  `utils/pdfRole.ts` returns one of six tags. `plain` (no attachments of ours: the file's own bytes
+  are the pristine original) and `annotated` (the supported legacy pair, `original.pdf` + a valid
+  `tldraw-snapshot.json`) are the only EDITABLE roles; `notebookExport`, `unreadable`, `ambiguous`
+  and `newer` open Annotate read-only with `pdfRoleNotice`'s text in the outer view. A role-passing
+  snapshot is loaded into an isolated legacy store before mounting; a library rejection or render
+  error revokes its exact source and replaces the editor with a read-only notice. An `original.pdf`
+  alone does NOT make a file ours. A failed or partial read never falls back to `plain`; the outer
+  pages stay readable. The first save of a `plain` PDF adds the attachments, and files from the old
+  spawn-a-sibling behaviour still work. Only `plain` may be rotated (`canRotatePdfRole`).
 - **Save authority is the exact source, not the path.** `authorizePdfRole` admits an editable role's
   `original` bytes; `canRebuildAnnotatedPdf(original)` is checked in `flushTab` before the build AND
   again after every await, directly before `writeFileVersioned`, so a revoked role cannot write.

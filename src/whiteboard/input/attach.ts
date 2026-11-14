@@ -264,7 +264,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
   let pointerClient: Point | null = null
   const unbindPointer = services.tools.bindPresentedPointer(view.token, () => {
-    if (!current() || !pointerClient) return null
+    if (!current()) return null
+    const virtual = cursor.active ? cursor.currentSample() : null
+    if (virtual) return { x: virtual.x, y: virtual.y }
+    if (!pointerClient) return null
     const mapping = view.mappings.latest()
     return mapping ? mapping.clientToWorld(pointerClient.x, pointerClient.y) : null
   })

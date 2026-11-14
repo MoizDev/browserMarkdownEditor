@@ -1,11 +1,14 @@
-import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
-import { openClassicPdf } from './pdfClassicOpen';
+import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
+import { createClassicPdfHealth } from './pdfClassicHealth';
+import type { ClassicPdfHealth } from './pdfClassicHealth';
 import { mapPool } from './pool';
 import { forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
 export interface PdfDocumentSession {
     readonly generation: number;
+    readonly health: ClassicPdfHealth;
     acquire(): Promise<{ document: PDFDocumentProxy; release(): void }>;
     acquirePage(index0: number, consumer: 'render' | 'text' | 'thumbnail' | 'agent', signal?: AbortSignal): Promise<PdfPageLease>;
     acquireRender(index0: number, signal?: AbortSignal): Promise<PdfPageLease>;
@@ -22,9 +25,10 @@ const aborted = () => new DOMException('PDF operation cancelled', 'AbortError');
  * the document. In particular, an old surface cannot destroy a new one's proxy. */
 export function createPdfDocumentSession(bytes: Uint8Array, generation: number, purpose: 'viewer' | 'agent' = 'viewer'): PdfDocumentSession {
     const opening = new AbortController();
+    const health = createClassicPdfHealth();
     let taskReady = false;
-    const loadingTask = openClassicPdf({ bytes, purpose, signal: opening.signal }).then(openedTask => { taskReady = true; return openedTask; });
-    const loadedDocument = loadingTask.then(openedTask => openedTask.promise);
+    let loadingTask: Promise<PDFDocumentLoadingTask> | undefined = openClassicPdf({ bytes, purpose, signal: opening.signal, diagnostic: health.record, progress: health.progress }).then(openedTask => { taskReady = true; return openedTask; });
+    let loadedDocument: Promise<PDFDocumentProxy> | undefined = loadingTask.then(loadClassicPdf);
     // A pane can be closed before its first consumer awaits worker startup.
     void loadedDocument.catch(() => {});
     let closing = false;
@@ -41,7 +45,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
     function makeEntry(index: number, doc: PDFDocumentProxy): Entry {
         const entry: Entry = {
             owner, index, users: 0, visible, current: currentPage, rendered: false, lastUsed: 0,
-            promise: doc.getPage(index + 1),
+            promise: health.guard(doc.getPage(index + 1)),
             evict() {
                 if (entry.users || pages.get(index) !== entry) return;
                 if (!entry.page) {
@@ -67,12 +71,17 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
             if (--leases === 0) finish?.();
         };
     }
+    function documentReady(): Promise<PDFDocumentProxy> {
+        if (closing || !loadedDocument) return Promise.reject(aborted());
+        return health.guard(loadedDocument);
+    }
     return {
         generation,
+        health,
         async acquire() {
             const release = hold();
             try {
-                const doc = await loadedDocument;
+                const doc = await documentReady();
                 if (closing) throw aborted();
                 return { document: doc, release };
             } catch (error) { release(); throw error; }
@@ -82,7 +91,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
             const releaseDocument = hold();
             let entry: Entry | undefined;
             try {
-                const doc = await loadedDocument;
+                const doc = await documentReady();
                 if (closing || signal?.aborted) throw aborted();
                 if (!Number.isInteger(index0) || index0 < 0 || index0 >= doc.numPages) throw new RangeError('PDF page is outside this document');
                 entry = pages.get(index0);
@@ -102,7 +111,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
                     releaseDocument();
                 };
                 try {
-                    const page = await entry.promise;
+                    const page = await health.guard(entry.promise, signal);
                     if (closing || signal?.aborted) throw aborted();
                     return { page, release };
                 } catch (error) { release(); throw error; }
@@ -185,15 +194,19 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
         dispose() {
             if (disposal) return disposal;
             closing = true;
+            health.close();
             for (const release of handoffs.values()) release();
             forgetParsedPages(owner);
             // Startup has no lease yet; once loaded, retain the original
             // document/page lease ordering rather than destroying mid-render.
             if (!taskReady) opening.abort();
+            const pendingTask = loadingTask;
+            loadingTask = undefined;
+            loadedDocument = undefined;
             disposal = (async () => {
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
-                const loaded = await loadingTask.catch(() => undefined);
-                await loaded?.destroy();
+                const loaded = await pendingTask?.catch(() => undefined);
+                if (loaded) await closeClassicPdf(loaded, health.stalled);
                 pages.clear();
             })();
             return disposal;

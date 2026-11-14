@@ -13,3 +13,4 @@ export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKey
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
 export { attachPlatformPane } from './attachPlatformPane';
+export { reportWorkerMemory, releaseWorkerMemory } from './workerMemory';

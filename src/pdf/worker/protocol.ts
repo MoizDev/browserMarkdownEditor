@@ -1,4 +1,5 @@
 import type { PageGeometry } from '../../platform/types';
+import type { PdfiumJbig2Regions } from '../engine/pdfium/imageRegions.types';
 import type { MainMessage, WorkerMessage } from '../../platform/workers/envelope';
 import type { BackendInfo, DocInfo, EngineLimits, FontSpec, PageComplexity, RawOutlineNode, RawPdfLink, DeviceRect, PdfEngineRole } from '../engine/types';
 import type { FigureTag, Schema2PageText, LineTable } from '../text/types';
@@ -105,6 +106,7 @@ export interface PdfEngineOps {
     'page.links': { args: PageArgs; result: RawPdfLink[] };
     'page.emphasisProbe': { args: PageProbeArgs; result: PageProbeResult };
     'page.complexity': { args: PageArgs; result: PageComplexity };
+    'page.imageRegions': { args: PageArgs; result: PdfiumJbig2Regions };
     'page.release': { args: PageArgs; result: Record<string, never> };
     'doc.outline': { args: { docKey: PdfDocKey }; result: RawOutlineNode[] };
     'doc.attachment': { args: { docKey: PdfDocKey; index: number; maxBytes: number }; result: ArrayBuffer };

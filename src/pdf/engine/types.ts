@@ -1,4 +1,5 @@
 import type { PageGeometry } from '../../platform/types';
+import type { PdfiumJbig2Regions } from './pdfium/imageRegions.types';
 import type { RawPdfLink, PdfLinkDestination } from '../pdfLinkModel';
 import type { RawPageText as ProjectableRawPageText } from '../text/types';
 
@@ -138,6 +139,7 @@ export interface BackendDoc {
     pageCount(): number;
     page(index: number): PageGeometry & { userUnit: 1 };
     complexity(index: number): PageComplexity;
+    imageRegions(index: number): PdfiumJbig2Regions;
     render(request: RenderRequest): RenderJob;
     text(index: number): RawPageText;
     links(index: number): RawPdfLink[];

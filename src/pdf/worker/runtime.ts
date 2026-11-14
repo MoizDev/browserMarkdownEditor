@@ -92,7 +92,7 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 const off = await runPdfRenderJob(item.doc.render(req), bounds, hooks);
                 let pixels = off.pixels, emphasisResult: { eligibleGlyphs: number; changedPixels: number } | undefined;
                 if (request.variant === 'emphasis') {
-                    const plan = buildEmphasisPlan(rawPage(item, page), { locale: request.emphasis.locale, deviceScale: request.scale });
+                    const plan = buildEmphasisPlan(rawPage(item, page), { locale: request.emphasis.locale ?? 'en', deviceScale: request.scale });
                     let changedPixels = 0;
                     if (plan.eligibleGlyphs) {
                         item.clone ??= item.doc.openEmphasisClone?.();
@@ -109,8 +109,10 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 ctx.transfer(pixels); return { ...request, pixels, w: off.w, h: off.h, heapBytes: backend.heapBytes(),
                     ms: { load: 0, render: performance.now() - start, copy: 0 }, ...(emphasisResult ? { emphasisResult } : {}) };
             }),
+            'page.geometry': serial((value, ctx) => { const { args, key, item } = lookup(value); return geometry(key, item, pageNumber(args.page, item), ctx); }),
             'page.links': serial((value, ctx) => { const { args, key, item } = lookup(value), page = pageNumber(args.page, item); geometry(key, item, page, ctx); return item.doc.links(page); }),
             'page.complexity': serial(value => { const { args, item } = lookup(value); return item.doc.complexity(pageNumber(args.page, item)); }),
+            'page.imageRegions': serial(value => { const { args, item } = lookup(value); return item.doc.imageRegions(pageNumber(args.page, item)); }),
             'page.release': serial(value => { const { args, item } = lookup(value), page = pageNumber(args.page, item); item.raw.delete(page); item.doc.releasePage(page); item.clone?.releasePage(page); return {}; }),
             'doc.outline': serial(value => { const { item } = lookup(value); return item.doc.outline({ maxDepth: 64, maxNodes: 20_000 }); }),
             'doc.attachment': serial((value, ctx) => { const { args, item } = lookup(value); if (!Number.isSafeInteger(args.index) || !Number.isSafeInteger(args.maxBytes) || (args.maxBytes as number) < 0 || (args.maxBytes as number) > 0x7fffffff) throw bad('RangeError', 'Invalid attachment request'); const data = item.doc.attachment(args.index as number, args.maxBytes as number); const buffer = data.slice().buffer as ArrayBuffer; ctx.transfer(buffer); return buffer; }),

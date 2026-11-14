@@ -11,27 +11,27 @@ export function heapView(runtime: PdfiumRuntime, pointer: number, bytes: number)
     return new DataView(heap.buffer, heap.byteOffset + pointer, bytes);
 }
 
-export function withPdfiumMemory<T>(runtime: PdfiumRuntime, bytes: number, use: (pointer: number) => T): T {
+export function withPdfiumMemory<T>(runtime: PdfiumRuntime, bytes: number, run: (pointer: number) => T): T {
     const pointer = runtime.malloc(bytes);
     try {
         heapView(runtime, pointer, bytes);
         runtime.HEAPU8.fill(0, pointer, pointer + bytes);
-        return use(pointer);
+        return run(pointer);
     } finally {
         runtime.free(pointer);
     }
 }
 
 /** PDFium takes a NUL-terminated UTF-8 password; embedded NUL cannot round-trip. */
-export function withPdfiumPassword<T>(runtime: PdfiumRuntime, password: string | undefined, use: (pointer: number) => T): T {
-    if (password === undefined) return use(0);
+export function withPdfiumPassword<T>(runtime: PdfiumRuntime, password: string | undefined, run: (pointer: number) => T): T {
+    if (password === undefined) return run(0);
     if (password.includes('\0')) throw new PdfEngineError('UnsupportedSecurity', 'PDF password contains an unsupported NUL');
     const bytes = new TextEncoder().encode(password);
     if (bytes.length > 1024 * 1024) throw new PdfEngineError('ResourceLimit', 'PDF password is too long');
     try {
         return withPdfiumMemory(runtime, bytes.length + 1, pointer => {
             runtime.HEAPU8.set(bytes, pointer);
-            try { return use(pointer); }
+            try { return run(pointer); }
             finally { if (!runtime.aborted) runtime.HEAPU8.fill(0, pointer, pointer + bytes.length + 1); }
         });
     } finally { bytes.fill(0); }

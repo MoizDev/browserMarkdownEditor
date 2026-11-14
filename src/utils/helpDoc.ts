@@ -564,6 +564,8 @@ function helloWorld() {
 }
 \`\`\`
 
+Code blocks may use backticks or tildes (at least three matching characters; the closing run may be longer). In Reading mode the fence lines stay hidden; Copy code copies only the lines between them. Use mermaid after either opening fence to draw a diagram. In Edit mode, move the caret into the block to reveal its source.
+
 ### Tables
 | Syntax | Description |
 | ----------- | ----------- |

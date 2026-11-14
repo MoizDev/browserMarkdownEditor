@@ -44,7 +44,7 @@ interface RunGlyph { glyph: Glyph; op: number; from: number; to: number }
  * so TextItem merging/splitting and visual column order cannot move a prefix.
  * Ligatures are indivisible: a prefix ending INSIDE one leaves that glyph alone.
  * The shared Unicode policy currently selects Latin words only. */
-export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, enabled = true) {
+function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>) {
     const result: PdfNativeEmphasisResult = { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
         supported: version === PDF_EMPHASIS_RENDERER_VERSION,
         reason: version === PDF_EMPHASIS_RENDERER_VERSION ? undefined : 'renderer-version' };
@@ -52,7 +52,6 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
     const fontIds = new Map<number, string>();
     try {
         if (result.supported) {
-            const list = await page.getOperatorList();
             let text = '', glyphs: RunGlyph[] = [], fontId = '', codeUnits = 0;
             let annotation = false;
             const fonts: string[] = [];
@@ -110,6 +109,19 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
         paints.clear(); fontIds.clear();
     }
 
+    return { result, paints, fontIds };
+}
+
+export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, enabled = true) {
+    let plan: ReturnType<typeof makePdfEmphasisPlan>;
+    try {
+        plan = makePdfEmphasisPlan(await page.getOperatorList());
+    } catch {
+        plan = { result: { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
+            supported: false, reason: 'glyph-data' }, paints: new Map(), fontIds: new Map() };
+    }
+    const { paints, fontIds } = plan;
+    const result = { ...plan.result };
     const originalFillText = ctx.fillText;
     const originalFill = ctx.fill;
     let queue: Paint[] | undefined, cursor = 0;

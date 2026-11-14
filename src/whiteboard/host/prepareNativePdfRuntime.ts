@@ -50,9 +50,12 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     const tokenCurrent = (token: RenderToken) => {
         if (token.documentId !== identity.documentId || token.session !== identity.session || token.vaultEpoch !== identity.vaultActivation) return false;
         const source = host.identity(identity.documentId), outer = host.outerIdentity(identity.documentId);
-        return [source, outer].some(candidate => !!candidate && candidate.kind === 'pdfInk'
-            && candidate.session === token.session && candidate.vaultActivation === token.vaultEpoch
-            && candidate.bytesGeneration === token.bytesGeneration && host.isCurrent(candidate));
+        return !!source && !!outer && source.kind === 'pdfInk' && outer.kind === 'pdfInk'
+            && source.documentId === token.documentId && outer.documentId === token.documentId
+            && source.session === token.session && outer.session === token.session
+            && source.vaultActivation === token.vaultEpoch && outer.vaultActivation === token.vaultEpoch
+            && source.bytesGeneration <= token.bytesGeneration && token.bytesGeneration <= outer.bytesGeneration
+            && host.isCurrent(source) && host.isCurrent(outer);
     };
     let sources: SourceOwnerPort;
     try {
@@ -63,6 +66,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     let media: MediaStore | undefined, render: ReturnType<typeof createBoardRenderServices> | undefined;
     let serializer: ReturnType<typeof createSerializerSession> | undefined, owned: OwnedBoardRuntime | undefined;
     const creators: MediaLease[] = [];
+    const verifiedMedia = new WeakMap<Blob, MediaId>();
     let disposed = false, transferred = false;
     const releaseCreators = () => { for (const lease of creators.splice(0)) lease.release(); };
     const dispose = () => {
@@ -93,6 +97,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
             const blob = await accepted.readMedia(name, signal);
             check();
             if (blob.size !== entry.bytes || await hashMedia(blob, signal) !== entry.id) throw new Error(`PDF ink media is corrupt: ${entry.id}`);
+            verifiedMedia.set(blob, entry.id);
             creators.push(store.retain(entry.id, 'journal')); store.put(entry.id, blob); store.setFile(entry.id, entry.file);
         })));
         const failed = loads.find(result => result.status === 'rejected');
@@ -166,6 +171,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                                 recoverySignal.throwIfAborted();
                                 if (asset.file !== null || !isCurrent() || await hashMedia(asset.blob, recoverySignal) !== asset.id || !isCurrent()) throw new Error('Recovered PDF embedded media is invalid');
                                 const id = asset.id as MediaId;
+                                verifiedMedia.set(asset.blob, id);
                                 leases.push(store.retain(id, 'journal')); store.put(id, asset.blob);
                             }
                             return { files: new Map<MediaId, string>(), release() { for (const lease of leases) lease.release(); } };
@@ -196,8 +202,10 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                             async restore(restoreSignal) {
                                 for (const item of held) {
                                     restoreSignal.throwIfAborted();
-                                    if (released || !current() || item.blob.size !== item.bytes || await hashMedia(item.blob, restoreSignal) !== item.id) {
-                                        throw new Error(`PDF embedded media is unavailable or corrupt: ${item.id}`);
+                                    if (released || !current() || item.blob.size !== item.bytes) throw new Error(`PDF embedded media is unavailable: ${item.id}`);
+                                    if (verifiedMedia.get(item.blob) !== item.id) {
+                                        if (await hashMedia(item.blob, restoreSignal) !== item.id) throw new Error(`PDF embedded media is corrupt: ${item.id}`);
+                                        verifiedMedia.set(item.blob, item.id);
                                     }
                                 }
                                 restoreSignal.throwIfAborted();

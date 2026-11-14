@@ -1,3 +1,4 @@
+import { preflightLegacyJson } from '../preflight';
 import { ReportBuilder } from '../report';
 import { readStoreFields } from './storeFields';
 
@@ -7,6 +8,8 @@ export interface LegacyEnvelope {
     readonly session: LegacyObject | null;
     readonly ui: LegacyObject | null;
     readonly paper: LegacyObject | null;
+    readonly extras: LegacyObject;
+    readonly documentExtras: LegacyObject;
 }
 export function object(value: unknown): LegacyObject | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as LegacyObject : null;
@@ -23,20 +26,27 @@ const SEQUENCES: Readonly<Record<string, number>> = {
 };
 
 export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyEnvelope | null {
-    const empty: LegacyEnvelope = { records: [], session: null, ui: null, paper: null };
-    if (text.length > 256 * 1024 * 1024) { report.refuse(null, 'Drawing exceeds the import size limit'); return null; }
+    const empty: LegacyEnvelope = { records: [], session: null, ui: null, paper: null,
+        extras: Object.create(null) as LegacyObject, documentExtras: Object.create(null) as LegacyObject };
+    try { preflightLegacyJson(text); }
+    catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Drawing exceeds an import limit'); return null; }
     if (!text.trim()) return empty;
     let root: LegacyObject | null;
     try { root = object(JSON.parse(text.replace(/^\uFEFF/, ''))); }
     catch { report.refuse(null, 'Not a drawing this app can read'); return null; }
     if (!root) { report.refuse(null, 'Invalid drawing envelope'); return null; }
+    const extras: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(root)) if (key !== 'document') {
+        extras[key] = value;
+        if (key !== 'ui' && key !== 'session' && key !== 'paper') report.refuse(null, `Unknown envelope field ${key}`);
+    }
     const document = object(root.document);
     if (!document) {
         if ('document' in root) { report.refuse(null, 'Invalid document record'); return null; }
         if (Object.keys(root).some(key => key !== 'paper' && key !== 'ui' && key !== 'session')) {
             report.refuse(null, 'Unrecognized drawing envelope'); return null;
         }
-        return { ...empty, session: object(root.session), ui: object(root.ui), paper: object(root.paper) };
+        return { ...empty, extras, session: object(root.session), ui: object(root.ui), paper: object(root.paper) };
     }
     const store = object(document.store), schema = object(document.schema);
     if (!store || !schema) { report.refuse(null, 'Incomplete drawing document'); return null; }
@@ -59,5 +69,10 @@ export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyE
             records.push(record);
         }
     }
-    return { records, session: object(root.session), ui: object(root.ui), paper: object(root.paper) };
+    const documentExtras: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(document)) if (key !== 'store') {
+        documentExtras[key] = value;
+        if (key !== 'schema') report.refuse(null, `Unknown document field ${key}`);
+    }
+    return { records, session: object(root.session), ui: object(root.ui), paper: object(root.paper), extras, documentExtras };
 }

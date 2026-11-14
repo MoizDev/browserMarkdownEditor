@@ -49,8 +49,9 @@ export function compositeEmphasis(off: Uint8Array | Uint8ClampedArray, on: Uint8
     const pixels = new Uint8Array(off);
     let changedPixels = 0;
     for (let i = 0; i < mask.length; i++) {
-        if (!mask[i]) continue;
         const p = i * 4;
+        if (off[p + 3] !== 255 || on[p + 3] !== 255) throw new RangeError('Emphasis raster must be opaque');
+        if (!mask[i]) continue;
         if (off[p] !== on[p] || off[p + 1] !== on[p + 1] || off[p + 2] !== on[p + 2] || off[p + 3] !== on[p + 3]) changedPixels++;
         pixels[p] = on[p]; pixels[p + 1] = on[p + 1]; pixels[p + 2] = on[p + 2]; pixels[p + 3] = on[p + 3];
     }

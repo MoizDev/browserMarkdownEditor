@@ -492,6 +492,9 @@ export interface FileSystemContextValue {
   /** Board media are content-addressed but retain their actual collision-free leaf name. */
   readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
   putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
+  /** Copy a verified pre-conversion backup out of Trash without removing it. */
+  restoreConversionCopy: (request: BoardAssetAccess, item: TrashItem) => Promise<string>;
+  copyTrashFile: (item: TrashItem, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;

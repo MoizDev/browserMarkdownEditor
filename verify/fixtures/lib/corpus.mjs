@@ -62,7 +62,20 @@ export async function recordManifests(records) {
             delete fixture.stream;
             return fixture;
         });
-        await writeManifest(resolve(REPO, 'verify/fixtures', stream, 'manifest.json'), stream, fixtures);
+        const manifestPath = resolve(REPO, 'verify/fixtures', stream, 'manifest.json');
+        let frozen = [];
+        try {
+            frozen = JSON.parse(await readFile(manifestPath, 'utf8')).fixtures;
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        for (const previous of frozen) {
+            const current = fixtures.find(record => record.id === previous.id);
+            if (!current || current.sha256 !== previous.sha256 || current.bytes !== previous.bytes) {
+                throw new Error(`Cannot replace/remove frozen fixture ${previous.id}; add a reviewed new fixture identity instead`);
+            }
+        }
+        await writeManifest(manifestPath, stream, fixtures);
     }
     const geometry = records.filter(record => record.invocation === 'platform/geometry').map(record => {
         const fixture = { ...record, canonicalManifest: 'verify/fixtures/platform/manifest.json' };

@@ -35,6 +35,8 @@ export function resolveEmbedCandidate(input: string, environment: UrlEnvironment
 }
 export interface EmbedLease {
     readonly element: HTMLIFrameElement;
+    /** Call on visibility or source changes; hiding or changing URL revokes consent. */
+    update(visible: boolean, input: string): void;
     /** Hide, URL change, close or reload must dispose; showing again requires fresh consent. */
     dispose(): void;
 }
@@ -96,6 +98,11 @@ export async function activateEmbed(options: {
         signal.removeEventListener('abort', abort);
         options.signal?.addEventListener('abort', dispose, { once: true });
         if (options.signal?.aborted) { dispose(); throw options.signal.reason; }
-        return { element: frame.frame, dispose };
+        return { element: frame.frame,
+            update(visible, input) {
+                if (closed) return;
+                if (!visible || input !== options.input || !options.current(identity) || !options.containmentApproved()
+                    || enabledOrigins(options.manifest)?.join(' ') !== origins.join(' ')) dispose();
+            }, dispose };
     } catch (error) { dispose(); throw error; }
 }

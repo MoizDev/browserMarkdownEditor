@@ -1,9 +1,12 @@
-import type { NodeId } from '../model/ids';
+import type { NodeId, ParentId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
+import { compareOrder } from '../model/orderKey';
 
 export interface SceneRecordPin {
+    readonly nodeCount: number;
     get(id: NodeId): Node | undefined;
     values(): Iterable<Node>;
+    children(parent: ParentId): Iterable<Node>;
     release(): void;
 }
 export interface SceneRecordStore {
@@ -15,13 +18,17 @@ export interface SceneRecordStore {
 type Lease = { release(): void };
 type Retain = (node: Node) => Lease;
 interface Value { readonly node: Node; readonly lease: Lease; refs: number }
-interface Link { readonly value: Value; readonly left: Link | null; readonly right: Link | null; readonly height: number; refs: number }
+interface Link { readonly value: Value; readonly left: Link | null; readonly right: Link | null; readonly height: number; readonly count: number; refs: number }
+type Compare = (a: Node, b: Node) => number;
 const height = (node: Link | null) => node?.height ?? 0;
+const countLinks = (node: Link | null) => node?.count ?? 0;
+const idCompare: Compare = (a, b) => a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+const parentCompare: Compare = (a, b) => a.parent === b.parent ? compareOrder(a, b) : a.parent < b.parent ? -1 : 1;
 
 /** A path-copied AVL owns its links and values independently of the live mutable model. */
 export async function createSceneRecordStore(initial: Iterable<Node>, retain: Retain,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<SceneRecordStore> {
-    let root: Link | null = null, disposed = false, scheduled = false, failure: unknown;
+    let root: Link | null = null, parentRoot: Link | null = null, disposed = false, scheduled = false, failure: unknown;
     const pending: Link[] = [];
     let waiters: { resolve(): void; reject(error: unknown): void }[] = [];
     const schedule = () => {
@@ -57,7 +64,7 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
     const keep = (link: Link | null): Link | null => { if (link) link.refs++; return link; };
     const make = (value: Value, left: Link | null, right: Link | null): Link => {
         value.refs++; keep(left); keep(right);
-        return { value, left, right, height: 1 + Math.max(height(left), height(right)), refs: 1 };
+        return { value, left, right, height: 1 + Math.max(height(left), height(right)), count: 1 + countLinks(left) + countLinks(right), refs: 1 };
     };
     // Arguments are borrowed; the returned root owns one reference. Rotations
     // allocate only the affected path and share every untouched subtree/value.
@@ -90,69 +97,81 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
         }
         return make(value, left, right);
     };
-    const insert = (link: Link | null, value: Value): Link => {
+    const insert = (link: Link | null, value: Value, compare: Compare): Link => {
         if (!link) return make(value, null, null);
-        const id = value.node.id, current = link.value.node.id;
-        if (id === current) return make(value, link.left, link.right);
-        if (id < current) {
-            const next = insert(link.left, value);
+        const order = compare(value.node, link.value.node);
+        if (!order) return make(value, link.left, link.right);
+        if (order < 0) {
+            const next = insert(link.left, value, compare);
             try { return balance(link.value, next, link.right); } finally { releaseLink(next); }
         }
-        const next = insert(link.right, value);
+        const next = insert(link.right, value, compare);
         try { return balance(link.value, link.left, next); } finally { releaseLink(next); }
     };
-    const remove = (link: Link | null, id: NodeId): Link | null => {
+    const remove = (link: Link | null, node: Node, compare: Compare): Link | null => {
         if (!link) return null;
-        const current = link.value.node.id;
-        if (id < current) {
-            const next = remove(link.left, id);
+        const order = compare(node, link.value.node);
+        if (order < 0) {
+            const next = remove(link.left, node, compare);
             try { return balance(link.value, next, link.right); } finally { releaseLink(next); }
         }
-        if (id > current) {
-            const next = remove(link.right, id);
+        if (order > 0) {
+            const next = remove(link.right, node, compare);
             try { return balance(link.value, link.left, next); } finally { releaseLink(next); }
         }
         if (!link.left) return keep(link.right);
         if (!link.right) return keep(link.left);
         let successor = link.right;
         while (successor.left) successor = successor.left;
-        const next = remove(link.right, successor.value.node.id);
+        const next = remove(link.right, successor.value.node, compare);
         try { return balance(successor.value, link.left, next); } finally { releaseLink(next); }
     };
-    const stageRecord = (base: Link | null, record: Node): Link => {
-        const node = Object.freeze(createNode(record)), lease = retain(node), value: Value = { node, lease, refs: 1 };
-        try { return insert(base, value); } finally { releaseValue(value); }
+    const find = (base: Link | null, id: NodeId): Value | undefined => {
+        let cursor = base;
+        while (cursor) {
+            const key = cursor.value.node.id;
+            if (id === key) return cursor.value;
+            cursor = id < key ? cursor.left : cursor.right;
+        }
+        return undefined;
     };
     const update = (records: Iterable<Node>, removed: Iterable<NodeId>) => {
         if (disposed) throw new Error('Scene record store is disposed');
-        let staged = keep(root);
+        let staged = keep(root), stagedParents = keep(parentRoot);
         try {
             for (const id of removed) {
-                const next = remove(staged, id);
+                const old = find(staged, id);
+                if (!old) continue;
+                const next = remove(staged, old.node, idCompare);
                 releaseLink(staged); staged = next;
+                const nextParents = remove(stagedParents, old.node, parentCompare);
+                releaseLink(stagedParents); stagedParents = nextParents;
             }
             for (const record of records) {
-                const next = stageRecord(staged, record);
-                releaseLink(staged); staged = next;
+                const node = Object.freeze(createNode(record)), lease = retain(node), value: Value = { node, lease, refs: 1 };
+                try {
+                    const old = find(staged, node.id);
+                    if (old) {
+                        const nextParents = remove(stagedParents, old.node, parentCompare);
+                        releaseLink(stagedParents); stagedParents = nextParents;
+                    }
+                    const next = insert(staged, value, idCompare);
+                    releaseLink(staged); staged = next;
+                    const nextParents = insert(stagedParents, value, parentCompare);
+                    releaseLink(stagedParents); stagedParents = nextParents;
+                } finally { releaseValue(value); }
             }
-        } catch (error) { releaseLink(staged); throw error; }
-        const previous = root; root = staged; releaseLink(previous);
+        } catch (error) { releaseLink(staged); releaseLink(stagedParents); throw error; }
+        const previous = root, previousParents = parentRoot;
+        root = staged; parentRoot = stagedParents; releaseLink(previous); releaseLink(previousParents);
     };
     const pin = (): SceneRecordPin => {
         if (disposed) throw new Error('Scene record store is disposed');
-        let held = keep(root), released = false;
+        let held = keep(root), heldParents = keep(parentRoot), released = false;
         const guard = () => { if (released) throw new Error('Scene record pin is released'); };
         return {
-            get(id) {
-                guard();
-                let cursor = held;
-                while (cursor) {
-                    const key = cursor.value.node.id;
-                    if (id === key) return cursor.value.node;
-                    cursor = id < key ? cursor.left : cursor.right;
-                }
-                return undefined;
-            },
+            get nodeCount() { guard(); return countLinks(held); },
+            get(id) { guard(); return find(held, id)?.node; },
             *values() {
                 guard();
                 const stack: Link[] = []; let cursor = held;
@@ -164,10 +183,27 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
                     cursor = next.right;
                 }
             },
-            release() { if (!released) { released = true; releaseLink(held); held = null; } },
+            *children(parent) {
+                guard();
+                const stack: Link[] = []; let cursor = heldParents;
+                while (cursor || stack.length) {
+                    guard();
+                    while (cursor) {
+                        if (cursor.value.node.parent < parent) cursor = cursor.right;
+                        else { stack.push(cursor); cursor = cursor.left; }
+                    }
+                    if (!stack.length) break;
+                    const next = stack.pop()!, node = next.value.node;
+                    if (node.parent !== parent) break;
+                    yield node; cursor = next.right;
+                }
+            },
+            release() {
+                if (!released) { released = true; releaseLink(held); releaseLink(heldParents); held = heldParents = null; }
+            },
         };
     };
-    const dispose = () => { if (!disposed) { disposed = true; releaseLink(root); root = null; } };
+    const dispose = () => { if (!disposed) { disposed = true; releaseLink(root); releaseLink(parentRoot); root = parentRoot = null; } };
     let count = 0, started = performance.now();
     try {
         signal?.throwIfAborted();
@@ -179,8 +215,7 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
                 await drain();
                 count = 0; started = performance.now();
             }
-            const next = stageRecord(root, node);
-            releaseLink(root); root = next; count++;
+            update([node], []); count++;
         }
         signal?.throwIfAborted();
         return { update, pin, dispose, drain };

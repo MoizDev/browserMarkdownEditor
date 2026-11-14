@@ -50,8 +50,9 @@ interface FindResource {
 /** The viewer mounts the returned chrome layer after its page layer and calls
  * onView from the same overlay frame that positions links and the mirror. */
 export function usePdfTiledFind(options: PdfTiledFindOptions) {
-    const live = useRef(options), find = useRef<PdfFindBarHandle>(null);
+    const live = useRef(options), find = useRef<PdfFindBarHandle>(null), mounted = useRef(false);
     useLayoutEffect(() => { live.current = options; });
+    useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
     const { session, document } = options;
     const subscribeEpoch = useCallback((listener: () => void) => subscribePdfFontEpoch(document.docKey, listener), [document.docKey]);
     const readEpoch = useCallback(() => getPdfFontEpoch(document.docKey), [document.docKey]);
@@ -76,7 +77,14 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
             beginReveal: (page, box) => live.current.beginReveal && live.current.correctReveal ? live.current.beginReveal(page, box) : null,
             correctReveal: (page, box, revision) => live.current.correctReveal?.(page, box, revision),
             publish: rects => layer.setRects(rects),
-            error: error => live.current.notify(error instanceof Error ? error.message : 'PDF text highlights are unavailable.'),
+            error: error => {
+                // Old highlight work can settle during a surface handoff, before
+                // passive resource disposal. It cannot notify the new document.
+                const owner = live.current;
+                if (!mounted.current || owner.session !== session || owner.document !== document || !owner.isVisible ||
+                    !session.isCurrent() || document.closed || error instanceof Error && error.name === 'AbortError') return;
+                owner.notify(error instanceof Error && error.message.trim() ? error.message : 'PDF text highlights are unavailable.');
+            },
         });
         setStored({ session, document, reader, geometry, layer, highlights });
         return () => { highlights.dispose(); geometry.dispose(); };

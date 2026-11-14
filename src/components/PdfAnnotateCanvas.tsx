@@ -4,7 +4,7 @@ import type { Editor, TLAssetStore, TLEditorSnapshot, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
 import { setPdfRenderData } from '../utils/pdfRenderCache';
-import { revokePdfSource } from '../utils/pdfRole';
+import { canRebuildAnnotatedPdf, revokePdfSource } from '../utils/pdfRole';
 import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
 import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
@@ -207,6 +207,14 @@ function AnnotationLoadNotice() {
     </div></div>;
 }
 
+function AnnotationWriteSafetyNotice() {
+    return <div className="canvas-readonly-notice" role="alert" onContextMenu={event => event.preventDefault()}><div className="canvas-readonly-card">
+        <h2>PDF annotations are read-only</h2>
+        <p>This source has no current safe-write approval. Switch to View to read it. Signed, encrypted or unverified PDFs cannot be annotated in place.</p>
+        <p className="canvas-readonly-preserved">The original file has not been changed. No edits will be saved.</p>
+    </div></div>;
+}
+
 class AnnotationLoadBoundary extends Component<{ original: Uint8Array; children: ReactNode }, { failed: boolean }> {
     state = { failed: false };
     static getDerivedStateFromError() { return { failed: true }; }
@@ -222,7 +230,8 @@ export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
         // guard: no editor, pending serializer or rebuild capability survives it.
         if (reason) revokePdfSource(props.original);
     }, [reason, props.original]);
-    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : !canRebuildAnnotatedPdf(props.original) ? <AnnotationWriteSafetyNotice /> :
+        <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
 }
 
 function CheckedPdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
@@ -634,6 +643,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
         let firstPending = 0;
         const activePointers = new Set<number>();
         const flush = async (immediate = false) => {
+            if (!canRebuildAnnotatedPdf(original)) throw new Error('PDF safe-write approval was revoked; the original has not been changed');
             serializeTimerRef.current = null;
             const capturedRevision = revision;
             const stagedCache = new Map(overlayCacheRef.current);
@@ -729,6 +739,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snap
             // SVG/image work. Never publish a mixed snapshot and overlay, nor
             // poison the unchanged-page cache with that partial export.
             if (capturedRevision !== revision) { hasUnsavedRef.current = true; return; }
+            if (!canRebuildAnnotatedPdf(original)) { hasUnsavedRef.current = true; throw new Error('PDF safe-write approval was revoked during export; the original has not been changed'); }
             overlayCacheRef.current = stagedCache;
             firstPending = 0;
             setPdfRenderData(filePath, { original, overlays });

@@ -17,6 +17,7 @@ import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
 import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
+import { inspectPdfBytesWriteSafety } from './pdfWriteSafety';
 
 /**
  * pdf-lib's own pacing, switched off — for every load and save in the worker.
@@ -172,7 +173,14 @@ export async function buildAnnotatedPdf(
     // Re-check both if this is ever called from the main thread, or on a pdf-lib
     // upgrade. The two .slice()s this replaces cost a full extra copy of the
     // document EACH, on a path that runs every ~2.5s while annotating.
+    const originalSafety = await inspectPdfBytesWriteSafety(original);
+    if (originalSafety.kind !== 'safe') throw new PdfBuildRefused({ reason: 'unsafe-pdf', safety: originalSafety.kind });
+    if (outer) {
+        const outerSafety = await inspectPdfBytesWriteSafety(outer);
+        if (outerSafety.kind !== 'safe') throw new PdfBuildRefused({ reason: 'unsafe-pdf', safety: outerSafety.kind });
+    }
     const doc = await PDFDocument.load(original, LOAD_WITHOUT_TICKS);
+    const outerDoc = outer ? await PDFDocument.load(outer, LOAD_WITHOUT_TICKS) : undefined;
     const pages = doc.getPages();
 
     for (let i = 0; i < pages.length; i++) {
@@ -223,7 +231,6 @@ export async function buildAnnotatedPdf(
         page.pushOperators(popGraphicsState());
     }
 
-    const outerDoc = outer ? await PDFDocument.load(outer, LOAD_WITHOUT_TICKS) : undefined;
     const expected = await rebuildAttachmentTree(doc, outerDoc, original, new TextEncoder().encode(snapshot));
 
     // Flush deferred attachments/images BEFORE allocating the mark: pdf-lib

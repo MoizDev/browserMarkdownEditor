@@ -42,6 +42,7 @@ interface Pending {
     resolve(value: Cached): void;
     reject(error: unknown): void;
     releaseMemory?: () => void;
+    workerRequest?: Promise<unknown>;
 }
 
 export class MediaResidency implements PaintImageProvider {
@@ -102,7 +103,10 @@ export class MediaResidency implements PaintImageProvider {
         this.wanted = new Set([...visible, ...near]);
         this.near = new Set(near);
         for (const [key, entry] of this.cache) if (!this.wanted.has(key) && !entry.refs) this.drop(key, entry);
-        for (const [key, job] of this.pending) if (!this.wanted.has(key)) job.controller.abort();
+        for (const [key, job] of this.pending) {
+            if (!this.wanted.has(key)) job.controller.abort();
+            else if (job.workerRequest) this.worker.reprioritise(job.workerRequest, visible.has(key) ? 0 : 2);
+        }
         this.queue.sort((a, b) => Number(this.near.has(a.key)) - Number(this.near.has(b.key)));
     }
 
@@ -216,14 +220,18 @@ export class MediaResidency implements PaintImageProvider {
         try {
             const blob = source.blob.slice(0, source.blob.size, source.mime);
             try {
-                const result = await this.worker.request<{ bitmap: ImageBitmap; durationMs: number; frameCount: number }>('raster', { blob, mime: source.mime, animated: source.animated, frame: tile.frame,
+                const request = this.worker.request<{ bitmap: ImageBitmap; durationMs: number; frameCount: number }>('raster', { blob, mime: source.mime, animated: source.animated, frame: tile.frame,
                     sourceWidth: source.width, sourceHeight: source.height, x: geometry.sourceX, y: geometry.sourceY,
                     width: geometry.sourceWidth, height: geometry.sourceHeight, outputWidth: geometry.width, outputHeight: geometry.height },
                 job.identity, { priority: this.near.has(job.key) ? 2 : 0, deadlineMs: 10000, signal }, () => current());
+                job.workerRequest = request;
+                const result = await request;
+                job.workerRequest = undefined;
                 bitmap = result.bitmap;
                 durationMs = result.durationMs;
                 frameCount = result.frameCount;
             } catch (error) {
+                job.workerRequest = undefined;
                 await this.worker.recycle('media raster interrupted').catch(() => undefined);
                 if (!current()) throw error;
                 if (source.mime !== 'image/svg+xml') throw error;

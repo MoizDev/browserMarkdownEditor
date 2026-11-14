@@ -273,8 +273,12 @@ third-party code included (normally "none") · date.
 | `build/whiteboardSvgFrames.mjs` | lane w-q | SEC-3/4 | security §§5–6 | SEC-W2 exact-byte hashing/bundling helper; strict separate profile CSPs | none | 2026-11-13 |
 | `build/whiteboardSvgFrames.d.mts` | lane w-q | SEC-3/4 | security §§5–6 | Vite plugin declaration for fixed-frame build | none | 2026-11-13 |
 | `media/mips.ts` | lane w-q | F-MEDIA-001/003; SEC-4 | media §§4/9; rendering §8.4 | Bounded tile selection and mip geometry from the design | none | 2026-11-13 |
-| `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, shared worker, platform memory allocator and session token contracts | none | 2026-11-13 |
+| `media/residency.ts` | lane w-q | F-MEDIA-001/003/011; SEC-4 | media §§4–5/8–9; C4 | Renderer PaintImageProvider, shared worker priorities, platform memory allocator and session tokens | none | 2026-11-13 |
 | `media/animation.ts` | lane w-q | F-MEDIA-011; SEC-4 | media §5 | Largest-eight visible animation scheduler, playback-only state | none | 2026-11-13 |
+| `clipboard/rendition.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §2.3; text §4.1 | Fixed-shape rich text projection with inert DOM node construction | none | 2026-11-13 |
+| `clipboard/snapshot.ts` | lane w-q | F-CLIP-001/004; SEC-8/10 | clipboard §§2.1–2.3/2.5 | Model public graph, native encoder and immutable sample/media leases | none | 2026-11-13 |
+| `clipboard/encode.ts` | lane w-q | F-CLIP-001; SEC-10 | clipboard §§2.1–2.3/7 | Native payload, bounded inline bytes, browser CompressionStream and opaque cache-only ruling | none | 2026-11-13 |
+| `clipboard/copy.ts` | lane w-q | F-CLIP-001/004; SEC-10 | clipboard §§2.1–2.3/2.5 | Native clipboard event/API, exact cache-envelope matching and transactional host callbacks | none | 2026-11-13 |
 
 ## Text editing and spelling (lane w-i)
 

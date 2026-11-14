@@ -7,6 +7,7 @@ import { childrenOf, hasOpaqueDescendant, sheetOf, type BoardDoc } from '../mode
 import type { NodeId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { projectFrameMembership } from './frameMembership';
+import { projectBoardTransformPreview } from './transformProjection';
 import type { Vec2 } from './path';
 import { snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
 import { TranslationPlan } from './translation';
@@ -114,7 +115,11 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     try {
                         const membership = await projectFrameMembership({ runtime, doc: finalDoc, roots: roots.map(root => root.id), geometry: placementScope,
                             current: active, signal: request, cooperate: options.cooperate });
-                        assert(); finalDoc = membership.doc; ops.push(...membership.ops);
+                        assert(); finalDoc = membership.doc;
+                        if (membership.ops.length) {
+                            ops.push(...membership.ops);
+                            finalDoc = await projectBoardTransformPreview(doc, ops, { signal: request, current: active, cooperate: options.cooperate }); assert();
+                        }
                     } finally { placementScope.release(); }
                 }
                 final = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: finalDoc, signal: request, current: active, cooperate: options.cooperate }); assert();

@@ -32,7 +32,7 @@
 
 import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
-import type { AgentChange, HostResult, VaultToolHost } from '../types/vaultAgent';
+import type { AgentChange, ClosedPdfEmphasis, HostResult, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
 import { getView, type CanvasApplyResult, type CanvasShapePage, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
@@ -688,6 +688,15 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
     return ok(caption, undefined, [{ type: 'image', data: img.data, mimeType: img.mimeType }]);
 }
 
+function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
+    if (!emphasis) return '';
+    if (emphasis.kind === 'active') return ' (word emphasis applied)';
+    const reason = typeof emphasis.reason === 'string'
+        ? [...emphasis.reason.slice(0, 512)].map(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? ' ' : char).join('').replace(/\s+/g, ' ').trim().slice(0, 200)
+        : '';
+    return ` (word emphasis not applied${reason ? `: ${reason}` : ''})`;
+}
+
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
     if (!getView(path)?.canvas?.shapePage && !ctx.host.canvasShapePage) assertSupportedCanvasFormat(path);
@@ -725,7 +734,8 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             : await (await import('./pdfText')).renderPdfPage(bytes, target, max);
         ctx.ensureLive();
         if (!r.png) throw new ToolError(`page ${target} is past the end of "${path}", which has ${r.pageCount} page${r.pageCount === 1 ? '' : 's'}.`);
-        return pngResult(r.png, `${path}, page ${target} of ${r.pageCount}:`, `page ${target}`);
+        const emphasis = 'emphasis' in r ? r.emphasis : undefined;
+        return pngResult(r.png, `${path}, page ${target} of ${r.pageCount}${pdfEmphasisCaption(emphasis)}:`, `page ${target}`);
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {

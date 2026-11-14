@@ -9,6 +9,8 @@ import { subscribePenScale } from '../utils/penStyle';
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
 import { registerView, type DrawingViewInfo } from '../utils/viewRegistry';
 import { registerPending } from '../utils/unloadCoordinator';
+import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
+import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { captureRegion, createCanvasAgentOps, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel } from './canvasAgentOps';
 
 interface DrawingPaneProps {
@@ -49,14 +51,12 @@ function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: 
     try {
         // Files written before the `ui` block existed are plain snapshots;
         // destructuring just yields ui === undefined for those.
-        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: CanvasUiState };
+        const { ui, ...snapshot } = JSON.parse(content.trim()) as TLEditorSnapshot & { ui?: CanvasUiState };
         return { snapshot, ui };
     } catch (err) {
-        // Don't destroy an unreadable file: mounting blank would autosave over
-        // it on the first stroke. Better to show an empty canvas and let the
-        // user close the tab with the bytes still intact on disk.
-        console.error('Could not parse drawing (leaving the file untouched):', err);
-        return {};
+        // The outer guard rejects malformed JSON. Never turn an unexpected
+        // decoder failure into an editable blank either.
+        throw new Error('The drawing could not be loaded without losing content.', { cause: err });
     }
 }
 
@@ -67,7 +67,12 @@ function parseDrawingFile(content: string): { snapshot?: TLEditorSnapshot; ui?: 
  * CodeMirror uses, so dirty-tracking, autosave, Cmd+S and close-flush all work
  * unchanged.
  */
-export default function DrawingPane({ documentId, filePath, content, onContentChange, theme }: DrawingPaneProps) {
+export default function DrawingPane(props: DrawingPaneProps) {
+    const sniff = useMemo(() => sniffCanvas(props.content, props.filePath), [props.content, props.filePath]);
+    return canvasReadOnlyReason(sniff) ? <CanvasReadOnlyNotice sniff={sniff} /> : <LegacyDrawingPane {...props} />;
+}
+
+function LegacyDrawingPane({ documentId, filePath, content, onContentChange, theme }: DrawingPaneProps) {
     const onContentChangeRef = useRef(onContentChange);
     useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 

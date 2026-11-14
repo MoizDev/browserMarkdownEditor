@@ -45,6 +45,7 @@ export class TextLayoutClient {
     constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
         const changed = (key: FontKey) => { this.compatibleClasses.clear(); this.different = false; onFontArrival?.(key); };
         this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
+        // A worker FontFaceSet is shared; the request identity that relays an arrival is not the only affected board.
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
             if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
             const key = payload.key as Partial<FontKey> | null;

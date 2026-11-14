@@ -1,3 +1,4 @@
+import { preflightLegacyJson } from '../preflight';
 import { ReportBuilder } from '../report';
 import { readStoreFields } from './storeFields';
 
@@ -27,7 +28,8 @@ const SEQUENCES: Readonly<Record<string, number>> = {
 export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyEnvelope | null {
     const empty: LegacyEnvelope = { records: [], session: null, ui: null, paper: null,
         extras: Object.create(null) as LegacyObject, documentExtras: Object.create(null) as LegacyObject };
-    if (text.length > 256 * 1024 * 1024) { report.refuse(null, 'Drawing exceeds the import size limit'); return null; }
+    try { preflightLegacyJson(text); }
+    catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Drawing exceeds an import limit'); return null; }
     if (!text.trim()) return empty;
     let root: LegacyObject | null;
     try { root = object(JSON.parse(text.replace(/^\uFEFF/, ''))); }

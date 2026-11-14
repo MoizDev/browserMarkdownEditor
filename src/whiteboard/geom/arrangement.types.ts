@@ -8,7 +8,8 @@ export type ArrangementAction =
     | Readonly<{ kind: 'align'; mode: Align }>
     | Readonly<{ kind: 'distribute' | 'stack'; axis: Axis }>
     | Readonly<{ kind: 'pack' }>;
-export interface StretchServices extends ArrangementServices { readonly resize: ResizePlanServices }
+// This entry point is synchronous; whole-selection asynchronous planning uses its own driver.
+export interface StretchServices extends ArrangementServices { readonly resize: Extract<ResizePlanServices, { readonly kinds: unknown }> }
 export interface ArrangementServices {
     readonly geometry: ChangeGeometry;
     /** Current unclipped logical world bounds, including text-driven growth. */

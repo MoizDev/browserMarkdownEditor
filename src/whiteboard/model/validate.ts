@@ -40,7 +40,7 @@ const FIELDS = {
     text: ['text', 'color', 'size', 'font', 'align', 'autoSize', 'w', 'scale'],
     sticky: ['text', 'color', 'labelColor', 'size', 'font', 'align', 'valign', 'growY', 'fit', 'scale', 'url'],
     connector: ['route', 'start', 'end', 'bend', 'elbowMid', 'headStart', 'headEnd', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'label', 'labelAt', 'width', 'labelScale'],
-    polyline: ['points', 'spline', 'color', 'dash', 'size', 'width'],
+    polyline: ['points', 'startAttach', 'endAttach', 'spline', 'color', 'dash', 'size', 'width'],
     frame: ['w', 'h', 'name', 'color'],
     group: [],
     picture: ['w', 'h', 'media', 'crop', 'flipX', 'flipY', 'alt', 'inverted', 'playing', 'url'],
@@ -162,7 +162,7 @@ function richText(value: unknown): value is RichText {
         if (!object(block) || !closed(block, KEYS.block)
             || !known(block.kind, BLOCK_KINDS) || !integer(block.level, 0, 7)
             || (block.kind === 'p' && block.level !== 0) || !known(block.dir, VALUES.dir)
-            || (block.start !== undefined && (block.kind !== 'ol' || !number(block.start)))
+            || (block.start !== undefined && ((block.kind !== 'ol' && block.tail === undefined) || !number(block.start)))
             || (block.tail !== undefined && !rawArray(block.tail))
             || !Array.isArray(block.runs) || block.runs.length === 0) return false;
         for (let r = 0; r < block.runs.length; r++) {
@@ -281,6 +281,7 @@ function field(context: ValidationContext, nodeKind: NodeKind, nodeId: string, k
             code = 'V-10'; break;
         case 'text': case 'label': valid = (key === 'label' && value === null) || validRichText(value); code = 'V-11'; break;
         case 'start': case 'end': valid = end(value); code = 'V-8'; break; // Targets checked after cross-sheet normalization.
+        case 'startAttach': case 'endAttach': valid = value == null || end({ x: 0, y: 0, attach: value }); code = 'V-8'; break;
         case 'crop': valid = crop(value); code = 'V-12'; break;
         case 'media': valid = mediaReference(doc, value); code = 'V-9'; break;
         case 'preview': valid = preview(doc, value); code = 'V-9'; break;
@@ -486,10 +487,10 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
         const mode = context.samples.pressureMode(node.samples);
         if (node.pressure !== mode || (node.widthModel.id === 'pressure-linear-v1' && mode !== 'real')) return refuse('V-10', index, node.id, 'Stroke pressure and width model must agree with sealed sample pressure');
     }
-    if (node.kind === 'connector') {
+    if (node.kind === 'connector' || node.kind === 'polyline') {
         const sheet = sheetOf(doc, node.id);
         for (let i = 0; i < 2; i++) {
-            const attach = (i === 0 ? node.start : node.end).attach;
+            const attach = node.kind === 'connector' ? (i === 0 ? node.start : node.end).attach : i === 0 ? node.startAttach : node.endAttach;
             if (!attach) continue;
             const target = doc.nodes.get(attach.target);
             if (!target || target.id === node.id || target.kind === 'connector' || target.kind === 'group' || target.kind === 'opaque'
@@ -497,6 +498,26 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
         }
     }
     return OK;
+}
+function* boundPathsAcyclic(doc: BoardDoc): Generator<void, boolean> {
+    const states = new Map<NodeId, 1 | 2>();
+    for (const root of doc.nodes.values()) {
+        yield;
+        if (root.kind !== 'polyline' || states.has(root.id)) continue;
+        const pending: { node: typeof root; next: number }[] = [{ node: root, next: 0 }]; states.set(root.id, 1);
+        while (pending.length) {
+            yield;
+            const frame = pending[pending.length - 1];
+            if (frame.next === 2) { states.set(frame.node.id, 2); pending.pop(); continue; }
+            const attach = frame.next++ === 0 ? frame.node.startAttach : frame.node.endAttach;
+            if (!attach) continue;
+            const target = doc.nodes.get(attach.target);
+            if (!target || target.kind !== 'polyline') continue;
+            if (states.get(target.id) === 1) return false;
+            if (!states.has(target.id)) { states.set(target.id, 1); pending.push({ node: target, next: 0 }); }
+        }
+    }
+    return true;
 }
 // Load admission validates the root separately from runtime ops. Native major 1
 // is the editable format; raw lexemes remain reader-owned and are never parsed here.
@@ -571,6 +592,7 @@ function* loadedRootSteps(doc: BoardDoc): Generator<void, ValidationResult> {
             yield;
             if (typeof key !== 'string' || !MEDIA_HASH.test(key) || !integer(count, 1)) return bad('Invalid preserved media reference', 'V-9');
         }
+        if (!(yield* boundPathsAcyclic(doc))) return bad('Cyclic polyline attachment graph', 'V-8');
         return OK;
     } catch { return bad('Malformed loaded board'); }
 }
@@ -628,7 +650,7 @@ function incomingAttachments(context: ValidationContext, id: NodeId, index: numb
     if (!incoming) return OK;
     for (const connectorId of incoming) {
         const connector = context.doc.nodes.get(connectorId);
-        if (!connector || connector.kind !== 'connector') return refuse('V-8', index, connectorId, 'Attachment index refers to a missing connector');
+        if (!connector || (connector.kind !== 'connector' && connector.kind !== 'polyline')) return refuse('V-8', index, connectorId, 'Attachment index refers to a missing bound path');
         const result = finalNode(context, connector, index);
         if (!result.ok) return result;
     }
@@ -657,6 +679,14 @@ function finalSubtree(context: ValidationContext, id: NodeId, index: number, dep
 // subtree. A moved subtree already costs O(subtree) in the model's index upkeep.
 export function validateCommit(context: ValidationContext, touched: TouchedSet, forward: readonly Op[], opIndex: number): ValidationResult {
     try {
+        if (forward.some(op => op.t === 'create' && op.node.kind === 'polyline' && (op.node.startAttach || op.node.endAttach)
+            || op.t === 'set' && (op.key === 'startAttach' || op.key === 'endAttach'))) {
+            const graph = boundPathsAcyclic(context.doc);
+            for (;;) { const step = graph.next(); if (step.done) {
+                if (!step.value) return refuse('V-8', opIndex, null, 'Cyclic polyline attachment graph');
+                break;
+            } }
+        }
         for (const id of touched.nodes) {
             const node = context.doc.nodes.get(id);
             if (node) {

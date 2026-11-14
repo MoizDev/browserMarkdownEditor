@@ -19,6 +19,20 @@
     font-size: 13px;
 }
 .pdf-tiled-link { pointer-events: auto; }
+.pdf-tiled-copy-status {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    max-width: min(400px, 80vw);
+    padding: 6px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: none;
+}
 .pdf-tiled-notice {
     position: absolute;
     z-index: 13;

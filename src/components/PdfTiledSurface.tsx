@@ -3,7 +3,7 @@ import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
-import type { PdfTiledSource } from './PdfTiledView';
+import type { PdfTiledPresentation, PdfTiledSource } from '../pdf/session/hostTypes';
 import PdfTiledView from './PdfTiledView';
 import PdfPasswordCoordinator from './PdfPasswordCoordinator';
 
@@ -21,6 +21,7 @@ interface Props {
     openText(page?: number): void;
     openClassic(): void;
     onSource(source: PdfTiledSource): void;
+    onPresentation?(presentation: PdfTiledPresentation): void;
     onCapabilities(source: PdfTiledSource, capabilities: ReaderCapabilities): void;
     notify(message: string): void;
 }
@@ -32,6 +33,7 @@ export default function PdfTiledSurface(props: Props) {
     const identity = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(reading.identity.documentId), () => undefined);
     const [loaded, setLoaded] = useState<{ key: string; source: PdfTiledSource } | null>(null);
+    const [version, setVersion] = useState<{ source: PdfTiledSource; hash: string } | null>(null);
     const [error, setError] = useState<{ key: string; message: string } | null>(null);
     const [retry, setRetry] = useState(0);
     const [passwords, setPasswords] = useState<typeof import('../pdf/session/passwords') | null>(null);
@@ -77,6 +79,14 @@ export default function PdfTiledSurface(props: Props) {
         return () => { disposed = true; release?.(); };
     }, [key, reading.identity.documentId, props.visible, props.focused]);
     useEffect(() => { if (source?.session.isCurrent()) onSource(source); }, [onSource, source]);
+    useEffect(() => {
+        if (!source) return;
+        let active = true;
+        void source.version.then(value => {
+            if (active && source.session.isCurrent()) setVersion({ source, hash: value.hash });
+        }).catch(() => {});
+        return () => { active = false; };
+    }, [source]);
     const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} visible={props.visible && props.focused} /> : null;
     if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
@@ -85,7 +95,7 @@ export default function PdfTiledSurface(props: Props) {
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
         mirror={source.mirror} capturer={source.capturer} selectionState={source.selection} transition={source.transition} bridge={source.bridge}
-        filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={props.sourceHash}
+        filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={version?.source === source ? version.hash : undefined} onPresentation={props.onPresentation}
         findMemory={props.findMemory} onSearchVault={props.searchVault} onRotate={props.rotate}
         onCapabilities={reportCapabilities}
         onOpenTextView={props.openText} onNotice={props.notify} onOpenClassic={props.openClassic} />;

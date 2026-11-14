@@ -18,6 +18,8 @@ export function createNativeViewPlatform(options: {
     paneId: string;
     viewLease: number;
     readSheetId(): string;
+    captureRegion?: NonNullable<Services['session']['captureRegion']>;
+    captureBlob?: NonNullable<Services['session']['captureBlob']>;
     ports: NativeViewPorts;
 }): Services {
     const { host, identity, board, viewer, camera, paneId, viewLease, ports } = options;
@@ -28,7 +30,9 @@ export function createNativeViewPlatform(options: {
         vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     return {
         paneId, viewLease, camera, backendPreference: viewer.getSnapshot().backendPreference,
-        session: { mirrors: null, checkpoint: () => { if (board.hasPendingEdits()) board.checkpoint(); } },
+        session: { mirrors: null, checkpoint: () => { if (board.hasPendingEdits()) board.checkpoint(); },
+            ...(options.captureRegion ? { captureRegion: options.captureRegion } : {}),
+            ...(options.captureBlob ? { captureBlob: options.captureBlob } : {}) },
         layout: viewer.getSnapshot().layout,
         readLayout: () => viewer.getSnapshot().layout,
         readAppearance: () => viewer.getSnapshot().appearance,

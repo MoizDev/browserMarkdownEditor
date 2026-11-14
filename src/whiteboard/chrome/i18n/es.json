@@ -203,6 +203,11 @@
     "preferences.keyboardShortcutsEnabled": "Activar atajos de teclado",
     "preferences.enhancedAccessibility": "Accesibilidad mejorada",
     "preferences.debugMode": "Modo de depuración",
-    "preferences.mouseRequired": "Disponible cuando se selecciona el ratón"
+    "preferences.mouseRequired": "Disponible cuando se selecciona el ratón",
+    "shortcutGroups.style": "Estilo",
+    "shortcuts.style.white": "Blanco",
+    "shortcuts.style.fill": "Relleno",
+    "shortcuts.style.linedFill": "Relleno rayado",
+    "shortcuts.style.sample": "Tomar muestra del estilo"
   }
 }

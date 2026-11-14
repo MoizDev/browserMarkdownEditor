@@ -1,4 +1,3 @@
-import { graphemeBoundaries } from '../graphemes';
 import type { EditSelection, TextChange } from './host';
 
 export interface KeyServices {
@@ -6,6 +5,7 @@ export interface KeyServices {
     selection(): EditSelection;
     setSelection(selection: EditSelection): void;
     replace(change: TextChange): void;
+    adjacent(offset: number, direction: -1 | 1): number;
     // Visual movement is supplied by the caret index built from the renderer's
     // TextPaint, not by a second text layout in the input layer.
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
@@ -13,16 +13,6 @@ export interface KeyServices {
     command(command: string): void;
     inList(): boolean;
     undoTransformation(): boolean;
-}
-
-function adjacentGrapheme(text: string, offset: number, direction: -1 | 1): number {
-    const boundaries = graphemeBoundaries(text);
-    if (direction < 0) {
-        for (let i = boundaries.length - 1; i >= 0; i--) if (boundaries[i] < offset) return boundaries[i];
-        return 0;
-    }
-    for (const boundary of boundaries) if (boundary > offset) return boundary;
-    return text.length;
 }
 
 function consume(event: KeyboardEvent): void { event.preventDefault(); event.stopPropagation(); }
@@ -74,7 +64,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         if (from === to) {
             const destination = mod && mac && backward ? services.move(focus, 'line-start')
                 : word ? services.move(focus, backward ? 'word-left' : 'word-right')
-                : adjacentGrapheme(text(), focus, backward ? -1 : 1);
+                : services.adjacent(focus, backward ? -1 : 1);
             from = Math.min(focus, destination); to = Math.max(focus, destination);
         }
         consume(event);

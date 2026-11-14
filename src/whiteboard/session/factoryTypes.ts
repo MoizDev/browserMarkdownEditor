@@ -11,6 +11,7 @@ import type { SerializerCheckpoint, SerializerSession } from '../format/serializ
 import type { MediaStore } from '../media/store';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
+import type { MediaId } from '../model/media';
 import type { SampleStoreReader } from '../model/samples';
 import type { SelectionState } from '../selection';
 import type { PinnedBoardBuild } from './contentSource';
@@ -62,6 +63,8 @@ export interface PendingRecordChanges {
 export type ComposedBoardSession = BoardSession & SessionAdapter & {
     readonly history: HistoryController;
     readonly readOnlyReason: string | null;
+    mediaReferences(): readonly string[];
+    mediaReferenceIssues(): readonly MediaId[];
     flushNow(): void;
     pageHide(): void;
     hidden(): void;

@@ -2,7 +2,8 @@ import type { Affine, PathCommand, Rect } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { InkCoverage } from '../ink/outline';
 import type { Blend } from './colour';
-import type { InkMaterial, PaintBand, PathMaterial } from './material';
+import type { InkMaterial, PaintBand, PathMaterial, TextMaterial } from './material';
+import type { TextPaint, FaceTable } from '../text/paint';
 
 export type FillRule = 'nonzero' | 'evenodd';
 export interface PaintClip {
@@ -41,7 +42,13 @@ export interface PaintImageItem extends PaintBase {
     readonly blend: Blend;
     readonly inverted: boolean; // Content invert+hue-rotate180; page inversion is OUTSIDE stream.
 }
-export type PaintItem = PaintPathItem | PaintInkItem | PaintImageItem;
+export interface PaintTextItem extends PaintBase {
+    readonly kind: 'text';
+    readonly paint: TextPaint;
+    readonly faces: FaceTable;
+    readonly material: TextMaterial;
+}
+export type PaintItem = PaintPathItem | PaintInkItem | PaintImageItem | PaintTextItem;
 
 // Already-resolved geometry/materials, reusable by screen and export. Ordinary groups flatten
 // into inherited transforms/clips/colour alpha, never an isolated group-opacity operation.

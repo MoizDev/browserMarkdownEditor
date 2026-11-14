@@ -1298,7 +1298,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     if (!visibleRef.current || docGenRef.current !== gen || !visible || i < visible.first - RENDER_AHEAD || i > visible.last + RENDER_AHEAD) return;
                     const page = await getPage(i);
                     const viewport = page.getViewport({ scale: 1 });
-                    if (![viewport.width, viewport.height, viewport.width * viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) throw new Error('Invalid PDF page geometry');
+                    if (![viewport.width, viewport.height, viewport.width * viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) throw Object.assign(new Error('Invalid PDF page geometry'), { name: 'PageError' });
                     const current = docStateRef.current;
                     if (!current || current.gen !== gen || !current.estimated?.has(i)) return;
                     const dims = current.dims.slice(); dims[i] = { w: viewport.width, h: viewport.height };

@@ -21,11 +21,12 @@ function effects(opacity: number | undefined, blend: 'normal' | 'multiply' | und
   return `${opacity === undefined ? '' : ` opacity="${number(opacity)}"`}${blend === 'multiply' ? ' style="mix-blend-mode:multiply"' : ''}`
 }
 
-/** A self-contained SVG; all image bytes have already been admitted and pinned by export. */
-export function displayListSvg(list: PageDisplayList, bounds: Readonly<Rect>): Blob {
-  if (bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
+/** Chunkable writer; admitted image bytes are embedded before the caller releases its leases. */
+export function createSvgWriter(bounds: Readonly<Rect>): { append(item: PageDisplayItem): void; finish(): Blob } {
+  if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
   let nextClip = 0
-  const definitions: string[] = []
+  const definitions: string[] = [], body: string[] = []
+  let finished = false
   function emit(item: PageDisplayItem, depth: number): string {
     if (depth > 64) throw new RangeError('SVG group nesting exceeds 64 levels')
     switch (item.kind) {
@@ -49,6 +50,20 @@ export function displayListSvg(list: PageDisplayList, bounds: Readonly<Rect>): B
       case 'raster': return `<image ${rect(item.rect)} preserveAspectRatio="none" href="data:image/png;base64,${bytes64(item.png)}"${effects(item.opacity, item.blend)}/>`
     }
   }
-  const body = list.items.map(item => emit(item, 0)).join('')
-  return new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${number(bounds.width)}" height="${number(bounds.height)}" viewBox="${number(bounds.x)} ${number(bounds.y)} ${number(bounds.width)} ${number(bounds.height)}"><defs>${definitions.join('')}</defs>${body}</svg>`], { type: 'image/svg+xml' })
+  return {
+    append(item) { if (finished) throw new Error('SVG writer is closed'); body.push(emit(item, 0)) },
+    finish() {
+      if (finished) throw new Error('SVG writer is closed')
+      finished = true
+      return new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${number(bounds.width)}" height="${number(bounds.height)}" viewBox="${number(bounds.x)} ${number(bounds.y)} ${number(bounds.width)} ${number(bounds.height)}"><defs>`,
+        ...definitions, '</defs>', ...body, '</svg>'], { type: 'image/svg+xml' })
+    },
+  }
+}
+
+/** A self-contained SVG; all image bytes have already been admitted and pinned by export. */
+export function displayListSvg(list: PageDisplayList, bounds: Readonly<Rect>): Blob {
+  const writer = createSvgWriter(bounds)
+  for (const item of list.items) writer.append(item)
+  return writer.finish()
 }

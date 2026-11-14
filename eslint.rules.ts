@@ -223,7 +223,135 @@ const fsAccess: Rule.RuleModule = {
   },
 }
 
+// P1-dev exports every public symbol; the worker adapter may use only the
+// canonical 136-export surface. An explicit dev import guard is also required
+// so a static import cannot silently carry its manifest into a shipping chunk.
+const pdfiumBoundaries: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array', items: { type: 'string' } }] },
+  create(context) {
+    const allowed = new Set((context.options[0] ?? []) as string[])
+    const file = rel(context.filename)
+    const checkNative = (node: Rule.Node, value: unknown) => {
+      if (typeof value !== 'string' || !/^_?(?:FPDF|FORM|FSDK)[A-Za-z0-9_]+$/.test(value)) return
+      if (!allowed.has(value.replace(/^_/, ''))) context.report({ node, message: `PDFium symbol ${value} is not in src/pdf/engine/pdfium/exports.json (02-engine-build section 3).` })
+    }
+    const enabled = (test: Node): boolean => {
+      const source = context.sourceCode.getText(test).replace(/\s+/g, '')
+      return source === 'import.meta.env.DEV||__BME_BENCH__' || source === '__BME_BENCH__||import.meta.env.DEV'
+    }
+    const guarded = (node: Node): boolean => {
+      let child = node
+      for (let parent = node.parent as Node; parent; parent = parent.parent as Node) {
+        if (parent.type === 'IfStatement' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'ConditionalExpression' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'LogicalExpression' && parent.operator === '&&' && parent.right === child && enabled(parent.left as Node)) return true
+        child = parent
+      }
+      return false
+    }
+    return {
+      ...onImport(context, (node, source) => {
+        const local = target(context.filename, source).local
+        if (!local || !under(local, 'src/pdf/engine/dev') || under(file, 'src/pdf/engine/dev')) return
+        const n = node as Node
+        if (n.importKind === 'type' || n.exportKind === 'type') return
+        if (n.type !== 'ImportExpression' || !guarded(n)) context.report({ node, message: 'Import the development PDFium loader dynamically inside if (import.meta.env.DEV || __BME_BENCH__), never statically or from its production branch.' })
+      }),
+      Identifier(raw) {
+        const n = raw as Node
+        const parent = n.parent as Node
+        if (typeof n.name === 'string' && (n.name.startsWith('_') || (parent.type === 'CallExpression' && parent.callee === n))) checkNative(n, n.name)
+      },
+      MemberExpression(raw) {
+        const n = raw as Node
+        const property = n.property as Node
+        if (!n.computed && property.type === 'Identifier') checkNative(property, property.name)
+      },
+      Literal(raw) { const n = raw as Node; checkNative(n, n.value) },
+      TemplateLiteral(raw) {
+        const n = raw as Node
+        const parts = n.quasis as unknown as { value: { cooked: string | null } }[]
+        if (parts.length === 1) checkNative(n, parts[0].value.cooked)
+      },
+    }
+  },
+}
+
+// P-02a: utils/pdfClassicOpen.ts is the sole value caller of pdf.js's getDocument, so the
+// decoder/font/CMap assets, the shared worker and the protective byte slice cannot diverge.
+// Catches named aliases, namespace or default imports reached by any non-type use (a whole
+// namespace escape could hide the value from a local rule), re-exports and dynamic imports;
+// type-only imports stay allowed. Written by lane p-e and used verbatim.
+const classicPdfOpen: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [], messages: { open: 'Open classic PDFs through utils/pdfClassicOpen so assets, worker and diagnostics cannot diverge.' } },
+  create(context) {
+    const source = context.sourceCode
+    const binding = (node: Node) => {
+      for (let scope: ReturnType<typeof source.getScope> | null = source.getScope(node); scope; scope = scope.upper) {
+        const variable = scope.set.get(node.name as string)
+        if (variable) return variable
+      }
+    }
+    const namespace = (node: Node | null | undefined, seen = new Set<unknown>()): boolean => {
+      if (node?.type !== 'Identifier') return false
+      const variable = binding(node)
+      if (!variable || seen.has(variable)) return false
+      seen.add(variable)
+      return variable.defs.some(def => {
+        const d = def as unknown as { type: string; parent: { source: { value: unknown }; importKind?: string }; node: { type: string; init?: Node } }
+        if (d.type === 'ImportBinding') return d.parent.source.value === 'pdfjs-dist'
+          && ['ImportNamespaceSpecifier', 'ImportDefaultSpecifier'].includes(d.node.type)
+          && d.parent.importKind !== 'type'
+        return d.type === 'Variable' && namespace(d.node.init, seen)
+      })
+    }
+    const key = (node: Node) => {
+      const property = node.property as Node
+      return !node.computed ? property.name : property.type === 'Literal' ? property.value : undefined
+    }
+    return {
+      ImportDeclaration(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value !== 'pdfjs-dist' || node.importKind === 'type') return
+        for (const specifier of node.specifiers as Node[]) {
+          const imported = specifier.imported as Node | undefined
+          if (specifier.type === 'ImportSpecifier' && specifier.importKind !== 'type' && (imported?.name || imported?.value) === 'getDocument') context.report({ node: specifier, messageId: 'open' })
+        }
+      },
+      ImportExpression(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value === 'pdfjs-dist') context.report({ node, messageId: 'open' })
+      },
+      ExportAllDeclaration(raw) {
+        const node = raw as unknown as Node
+        if ((node.source as Node).value === 'pdfjs-dist') context.report({ node, messageId: 'open' })
+      },
+      ExportNamedDeclaration(raw) {
+        const node = raw as unknown as Node
+        const specifiers = node.specifiers as Node[]
+        if ((node.source as Node | null)?.value === 'pdfjs-dist' && node.exportKind !== 'type' && specifiers.some(s => s.exportKind !== 'type' && ((s.local as Node)?.name === 'getDocument' || (s.local as Node)?.value === 'getDocument'))) context.report({ node, messageId: 'open' })
+      },
+      MemberExpression(raw) {
+        const node = raw as unknown as Node
+        if (namespace(node.object as Node) && (key(node) === 'getDocument' || key(node) === undefined)) context.report({ node, messageId: 'open' })
+      },
+      Identifier(raw) {
+        const node = raw as unknown as Node
+        if (!namespace(node)) return
+        const parent = node.parent as Node
+        // Module declaration, static non-open property access and type qualification only.
+        if (['ImportNamespaceSpecifier', 'ImportDefaultSpecifier', 'TSQualifiedName'].includes(parent.type)) return
+        if (parent.type === 'MemberExpression' && parent.object === node) return
+        // Only real references: property names can share an import's spelling.
+        const variable = binding(node)
+        if (!variable?.references.some(reference => reference.identifier === (node as unknown))) return
+        context.report({ node, messageId: 'open' })
+      },
+    }
+  },
+}
+
 export const bmePlugin = {
   meta: { name: 'bme' },
-  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess },
+  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess, 'pdfium-boundaries': pdfiumBoundaries, 'classic-pdf-open': classicPdfOpen },
 }

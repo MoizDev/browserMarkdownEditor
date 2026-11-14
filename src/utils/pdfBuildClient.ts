@@ -7,32 +7,66 @@ import type { NotebookPaper } from './paper';
 import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
+import type { PdfRole } from './pdfRole';
+import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
 
 let worker: Worker | null = null;
 let nextId = 1;
 const pending = new Map<number, { resolve: (b: Uint8Array) => void; reject: (e: Error) => void }>();
+const rolePending = new Map<number, { resolve: (role: PdfRole) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+function failWorker(error: Error) {
+    for (const entry of pending.values()) entry.reject(error);
+    pending.clear();
+    for (const entry of rolePending.values()) { clearTimeout(entry.timer); entry.reject(error); }
+    rolePending.clear();
+    if (worker) {
+        worker.onmessage = worker.onerror = worker.onmessageerror = null;
+        worker.terminate();
+    }
+    worker = null;
+}
 
 function getWorker(): Worker {
     if (worker) return worker;
     worker = new Worker(new URL('./pdfBuild.worker.ts', import.meta.url), { type: 'module' });
     worker.onmessage = (e: MessageEvent<PdfBuildResponse>) => {
-        const { id, bytes, error } = e.data;
+        const { id, bytes, error, role, refusal } = e.data;
+        const inspection = rolePending.get(id);
+        if (inspection) {
+            clearTimeout(inspection.timer);
+            rolePending.delete(id);
+            if (error !== undefined || !role) inspection.reject(new Error(error ?? 'Missing PDF role response'));
+            else inspection.resolve(role);
+            return;
+        }
         const entry = pending.get(id);
         if (!entry) return;
         pending.delete(id);
-        if (error !== undefined) entry.reject(new Error(error));
+        if (refusal) entry.reject(new PdfBuildRefused(refusal));
+        else if (error !== undefined || !bytes) entry.reject(new Error(error ?? 'Missing PDF build response'));
         else entry.resolve(bytes);
     };
     worker.onerror = (e) => {
         // A worker-level failure kills every in-flight build; fail them all
         // rather than leave saves hanging forever.
-        const err = new Error(`PDF worker failed: ${e.message}`);
-        for (const [, entry] of pending) entry.reject(err);
-        pending.clear();
-        worker?.terminate();
-        worker = null;
+        failWorker(new Error(`PDF worker failed: ${e.message}`));
     };
+    worker.onmessageerror = () => failWorker(new Error('PDF worker response could not be read'));
     return worker;
+}
+
+/** Read-only union inventory in the same warm worker as the assembler. */
+export function inspectPdfRoleAsync(bytes: Uint8Array, generation: string): Promise<PdfRole> {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+        // A dead/stalled inventory is a refusal, never permission to draw on
+        // stamped outer pages. Terminating also releases an unbounded decoder.
+        const timer = setTimeout(() => failWorker(new Error('PDF role read timed out')), 30000);
+        rolePending.set(id, { resolve, reject, timer });
+        try { getWorker().postMessage({ kind: 'inspect-role', id, bytes, generation } satisfies PdfBuildRequest); }
+        catch (error) { failWorker(error instanceof Error ? error : new Error(String(error))); }
+    });
 }
 
 /**
@@ -47,6 +81,8 @@ export function buildAnnotatedPdfAsync(
     snapshot: string,
     overlays: Array<PageOverlay | undefined>,
 ): Promise<Uint8Array> {
+    const refusal = pdfSnapshotRefusal(snapshot);
+    if (refusal) return Promise.reject(new PdfBuildRefused(refusal));
     return dispatch(id => ({ kind: 'annotate', id, original, snapshot, overlays }));
 }
 

@@ -12,18 +12,17 @@
 // per run, and a held-open document would be a second copy of it in memory for
 // the rest of the session.
 
-import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from './pdfPageText';
-import { pdfWorker } from './pdfWorker';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from './pdfClassicOpen';
 
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
     // pdf.js detaches the buffer it is handed; give it a copy.
-    const task = pdfjs.getDocument({ data: bytes.slice(), worker: pdfWorker() });
+    const task = await openClassicPdf({ bytes, purpose: 'agent' });
     try {
-        return await read(await task.promise);
+        return await classicPdfHealth(task).guard(read(await loadClassicPdf(task)));
     } finally {
-        await task.destroy();
+        await closeClassicPdf(task);
     }
 }
 
@@ -67,21 +66,24 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
     return withPdf(bytes, async doc => {
         if (pageNumber < 1 || pageNumber > doc.numPages) return { pageCount: doc.numPages, png: null };
         const page = await doc.getPage(pageNumber);
+        const canvas = document.createElement('canvas');
         try {
             const unit = page.getViewport({ scale: 1 });
             const viewport = page.getViewport({ scale: maxSide / Math.max(unit.width, unit.height, 1) });
-            const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.floor(viewport.width));
             canvas.height = Math.max(1, Math.floor(viewport.height));
             const context = canvas.getContext('2d');
             if (!context) throw new Error('no 2D canvas context');
             context.fillStyle = '#ffffff';
             context.fillRect(0, 0, canvas.width, canvas.height);
-            await page.render({ canvas, canvasContext: context, viewport }).promise;
+            const health = classicPdfHealth(doc);
+            await health.guard(page.render({ canvas, canvasContext: context, viewport }).promise);
+            health.assertComplete(pageNumber - 1);
             const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
             if (!png) throw new Error(`could not rasterize page ${pageNumber}`);
             return { png, pageCount: doc.numPages };
         } finally {
+            canvas.width = canvas.height = 0;
             page.cleanup();
         }
     });

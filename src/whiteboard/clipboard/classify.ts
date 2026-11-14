@@ -77,12 +77,7 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (plainOnly) {
         if (input.text) return plain(input.text, signal);
         if (input.files.length) return { kind: 'files', files: input.files };
-        if (input.text !== null) return plain(input.text, signal);
-        if (input.uriList) {
-            const first = await firstUriLine(input.uriList, signal);
-            if (first) return plain(first, signal);
-        }
-        return { kind: 'empty' };
+        return input.text !== null ? plain(input.text, signal) : { kind: 'empty' };
     }
     let markers: HtmlClipboardMarkers | null = null;
     if (input.html !== null) {
@@ -94,8 +89,6 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (input.privatePng) return { kind: 'private-png', blob: input.privatePng };
     if (input.files.length) return { kind: 'files', files: input.files };
     if (markers?.legacyPayload !== null && markers?.legacyPayload !== undefined) return { kind: 'legacy', envelope: markers.legacyPayload };
-    const uri = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
-    if (uri) return { kind: 'url', url: uri };
     if (input.text !== null) {
         const text = input.text, start = await leading(input.text, signal);
         if (text[start] === '{' || text[start] === '[') {

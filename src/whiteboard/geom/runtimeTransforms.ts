@@ -3,7 +3,7 @@ import { pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPos
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
-import { hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
+import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
@@ -79,6 +79,15 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         if (sheetOf(doc, node.id) !== selection.sheet) throw new Error('Rotation selection spans another sheet');
     }
     const roots: Root[] = chosen.map(node => ({ node, pose: worldPose(doc, node.id) }));
+    const protectedRoots: Root[] = [], pending = [...chosen], cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    let visited = 0;
+    while (pending.length) {
+        check(); const node = pending.pop()!;
+        if (node.locked) { protectedRoots.push({ node, pose: worldPose(doc, node.id) }); continue; }
+        if (node.kind === 'group' || node.kind === 'frame') for (const child of childrenOf(doc, node.id)) pending.push(child);
+        if (++visited % 256 === 0) { await cooperate(); check(); }
+    }
+    const protectedIds = new Set(protectedRoots.map(root => root.node.id));
     const base = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { signal, current, cooperate: options.cooperate });
     try { check(); font = runtime.render.text.fonts.epoch; } catch (error) { base.release(); throw error; }
     let angle = 0, lastPointer = Math.atan2(down.y - centre.y, down.x - centre.x);
@@ -104,12 +113,18 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
                 desired.set(root.node.id, world); initial.push(...provisional(doc, root, world));
             }
             const request = requestSignal ?? signal;
-            const candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate });
+            let candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate });
             assert();
+            for (const saved of protectedRoots) {
+                const node = candidate.nodes.get(saved.node.id); if (!node) throw new Error('Protected descendant disappeared');
+                initial.push(...provisional(candidate, { node, pose: saved.pose }, saved.pose));
+                candidate = await projectBoardGeometrySets(doc, initial, { signal: request, current: active, cooperate: options.cooperate }); assert();
+            }
             const staged = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
             let published = false;
             try {
-                assert(); const final: NodeSetOp[] = [];
+                assert(); const final: NodeSetOp[] = initial.filter(op => protectedIds.has(op.id)
+                    && !Object.is(Reflect.get(doc.nodes.get(op.id)!, op.key), op.value));
                 for (const root of roots) {
                     const b = staged.logicalBounds(root.node.id), center = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
                     const geometry: ChangeGeometry = { resolvedTip: runtime.render.changeGeometry.resolvedTip,

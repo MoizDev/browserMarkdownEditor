@@ -43,6 +43,8 @@ export async function repairLoadIdentities(sheets: readonly Sheet[], nodes: read
         const index = source.category === 'sheet' ? sheetCount++ : nodeCount++;
         if (index >= (source.category === 'sheet' ? sheets.length : nodes.length)
             || !Number.isSafeInteger(source.position.ordinal) || source.position.ordinal < 0) return refusal('Source records do not match identity records');
+        const record = source.category === 'sheet' ? sheets[index] : nodes[index];
+        if (source.id !== record.id || source.type !== source.category) return refusal('Source identity does not match its decoded record');
         candidates.push({ category: source.category, index, ordinal: source.position.ordinal });
     }
     // A stable bottom-up merge avoids native sort's uninterruptible million-record turn.

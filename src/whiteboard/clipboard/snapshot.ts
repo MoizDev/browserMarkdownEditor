@@ -72,7 +72,7 @@ function* mediaOf(node: Node, ids: Set<MediaId>): Generator<SnapshotStep, void> 
     for (const raw of nodeRawValues(node)) if (raw !== null) yield { raw, ids };
 }
 
-export function snapshotTextSelection(host: CopySnapshotHost, fragment: RichFragment, node: Node, bounds: ClipboardBounds,
+export function snapshotTextSelection(host: Pick<CopySnapshotHost, 'doc' | 'sheet' | 'board' | 'encoder'>, fragment: RichFragment, node: Node, bounds: ClipboardBounds,
     textSelection: { readonly node: NodeId; readonly anchor: number; readonly focus: number }): CopySnapshot {
     if (!host.doc.sheets.has(host.sheet) || !host.doc.nodes.has(textSelection.node)
         || !Number.isSafeInteger(textSelection.anchor) || textSelection.anchor < 0 || !Number.isSafeInteger(textSelection.focus) || textSelection.focus < 0

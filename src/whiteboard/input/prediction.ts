@@ -56,6 +56,7 @@ export class DelegatedInk {
   private generation = 0
   private disabled = false
   constructor(private readonly area: HTMLElement) {}
+  get ready(): boolean { return !this.disabled && !!this.presenter && this.area.isConnected }
 
   async attach(): Promise<void> {
     const generation = ++this.generation

@@ -25,6 +25,8 @@ export interface BoardGeometryScope {
     readonly geometry: BoardRuntime['render']['changeGeometry'];
     localBounds(id: NodeId): Box;
     logicalBounds(id: NodeId): Readonly<Rect>;
+    /** Actual logical geometry in the caller's rigid target space. */
+    boundsInSpace(id: NodeId, targetFromWorld: Affine): Promise<Box>;
     worldPose(id: NodeId): WorldPose;
     rank(id: NodeId): number;
     release(): void;
@@ -40,18 +42,31 @@ function transformed(box: Box, m: Affine): Box {
 }
 function rectBox(rect: Rect): Box { return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]; }
 
+/** A read-only projection uses real C5 data/renderers without inventing a session. */
+export interface BoardGeometrySource {
+    readonly doc: BoardDoc;
+    readonly render: BoardRuntime['render'];
+    isCurrent(): boolean;
+}
+
 /** Geometry and resources stay pinned until release; the input candidate must stay immutable. */
-export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iterable<NodeId>, options: BoardGeometryScopeOptions = {}): Promise<BoardGeometryScope> {
-    const doc = options.doc ?? runtime.session.doc, signal = options.signal ?? new AbortController().signal;
+export function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iterable<NodeId>, options: BoardGeometryScopeOptions = {}): Promise<BoardGeometryScope> {
+    const doc = runtime.session.doc, owner = runtime.session.owner, revision = doc.rev;
+    return acquireBoardGeometryProjection({ doc, render: runtime.render,
+        isCurrent: () => runtime.session.doc === doc && runtime.session.owner === owner && doc.rev === revision }, ids, options);
+}
+
+export async function acquireBoardGeometryProjection(source: BoardGeometrySource, ids: Iterable<NodeId>, options: BoardGeometryScopeOptions = {}): Promise<BoardGeometryScope> {
+    const { render } = source, doc = options.doc ?? source.doc, signal = options.signal ?? new AbortController().signal;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    const revision = doc.rev, host = doc.host, owner = runtime.session.owner, roots: NodeId[] = [];
-    const live = doc === runtime.session.doc, fenced = live || options.current !== undefined;
+    const revision = doc.rev, host = doc.host, roots: NodeId[] = [];
+    const live = doc === source.doc, fenced = live || options.current !== undefined;
     const captured = new Map<NodeId, Readonly<Node>>(), children = new Map<NodeId, readonly Node[] | undefined>();
     const incidents = new Map<NodeId, ReadonlySet<NodeId> | undefined>(), sheets = new Map<SheetId, BoardDoc['sheetOrder'][number]>();
     const fast = () => {
         signal.throwIfAborted();
-        if ((options.current && !options.current()) || runtime.session.owner !== owner || doc.rev !== revision || doc.host !== host
-            || (live && runtime.session.doc !== doc)) throw new DOMException('Board geometry scope became stale', 'AbortError');
+        if (!source.isCurrent() || (options.current && !options.current()) || doc.rev !== revision || doc.host !== host)
+            throw new DOMException('Board geometry scope became stale', 'AbortError');
     };
     const all = () => {
         for (const [id, node] of captured) if (doc.nodes.get(id) !== node) throw new DOMException('Board geometry node changed', 'AbortError');
@@ -97,11 +112,11 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
         if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) closure.push(end.attach.target);
         if (due()) await tick();
     }
-    const rendererCurrent = fenced ? () => (!options.current || options.current()) && runtime.session.owner === owner && (!live || runtime.session.doc === doc) : undefined;
-    const lease = await runtime.render.pinChangeGeometry(roots, signal, doc, rendererCurrent);
+    const rendererCurrent = fenced ? () => source.isCurrent() && (!options.current || options.current()) : undefined;
+    const lease = await render.pinChangeGeometry(roots, signal, doc, rendererCurrent);
     try {
         check();
-        const font = runtime.render.text.fonts.epoch;
+        const font = render.text.fonts.epoch;
         const prepared = new Map<NodeId, Prepared>(), pending = [...roots], seen = new Set<NodeId>();
         while (pending.length) {
             const id = pending.pop()!; if (seen.has(id)) continue; seen.add(id);
@@ -113,8 +128,8 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
                 for (const child of doc.children.get(id) ?? []) { pending.push(child.id); if (due()) await tick(); }
             }
             if (node.kind !== 'group') {
-                const value = await runtime.render.prepareForPick(node, signal, doc);
-                check(); checkNode(id); if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+                const value = await render.prepareForPick(node, signal, doc);
+                check(); checkNode(id); if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
                 prepared.set(id, value);
             }
             if (due()) await tick();
@@ -180,7 +195,7 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
         for (const id of roots) {
             const back = inverse(matrix(pose(id)), 1e12); if (!back) throw new Error(`Geometry transform is not invertible: ${id}`);
             local.set(id, await aggregate(id, back)); check(); world.set(id, await aggregate(id, IDENTITY)); check();
-            if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+            if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
         }
         type Path = { sheet: { order: string; id: string }; nodes: readonly { order: string; id: string }[] };
         const paths = new Map<NodeId, Path>();
@@ -225,19 +240,24 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
         for (const [id, value] of sheets) { if (doc.sheets.get(id) !== value) throw new DOMException('Board geometry sheet changed', 'AbortError'); if (due()) await tick(); }
         const guard = (id?: NodeId) => { if (released) throw new Error('Geometry scope released'); check();
             if (id) checkNode(id);
-            if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError'); };
+            if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError'); };
         guard();
         const geometry: BoardGeometryScope['geometry'] = {
             resolvedTip(candidate, connector, terminal) { guard(connector.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
-                return runtime.render.changeGeometry.resolvedTip(candidate, connector, terminal); },
+                return render.changeGeometry.resolvedTip(candidate, connector, terminal); },
             worldBoundsCenter(candidate, node) { guard(node.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
-                return runtime.render.changeGeometry.worldBoundsCenter(candidate, node); },
+                return render.changeGeometry.worldBoundsCenter(candidate, node); },
         };
         return { doc, geometry,
             localBounds(id) { guard(id); const box = local.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
                 return [box[0], box[1], box[2], box[3]]; },
             logicalBounds(id) { guard(id); const box = world.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
                 return { x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] }; },
+            async boundsInSpace(id, targetFromWorld) {
+                guard(id); if (!local.has(id) || targetFromWorld.length !== 6 || !targetFromWorld.every(Number.isFinite)) throw new Error('Invalid geometry target space');
+                const target: Affine = [...targetFromWorld];
+                const box = await aggregate(id, target); guard(id); return box;
+            },
             worldPose(id) { guard(id); if (!local.has(id)) throw new Error(`Node is outside geometry scope: ${id}`); return { ...pose(id) }; },
             rank(id) { guard(id); const value = ranks.get(id); if (value === undefined) throw new Error(`Node is outside geometry scope: ${id}`); return value; },
             release() { if (!released) { released = true; lease.release(); } },

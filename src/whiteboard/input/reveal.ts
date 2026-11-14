@@ -34,7 +34,9 @@ export function createSelectionReveal(services: RevealServices): SelectionReveal
       if ((!sx && !sy) || disposed || serial !== sequence || !services.current(captured)) return
       services.camera.setCamera({ x: camera.x - sx / camera.z, y: camera.y - sy / camera.z, z: camera.z })
       services.changed()
-    }).catch(error => { if (!disposed && serial === sequence) services.error?.(error) })
+    }).catch(error => {
+      if (!disposed && serial === sequence && services.current(captured) && !(error instanceof DOMException && error.name === 'AbortError')) services.error?.(error)
+    })
   }
   return {
     request,

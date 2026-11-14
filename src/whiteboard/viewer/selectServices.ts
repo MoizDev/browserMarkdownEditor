@@ -1,36 +1,70 @@
-import { worldToSurface } from '../../platform/render/camera';
+import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
-import { TranslationPlan } from '../geom/translation';
+import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import { flipBoardLeaves } from '../commands/flipLeaves';
+import { stretchBoardLeaves } from '../commands/stretchLeaves';
+import type { StickyDirection } from '../commands/stickyNeighbour';
+import { isLocked } from '../change/commands';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
+import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
+import { createBoardRotationPlan } from '../geom/runtimeTransforms';
+import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
+import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
+import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
+import { prepareFrameDrop } from '../input/frameDrop';
+import { prepareNotebookTransform, prepareNotebookTranslation } from '../input/notebookTranslation';
+import { createBoardCameraCommands } from './cameraCommands';
+import { createSelectionCommandDriver } from './selectionCommands';
+import { createStyleShortcuts } from './styleShortcuts';
+import { createBackToContent } from './backToContent';
+import { createKeyboardContext, type KeyboardContextRequest } from './keyboardContext';
 import type { createBoardRenderServices } from '../render/services';
-import { TransformGesture } from '../tools/transform';
-import { translationDriver } from '../tools/transformDrivers';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
+import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
+import { enterGroupAtPoint } from '../input/groupFocus';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
+import { createBoardAttachmentResolver } from './attachments';
+import { createShapeHandles } from './shapeHandles';
+import { createStickyHandles } from './stickyHandles';
+import { createSelectionHandles } from './selectionHandles';
+import { createBoardSelectionNavigation } from './selectionNavigation';
+import type { BoardPreview } from './preview';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
 export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
-    readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'changeGeometry'>;
+    readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'pinChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
-    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit'>;
+    readonly cameraController: CameraController;
+    readonly surface: HTMLElement;
+    readonly inputToken: InputToken;
+    readonly cameraChanged: () => void;
+    /** Convert a physical sample using the mapping that actually presented it. */
+    readonly sampleToSurface: (sample: RealSample) => Vec2;
+    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
-    readonly preview: { showOps(ops: readonly Op[]): void; clear(): void };
+    readonly preview: Pick<BoardPreview, 'showOps' | 'waitUntilReady' | 'waitUntilIdle' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
+    readonly editSticky: (id: NodeId) => void | Promise<void>;
+    readonly alwaysSnap?: () => boolean;
     onError(error: unknown): void;
+    onKeptLocked?(ids: readonly NodeId[]): void;
+    toggleWhiteboardTheme?(): void;
+    openKeyboardContextMenu?(request: KeyboardContextRequest): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
 export function createBoardSelectServices(options: BoardSelectServicesOptions) {
@@ -38,8 +72,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const token = Object.freeze({ ...options.token });
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
-    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, scheduled: (() => void) | null = null;
+    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = '';
+    let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
+    let guides: readonly BoardSnapGuide[] = [];
     let warmedRevision = -1, warmed = new Set<NodeId>();
+    let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && !session.isReadOnly;
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
@@ -52,12 +90,29 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         pending.add(cancel); return () => { pending.delete(cancel); };
     };
     const cancelPending = () => {
+        nudgeEpoch++;
+        navigation.cancel();
         const work = [...pending], had = work.length > 0 || controllers.size > 0;
         pending.clear(); for (const cancel of work) { try { cancel(); } catch (error) { report(error); } }
         for (const controller of controllers) controller.abort(); controllers.clear();
         return had;
     };
+    const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
+    const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
+    const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
+    const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        sampleToSurface: physicalSurface, alwaysSnap: options.alwaysSnap ?? (() => false), guides: setGuides,
+        invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
+        show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
+        armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+        clear: () => options.preview.clear(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
+    const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, edit: options.editSticky, error: report });
+    const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
+        invalidate: requestFrame, error: report });
+    const navigation = createBoardSelectionNavigation({ runtime, camera: options.cameraController, surface: options.surface, token,
+        inputToken: options.inputToken, current, changed: options.cameraChanged, error: report });
     const check = (signal?: AbortSignal) => {
         signal?.throwIfAborted();
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -129,39 +184,212 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         beginTransform(sample, hit, modifiers) {
             check(); const ids = runtime.selection.getSnapshot().selected, revision = doc.rev;
             if (warmedRevision !== revision || !warmed.has(hit) || ids.some(id => !warmed.has(id))) throw new Error('Selection geometry is not preflighted');
-            const plan = new TranslationPlan(doc, ids, render.changeGeometry);
-            return new TransformGesture(sample, modifiers, translationDriver(plan, sample), {
-                hold: () => session.beginGesture(), registerPending,
-                isCurrent: () => mutable() && doc.rev === revision,
-                showPreview: ops => options.preview.showOps(ops), clearPreview: () => options.preview.clear(),
-                apply(transaction) { check(); if (doc.rev !== revision) throw new DOMException('Transform became stale', 'AbortError'); const applied = session.apply(transaction); applied.release(); },
-                error: report,
+            return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
+                zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
+                hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
+                show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+                guides: setGuides, clear() { setGuides([]); options.preview.clear(); }, error: report,
             });
         },
         onError: report,
     };
+    const presentAndCommit = async (ops: readonly Op[], signal: AbortSignal, active: () => boolean, commit: () => void) => {
+        if (!ops.length) { commit(); return; }
+        options.preview.showOps(ops);
+        try {
+            await options.preview.waitUntilReady(signal);
+            signal.throwIfAborted(); if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+            options.preview.armCommit();
+            try { commit(); options.preview.finishCommit(); }
+            catch (error) { options.preview.cancelCommit(); throw error; }
+        } finally { options.preview.clear(); }
+    };
+    const nudge = (key: string, coarse: boolean): boolean => {
+        const direction: Record<string, Vec2> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },
+            ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
+        const delta = direction[key], selection = runtime.selection.getSnapshot();
+        if (!mutable() || !delta || !selection.selected.length) return false;
+        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        const scale = doc.view.grid ? (coarse ? 50 : 10) : (coarse ? 10 : 1);
+        // Repeated key presses queue individual history steps rather than racing immutable snapshots.
+        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
+            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
+                || runtime.selection.getSnapshot() !== selection) return;
+            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
+            let unregister: (() => void) | undefined, plan: Awaited<ReturnType<typeof createBoardTranslationPlan>> | undefined;
+            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
+                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+            try {
+                unregister = registerPending(() => controller.abort());
+                await options.preview.waitUntilIdle(controller.signal);
+                if (!active()) throw new DOMException('Keyboard nudge became stale', 'AbortError');
+                plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
+                    alwaysSnap: () => false, current: active, signal: controller.signal });
+                const preview = await plan.preview({ x: delta.x * scale, y: delta.y * scale }, false, false, controller.signal);
+                const notebook = preview.ops.length ? await prepareNotebookTranslation({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
+                try {
+                    const drop = preview.ops.length ? await prepareFrameDrop({ runtime, ids, preview: notebook?.preview ?? preview, signal: controller.signal, current: active }) : null;
+                    try {
+                        if (active()) {
+                            const movement = notebook?.ops ?? preview.ops, ops = drop ? [...movement, ...drop.ops] : movement;
+                            await presentAndCommit(ops, controller.signal, active, () => {
+                                if (!drop && !notebook) { plan!.commit(preview); return; }
+                                const applied = session.apply({ origin: 'tool', label: 'Move selection', ops }); applied.release();
+                                plan!.cancel();
+                            });
+                        }
+                    } finally { drop?.release(); }
+                } finally { notebook?.release(); }
+            } catch (error) { if (active()) report(error); }
+            finally { try { plan?.cancel(); } finally { try { unregister?.(); } finally { release(); } } }
+        });
+        return true;
+    };
+    const transform = (command: string): boolean => {
+        // Fine rotation is one sixteenth of the 15° keyboard step.
+        const angles: Record<string, number> = { 'rotate.clockwise': Math.PI / 12, 'rotate.counterclockwise': -Math.PI / 12,
+            'rotate.fineClockwise': Math.PI / 192, 'rotate.fineCounterclockwise': -Math.PI / 192 };
+        const flip = command === 'flip.horizontal' ? 'x' : command === 'flip.vertical' ? 'y' : null;
+        const stretch = command === 'stretch.horizontal' ? 'x' : command === 'stretch.vertical' ? 'y' : null;
+        const factor = command === 'scale.enlarge' ? 1.1 : command === 'scale.shrink' ? 1 / 1.1 : null;
+        if (!(command in angles) && !flip && !stretch && factor === null) return false;
+        const selection = runtime.selection.getSnapshot();
+        if (!mutable() || !selection.selected.length) return false;
+        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        // Keyboard transforms share the nudge queue so no two preflights race the same revision.
+        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
+            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
+                || runtime.selection.getSnapshot() !== selection) return;
+            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
+            let unregister: (() => void) | undefined;
+            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
+                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+            try {
+                unregister = registerPending(() => controller.abort());
+                await options.preview.waitUntilIdle(controller.signal);
+                if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+                if (stretch) {
+                    await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal });
+                    return;
+                }
+                if (factor !== null) {
+                    const plan = await createBoardLeafResizePlan({ runtime, ids, down: { x: 0, y: 0 }, handle: { x: 1, y: 1 },
+                        current: active, signal: controller.signal });
+                    try {
+                        const box = plan.startBox, c = Math.cos(box.rotation), s = Math.sin(box.rotation);
+                        const dx = box.width * (factor - 1) / 2, dy = box.height * (factor - 1) / 2;
+                        const result = await plan.preview({ x: c * dx - s * dy, y: s * dx + c * dy },
+                            { shift: true, alt: true }, controller.signal);
+                        const notebook = result.ops.length ? await prepareNotebookTransform({ runtime, ids, preview: result, signal: controller.signal, current: active }) : null;
+                        try {
+                            if (active()) await presentAndCommit(notebook?.ops ?? result.ops, controller.signal, active, () => {
+                                if (!notebook) { plan.commit(result); return; }
+                                const applied = session.apply({ origin: 'tool', label: 'Resize selection', ops: notebook.ops }); applied.release();
+                                plan.cancel();
+                            });
+                        } finally { notebook?.release(); }
+                    } finally { plan.cancel(); }
+                    return;
+                }
+                const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
+                let centre: Vec2;
+                try {
+                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visited = 0;
+                    for (const id of ids) {
+                        const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+                        if (++visited % 128 === 0) {
+                            await new Promise<void>(resolve => setTimeout(resolve, 0));
+                            if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+                        }
+                    }
+                    centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+                } finally { scope.release(); }
+                if (!active()) return;
+                if (flip) { await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal }); return; }
+                const angle = angles[command], down = { x: centre.x + 1, y: centre.y };
+                const plan = await createBoardRotationPlan({ runtime, ids, centre, down, orientation: 0,
+                    current: active, signal: controller.signal });
+                try {
+                    const preview = await plan.preview({ x: centre.x + Math.cos(angle), y: centre.y + Math.sin(angle) }, false, controller.signal);
+                    const notebook = preview.ops.length ? await prepareNotebookTransform({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
+                    try {
+                        if (active()) await presentAndCommit(notebook?.ops ?? preview.ops, controller.signal, active, () => {
+                            if (!notebook) { plan.commit(preview); return; }
+                            const applied = session.apply({ origin: 'tool', label: 'Rotate selection', ops: notebook.ops }); applied.release();
+                            plan.cancel();
+                        });
+                    } finally { notebook?.release(); }
+                } finally { plan.cancel(); }
+            } catch (error) { if (active()) report(error); }
+            finally { try { unregister?.(); } finally { release(); } }
+        });
+        return true;
+    };
     const eraserSweep = sweep(true);
+    let eraseLease: { release(): void } | undefined;
     const eraser: EraserContext = {
         ...eraserSweep, hold: () => session.beginGesture(), registerPending,
+        async prepareCommit(ids, signal) {
+            check(signal);
+            const revision = doc.rev, owner = session.owner, selection = runtime.selection.getSnapshot();
+            const active = () => !signal.aborted && mutable() && session.owner === owner && session.doc === doc && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection;
+            const lease = await render.pinChangeGeometry(ids, signal, doc, active);
+            if (!active()) { lease.release(); throw new DOMException('Erase source changed', 'AbortError'); }
+            const previous = eraseLease; eraseLease = lease;
+            try { previous?.release(); } catch (error) { eraseLease = undefined; lease.release(); throw error; }
+            try {
+                options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
+                await options.preview.waitUntilReady(signal);
+                if (!active()) throw new DOMException('Erase source changed', 'AbortError');
+            } catch (error) { if (eraseLease === lease) eraseLease = undefined; lease.release(); throw error; }
+        },
+        armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
         commit(ids) {
             check(); if (!ids.size) return;
             const builder = session.begin('tool', 'Erase');
             try { planDelete(doc, builder, runtime.selection.getSnapshot().sheet, [...ids], render.changeGeometry); const applied = builder.commit(); applied.release(); }
             catch (error) { builder.abort(); throw error; }
         },
-        clearPreview() { previewIds.clear(); options.preview.clear(); requestFrame(); }, error: report,
+        clearPreview() {
+            const lease = eraseLease; eraseLease = undefined;
+            try { lease?.release(); } finally { previewIds.clear(); options.preview.clear(); requestFrame(); }
+        }, error: report,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
+        navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
+        if (guides.length) {
+            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+                options.overlay.append(guideSvg); }
+            guideSvg.replaceChildren();
+            for (const guide of guides) {
+                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+                const a = worldToSurface(from, frame.view.camera), b = worldToSurface(to, frame.view.camera);
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
+                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+            }
+        } else { guideSvg?.remove(); guideSvg = null; }
+        if (!regionPreview) {
+            svg?.remove(); svg = null; shape = null; scribbleSource = null; scribbleCount = 0;
+            scribbleTail = null; scribblePoints = []; scribbleCamera = ''; return;
+        }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svg.setAttribute('aria-hidden', 'true'); svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
             options.overlay.append(svg);
         }
-        const kind = regionPreview.kind === 'marquee' ? 'rect' : 'polyline';
-        if (!shape || shape.localName !== kind) { shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape); }
+        const kind = regionPreview.kind === 'marquee' ? 'rect' : 'g';
+        if (!shape || shape.localName !== kind) {
+            shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape);
+            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; scribbleCamera = '';
+        }
         shape.setAttribute('stroke', previewIds.size ? '#75b7ff' : '#6a9fff'); shape.setAttribute('stroke-width', '1.5');
         if (regionPreview.kind === 'marquee') {
             const a = worldToSurface(regionPreview.start, frame.view.camera), b = worldToSurface(regionPreview.end, frame.view.camera);
@@ -169,12 +397,133 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             shape.setAttribute('width', String(Math.abs(a.x - b.x))); shape.setAttribute('height', String(Math.abs(a.y - b.y)));
             shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3');
         } else {
-            const points = regionPreview.points.map(point => worldToSurface(point, frame.view.camera));
-            shape.setAttribute('points', points.map(point => `${point.x},${point.y}`).join(' '));
+            const source = regionPreview.points, camera = frame.view.camera, cameraKey = `${camera.x}:${camera.y}:${camera.z}`;
+            if (scribbleSource !== source || scribbleCamera !== cameraKey || scribbleCount > source.length) {
+                shape.replaceChildren(); scribbleSource = source; scribbleCamera = cameraKey; scribbleCount = 0;
+                scribbleTail = null; scribblePoints = [];
+            }
             shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
+            // Keep exact points, but bound DOM projection to four small chunks per shared frame.
+            const limit = Math.min(source.length, scribbleCount + 1024);
+            while (scribbleCount < limit) {
+                if (!scribbleTail || scribblePoints.length >= 257) {
+                    scribbleTail = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                    scribbleTail.setAttribute('stroke-linejoin', 'round'); scribbleTail.setAttribute('stroke-linecap', 'round');
+                    shape.append(scribbleTail); scribblePoints = [];
+                    if (scribbleCount) {
+                        const previous = worldToSurface(source[scribbleCount - 1], camera); scribblePoints.push(`${previous.x},${previous.y}`);
+                    }
+                }
+                const remaining = Math.min(limit - scribbleCount, 257 - scribblePoints.length);
+                for (let i = 0; i < remaining; i++) {
+                    const p = worldToSurface(source[scribbleCount++], camera); scribblePoints.push(`${p.x},${p.y}`);
+                }
+                scribbleTail.setAttribute('points', scribblePoints.join(' '));
+            }
+            if (scribbleCount < source.length) requestFrame();
         }
     };
-    return { select, eraser, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
+    const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
+        if (!mutable()) return null;
+        const surface = physicalSurface(sample), coarse = sample.source === 'touch';
+        const shapeHit = shapeHandles.hit(surface, coarse, sample.time);
+        if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
+        const direction = stickyHandles.hit(surface, coarse, sample.time);
+        if (!direction) {
+            const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
+            const ids = [...runtime.selection.getSnapshot().selected], host = {
+                hold: () => session.beginGesture(), registerPending, current: mutable,
+                show: (ops: readonly Op[]) => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
+                guides: setGuides, clear: () => { setGuides([]); options.preview.clear(); }, error: report,
+            };
+            if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
+                { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);
+            return leafResizeHandleGesture(sample, modifiers, { runtime, ids, handle: hit.handle, current: mutable }, host,
+                { zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) });
+        }
+        const release = session.beginGesture(), pointerIds = new Set([sample.pointerId]), down = surface;
+        let ended = false, cancelled = false, cleaned = false, unregister: (() => void) | undefined;
+        const cleanup = () => { if (cleaned) return; cleaned = true; unregister?.(); unregister = undefined; release(); };
+        const cancel = () => { if (cancelled) return; cancelled = true; ended = true; stickyHandles.hide(); cleanup(); };
+        try { unregister = registerPending(cancel); } catch (error) { release(); throw error; }
+        return { kind: 'node-edit', pointerIds,
+            update(samples) { for (const next of samples) if (pointerIds.has(next.pointerId)) {
+                const point = physicalSurface(next); if (Math.hypot(point.x - down.x, point.y - down.y) >= 4) cancel();
+            } },
+            finish(reason) {
+                if (ended || cancelled) return; ended = true;
+                if (reason !== 'up' || !mutable()) { cancel(); return; }
+                void stickyHandles.activate(direction, sample.source === 'keyboard').finally(cleanup);
+            },
+            cancel,
+        };
+    };
+    const navigate = (command: string): boolean => {
+        if (!current()) return false;
+        if (command === 'select.next') return navigation.navigation.next(1);
+        if (command === 'select.previous') return navigation.navigation.next(-1);
+        if (command === 'select.child') return navigation.navigation.child();
+        if (command === 'select.parent') return navigation.navigation.parent();
+        const directions = { 'select.neighbour.ArrowLeft': 'left', 'select.neighbour.ArrowRight': 'right',
+            'select.neighbour.ArrowUp': 'up', 'select.neighbour.ArrowDown': 'down' } as const;
+        const direction = directions[command as keyof typeof directions];
+        if (!direction) return false;
+        void navigation.navigation.cardinal(direction).catch(error => {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) report(error);
+        });
+        return true;
+    };
+    const stickyNeighbour = (direction: StickyDirection): boolean => {
+        if (!mutable()) return false;
+        const selection = runtime.selection.getSnapshot();
+        const node = selection.selected.length === 1 ? doc.nodes.get(selection.selected[0]) : undefined;
+        if (!node || node.kind !== 'sticky' || isLocked(doc, node)) return false;
+        const release = session.beginGesture();
+        let unregister: (() => void) | undefined;
+        try { unregister = registerPending(() => stickyHandles.hide()); }
+        catch (error) { release(); throw error; }
+        void stickyHandles.activate(direction, true).finally(() => { try { unregister?.(); } finally { release(); } });
+        return true;
+    };
+    const doubleClickHandle = (surface: Vec2, world: Vec2, time?: number): boolean => {
+        if (!mutable()) return false;
+        const hit = shapeHandles.hit(surface, false, time);
+        if (hit && shapeHandles.toggleHead(hit)) return true;
+        if (!selectionHandles.contains(world, time)) return false;
+        return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
+            hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });
+    };
+    const handleCommand = (id: string, sample: RealSample): boolean => {
+        if (id !== 'delete' || sample.source !== 'keyboard' || !mutable()) return false;
+        const hit = shapeHandles.hit(physicalSurface(sample), false, sample.time);
+        return hit ? shapeHandles.remove(hit) : false;
+    };
+    const cameraCommands = createBoardCameraCommands({ runtime, camera: options.cameraController, surface: options.surface,
+        current, changed: options.cameraChanged, error: report });
+    const backToContent = createBackToContent({ runtime, overlay: options.overlay, surface: options.surface, current,
+        activate: () => { cameraCommands.run('camera.backToContent'); }, error: report });
+    const keyboardContext = options.openKeyboardContextMenu ? createKeyboardContext({ runtime, camera: options.cameraController,
+        surface: options.surface, current, open: options.openKeyboardContextMenu, error: report }) : null;
+    const keyboardContextMenu = (surface: Vec2, world: Vec2) => keyboardContext?.request(surface, world) ?? false;
+    const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
+        registerPending, error: report, keptLocked: options.onKeptLocked });
+    const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
+        hit: (point, signal) => options.point.hit(point, 'mouse', signal), current, registerPending, error: report,
+        toggleWhiteboardTheme: options.toggleWhiteboardTheme });
+    const command = (id: string): boolean => {
+        if (cameraCommands.run(id) || selectionCommands.run(id) || styleShortcuts.run(id)) return true;
+        if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true);
+        if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false);
+        return navigate(id) || transform(id);
+    };
+    // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
+    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle };
+    const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
+        return boardSelectTool.begin(sample, modifiers, selectContext);
+    } };
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+            regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

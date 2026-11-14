@@ -7,6 +7,8 @@ import { createLoadedBoardDoc } from './loadDocument';
 import { recountLoadMedia } from './loadMediaCounts';
 import type { LoadProjection, LoadRepairDraft, LoadSampleWire, RehydratedLoad } from './loadTypes';
 import type { NodeRecord } from './nodes';
+import type { NodeId, SheetId } from './ids';
+import type { MediaId } from './media';
 import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
 import { validateLoadedNode, validateLoadedRootIncremental } from './validate';
 
@@ -16,10 +18,11 @@ function cancelled(signal?: AbortSignal): void { signal?.throwIfAborted(); }
  * projection itself carries no admission authority or receiving-store handles. */
 export async function projectLoad(draft: LoadRepairDraft, sampleWire: (ref: SampleRef) => LoadSampleWire,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<LoadProjection> {
+    const yieldWork = cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const input = draft.input, nodes: NodeRecord[] = [], wires: LoadSampleWire[] = [], seen = new Set<SampleRef>();
     let index = 0;
     for (const node of input.nodes ?? []) {
-        if ((index++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+        if ((index++ & 255) === 0) { cancelled(signal); await yieldWork(); }
         nodes.push(node);
         if (node.kind === 'stroke' && !seen.has(node.samples)) {
             const wire = sampleWire(node.samples);
@@ -30,7 +33,7 @@ export async function projectLoad(draft: LoadRepairDraft, sampleWire: (ref: Samp
     const collect = async <T>(source: Iterable<T>): Promise<T[]> => {
         const values: T[] = [];
         for (const value of source) {
-            if ((values.length & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((values.length & 255) === 0) { cancelled(signal); await yieldWork(); }
             values.push(value);
         }
         return values;
@@ -40,7 +43,7 @@ export async function projectLoad(draft: LoadRepairDraft, sampleWire: (ref: Samp
         preservedMediaRefs: await collect(input.preservedMediaRefs), samples: wires, sources: draft.sources, unmapped: draft.unmapped,
         ...(draft.removedSources === undefined ? {} : { removedSources: draft.removedSources }),
         ...(draft.savedView === undefined ? {} : { savedView: draft.savedView }) };
-    return await encodeLoadData(ordered, cooperate, signal) as unknown as LoadProjection;
+    return await encodeLoadData(ordered, yieldWork, signal) as unknown as LoadProjection;
 }
 
 function checkProjection(value: unknown): asserts value is LoadProjection {
@@ -61,7 +64,8 @@ function checkProjection(value: unknown): asserts value is LoadProjection {
 export async function rehydrateLoad(projection: LoadProjection,
     admit: (pts: string, header: PointInspectionHeader) => SampleLease, samples: SampleStoreReader,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<RehydratedLoad> {
-    const decoded = await decodeLoadData(projection as unknown as JsonValue, cooperate, signal);
+    const yieldWork = cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const decoded = await decodeLoadData(projection as unknown as JsonValue, yieldWork, signal);
     checkProjection(decoded);
     const p = decoded;
     const leases: SampleLease[] = [], refs = new Map<SampleRef, SampleRef>();
@@ -74,13 +78,13 @@ export async function rehydrateLoad(projection: LoadProjection,
     };
     try {
         for (let i = 0; i < p.samples.length; i++) {
-            if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((i & 255) === 0) { cancelled(signal); await yieldWork(); }
             const wire = p.samples[i];
             if (!wire || typeof wire !== 'object' || Object.keys(wire).some(key => !['workerRef', 'pts', 'header'].includes(key))
                 || !Number.isSafeInteger(wire.workerRef) || wire.workerRef < 0 || typeof wire.pts !== 'string'
                 || wire.pts.length > SECURITY_LIMITS.encodedPoints || refs.has(wire.workerRef)) throw new TypeError('Invalid projected sample');
             // A worker header is a hint, not proof that its encoded bytes agree.
-            const inspected = await inspectPointsIncremental(wire.pts, async () => { cancelled(signal); await cooperate?.(); cancelled(signal); });
+            const inspected = await inspectPointsIncremental(wire.pts, async () => { cancelled(signal); await yieldWork(); cancelled(signal); });
             if (!inspected.ok) throw new TypeError(inspected.error.reason);
             cancelled(signal);
             const lease = admit(wire.pts, inspected.value.header);
@@ -89,7 +93,7 @@ export async function rehydrateLoad(projection: LoadProjection,
         }
         const nodes: NodeRecord[] = [], ids = new Set<string>();
         for (let i = 0; i < p.nodes.length; i++) {
-            if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((i & 255) === 0) { cancelled(signal); await yieldWork(); }
             const node = p.nodes[i] as unknown as NodeRecord;
             if (!node || typeof node !== 'object' || typeof node.id !== 'string' || ids.has(node.id)) throw new TypeError('Invalid or duplicate projected node identity');
             ids.add(node.id);
@@ -106,7 +110,7 @@ export async function rehydrateLoad(projection: LoadProjection,
             sheetIds.add(sheet.id);
         }
         for (let i = 0; i < p.media.length; i++) {
-            if ((i & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((i & 255) === 0) { cancelled(signal); await yieldWork(); }
             const entry = p.media[i];
             if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || mediaIds.has(entry.id)) throw new TypeError('Invalid or duplicate projected media');
             mediaIds.add(entry.id);
@@ -116,22 +120,42 @@ export async function rehydrateLoad(projection: LoadProjection,
         const counts = new Map();
         let countOrdinal = 0;
         for (const pair of p.preservedMediaRefs) {
-            if ((countOrdinal++ & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((countOrdinal++ & 255) === 0) { cancelled(signal); await yieldWork(); }
             if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || counts.has(pair[0])
                 || !Number.isSafeInteger(pair[1]) || pair[1] < 1) throw new TypeError('Invalid preserved media reference count');
             counts.set(pair[0], pair[1]);
         }
         const input = { kind: p.kind, sheets: p.sheets, nodes, media: p.media, ui: p.ui, view: p.view,
             host: p.host, preserved: p.preserved, preservedMediaRefs: counts } as unknown as BoardDocInput;
-        const recounted = await recountLoadMedia(input, cooperate, signal);
+        const recounted = await recountLoadMedia(input, yieldWork, signal);
         if (recounted.size !== counts.size) throw new TypeError('Projected media counts do not match retained data');
-        for (const [id, count] of recounted) if (counts.get(id) !== count) throw new TypeError('Projected media counts do not match retained data');
-        const doc = await createLoadedBoardDoc(input, cooperate, signal);
-        const root = await validateLoadedRootIncremental(doc, cooperate, signal);
+        let checkedCounts = 0;
+        for (const [id, count] of recounted) {
+            if ((checkedCounts++ & 255) === 0) { cancelled(signal); await yieldWork(); }
+            if (counts.get(id) !== count) throw new TypeError('Projected media counts do not match retained data');
+        }
+        const doc = await createLoadedBoardDoc(input, yieldWork, signal);
+        const root = await validateLoadedRootIncremental(doc, yieldWork, signal);
         if (!root.ok) throw new TypeError(root.reason);
+        const preservedKeys = new Set<string>();
+        let sourceWork = 0;
+        for (const record of doc.preserved.records) {
+            if ((sourceWork++ & 255) === 0) { cancelled(signal); await yieldWork(); }
+            preservedKeys.add(JSON.stringify([record.type, record.id]));
+        }
+        for (const source of p.sources) {
+            if ((sourceWork++ & 255) === 0) { cancelled(signal); await yieldWork(); }
+            if (!source || typeof source !== 'object') throw new TypeError('Invalid projected source');
+            if ((source.category === 'node' && (typeof source.id !== 'string' || !doc.nodes.has(source.id as NodeId)))
+                || (source.category === 'sheet' && (typeof source.id !== 'string' || !doc.sheets.has(source.id as SheetId)))
+                || (source.category === 'media' && (typeof source.id !== 'string' || !doc.media.has(source.id as MediaId)))
+                || (source.category === 'opaque' && (typeof source.id !== 'string' || !preservedKeys.has(JSON.stringify([source.type, source.id]))))) {
+                throw new TypeError('Projected source does not name an admitted record');
+            }
+        }
         let ordinal = 0;
         for (const node of nodes) {
-            if ((ordinal & 255) === 0) { cancelled(signal); await cooperate?.(); }
+            if ((ordinal & 255) === 0) { cancelled(signal); await yieldWork(); }
             const check = validateLoadedNode({ doc, samples }, node, ordinal++);
             if (!check.ok) throw new TypeError(`Node ${node.id}: ${check.reason}`);
         }

@@ -25,6 +25,7 @@ export interface Modifiers {
   readonly shift: boolean
   readonly alt: boolean
   readonly accel: boolean
+  readonly control: boolean
 }
 
 export type GestureKind = 'ink' | 'erase' | 'laser' | 'node-edit' | 'pan' | 'pinch' | 'zoom-brush' | 'marquee'

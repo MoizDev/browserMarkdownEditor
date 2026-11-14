@@ -124,7 +124,9 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
             const ordinal = sheetOrdinal++, sheet = sheetRepair.sheets[ordinal];
             sources.push(identities.changedSheetOrdinals.has(ordinal) || sheetRepair.changedOrdinals.has(ordinal) ? { ...source, id: sheet.id, reencode: true } : source);
         } else if (source.category === 'media') {
-            if (!duplicateMedia.has(mediaOrdinal++)) sources.push(source);
+            const ordinal = mediaOrdinal++, entry = sourceMedia[ordinal];
+            if (!entry || source.id !== entry.id || source.type !== 'media') return refuse('Media source identity does not match its decoded record');
+            if (!duplicateMedia.has(ordinal)) sources.push(source);
         } else sources.push(source);
     }
     const projection = await projectLoad({ input, sources, removedSources, unmapped: draft.unmapped,

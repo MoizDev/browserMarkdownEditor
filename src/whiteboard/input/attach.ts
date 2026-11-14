@@ -31,6 +31,7 @@ export interface BoardInputView {
   readonly token: InputToken
   readonly mappings: MappingHistory
   readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void }
+  readonly bindFlush?: (flush: () => void) => Detach
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
   readonly predictionMapping: () => PredictionMapping

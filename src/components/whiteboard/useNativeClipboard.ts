@@ -124,9 +124,10 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 return active.controller.duplicate(snapshot);
             }, notice: report, onError: fail,
             copyPng: capture => {
-                const custom = capture.then(blob => new Blob([blob], { type: 'image/x-board+png' }));
-                void custom.catch(() => {});
-                return navigator.clipboard.write([new ClipboardItem({ 'image/png': capture, 'web image/x-board+png': custom })]);
+                // Both items come from one frozen export job: the public PNG and our density-carrying private copy.
+                const image = capture.then(pair => pair.image), privateImage = capture.then(pair => pair.privateImage);
+                void image.catch(() => {}); void privateImage.catch(() => {});
+                return navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]);
             },
             copySvg: capture => {
                 const text = capture.then(blob => new Blob([blob], { type: 'text/plain' }));

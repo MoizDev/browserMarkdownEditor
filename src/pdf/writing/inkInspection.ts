@@ -5,6 +5,7 @@ import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import { checkPdfWriteMark } from '../../utils/pdfWriteMark';
 import { Sha256 } from '../../utils/sha256';
 import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
+import { fenceBytes, isCompatibilityFenceBytes } from '../../whiteboard/format/fence';
 import { attachmentMarker } from './attachments';
 import { validateBoardWriteIdentity } from './boardIdentity';
 import type { PdfInkInspection, PdfInkInspectionFailure, PdfInkMediaDescriptor } from './inkInspection.types';
@@ -13,7 +14,6 @@ const LIMIT = 0x7fffffff, BOARD_LIMIT = 32 * 1024 * 1024, MAX_INSPECTIONS = 16;
 const key = PDFName.of;
 const RESERVED = new Set(['original.pdf', 'board.json', 'tldraw-snapshot.json', '.vault-write-mark', NOTEBOOK_SOURCE_ATTACHMENT]);
 const MEDIA = /^board-media\/([0-9a-f]{64})\.[a-zA-Z0-9]{1,16}$/;
-const FENCE = '{"document":{"schema":{"schemaVersion":999},"store":{}},"fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file"}';
 interface Retained { document: PDFDocument; bytes: Uint8Array; media: Map<string, AttachmentEntry> }
 class Refusal extends Error { constructor(readonly reason: PdfInkInspectionFailure) { super(reason); } }
 class Interrupted extends Error { constructor(readonly cause: unknown) { super('Inspection interrupted'); } }
@@ -131,8 +131,8 @@ export class PdfInkInspector {
                 const boardBytes = attachment(entries.get('board.json')!, BOARD_LIMIT);
                 if (!boardBytes.length) return refuse('unreadable');
                 board = new Blob([new Uint8Array(boardBytes)], { type: 'application/json' });
-                const fence = attachment(entries.get('tldraw-snapshot.json')!, BOARD_LIMIT);
-                if (new TextDecoder('utf-8', { fatal: true }).decode(fence) !== FENCE) return refuse('unsupported-format');
+                const fence = attachment(entries.get('tldraw-snapshot.json')!, fenceBytes().byteLength);
+                if (!isCompatibilityFenceBytes(fence)) return refuse('unsupported-format');
                 attachment(entries.get('.vault-write-mark')!, BOARD_LIMIT);
                 await step();
                 const mark = await checkPdfWriteMark(bytes);

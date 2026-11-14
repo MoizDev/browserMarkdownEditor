@@ -211,15 +211,14 @@ const loaded = new Map<string, Extension>();
 const languageRequests = new WeakMap<EditorView, { generation: number; descriptor: LanguageDescription | null }>();
 
 /**
- * Load `language` into `view`'s compartment. A cached state's grammar is left
- * alone by default; an explicit replacement handles a same-kind rename.
+ * Load `language` into `view`'s compartment. A matching cached grammar is left
+ * alone; a renamed file may need a different grammar even on its next mount.
  */
 export async function loadCodeLanguage(view: EditorView, language: CodeLanguage | null, replace = false): Promise<void> {
     const request = { generation: (languageRequests.get(view)?.generation ?? 0) + 1, descriptor: language?.description ?? null };
     languageRequests.set(view, request);
     const present = codeLanguageCompartment.get(view.state);
     const hasGrammar = Array.isArray(present) ? present.length > 0 : present != null;
-    if (!replace && hasGrammar) return;
     if (!language) {
         if (replace && hasGrammar && view.dom.isConnected) view.dispatch({ effects: codeLanguageCompartment.reconfigure([]) });
         return;
@@ -241,7 +240,7 @@ export async function loadCodeLanguage(view: EditorView, language: CodeLanguage 
     const latest = languageRequests.get(view);
     if (!view.dom.isConnected || latest?.generation !== request.generation || latest.descriptor !== language.description) return;
     const current = codeLanguageCompartment.get(view.state);
-    if (current === support || !replace && (Array.isArray(current) ? current.length > 0 : current != null)) return;
+    if (current === support) return;
     view.dispatch({ effects: codeLanguageCompartment.reconfigure(support) });
 }
 

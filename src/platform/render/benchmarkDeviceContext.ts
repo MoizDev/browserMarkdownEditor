@@ -9,7 +9,7 @@ const mirroredMethods = new Set<PropertyKey>([
 
 /** The witness shares geometry and clipping, but never receives document paint. */
 export function benchmarkDeviceContext(native: CanvasRenderingContext2D, origin: { x: number; y: number },
-    imageCallback: CanvasImageCall, witnessNative: CanvasRenderingContext2D): CanvasRenderingContext2D {
+    imageCallback: CanvasImageCall, witnessNative: CanvasRenderingContext2D, onWitnessFailure?: () => void): CanvasRenderingContext2D {
     const context = deviceContext(native, origin, imageCallback);
     if (!__BME_BENCH__) return context;
     const witness = deviceContext(witnessNative, origin, (_source, _src, _dst, draw) => draw());
@@ -20,7 +20,8 @@ export function benchmarkDeviceContext(native: CanvasRenderingContext2D, origin:
             if (typeof value !== 'function' || !mirroredMethods.has(key)) return value;
             if (!methods.has(key)) methods.set(key, (...args: unknown[]) => {
                 const result = Reflect.apply(value, target, args);
-                Reflect.apply(Reflect.get(witness, key, witness), witness, args);
+                try { Reflect.apply(Reflect.get(witness, key, witness), witness, args); }
+                catch { try { onWitnessFailure?.(); } catch { /* Witness failure must not alter product paint. */ } }
                 return result;
             });
             return methods.get(key);

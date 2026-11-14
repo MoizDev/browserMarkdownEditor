@@ -372,7 +372,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 let qualityScale: number;
                                 if (mirrored) {
                                     encoding?.discard();
-                                    presented = { drawn: [] };
+                                    presented = { drawn: [], ...(__BME_BENCH__ ? { commitObservation: mirror!.commitObservation } : {}) };
                                     complete = mirror!.complete;
                                     sharp = mirror!.sharp;
                                     staleVersion = mirror!.staleVersion;

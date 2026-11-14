@@ -1,3 +1,5 @@
+import type { DocumentSessionStore } from './documentSessions';
+
 // C-01a wires App's exit guard and hidden-page checkpoint; W-10 registers the
 // drawing, notebook and annotated-PDF serializers; C-14 drains before every
 // flushTab caller. This store outlives panes and cached EditorStates.
@@ -13,11 +15,27 @@ interface Registration { serializer: PendingSerializer }
 const registrations = new Map<string, Registration>();
 const listeners = new Set<() => void>();
 let drainQueue: Promise<void> = Promise.resolve();
+let sessionBinding: { store: DocumentSessionStore; unsubscribe: () => void } | undefined;
+const DRAIN_DEADLINE_MS = 2000;
 
 function notifyPending(): void {
     for (const listener of [...listeners]) {
         try { listener(); } catch (error) { console.error('Pending-work subscriber failed:', error); }
     }
+}
+
+/** Bind the App-owned store; a stale StrictMode cleanup cannot remove its successor. */
+export function installDocumentSessions(store: DocumentSessionStore): () => void {
+    sessionBinding?.unsubscribe();
+    const binding = { store, unsubscribe: store.subscribe(notifyPending) };
+    sessionBinding = binding;
+    notifyPending();
+    return () => {
+        if (sessionBinding !== binding) return;
+        sessionBinding = undefined;
+        binding.unsubscribe();
+        notifyPending();
+    };
 }
 
 /** Report in the first unserialised-change task, not in a later pane effect. */
@@ -37,6 +55,11 @@ export function registerPending(serializer: PendingSerializer): () => void {
 
 /** Read synchronously by the exit guard; an unreadable reporter stays protected. */
 export function anyPending(): boolean {
+    try {
+        for (const entry of sessionBinding?.store.entries() ?? []) {
+            if (entry.hasPendingEdits()) return true;
+        }
+    } catch { return true; }
     for (const { serializer } of registrations.values()) {
         try {
             if (serializer.hasPendingEdits()) return true;
@@ -55,8 +78,30 @@ async function drainRegistered(documentId?: string): Promise<void> {
             if (serializer.hasPendingEdits()) work.push(Promise.resolve(serializer.flushPending()));
         } catch (error) { failures.push(error); }
     }
-    for (const result of await Promise.allSettled(work)) {
-        if (result.status === 'rejected') failures.push(result.reason);
+    for (const entry of sessionBinding?.store.entries() ?? []) {
+        if (documentId !== undefined && entry.documentId !== documentId) continue;
+        try {
+            if (entry.adapter.drain) work.push(Promise.resolve(entry.adapter.drain()));
+        } catch (error) { failures.push(error); }
+    }
+    if (work.length) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
+        const settled = Promise.allSettled(work).then(results => {
+            for (const result of results) if (result.status === 'rejected') {
+                if (timedOut) console.error('Document drain failed after its deadline:', result.reason);
+                else failures.push(result.reason);
+            }
+        });
+        await Promise.race([settled, new Promise<void>(resolve => {
+            timer = setTimeout(() => { timedOut = true; resolve(); }, DRAIN_DEADLINE_MS);
+        })]);
+        if (timer !== undefined) clearTimeout(timer);
+        if (timedOut) {
+            console.warn('Document drain exceeded its deadline; pending work may be at risk.');
+            for (const error of failures) console.error('Document drain failed:', error);
+            failures.length = 0;
+        }
     }
     notifyPending();
     if (failures.length) throw new AggregateError(failures, 'Could not drain pending document serializers.');

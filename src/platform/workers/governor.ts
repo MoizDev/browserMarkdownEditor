@@ -81,7 +81,9 @@ class Governor implements CpuPermits {
             && time - entry.waiting >= starvationMs;
         // A waiting background job gets a turn ahead of 1/2 after two seconds, otherwise
         // a steady stream of visible work could keep it queued forever. It never displaces 0.
-        const rank = (entry: Entry) => overdue(entry) ? 0.5 : entry.priority;
+        // An aged job keeps its turn until it finishes or priority 0 displaces it; otherwise
+        // the next queue change could immediately undo the fairness admission.
+        const rank = (entry: Entry) => entry.priority === 3 && (entry.aged || overdue(entry)) ? 0.5 : entry.priority;
         entries.sort((a, b) => rank(a) - rank(b)
             || Number(b.phase === 'running') - Number(a.phase === 'running')
             || (a.phase === 'running' && b.phase === 'running' ? a.started - b.started : 0)
@@ -91,8 +93,8 @@ class Governor implements CpuPermits {
         for (const entry of entries) {
             if (entry.priority !== 0) {
                 if (selected.size >= this.cap) break;
-                // Do not fill the reserved core with lower-priority work while a 2 is waiting.
-                if (entry.priority === 2 && selected.size >= this.cap - 1) break;
+                // Priority 2 leaves a core free, but priority 3 may use that slot when eligible.
+                if (entry.priority === 2 && selected.size >= this.cap - 1) continue;
                 if (entry.priority === 3 && foreground && !entry.aged && !overdue(entry)) continue;
             }
             selected.add(entry);

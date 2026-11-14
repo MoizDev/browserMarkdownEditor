@@ -335,7 +335,11 @@ export class CameraController {
         this.publishCamera(next);
     }
 
-    setMoving(moving: boolean): void { this.moving = moving; }
+    setMoving(moving: boolean): void {
+        if (this.moving === moving) return;
+        this.moving = moving;
+        this.epoch++;
+    }
 
     /** CSS displacement is divided by z, never multiplied by DPR (§7.2:696–697). */
     panBy(delta: Point): void {
@@ -387,11 +391,14 @@ export class CameraController {
         if (!Number.isSafeInteger(frameId) || frameId < 0 || frameId < this.frameId) throw new RangeError('Frame ids must be monotonic nonnegative integers');
         if (frameId === this.frameId && this.frameState) return this.frameState;
         const ideal = constrainCamera(this.cameraValue, this.viewportValue, this.constraint);
+        this.publishCamera(ideal);
         const next = this.moving ? ideal : snapCamera(ideal, this.viewportValue, this.constraint.bounds(ideal, this.viewportValue));
         validateCamera(next, this.viewportValue);
-        this.publishCamera(next);
+        // Rest snapping is presentation, not a new semantic input. Writing it back made a
+        // fractional scroll alternate raw→snapped every frame (epoch +2), cancelling CPU bands
+        // forever after quality reduction changed the device-pixel phase.
         this.frameId = frameId;
-        this.frameState = Object.freeze({ camera: this.cameraValue, viewport: this.viewportValue, epoch: this.epoch, moving: this.moving });
+        this.frameState = Object.freeze({ camera: Object.freeze({ ...next }), viewport: this.viewportValue, epoch: this.epoch, moving: this.moving });
         return this.frameState;
     }
 

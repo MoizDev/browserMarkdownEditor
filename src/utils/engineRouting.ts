@@ -1,4 +1,5 @@
 import { writeStoredValue } from './storage';
+import { pdfEngineAvailableInBuild } from './pdfEngineAvailability';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
 export type CanvasEngine = 'tldraw' | 'viewer' | 'board';
@@ -7,7 +8,7 @@ export type PdfViewer = 'classic' | 'tiled';
 // Add an engine here only when its host and lazy import are in this build.
 // The same availability list drives the controls and the synchronous router.
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw'];
-export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['classic'];
+export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['classic', 'tiled'] : ['classic'];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;

@@ -83,6 +83,16 @@ export class SurfaceBacking implements MemoryAllocator {
         for (const lease of this.leases) this.release(lease);
     }
 
+    /** A zeroed kept canvas may rebuild behind a different displayed backend. Its new
+     * allocation is working scratch until that old display has actually been relinquished.
+     */
+    stage(): void {
+        if (this.closed || this.options.canvas.width || this.options.canvas.height || this.leases.size) {
+            throw new Error('Only a released zero-size backing can be staged');
+        }
+        this.displayed = false;
+    }
+
     /** Called only after the selected old canvas has released its actual backing. */
     promote(): boolean {
         if (this.closed) return false;

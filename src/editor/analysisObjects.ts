@@ -74,17 +74,29 @@ function readTail(doc: Text, at: number): Tail {
     return { end: p + 2, inspected: p + 2, width: parseInt(doc.sliceString(digits, p), 10) };
 }
 
+function lowerBound(positions: readonly number[], value: number): number {
+    let lo = 0, hi = positions.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (positions[mid] < value) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
 function embedsFor(doc: Text, openers: readonly number[], terms: readonly number[], tails: Map<number, Tail>,
-    code: readonly CharRange[], math: readonly CharRange[], reusable: ReadonlyMap<number, EmbedMatch>): EmbedMatch[] {
+    code: readonly CharRange[], math: readonly CharRange[], reusable: ReadonlyMap<number, EmbedMatch>,
+    start = 0, convergeAfter = Infinity): EmbedMatch[] {
     const embeds: EmbedMatch[] = [];
-    let consumed = 0;
-    for (const from of openers) {
+    let consumed = start;
+    for (let i = lowerBound(openers, start); i < openers.length; i++) {
+        const from = openers[i];
         if (from < consumed) continue;
         const old = reusable.get(from);
         if (old) {
             const match = { ...old, accepted: !overlapsRange(code, from, old.to) && !overlapsRange(math, from, old.to) };
             embeds.push(match);
             consumed = match.to;
+            if (from >= convergeAfter) break;
             continue;
         }
         const term = nextTerminator(terms, from + 3);
@@ -202,7 +214,39 @@ export function updateObjects(previous: ObjectScans, oldDoc: Text, doc: Text, ch
         const from = changes.mapPos(match.from, 1), to = changes.mapPos(match.to, -1);
         reusable.set(from, { ...match, from, to });
     }
-    const embeds = embedsFor(doc, openers, terminators, tails, code, math, reusable);
+    // An earlier opener cannot reach past a terminator unless that terminator's
+    // tail itself reaches the edit. Failed tails matter just as successful ones do.
+    let affected = edits[0]?.fromB ?? doc.length;
+    for (const c of edits) {
+        let termIndex = lowerBound(terminators, c.fromB) - 1;
+        if (termIndex >= 0) {
+            const term = terminators[termIndex];
+            let tail = tails.get(term);
+            if (!tail) { tail = readTail(doc, term); tails.set(term, tail); }
+            if (tail.inspected >= c.fromB) termIndex--;
+        }
+        const boundary = termIndex >= 0 ? terminators[termIndex] + 1 : 0;
+        const opener = openers[lowerBound(openers, boundary)];
+        if (opener !== undefined && opener <= c.toB) affected = Math.min(affected, opener);
+    }
+    // A removed opener or terminator can invalidate an old match even when no
+    // corresponding opener remains in the new text.
+    for (const match of previous.embeds) {
+        if (touched(match.from, match.to, edits, true)) affected = Math.min(affected, changes.mapPos(match.from, -1));
+    }
+    const mapped = [...reusable.values()];
+    let prefix = 0;
+    while (prefix < mapped.length && mapped[prefix].to <= affected) prefix++;
+    const start = prefix < mapped.length && mapped[prefix].from < affected
+        ? mapped[prefix].from : affected;
+    const lastEdit = edits.length ? edits[edits.length - 1].toB : 0;
+    const rescanned = embedsFor(doc, openers, terminators, tails, code, math, reusable, start, lastEdit);
+    const last = rescanned[rescanned.length - 1];
+    const converged = last && last.from >= lastEdit && reusable.get(last.from)?.to === last.to;
+    const suffix = converged ? mapped.filter(match => match.from >= last.to) : [];
+    const refilter = (match: EmbedMatch): EmbedMatch => ({ ...match,
+        accepted: !overlapsRange(code, match.from, match.to) && !overlapsRange(math, match.from, match.to) });
+    const embeds = [...mapped.slice(0, prefix).map(refilter), ...rescanned, ...suffix.map(refilter)];
 
     const oldLines = regexLines(oldDoc), newLines = regexLines(doc);
     const oldWindows = mergeRanges(edits.map(c => ({ from: tableRegion(oldDoc, oldLines, c.fromA).from, to: tableRegion(oldDoc, oldLines, c.toA).to })));

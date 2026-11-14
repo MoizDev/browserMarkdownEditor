@@ -1,5 +1,6 @@
 import type { Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
+import type { DamageRecord } from './damage';
 import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
@@ -83,7 +84,7 @@ export interface LayerHost {
     device(): GfxDevice | null;
     /** Current broker circuit generation, also while device=null; never reset on CPU fallback. */
     readonly generation: number;
-    invalidate(reason: string): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
     wakeAt(deadlineMs: number | null): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
@@ -156,6 +157,8 @@ export interface PaneCompositor {
     readonly surface: HTMLCanvasElement;
     readonly resources: CompositorResources;
     readonly surfaceGeneration: number;
+    /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
+    promoteSurface?(): boolean;
     readonly target: SurfaceCommitTarget;
     attach(host: PaneSurfaceHost): void;
     detach(): void;

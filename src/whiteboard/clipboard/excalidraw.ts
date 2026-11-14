@@ -267,7 +267,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
     const yieldHost = async () => { check(); await options.cooperate(); check(); };
     const samples = new SampleStore(), leases: SampleLease[] = [], media = new Map<MediaId, MediaEntry>(), blobs = new Map<MediaId, Blob>();
     const ids = new Map(draft.ids), nodes = [...draft.nodes], orders = keysBetween(null, null, options.elements.length);
-    const files = new Map(options.files.map(file => [file.fileId, file]));
+    const files = new Map(options.files.map(file => [file.fileId, file])), inspected = new Map<string, InspectedMedia | null>();
     const labelsByContainer = new Map<string, Readonly<Record<string, unknown>>[]>(), removed = new Set<NodeId>();
     for (const element of options.elements) if (element.type === 'text' && typeof element.containerId === 'string') {
         let labels = labelsByContainer.get(element.containerId); if (!labels) labelsByContainer.set(element.containerId, labels = []); labels.push(element);
@@ -286,9 +286,13 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
             if (element.type === 'image') {
                 const geometry = elementGeometry(element), file = typeof element.fileId === 'string' ? files.get(element.fileId) : undefined;
                 if (!geometry || !file) { skipped++; ids.delete(sourceId); continue; }
-                let info: InspectedMedia;
-                try { info = await options.inspectImage(file, options.signal); check(); }
-                catch { check(); skipped++; ids.delete(sourceId); continue; }
+                let info = inspected.get(file.fileId);
+                if (info === undefined) {
+                    try { info = await options.inspectImage(file, options.signal); check(); }
+                    catch { check(); info = null; }
+                    inspected.set(file.fileId, info);
+                }
+                if (!info) { skipped++; ids.delete(sourceId); continue; }
                 if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !info.mime.startsWith('image/') || !finite(info.width, 1, 2 ** 26)
                     || !finite(info.height, 1, 2 ** 26) || info.width * info.height > SECURITY_LIMITS.mediaPixels || info.duration !== null
                     || typeof info.animated !== 'boolean') throw new TypeError('Invalid inspected Excalidraw image');
@@ -298,7 +302,7 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 if (prior && (prior.bytes !== entry.bytes || prior.mime !== entry.mime || prior.w !== entry.w || prior.h !== entry.h || prior.animated !== entry.animated)) throw new Error('Conflicting Excalidraw image metadata');
                 const scale = Array.isArray(element.scale) ? element.scale : [1, 1];
                 if (scale.length !== 2 || ![1, -1].includes(scale[0] as number) || ![1, -1].includes(scale[1] as number)) { skipped++; ids.delete(sourceId); continue; }
-                media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime }));
+                if (!prior) { media.set(info.id, entry); blobs.set(info.id, new Blob([file.blob], { type: info.mime })); }
                 nodes.push(createPicture({ id, parent: options.sheet, order: orders[index], page: -1, x: geometry.x, y: geometry.y,
                     rotation: geometry.rotation, opacity: geometry.opacity, ext: null, w: geometry.w, h: geometry.h, media: info.id, crop: null,
                     flipX: scale[0] === -1, flipY: scale[1] === -1, alt: '', inverted: false, playing: false, url: null }));

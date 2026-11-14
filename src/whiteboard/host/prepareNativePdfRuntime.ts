@@ -88,7 +88,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         const store = media, limiter = new Limiter();
         const loads = await Promise.allSettled([...doc.media.values()].map(entry => limiter.run(async () => {
             check();
-            if (!(MEDIA_MIMES as readonly string[]).includes(entry.mime) || !/^sha256:[0-9a-f]{64}$/.test(entry.id)) throw new Error('Invalid PDF ink media identity');
+            if (entry.file !== null || !(MEDIA_MIMES as readonly string[]).includes(entry.mime) || !/^sha256:[0-9a-f]{64}$/.test(entry.id)) throw new Error('Invalid PDF ink embedded media identity');
             const name = `board-media/${entry.id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}`;
             const blob = await accepted.readMedia(name, signal);
             check();
@@ -164,7 +164,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                         try {
                             for (const asset of boardRecoveryMedia(payload)) {
                                 recoverySignal.throwIfAborted();
-                                if (!isCurrent() || await hashMedia(asset.blob, recoverySignal) !== asset.id || !isCurrent()) throw new Error('Recovered PDF media is invalid');
+                                if (asset.file !== null || !isCurrent() || await hashMedia(asset.blob, recoverySignal) !== asset.id || !isCurrent()) throw new Error('Recovered PDF embedded media is invalid');
                                 const id = asset.id as MediaId;
                                 leases.push(store.retain(id, 'journal')); store.put(id, asset.blob);
                             }
@@ -180,7 +180,33 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: services.bounds, retainNode: services.retainNode, realize: services.realize,
                             preparePaint: services.preparePaint, subscribeInvalidation: services.subscribeInvalidation },
-                    }, builds: { pinMedia: () => ({ async restore(restoreSignal) { restoreSignal.throwIfAborted(); return 'unchanged'; }, release() {} }), pinPdf: build.pinPdf } });
+                    }, builds: { pinMedia: () => {
+                        const held: Array<{ id: MediaId; bytes: number; blob: Blob; lease: MediaLease }> = [];
+                        try {
+                            for (const entry of doc.media.values()) {
+                                const blob = store.get(entry.id);
+                                if (entry.file !== null || store.currentFile(entry.id) !== null || !blob || blob.size !== entry.bytes) {
+                                    throw new Error(`PDF embedded media is unavailable: ${entry.id}`);
+                                }
+                                held.push({ id: entry.id, bytes: entry.bytes, blob, lease: store.retain(entry.id, 'snapshot') });
+                            }
+                        } catch (error) { for (const item of held) item.lease.release(); throw error; }
+                        let released = false;
+                        return {
+                            async restore(restoreSignal) {
+                                for (const item of held) {
+                                    restoreSignal.throwIfAborted();
+                                    if (released || !current() || item.blob.size !== item.bytes || await hashMedia(item.blob, restoreSignal) !== item.id) {
+                                        throw new Error(`PDF embedded media is unavailable or corrupt: ${item.id}`);
+                                    }
+                                }
+                                restoreSignal.throwIfAborted();
+                                if (released || !current()) throw new DOMException('PDF session ended', 'AbortError');
+                                return 'unchanged';
+                            },
+                            release() { if (!released) { released = true; for (const item of held) item.lease.release(); } },
+                        };
+                    }, pinPdf: build.pinPdf } });
                     transferred = true; releaseCreators(); acquired?.dispose();
                     let closed = false;
                     return { board: owned.board, sources, dispose() {

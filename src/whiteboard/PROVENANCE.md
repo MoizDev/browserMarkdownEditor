@@ -148,6 +148,8 @@ third-party code included (normally "none") · date.
 | `export/pngWorkerProtocol.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; row backpressure protocol; no tldraw source | none | 2026-11-13 |
 | `export/png.worker.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; dedicated streaming encoder and cancellation; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; bounded-band producer and transferable owned rows; no tldraw source | none | 2026-11-13 |
+| `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs and image lease contract; pinned capture resources; no tldraw source | none | 2026-11-13 |
+| `export/capturePng.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; pinned capture preparation, worker encoding and lease cleanup; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 

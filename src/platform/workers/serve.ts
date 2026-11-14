@@ -35,6 +35,8 @@ async function assertReply(value: unknown, context: WorkerContext): Promise<void
     const pending: Iterator<unknown>[] = [[value][Symbol.iterator]()];
     let started = now(), count = 0;
     while (pending.length) {
+        if (context.cancelled) throw new WorkerHostError('Cancelled', 'Worker request cancelled');
+        if ((++count & 255) === 0 && now() - started >= 3) { await context.slice(); started = now(); }
         const next = pending[pending.length - 1].next();
         if (next.done) { pending.pop(); continue; }
         const item = next.value;
@@ -53,13 +55,12 @@ async function assertReply(value: unknown, context: WorkerContext): Promise<void
         }
         pending.push((function* () {
             for (const key in item) {
-                if (!Object.hasOwn(item, key)) continue;
+                if (!Object.hasOwn(item, key)) { yield undefined; continue; }
                 const descriptor = Object.getOwnPropertyDescriptor(item, key)!;
                 if (!('value' in descriptor)) throw new WorkerHostError('Protocol', 'Worker payload must not contain accessors');
                 yield descriptor.value;
             }
         })());
-        if ((++count & 255) === 0 && now() - started >= 3) { await context.slice(); started = now(); }
     }
 }
 

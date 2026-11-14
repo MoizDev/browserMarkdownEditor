@@ -275,6 +275,15 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
     const displayedVersionOwner = useRef<ReaderToken | undefined>(undefined);
     const [tiledVersion, setTiledVersion] = useState<DiskVersion>();
+    const tiledCapabilities = useRef<{ source: NonNullable<PdfTiledTextSurfaceProps['source']>; capabilities: ReaderCapabilities } | null>(null);
+    const tiledCapabilityAllowed = useRef(false);
+    const reportTiledCapabilities = useCallback((source: NonNullable<PdfTiledTextSurfaceProps['source']>, capabilities: ReaderCapabilities) => {
+        const identity = binding.current?.identity, live = getSessionIdentity(documentId), token = source.session.token;
+        if (!identity || !live || capabilities.surface !== 'pdf-original' || !source.session.isCurrent() || source.document.poolDocument.closed ||
+            token.vaultEpoch !== identity.vaultEpoch || token.documentId !== identity.documentId || token.session !== live.serial ||
+            token.bytesGeneration !== live.bytesGeneration) return;
+        tiledCapabilities.current = { source, capabilities };
+    }, [documentId]);
     const tiledNotify = useCallback((message: string) => binding.current?.onNotify(message), []);
     const [unsignedPending, setUnsignedPending] = useState(false);
     const unsignedInFlight = useRef(false), unsignedMounted = useRef(true);
@@ -750,6 +759,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     function focusReading() {
         root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
     }
+    useLayoutEffect(() => {
+        tiledCapabilityAllowed.current = tiled && !annotationMode && !textSurface && !disk && !isDirty && !flushing;
+    }, [tiled, annotationMode, textSurface, disk, isDirty, flushing]);
     const capabilities: ReaderCapabilities = {
         surface: annotationMode ? 'pdf-annotation' : textSurface ? 'pdf-text' : 'pdf-original',
         emphasis: fatalRenderIssue ? { kind: 'inactive', reason: 'Try again to restart PDF rendering' }
@@ -772,7 +784,14 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     useEffect(() => {
         if (!identity) return;
         const unregister = registerReadingSurface(identity, {
-            capabilities: () => actions.current.capabilities,
+            capabilities: () => {
+                const native = tiledCapabilities.current, identity = binding.current?.identity, live = getSessionIdentity(documentId);
+                const token = native?.source.session.token;
+                if (tiledCapabilityAllowed.current && native && identity && live && token && native.source.session.isCurrent() &&
+                    !native.source.document.poolDocument.closed && token.vaultEpoch === identity.vaultEpoch && token.documentId === identity.documentId &&
+                    token.session === live.serial && token.bytesGeneration === live.bytesGeneration) return native.capabilities;
+                return actions.current.capabilities;
+            },
             showPdfText: () => actions.current.showText(),
             showPdfOriginal: () => actions.current.showOriginal(),
             findReading: () => actions.current.findReading(),
@@ -780,7 +799,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         });
         const unregisterKeyboard = registerKeyboardTarget?.(file.path, () => actions.current.focusReading());
         return () => { actions.current.publishLocation('layout'); flushPdfTextViewState(); unregisterKeyboard?.(); unregister(); };
-    }, [identity, file.path, registerKeyboardTarget]);
+    }, [identity, file.path, registerKeyboardTarget, documentId]);
     const capabilityKey = JSON.stringify(capabilities);
     useEffect(() => {
         if (tiled && !textSurface && !annotationMode) return;
@@ -902,14 +921,14 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                     <PdfTiledSurface sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
-                        onSource={setTiledSource} notify={tiledNotify} openClassic={openClassic} />
+                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} openClassic={openClassic} />
                 </Suspense>
             ) : (
                 <Suspense fallback={<div className="pdf-pane-message">Loading PDF…</div>}>
                     <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
-                        onSource={setTiledSource} notify={tiledNotify} openClassic={openClassic} />
+                        onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} openClassic={openClassic} />
                 </Suspense>
             );
         } else if (!session) {

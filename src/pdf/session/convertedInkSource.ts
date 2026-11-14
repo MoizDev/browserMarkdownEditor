@@ -52,7 +52,7 @@ export async function createConvertedPdfInkSource(ready: PdfLegacyConversionRead
         }
         await validateConvertedBoardHostIdentity(options.board, NATIVE_FORMAT_ID, writeId, encoded.value.text, async () => { check(); });
         check();
-        if (!validatePdfInkConversionHost(ready, host)) throw new Error('PDF conversion host changed');
+        if (!validatePdfInkConversionHost(ready, options.host)) throw new Error('PDF conversion host changed');
         let released = false, releasePromise: Promise<void> | undefined;
         const current = () => {
             if (released) return false;

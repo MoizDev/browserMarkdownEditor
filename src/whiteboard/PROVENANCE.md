@@ -286,7 +286,7 @@ third-party code included (normally "none") · date.
 | `geom/resizePlacement.types.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected local centre and page-aware placement service contract | none | 2026-11-13 |
 | `geom/resizePlacement.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected bounds-centre mapping through shared parent/page pose | none | 2026-11-13 |
 | `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
-| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.7 | Design; shared resize, rotation and per-kind reflection command services | none | 2026-11-13 |
+| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.2/6.7 | Design; nudge, resize, rotation and per-kind reflection command services | none | 2026-11-13 |
 | `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
 | `geom/flip.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; reflected centres, local sign/flip properties and delegated container/binding policies | none | 2026-11-13 |
 | `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-009/015 | geometry §6.7 | Design; ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transaction builders | none | 2026-11-13 |

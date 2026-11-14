@@ -9,6 +9,7 @@ export interface AgentProjectionSource {
     worldBox(node: Node): AgentWorldBox;
     localBox(node: Node): LocalBox;
     resolvedTip: ChangeGeometry['resolvedTip'];
+    resolvedPolylineTip: NonNullable<ChangeGeometry['resolvedPolylineTip']>;
 }
 export interface AgentProjection {
     readonly geometry: AgentGeometry;

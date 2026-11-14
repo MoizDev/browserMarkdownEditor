@@ -40,6 +40,7 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
             context.assertCurrent();
             const cooperate = async () => { context.assertCurrent(); await ports.cooperate?.(); context.assertCurrent(); };
             const load = await rehydrateLoad(projection, ports.admit, ports.samples, cooperate, context.signal);
+            let registered: AdmittedLoadToken | undefined;
             try {
                 await validateLoadSources(load.sources, load.removedSources, load.unmapped, baseline, cooperate, context.signal);
                 context.assertCurrent();
@@ -47,10 +48,14 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
                 const token = Object.freeze({ kind: 'admitted-board-load' }) as AdmittedLoadToken;
                 const abort = () => discard(token);
                 owned.set(token, { job: context.job, load, signal: context.signal, abort });
+                registered = token;
                 context.signal.addEventListener('abort', abort, { once: true });
                 context.assertCurrent();
                 return token;
-            } catch (error) { load.release(); throw error; }
+            } catch (error) {
+                if (registered) discard(registered); else load.release();
+                throw error;
+            }
         },
         take(token, job) {
             const entry = owned.get(token);

@@ -2527,6 +2527,19 @@ body.is-resizing-panes * {
   width: 190px;
 }
 
+.setting-control select {
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+}
+
+.settings-body .settings-notices-link {
+  color: var(--text-accent);
+}
+
 .settings-footer {
   display: flex;
   justify-content: flex-end;

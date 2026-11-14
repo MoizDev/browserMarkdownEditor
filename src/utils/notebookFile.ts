@@ -34,14 +34,13 @@ export interface NotebookFile {
  * Read a `.notebook`. A new (empty) file yields default paper and no snapshot,
  * which is a blank one-page notebook.
  *
- * NEVER THROWS. An unreadable file must not mount a blank canvas that then
- * autosaves over it on the first stroke — so a parse failure is reported, and
- * the caller opens a fresh notebook while the bytes stay intact on disk.
+ * NotebookPane guards the envelope before calling this decoder. Unexpected
+ * failures must not become editable blanks or empty notebook exports.
  */
 export function parseNotebookFile(content: string): NotebookFile {
     if (!content.trim()) return { paper: normalizePaper(undefined) };
     try {
-        const { paper, ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & {
+        const { paper, ui, ...snapshot } = JSON.parse(content.trim()) as TLEditorSnapshot & {
             paper?: Partial<NotebookPaper>;
             ui?: NotebookUiState;
         };
@@ -60,8 +59,7 @@ export function parseNotebookFile(content: string): NotebookFile {
             ui,
         };
     } catch (err) {
-        console.error('Could not parse notebook (leaving the file untouched):', err);
-        return { paper: normalizePaper(undefined) };
+        throw new Error('The notebook could not be loaded without losing content.', { cause: err });
     }
 }
 

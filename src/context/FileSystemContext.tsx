@@ -2206,6 +2206,44 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
     }, []);
 
+    const inspectExportTarget = useCallback(async (dir: FileSystemDirectoryHandle, name: string): Promise<DiskVersion | null> => {
+        try {
+            const handle = await dir.getFileHandle(name);
+            const { file, buf } = await readSnapshot(handle);
+            return await versionOfSnapshot(file, buf);
+        } catch (error) {
+            if (isNotFound(error)) return null;
+            throw error;
+        }
+    }, []);
+
+    const writeNotebookExport = useCallback((dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null) => withMutation(async (): Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' }> => {
+        const root = rootHandleRef.current;
+        if (!expected) {
+            // FSA has no exclusive create; the final name check is the narrowest
+            // possible window, and counts folders as well as files.
+            if (await entryExists(dir, name)) return { status: 'changed' };
+            const handle = await dir.getFileHandle(name, { create: true });
+            await writeAllBytes(handle, bytes);
+            if (root && rootHandleRef.current === root) await patchTreeDirs(root, [parentPath]);
+            return { status: 'written', version: await versionAfterWrite(handle, bytes) };
+        }
+        let handle: FileSystemFileHandle;
+        try { handle = await dir.getFileHandle(name); }
+        catch (error) { if (isGone(error)) return { status: 'changed' }; throw error; }
+        const { file, buf } = await readSnapshot(handle);
+        const observed = await versionOfSnapshot(file, buf);
+        if (observed.hash !== expected.hash) return { status: 'changed' };
+        const trash = await dir.getDirectoryHandle(TRASH_DIR, { create: true });
+        const backupName = await freeEntryName(trash, name);
+        // Keep the snapshot even if a later write fails: it is the last known
+        // complete version and the existing file is never truncated first.
+        await copyFileInto(trash, backupName, file);
+        const result = await writeFileVersioned(handle, bytes, observed);
+        if (result.status !== 'written') return { status: 'changed' };
+        return { status: 'written', version: result.version };
+    }), [patchTreeDirs, withMutation, writeFileVersioned]);
+
     /**
      * Park `data` beside `filePath` as `stem (conflict).ext`, then
      * `stem (conflict 2).ext`, … — never over anything: the name is verified free
@@ -2261,6 +2299,25 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         await writeAllBytes(handle, bytes);
         const version = await versionAfterWrite(handle, bytes);
         await patchTreeDirs(root, [patchFrom ?? parentPath]);
+        return { status: 'written' as const, version, handle };
+    }), [withMutation, patchTreeDirs]);
+
+    // A staged export must not recreate a deleted parent or truncate an existing
+    // target. The name check has the same FSA check/create gap as conflict copies.
+    const createStagedExport = useCallback((parent: FileSystemDirectoryHandle, name: string, parentPath: string, bytes: Uint8Array, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => withMutation(async () => {
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        if (await entryExists(parent, name)) return { status: 'exists' as const };
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        const handle = await parent.getFileHandle(name, { create: true });
+        if (root !== rootHandleRef.current || !isCurrent()) return { status: 'cancelled' as const };
+        const writable = await handle.createWritable();
+        try {
+            await writable.write(bytes as Uint8Array<ArrayBuffer>);
+            if (root !== rootHandleRef.current || !isCurrent()) { await writable.abort(); return { status: 'cancelled' as const }; }
+            await writable.close();
+        } catch (error) { await writable.abort().catch(() => {}); throw error; }
+        const version = await versionAfterWrite(handle, bytes);
+        if (root === rootHandleRef.current) await patchTreeDirs(root, [parentPath]);
         return { status: 'written' as const, version, handle };
     }), [withMutation, patchTreeDirs]);
 
@@ -2541,10 +2598,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         renameFile,
         readFileVersioned,
         readBytesVersioned,
+        inspectExportTarget,
+        writeNotebookExport,
         statFile: statOf,
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
+        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,
@@ -2586,9 +2646,12 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         renameFile,
         readFileVersioned,
         readBytesVersioned,
+        inspectExportTarget,
+        writeNotebookExport,
         writeFileVersioned,
         writeConflictCopy,
         recreateFile,
+        createStagedExport,
         resolveFileHandle,
         subscribeVaultChanges,
         liveDetection,

@@ -6,7 +6,7 @@ import { createCircleClipBoundsJob } from './circleClipBounds';
 import type { CircleClipResult } from './circleClipBounds';
 import { exactLineThrough, exactPoint, exactSide } from './homogeneous';
 import type { ExactLine, ExactPoint } from './homogeneous';
-import { add, dyadic, dyadicSubtract, interval, multiply, nextDown, nextUp, sqrtInterval, subtract } from './numeric';
+import { add, dyadic, dyadicMultiply, dyadicSubtract, interval, multiply, nextDown, nextUp, sqrtInterval, subtract } from './numeric';
 import type { Dyadic, Interval } from './numeric';
 import type { Cubic, Vec2 } from './path';
 
@@ -63,6 +63,12 @@ function union(a: Box | null, b: Box): Box {
     return a ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 }
 function uncertainty(reason: string): ClippedTubeResult { return { status: 'uncertain', reason }; }
+function supportDifference(line: ExactLine, a: Vec2, b: Vec2, winding: number): number {
+    const x = dyadicSubtract(dyadic(a.x), dyadic(b.x)), y = dyadicSubtract(dyadic(a.y), dyadic(b.y));
+    const ax = dyadicMultiply(line.a, x), by = dyadicMultiply(line.b, y);
+    const value = dyadicSubtract(ax, { n: -by.n, e: by.e }).n;
+    return (value < 0n ? -1 : value > 0n ? 1 : 0) * winding;
+}
 
 /** A depth-first certified union of clipped outer balls and actual inner discs. */
 export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | readonly [number, number], clip: ClippedTubeClip, tolerance: number,
@@ -74,7 +80,7 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
     const maxDepth = limits.maxDepth ?? 32, maxNodes = limits.maxNodes ?? 65536, maxWork = limits.maxWork ?? 10000000;
     const sourceOuter = 'outer' in clip ? clip.outer : clip, sourceInner = 'inner' in clip ? clip.inner : clip;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 64 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
-        || !Number.isSafeInteger(maxWork) || maxWork < 1 || sourceOuter.length > 1024 || sourceInner.length > 1024) throw new RangeError('Invalid cubic tube work limits');
+        || !Number.isSafeInteger(maxWork) || maxWork < 1 || sourceOuter.length > 131072 || sourceInner.length > 131072) throw new RangeError('Invalid cubic tube work limits');
     const outerPolygon = sourceOuter.map(p => ({ ...p }));
     const innerPolygon = sourceInner === sourceOuter ? outerPolygon : sourceInner.map(p => ({ ...p }));
     const matrix = limits.localToWorld;
@@ -100,9 +106,9 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
         readonly centre: Vec2; readonly radius: number; readonly retried: boolean };
     let pending: Pending | undefined, node: WorkNode | undefined, parts: ReturnType<typeof split> | undefined;
     let currentOuter: Box | null = null, sample = 0;
-    let phase: 'validateOuter' | 'validateInner' | 'outerLines' | 'innerLines' | 'outerWinding' | 'innerWinding' | 'subset' | 'ready' = 'validateOuter';
+    let phase: 'validateOuter' | 'validateInner' | 'outerLines' | 'innerLines' | 'outerWinding' | 'innerWinding' | 'subsetScan' | 'subset' | 'ready' = 'validateOuter';
     const outerLines: ExactLine[] = [], innerLines: ExactLine[] = [];
-    let index = 0, subIndex = 0, outerWinding = 0, innerWinding = 0;
+    let index = 0, support = 0, advances = 0, outerWinding = 0, innerWinding = 0;
     let witness: { point: ExactPoint; control: Control; edge: number } | undefined;
     const finish = (value: ClippedTubeResult): ClippedTubeStep => { result = value; return { done: true, result: value }; };
     const startCircle = (kind: Pending['kind'], centre: Vec2, r: number, retried = false) => {
@@ -110,8 +116,6 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
         pending = { kind, centre, radius: r, retried, job: createCircleClipBoundsJob({ centre, radius: r }, polygon, tolerance / 8) };
     };
     const clipBox: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const p of outerPolygon) { clipBox[0] = Math.min(clipBox[0], p.x); clipBox[1] = Math.min(clipBox[1], p.y);
-        clipBox[2] = Math.max(clipBox[2], p.x); clipBox[3] = Math.max(clipBox[3], p.y); }
     const intersect = (a: Box, b: Box): Box | null => {
         const value: Box = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
         return value[0] > value[2] || value[1] > value[3] ? null : value;
@@ -174,7 +178,15 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
             if (phase === 'validateOuter' || phase === 'validateInner') { startCircle(phase, { x: 0, y: 0 }, 0); continue; }
             if (phase === 'outerLines' || phase === 'innerLines') {
                 const polygon = phase === 'outerLines' ? outerPolygon : innerPolygon, lines = phase === 'outerLines' ? outerLines : innerLines;
-                if (index < polygon.length) { lines.push(exactLineThrough(polygon[index], polygon[(index + 1) % polygon.length])); index++; continue; }
+                if (index < polygon.length) {
+                    const point = polygon[index];
+                    lines.push(exactLineThrough(point, polygon[(index + 1) % polygon.length]));
+                    if (phase === 'outerLines') {
+                        clipBox[0] = Math.min(clipBox[0], point.x); clipBox[1] = Math.min(clipBox[1], point.y);
+                        clipBox[2] = Math.max(clipBox[2], point.x); clipBox[3] = Math.max(clipBox[3], point.y);
+                    }
+                    index++; continue;
+                }
                 index = 2; phase = phase === 'outerLines' ? 'innerLines' : 'outerWinding';
                 if (phase === 'innerLines') index = 0;
                 continue;
@@ -188,17 +200,28 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
                 }
                 if (polygon.length && !(phase === 'outerWinding' ? outerWinding : innerWinding)) return finish(uncertainty('Clip envelope has no area'));
                 if (phase === 'outerWinding') { phase = 'innerWinding'; index = 2; }
-                else { phase = 'subset'; index = 0; subIndex = 0; }
+                else { phase = 'subsetScan'; index = 1; support = 0; advances = 0; }
                 continue;
             }
-            if (phase === 'subset') {
-                if (index < innerPolygon.length && outerLines.length) {
-                    if (exactSide(outerLines[subIndex], exactPoint(innerPolygon[index])) * outerWinding < 0) return finish(uncertainty('Inner clip is not contained in outer clip'));
-                    if (++subIndex === outerLines.length) { subIndex = 0; index++; }
-                    continue;
-                }
+            if (phase === 'subsetScan') {
                 if (!outerLines.length) return finish(uncertainty('Outer clip is empty while inner clip is not'));
-                phase = 'ready'; continue;
+                if (!innerPolygon.length) { phase = 'ready'; continue; }
+                if (index < innerPolygon.length) {
+                    if (supportDifference(outerLines[0], innerPolygon[index], innerPolygon[support], outerWinding) <= 0) support = index;
+                    index++; continue;
+                }
+                index = 0; phase = 'subset'; continue;
+            }
+            if (phase === 'subset') {
+                if (index >= outerLines.length) { phase = 'ready'; continue; }
+                const direction = innerWinding === outerWinding ? 1 : -1;
+                const next = (support + direction + innerPolygon.length) % innerPolygon.length, line = outerLines[index];
+                if (supportDifference(line, innerPolygon[next], innerPolygon[support], outerWinding) <= 0) {
+                    if (++advances > 2 * innerPolygon.length + outerPolygon.length) return finish(uncertainty('Clip support advancement limit'));
+                    support = next; continue;
+                }
+                if (exactSide(line, exactPoint(innerPolygon[support])) * outerWinding < 0) return finish(uncertainty('Inner clip is not contained in outer clip'));
+                index++; continue;
             }
             if (witness) {
                 if (witness.edge < innerLines.length) {

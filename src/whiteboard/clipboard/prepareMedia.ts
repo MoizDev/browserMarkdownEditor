@@ -1,6 +1,8 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { Op } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
+import type { BoardDoc } from '../model/doc';
+import type { SessionOwner } from '../session/BoardSession';
 import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
 import { inspectMedia } from '../media/inspect';
 import type { InspectedMedia } from '../media/ingest';
@@ -12,6 +14,7 @@ import type { BoardJobIdentity } from '../workers/protocol';
 // Provenance: private clipboard media, session job authority and SEC-W4
 // verification contracts; independent pre-transaction staging, no third-party source.
 export interface PreparedClipboardMedia {
+    readonly stamp: Readonly<{ runtime: BoardRuntime; owner: Readonly<SessionOwner>; doc: BoardDoc; revision: number }>;
     readonly mediaOps: readonly Op[];
     readonly files: ReadonlyMap<MediaId, string | null>;
     readonly blobs: ReadonlyMap<MediaId, Blob>;
@@ -63,10 +66,13 @@ export function prepareBoardClipboardMedia(options: PrepareClipboardMediaOptions
     const deadlineMs = Math.max(30_000, Math.ceil([...entries.values()].reduce((sum, entry) => sum + entry.bytes, 0) / (100 * 1024 * 1024)) * 30_000);
     let abortOwned: (() => void) | undefined, stampedRevision = -1;
     return runtime.jobs.run(async context => {
-        const revision = runtime.session.doc.rev; stampedRevision = revision;
+        const session = runtime.session, doc = session.doc, revision = doc.rev; stampedRevision = revision;
+        const owner = Object.freeze({ documentId: session.owner.documentId, session: session.owner.session });
+        const stamp = Object.freeze({ runtime, owner, doc, revision });
         const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
         const current = (job: BoardJobIdentity) => job.session === identity.session && job.epoch === identity.epoch && job.revision === identity.revision
-            && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session.doc.rev === revision;
+            && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session === session && session.doc === doc && doc.rev === revision
+            && session.owner.documentId === owner.documentId && session.owner.session === owner.session;
         const check = () => { context.assertCurrent(); if (!current(identity)) throw new DOMException('Clipboard media staging became stale', 'AbortError'); };
         const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
         const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [];
@@ -106,11 +112,12 @@ export function prepareBoardClipboardMedia(options: PrepareClipboardMediaOptions
             abortOwned = release;
             context.signal.addEventListener('abort', release, { once: true });
             check();
-            return { mediaOps: Object.freeze(ops), files, blobs, release };
+            return { stamp, mediaOps: Object.freeze(ops), files, blobs, release };
         } catch (error) { release(); throw error; }
     }, { signal: options.signal, deadlineMs }).then(result => {
         options.signal?.throwIfAborted();
-        if (!options.current() || runtime.session.doc.rev !== stampedRevision) throw new DOMException('Clipboard media staging became stale', 'AbortError');
+        if (!options.current() || runtime.session.doc !== result.stamp.doc || runtime.session.doc.rev !== stampedRevision
+            || runtime.session.owner.documentId !== result.stamp.owner.documentId || runtime.session.owner.session !== result.stamp.owner.session) throw new DOMException('Clipboard media staging became stale', 'AbortError');
         abortOwned = undefined;
         return result;
     }).catch(error => { abortOwned?.(); abortOwned = undefined; throw error; });

@@ -5,7 +5,7 @@ import type { NodeId, SheetId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { RawJson } from '../model/json';
 import type { Node } from '../model/nodes';
-import { nodeRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
+import { extRawValues, nodeRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
 import type { RichFragment, RichText } from '../text/richText';
 import type { ClipboardTextItem } from './rendition';
 
@@ -147,8 +147,9 @@ function* selectionSteps(host: CopySnapshotHost, selection: readonly NodeId[]): 
         const media: MediaEntry[] = [];
         for (const id of ids) {
             const entry = host.doc.media.get(id);
-            if (!entry) continue;
+            if (!entry) throw new Error(`Clipboard media metadata is missing: ${id}`);
             leases.push(host.retainMedia(id));
+            for (const raw of extRawValues(entry.ext)) yield { raw, ids };
             const result = encodeMedia(entry);
             if (!result.ok) throw new Error(result.error.reason);
             records.push(result.value.text);
@@ -159,7 +160,7 @@ function* selectionSteps(host: CopySnapshotHost, selection: readonly NodeId[]): 
             payload: { v: 1, nonce: randomNonce(), from: { board: host.board, sheet: host.sheet, kind: host.doc.kind },
                 bounds: { x: left, y: top, w: right - left, h: bottom - top }, records, media: Object.create(null) as Record<string, string> } };
     } catch (error) {
-        for (const lease of leases) lease.release();
+        for (const lease of leases) try { lease.release(); } catch { /* Preserve the original failure and release the rest. */ }
         throw error;
     }
 }

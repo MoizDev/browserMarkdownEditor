@@ -1,7 +1,7 @@
 import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
-import { textBoundaries } from './boundaries';
+import { inheritWordBoundaries, textBoundaries } from './boundaries';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 
@@ -271,6 +271,7 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     const blocks = [...text.blocks.slice(0, first.block), ...after, ...text.blocks.slice(last.block + 1)];
     const result = { blocks };
     inheritProjection(text, result, first.block, before.length, after);
+    inheritWordBoundaries(text, result, first.block, before.length, after.length);
     return {
         text: result, before, after,
         inverse: { from: first.start, to: first.start + segmentLength, insert: { blocks: before }, wholeBlocks: true },

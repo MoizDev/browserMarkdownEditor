@@ -27,6 +27,21 @@ class EmptyBlocks {
         const interval = this.intervals[this.firstEndingAtOrAfter(index)];
         return interval && interval.from <= index ? direction < 0 ? interval.from - 1 : interval.to + 1 : index;
     }
+    /** Preserve only unchanged block ordinals when an immutable revision is spliced. */
+    splice(first: number, removed: number, inserted: number): EmptyBlocks {
+        const result = new EmptyBlocks(), oldEnd = first + removed, shift = inserted - removed;
+        const append = (from: number, to: number) => {
+            if (from > to) return;
+            const last = result.intervals[result.intervals.length - 1];
+            if (last && from <= last.to + 1) last.to = Math.max(last.to, to);
+            else if (result.intervals.length < INTERVAL_LIMIT) result.intervals.push({ from, to });
+        };
+        for (const interval of this.intervals) {
+            append(interval.from, Math.min(interval.to, first - 1));
+            append(Math.max(interval.from, oldEnd) + shift, interval.to + shift);
+        }
+        return result;
+    }
     add(index: number): void {
         const position = this.firstEndingAtOrAfter(index - 1), current = this.intervals[position];
         if (current && current.from <= index + 1) {
@@ -57,6 +72,13 @@ export class WordBlockIndex {
         const directory = this.directory(text), before = directory.size;
         directory.add(index);
         if (directory.size !== before) this.cache.set(text, directory, 512 + directory.size * 64);
+    }
+    inherit(before: RichText, after: RichText, first: number, removed: number, inserted: number): void {
+        const previous = this.cache.get(before);
+        // Do not turn a keystroke into a scan of thousands of fragmented intervals.
+        if (!previous || previous.size > 512) return;
+        const next = previous.splice(first, removed, inserted);
+        if (next.size) this.cache.set(after, next, 512 + next.size * 64);
     }
     clear(): void { this.cache.clear(); }
 }

@@ -20,6 +20,13 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const DEFAULT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ENTRIES = 1024;
+const emptyWords = new WordBlockIndex();
+
+/** A splice preserves every untouched block's wordless classification. */
+export function inheritWordBoundaries(before: RichText, after: RichText, first: number, removed: number, inserted: number): void {
+    emptyWords.inherit(before, after, first, removed, inserted);
+}
+export function clearWordBoundaries(): void { emptyWords.clear(); }
 
 function endsWithCR(block: Block): boolean {
     for (let index = block.runs.length - 1; index >= 0; index--) {
@@ -50,7 +57,6 @@ function blockString(block: Block): string {
 export class TextBoundaries {
     // LRU values retain text/ICU views, not blocks and their potentially large opaque data.
     private readonly entries: WeakIdentityLru<Block, BlockEntry>;
-    private readonly emptyWords = new WordBlockIndex();
 
     constructor(byteLimit = DEFAULT_BYTES, entryLimit = DEFAULT_ENTRIES) {
         this.entries = new WeakIdentityLru(byteLimit, entryLimit);
@@ -143,8 +149,8 @@ export class TextBoundaries {
         const point = projectionPosition(text, cursor);
         let index = point.index, start = point.start, local = point.offset;
         while (index >= 0 && index < text.blocks.length) {
-            if (this.emptyWords.has(text, index)) {
-                index = this.emptyWords.next(text, index, direction);
+            if (emptyWords.has(text, index)) {
+                index = emptyWords.next(text, index, direction);
                 if (index < 0 || index >= text.blocks.length) break;
                 start = projectionBlockStart(text, index);
                 local = direction < 0 ? runIndex(text.blocks[index]).length : 0;
@@ -160,9 +166,9 @@ export class TextBoundaries {
                     if (part.index >= local) break;
                     local = part.index;
                 }
-                if (scannedWhole) this.emptyWords.mark(text, index);
+                if (scannedWhole) emptyWords.mark(text, index);
                 const previous = index;
-                index = this.emptyWords.next(text, index - 1, -1);
+                index = emptyWords.next(text, index - 1, -1);
                 if (index < 0) break;
                 local = runIndex(text.blocks[index]).length;
                 start = index === previous - 1 ? start - local - 1 : projectionBlockStart(text, index);
@@ -175,9 +181,9 @@ export class TextBoundaries {
                     if (end <= local) break;
                     local = end;
                 }
-                if (scannedWhole) this.emptyWords.mark(text, index);
+                if (scannedWhole) emptyWords.mark(text, index);
                 const previous = index;
-                index = this.emptyWords.next(text, index + 1, 1);
+                index = emptyWords.next(text, index + 1, 1);
                 if (index >= text.blocks.length) break;
                 start = index === previous + 1 ? start + entry.text.length + 1 : projectionBlockStart(text, index);
                 local = 0;
@@ -186,7 +192,7 @@ export class TextBoundaries {
         return direction < 0 ? 0 : length;
     }
 
-    clear(): void { this.entries.clear(); this.emptyWords.clear(); }
+    clear(): void { this.entries.clear(); }
 }
 
 /** Bounded shared cache for the synchronous, view-independent rich operation API. */

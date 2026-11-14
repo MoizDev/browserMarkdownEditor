@@ -1,16 +1,18 @@
 import type { PageDisplayItem } from '../../platform/types'
 import type { PaintNodeSource, PaintTextItem } from '../render/paintStream'
+import { isOutlinePathPiece } from '../text/outlinePieces'
+import type { OutlinePiece } from '../text/outlinePieces'
 import type { OutlineStreamReply } from '../text/outlineStream'
 import { boardWorker } from '../workers/client'
 import { openExportTextStream } from './textStreamLease'
 
-/** Pull a captured text paint without keeping a worker CPU permit while the sink writes. */
-export function createStreamingExportTextResolver(source: PaintNodeSource, signal: AbortSignal) {
+function resolver(source: PaintNodeSource, signal: AbortSignal, chunkPaths: boolean) {
   const client = boardWorker('export')
-  return async function* resolve(item: PaintTextItem, pageScale: number, requestSignal?: AbortSignal): AsyncGenerator<PageDisplayItem> {
+  return async function* resolve(item: PaintTextItem, pageScale: number, requestSignal?: AbortSignal): AsyncGenerator<OutlinePiece> {
     const active = requestSignal && requestSignal !== signal ? AbortSignal.any([signal, requestSignal]) : signal
-    const lease = await openExportTextStream(source, item, pageScale, active)
+    const lease = await openExportTextStream(source, item, pageScale, active, chunkPaths)
     const base = { outlineStream: 1 as const, id: lease.id, owner: lease.owner }
+    let pathOpen = false
     try {
       for (;;) {
         active.throwIfAborted()
@@ -21,11 +23,40 @@ export function createStreamingExportTextResolver(source: PaintNodeSource, signa
         if (reply.done) lease.complete()
         for (const part of reply.items) {
           active.throwIfAborted()
-          if (!part || (part.kind !== 'path' && part.kind !== 'raster')) throw new TypeError('Invalid text outline stream item')
+          if (!part) throw new TypeError('Invalid text outline stream item')
+          if (part.kind === 'textPathStart') {
+            if (!chunkPaths || pathOpen || !Array.isArray(part.fill) || part.fill.length !== 4 || !part.fill.every(Number.isFinite)
+              || (part.blend !== 'normal' && part.blend !== 'multiply')) throw new TypeError('Invalid streamed text path start')
+            pathOpen = true
+          } else if (part.kind === 'textPathChunk') {
+            if (!pathOpen || !Array.isArray(part.commands) || part.commands.length > 1024) throw new TypeError('Invalid streamed text path chunk')
+          } else if (part.kind === 'textPathEnd') {
+            if (!pathOpen) throw new TypeError('Invalid streamed text path end')
+            pathOpen = false
+          } else if (pathOpen || (part.kind !== 'path' && part.kind !== 'raster')) throw new TypeError('Invalid text outline stream item')
           yield part
         }
-        if (reply.done) return
+        if (reply.done) {
+          if (pathOpen) throw new TypeError('Unfinished streamed text path')
+          return
+        }
       }
     } finally { lease.release() }
   }
+}
+
+/** Pull display items for consumers that require a complete path per text fragment. */
+export function createStreamingExportTextResolver(source: PaintNodeSource, signal: AbortSignal) {
+  const resolve = resolver(source, signal, false)
+  return async function* displayItems(item: PaintTextItem, pageScale: number, requestSignal?: AbortSignal): AsyncGenerator<PageDisplayItem> {
+    for await (const piece of resolve(item, pageScale, requestSignal)) {
+      if (isOutlinePathPiece(piece)) throw new TypeError('Unexpected chunked text path')
+      yield piece
+    }
+  }
+}
+
+/** A sink must preserve start/chunk/end as one path and fill it only once. */
+export function createStreamingExportTextPieces(source: PaintNodeSource, signal: AbortSignal) {
+  return resolver(source, signal, true)
 }

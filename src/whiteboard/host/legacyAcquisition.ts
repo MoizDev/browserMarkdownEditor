@@ -15,6 +15,7 @@ import { acquireNativeBoard, type NativeBoardAcquisition } from './nativeAcquisi
 import { scanLegacyBoard } from './legacyScan';
 import { encodeHost } from '../format/encode';
 import { FORMAT_LIMITS } from '../format/schema';
+import { parseJsonIncremental } from '../format/jsonRead';
 
 // Provenance: copied original -> governed legacy mapping -> real native C5.
 // Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
@@ -193,17 +194,46 @@ export async function rehostLegacyBoard(source: EditableLegacy,
     if (!reservation) throw new Error('Insufficient shared memory for native PDF host admission');
     let owned: NativeBoardAcquisition | undefined;
     try {
-        // Blob slices preserve every original record lexeme, sample packet,
-        // separator and opaque row; replacing a HOST does not change end.count.
-        const bytes = new Blob([source.bytes.slice(0, position.byteOffset), encoded.value.text,
-            source.bytes.slice(position.byteOffset + position.byteLength)], { type: source.bytes.type });
+        const cooperate = async () => {
+            check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check();
+        };
+        const physical = new Uint8Array(await source.bytes.slice(position.byteOffset, position.byteOffset + position.byteLength).arrayBuffer());
+        check();
+        const line = new TextDecoder('utf-8', { fatal: true }).decode(physical);
+        const whitespace = (code: number) => code === 32 || code === 9 || code === 10 || code === 13;
+        let first = 0, last = line.length;
+        while (first < last && whitespace(line.charCodeAt(first))) first++;
+        while (last > first && whitespace(line.charCodeAt(last - 1))) last--;
+        if (line.charCodeAt(last - 1) === 44) last--;
+        while (last > first && whitespace(line.charCodeAt(last - 1))) last--;
+        const original = await parseJsonIncremental(line.slice(first, last), cooperate);
+        const fields = await original.fieldMapIncremental(cooperate);
+        if (original.kind !== 'object' || fields.get('type')?.string(32) !== 'host' || !fields.has('pdf')) {
+            throw new Error('Admitted HOST span does not contain exactly its PDF record');
+        }
+        // ReadPosition spans the PHYSICAL line, including its comma, not just
+        // the JSON token (actual failure: final rehost dropped that delimiter).
+        // Only the skipped ASCII prefix/suffix need byte conversion; Unicode
+        // inside the untouched token cannot shift either splice boundary.
+        const tokenStart = position.byteOffset + first;
+        const tokenEnd = position.byteOffset + position.byteLength - (line.length - last);
+        const bytes = new Blob([source.bytes.slice(0, tokenStart), encoded.value.text,
+            source.bytes.slice(tokenEnd)], { type: source.bytes.type });
         const media = new Map(source.media);
         owned = await acquireNativeBoard({ bytes, kind: 'pdf-ink', pdfPages: finalHost.pages,
             identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision }, signal,
             deadlineMs: importDeadline(bytes.size), cooperate: options.cooperate });
         check();
         if (owned.status !== 'editable' || !owned.report.complete || owned.report.format !== 'native'
-            || owned.report.repaired?.repairs.length) throw new Error('Final legacy PDF HOST failed lossless native C5 admission');
+            || owned.report.repaired?.repairs.length) {
+            const report = owned.report;
+            const known = new Set(['duplicate-sheet-id', 'sheet-order', 'duplicate-id', 'cycle', 'missing-parent', 'page', 'order',
+                'dissolved-group-child', 'dissolved-group', 'detached-attachment', 'detached-attachment-cycle',
+                'numeric', 'missing-media', 'rich-text', 'rich-text-replaced-controls']);
+            const repairs = (report.repaired?.repairs ?? []).slice(0, 8).map(item => known.has(item.code) ? item.code : 'other');
+            const issues = report.issues.slice(0, 1).map(issue => issue.code);
+            throw new Error(`Final legacy PDF HOST C5 admission failed (status: ${owned.status}, format: ${report.format}, complete: ${report.complete}, repairs: ${report.repaired?.repairs.length ?? 0} [${repairs.join(', ')}], issues: ${report.issueCount} [${issues.join(', ')}]). The original is unchanged.`);
+        }
         const native = owned; owned = undefined;
         return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,
             bytes, native, legacyReport: source.legacyReport, media, previousFrames: source.previousFrames,

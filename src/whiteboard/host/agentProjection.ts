@@ -14,6 +14,7 @@ import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
 import type { RenderToken } from '../../platform/render/types';
 import { createAgentGeometryReader } from './agentGeometry';
+import type { NativeLoadReply } from '../workers/nativeLoad';
 
 function yieldAgentWork(): Promise<void> {
     const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
@@ -144,6 +145,10 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
     };
 }
 
+export type ClosedAgentProjectionResult =
+    | { readonly kind: 'native'; readonly page: ShapePage; readonly report: NativeLoadReply }
+    | { readonly kind: 'other'; readonly report: NativeLoadReply };
+
 /** A closed read uses copied source bytes and the same canonical geometry as a live read. */
 export async function readClosedAgentProjection(options: {
     /** For PDF ink this is the extracted board attachment, never the outer PDF. */
@@ -162,7 +167,7 @@ export async function readClosedAgentProjection(options: {
     project?(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{
         readonly geometry: AgentGeometry; prepare?(node: Node): Promise<void>; dispose(): void;
     }>;
-}): Promise<ShapePage> {
+}): Promise<ClosedAgentProjectionResult> {
     const { authority } = options, query = { ...options.query };
     if (!Number.isSafeInteger(options.diskRevision) || options.diskRevision < 0) throw new RangeError('Invalid disk generation');
     return authority.run(async context => {
@@ -178,6 +183,12 @@ export async function readClosedAgentProjection(options: {
             signal: context.signal, deadlineMs: options.job.deadlineMs });
         try {
             guard();
+            // Only a complete OTHER classification can hand the same baseline
+            // back to the legacy route. Truncated or malformed native is never fallback.
+            if (acquired.status === 'read-only' && acquired.report.complete && acquired.report.format === 'other') {
+                await options.assertBaseline(context.signal); guard();
+                return { kind: 'other' as const, report: acquired.report };
+            }
             if (acquired.status !== 'editable') throw new Error('Board cannot be projected without its original-byte recovery');
             const projection = options.project ? await options.project(acquired.load.doc, acquired.samples, context.signal)
                 : createAgentGeometryReader({ doc: acquired.load.doc, samples: acquired.samples, token: options.token,
@@ -189,7 +200,7 @@ export async function readClosedAgentProjection(options: {
                 guard();
                 await options.assertBaseline(context.signal);
                 guard();
-                return result;
+                return { kind: 'native' as const, page: result, report: acquired.report };
             } finally { projection.dispose(); }
         } finally { acquired.dispose(); }
     }, options.job);

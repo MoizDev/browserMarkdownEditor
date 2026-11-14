@@ -12,6 +12,19 @@ import { prepareAcceptedPdfInkSession, type PreparePdfInkSessionOptions } from '
 let memorySerial = 0;
 const stale = () => new DOMException('PDF conversion ended', 'AbortError');
 
+function visualFailure(phase: 'preview' | 'final', visual: Awaited<ReturnType<typeof inspectPdfVisualModel>>): Error {
+    const counts = new Map<string, number>();
+    const families = new Set(['legacy-document', 'legacy-user', 'legacy-shape', 'legacy-binding', 'legacy-unknown-record',
+        'legacy-unreadable-record', 'legacy-bookmark-asset', 'legacy-orphan-asset', 'legacy-unreadable-asset', 'legacy-rich-text']);
+    for (const issue of visual.issues) {
+        const key = issue.kind === 'preserved-record'
+            ? `${issue.kind}/${families.has(issue.type) ? issue.type : 'other'}` : issue.kind;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const summary = [...counts].map(([kind, count]) => `${kind}: ${count}`).join(', ');
+    return new Error(`Legacy PDF ${phase} visual preflight is unknown (${summary || 'unclassified'}). The original is unchanged.`);
+}
+
 /** The candidate is pane-cancellable until the actual App-owned runtime takes it. */
 export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOptions) {
     const { host, identity, signal } = options, documentId = identity.documentId;
@@ -64,7 +77,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             preview = await convert(source.createPreviewHost());
             if (preview.status !== 'editable') throw new Error(`Legacy PDF ink cannot be converted: ${preview.legacyReport.unrepresentable.map(issue => issue.reason).join('; ')}`);
             const visual = await inspectPdfVisualModel(preview.native.load, { signal: internal.signal });
-            if (visual.status !== 'known') throw new Error('The legacy PDF ink cannot be safely represented');
+            if (visual.status !== 'known') throw visualFailure('preview', visual);
             const qualificationFor = (board: Blob, report: NativeLoadReply, checkedVisual: typeof visual) => ({ board,
                 report: Object.freeze({ format: report.format, complete: report.complete, bytesRead: report.bytesRead }), visual: checkedVisual });
             let qualification = qualificationFor(preview.bytes, preview.native.report, visual);
@@ -97,7 +110,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             preview.dispose(); preview = undefined;
             const finalVisual = await inspectPdfVisualModel(final.native.load, { signal: internal.signal });
             checkRenderable();
-            if (finalVisual.status !== 'known') throw new Error('The final PDF conversion cannot be safely represented');
+            if (finalVisual.status !== 'known') throw visualFailure('final', finalVisual);
             qualification = qualificationFor(final.bytes, final.native.report, finalVisual);
             checkRenderable();
             const accepted = await createConvertedPdfInkSource(ready, { board: qualification.board, host: finalHost, media: final.media, signal: internal.signal });

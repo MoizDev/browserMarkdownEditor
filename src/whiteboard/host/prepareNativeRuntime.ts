@@ -31,6 +31,7 @@ export interface PrepareNativeRuntimeOptions {
     readonly deadlineMs: number;
     readonly zMax: number;
     readonly readOnlyReason?: string;
+    readonly sourcePin?: ReturnType<NativeCanvasHost['pinBoardSource']>;
     readonly savedView?: () => SavedView | undefined;
     onError(error: unknown): void;
     onHistoryLimit(): void;
@@ -42,13 +43,23 @@ let legacyMemorySerial = 0;
 export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions) {
     const { host, identity, signal } = options;
     if (identity.kind !== options.representation) throw new Error('Canvas representation does not match identity');
-    const original = await host.acquireBytes(identity, signal);
-    signal.throwIfAborted();
-    if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+    const pinned = options.sourcePin ?? host.pinBoardSource(identity);
+    let original: Blob, diskHash: string;
+    try {
+        const source = await pinned.read(signal);
+        original = source.input; diskHash = source.diskHash;
+        signal.throwIfAborted();
+        if (!host.isCurrent(identity) || !pinned.isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        if (pinned.dirty && original.size === 0) throw new Error('An unsaved empty canvas cannot be initialized as a new board.');
+    } catch (error) { pinned.release(); throw error; }
     // Only verified zero-byte originals are new boards; parse failures never
     // authorize replacement by an invented document.
-    const boardBytes = original.size === 0 ? createEmptyNativeBytes(options.representation === 'drawing' ? 'whiteboard' : 'notebook') : original;
-    const admitted = await acquireNativeBoardFromHost(host, identity, { signal, deadlineMs: options.deadlineMs, boardBytes });
+    let admitted: Awaited<ReturnType<typeof acquireNativeBoardFromHost>>;
+    try {
+        const boardBytes = original.size === 0 ? createEmptyNativeBytes(options.representation === 'drawing' ? 'whiteboard' : 'notebook') : original;
+        admitted = await acquireNativeBoardFromHost(host, identity, { signal, deadlineMs: options.deadlineMs, boardBytes });
+    }
+    catch (error) { pinned.release(); throw error; }
     let media: MediaStore | undefined;
     let services: ReturnType<typeof createBoardRenderServices> | undefined;
     let serializer: ReturnType<typeof createSerializerSession> | undefined;
@@ -59,6 +70,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
     const disposePreparation = () => {
         if (disposed || transferred) return;
         disposed = true;
+        pinned.release();
         releaseCreators();
         serializer?.dispose();
         services?.dispose();
@@ -174,16 +186,21 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             { session: `${identity.documentId}:${identity.session}`, epoch: identity.vaultActivation });
         const preparedSerializer = serializer;
         signal.throwIfAborted();
-        if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+        await pinned.verify(signal);
+        signal.throwIfAborted();
+        if (!host.isCurrent(identity) || !pinned.isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
         return {
-            legacyOriginalSha256: legacy?.status === 'editable' ? legacy.originalSha256.slice('sha256:'.length) : null,
+            legacyOriginalSha256: legacy?.status === 'editable' ? diskHash : null,
             conversionPending: legacy?.status === 'editable',
+            acceptPinnedSource(source: import('../../utils/documentBuffers').DeferredSource) {
+                try { if (pinned.dirty) { pinned.accept(source); return true; } return false; } finally { pinned.release(); }
+            },
             media: store,
             runtime: () => owned?.runtime,
             take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null) {
                 if (disposed || transferred) throw new Error('Native board preparation already consumed');
                 signal.throwIfAborted();
-                if (owner.documentId !== identity.documentId || owner.session !== identity.session || !isLiveOwner(owner) || !host.isCurrent(identity)) {
+                if (owner.documentId !== identity.documentId || owner.session !== identity.session || !isLiveOwner(owner) || !host.isCurrent(identity) || !pinned.isCurrent()) {
                     throw new DOMException('Canvas session ended', 'AbortError');
                 }
                 const journal = createBoardJournal({ doc, samples, capture: {
@@ -227,6 +244,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     return { board: owned.board, dispose() {
                         if (closed) return;
                         closed = true;
+                        pinned.release();
                         try { owned?.dispose(); } finally { render.dispose(); }
                     } };
                 } catch (error) { journal.dispose(); throw error; }

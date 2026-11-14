@@ -2544,8 +2544,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => { recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
+    const pagehide = () => { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -4502,9 +4502,12 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
-    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
+    if (vaultIdAtMove) {
+      try { await recoveryEvent({ type: 'retarget', vaultId: vaultIdAtMove, from: fromPath, to: newPath, folder: isFolder }); }
+      catch (error) { console.error('Could not move recovery records:', error); }
+    }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],

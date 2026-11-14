@@ -11,6 +11,7 @@ import { useNativeSheetControls } from './useNativeSheetControls';
 export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps, 'sheetName' | 'openSheets'> {
     readonly lease: NativeViewLease;
     readonly confirm: (question: BoardQuestion) => Promise<boolean>;
+    readonly canWrite: () => boolean;
     readonly notebook?: {
         readonly inverted: boolean;
         readonly setInverted: (value: boolean) => void;
@@ -20,9 +21,11 @@ export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps,
 }
 
 /** Logical sheet operations share the same session and owner-scoped confirmation as the chrome. */
-export function NativeBoardChromeHost({ lease, confirm, notebook, ...props }: NativeBoardChromeHostProps) {
+export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...props }: NativeBoardChromeHostProps) {
     const lang = useSyncExternalStore(props.language.subscribe, props.language.getSnapshot, props.language.getSnapshot);
-    const sheets = useNativeSheetControls({ runtime: props.runtime, lease, current: props.currentOwner,
+    const { currentOwner } = props;
+    const styleOwner = useCallback(() => currentOwner() && canWrite(), [currentOwner, canWrite]);
+    const sheets = useNativeSheetControls({ runtime: props.runtime, lease, current: currentOwner, canWrite,
         readOnly: props.readOnly, isVisible: props.isVisible, direction: lang.table.dir,
         translate: (key, values) => translateBoard(lang.table, key, values), confirm, onError: props.reportError });
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
@@ -34,7 +37,7 @@ export function NativeBoardChromeHost({ lease, confirm, notebook, ...props }: Na
     const stack = useMemo(() => boardPageStack(host), [host]);
     if (host.kind === 'notebook' && (!notebook || !stack)) throw new Error('Notebook controls need the actual page view');
     const t = (key: string, values?: Readonly<Record<string, string | number>>) => translateBoard(lang.table, key, values);
-    return <><NativeBoardChrome {...props} sheetName={sheets.sheetName} openSheets={sheets.openSheets} />
+    return <><NativeBoardChrome {...props} currentOwner={styleOwner} sheetName={sheets.sheetName} openSheets={sheets.openSheets} />
         {host.kind === 'notebook' && notebook && stack && <div className="board-page-controls">
             <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
                 thumbnailsOpen={notebook.thumbnailsOpen} dir={lang.table.dir} t={t} changePaper={sheets.controls.changePaper}
@@ -43,6 +46,9 @@ export function NativeBoardChromeHost({ lease, confirm, notebook, ...props }: Na
                 toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
             <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
                 current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
-                open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen} />
+                open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
+                reorder={props.readOnly ? undefined : (from, to) => {
+                    try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }
+                }} />
         </div>}{sheets.menu}</>;
 }

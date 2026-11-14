@@ -10,6 +10,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
+import { recordNativeAgentViewport } from '../../whiteboard/host/nativeAgentView';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
@@ -20,7 +21,7 @@ import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHos
 import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
 import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
-import { createNativeEditingLease, type NativeEditingToolOptions } from './nativeEditingLease';
+import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
 import type { NativeClipboardService } from './useNativeClipboard';
 
 export interface NativePdfBackdrop {
@@ -34,6 +35,34 @@ export interface NativePdfBackdrop {
     setVisible(visible: boolean, focused: boolean): void;
     notePresentation?(): void;
     dispose(): void;
+}
+
+type CameraOwner = ReturnType<typeof createBoardViewCamera>;
+type CameraPorts = Parameters<CameraOwner['bind']>[0];
+interface CameraHandoffState { readonly owner: CameraOwner; readonly runtime: BoardRuntime; readonly limits: ZoomLimits;
+    readonly insets: ViewportInsets; claimed: boolean; closed: boolean }
+export interface NativeCameraHandoff { dispose(): void }
+const cameraHandoffs = new WeakMap<NativeCameraHandoff, CameraHandoffState>();
+function retainCamera(owner: CameraOwner, runtime: BoardRuntime, limits: ZoomLimits, insets: ViewportInsets): NativeCameraHandoff {
+    const state: CameraHandoffState = { owner, runtime, limits: { ...limits }, insets: { ...insets }, claimed: false, closed: false };
+    const handoff: NativeCameraHandoff = { dispose() {
+        if (state.closed) return;
+        if (state.claimed) throw new Error('Camera handoff is being adopted');
+        state.closed = true; cameraHandoffs.delete(handoff); owner.dispose();
+    } };
+    cameraHandoffs.set(handoff, state); return handoff;
+}
+function claimCamera(handoff: NativeCameraHandoff, runtime: BoardRuntime, limits: ZoomLimits, insets: ViewportInsets, ports: CameraPorts) {
+    const state = cameraHandoffs.get(handoff);
+    if (!state || state.closed || state.claimed || state.runtime !== runtime || state.limits.min !== limits.min || state.limits.max !== limits.max ||
+        state.insets.left !== insets.left || state.insets.right !== insets.right || state.insets.top !== insets.top || state.insets.bottom !== insets.bottom) {
+        throw new Error('Camera handoff does not belong to this board view');
+    }
+    state.claimed = true;
+    try { state.owner.bind(ports); } catch (error) { state.claimed = false; throw error; }
+    return { owner: state.owner,
+        commit() { state.closed = true; state.claimed = false; cameraHandoffs.delete(handoff); },
+        rollback() { state.owner.unbind(); state.claimed = false; } };
 }
 
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
@@ -53,6 +82,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
     /** An outer source owner can fence input while its real view is covered or rebinding. */
     setInputPermitted(permitted: boolean): void;
     canMutateView(): boolean;
+    /** Transfer only after the old input and platform have detached. */
+    takeCameraForRebind(): NativeCameraHandoff;
     refreshAuthority(): void;
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
@@ -68,6 +99,7 @@ export function createNativeViewLease(options: {
     limits: ZoomLimits;
     insets: ViewportInsets;
     pdfBackdrop?: NativePdfBackdrop;
+    cameraHandoff?: NativeCameraHandoff;
     readPdfMedia?(id: MediaId, signal: AbortSignal): Promise<Blob>;
     editing?: {
         readonly clipboard: NativeClipboardService;
@@ -75,6 +107,7 @@ export function createNativeViewLease(options: {
         readonly commands: NativeEditingToolOptions['commands'];
         /** Actual per-view services, not the document-wide promotion, authorize input. */
         canMutate(): boolean;
+        onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
         onAttachment(attached: boolean): void;
     };
     onError(error: unknown): void;
@@ -90,7 +123,15 @@ export function createNativeViewLease(options: {
     if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
-    const token = Object.freeze({ vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
+    const boardRuntime = runtime;
+    const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
+    if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
+        sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
+        sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||
+        sourceToken.vaultEpoch !== runtime.paintToken.vaultEpoch || sourceToken.bytesGeneration !== runtime.paintToken.bytesGeneration)) {
+        throw new Error('PDF view source does not match its acquired owner');
+    }
+    const token = Object.freeze(sourceToken ? { ...sourceToken } : { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<() => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
@@ -100,10 +141,13 @@ export function createNativeViewLease(options: {
     const current = () => !disposed && host.isCurrent(identity);
     const publish = () => { if (!disposed) for (const listener of [...listeners]) listener(); };
     const invalidate = () => { platformPane?.invalidate('native-view'); publish(); };
-    const cameraOwner = createBoardViewCamera({ runtime,
-        currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
-        limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 },
-        invalidate, onError: options.onError });
+    const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
+        invalidate, onError: options.onError };
+    const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
+    const cameraOwner = cameraClaim?.owner ?? createBoardViewCamera({ runtime, ...cameraPorts,
+        limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 } });
+    let cameraTransferred = false;
+    try {
     const camera = cameraOwner.camera;
     const markUserNavigation = () => {
         if (board.doc.kind !== 'pdf-ink' || !parameters.visible || !current()) return;
@@ -142,7 +186,7 @@ export function createNativeViewLease(options: {
     try {
         backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
         viewer = attachView({ session: board, token, view: viewParameters(), images, reveal, onError: options.onError });
-    } catch (error) { backdrop?.dispose(); images.dispose(); cameraOwner.dispose(); throw error; }
+    } catch (error) { backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
@@ -150,7 +194,8 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
+        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure,
+        bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
@@ -161,7 +206,7 @@ export function createNativeViewLease(options: {
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
-        } catch (error) { viewer.dispose(); images.dispose(); cameraOwner.dispose(); throw error; } })();
+        } catch (error) { viewer.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
@@ -254,13 +299,14 @@ export function createNativeViewLease(options: {
     const captureLayers = () => board.doc.kind === 'notebook' ? ['notebook-paper', 'board-underlay', 'board-content']
         : board.doc.kind === 'pdf-ink' ? [...(backdrop?.layers.map(layer => layer.id) ?? []), 'board-underlay', 'board-content']
             : ['board-underlay', 'board-content'];
-    const services = createNativeViewPlatform({ host, identity, board, viewer, camera,
+    const services = createNativeViewPlatform({ host, identity, board, viewer, camera, documentToken: token,
+        currentSource: sourceCurrent,
         paneId, viewLease,
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
             setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
-            writeOverlays: frame => { refreshViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
+            writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
                 camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); },
             onPresentation: presentation => {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
@@ -270,7 +316,7 @@ export function createNativeViewLease(options: {
                 navigation.onPresentation(presentation);
                 const source = backdrop?.sourceToken;
                 if (presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
-                    presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+                    presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
                     presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
                     (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
                         presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
@@ -288,15 +334,23 @@ export function createNativeViewLease(options: {
         if (page !== navigationSnapshot.page || zoom !== navigationSnapshot.zoom) navigationSnapshot = { page, zoom };
         return navigationSnapshot;
     };
+    function recordViewport() {
+        if (!parameters.visible || !current() || !platformPane) return;
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+    }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
-    const sourceCurrent = () => {
+    function sourceCurrent() {
         if (!backdrop?.sourceToken) return true;
-        try { return backdrop.isCurrentSource?.() === true; }
+        try { const source = backdrop.sourceToken, paint = boardRuntime.paintToken;
+            return backdrop.isCurrentSource?.() === true && source.documentId === paint.documentId && source.session === paint.session &&
+                source.vaultEpoch === paint.vaultEpoch && source.bytesGeneration === paint.bytesGeneration &&
+                source.documentId === token.documentId && source.session === token.session && source.vaultEpoch === token.vaultEpoch &&
+                source.bytesGeneration === token.bytesGeneration; }
         catch (error) { options.onError(error); return false; }
-    };
+    }
     const updateInput = () => {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
@@ -305,6 +359,13 @@ export function createNativeViewLease(options: {
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
         canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
             current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
+        takeCameraForRebind() {
+            if (disposed || cameraTransferred || platformPane || surface) throw new Error('Detach the old view before transferring its camera');
+            cameraOwner.unbind(); cameraTransferred = true;
+            const handoff = retainCamera(cameraOwner, runtime, limits, insets);
+            try { lease.dispose(); return handoff; }
+            catch (error) { handoff.dispose(); throw error; }
+        },
         refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
@@ -339,13 +400,14 @@ export function createNativeViewLease(options: {
             sourceToken: token,
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
+                if (parameters.visible && !next.visible) recordViewport();
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 viewer.setView(viewParameters());
                 updateInput();
             },
             attachPlatform(next) {
-                if (!next) navigation.cancelViewWork('platform-detach');
+                if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
                 if (next) next.invalidate('native-attachment');
@@ -374,9 +436,11 @@ export function createNativeViewLease(options: {
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispose() {
             if (disposed) return;
-            disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
-            navigation.dispose(); cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
+            recordViewport(); disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
+            navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
+    cameraClaim?.commit();
     return lease;
+    } catch (error) { cameraClaim?.rollback(); throw error; }
 }

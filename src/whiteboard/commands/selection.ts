@@ -1,11 +1,11 @@
 import { pageAt } from '../../platform/render/pageStack';
-import { allocateOrderKeys, reparentNode, setIfChanged } from '../change/commands';
+import { allocateOrderKeys, isLocked, reparentNode, selectedRoots, setIfChanged } from '../change/commands';
 import { worldPose } from '../change/coordinates';
 import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from './geometryScope';
 import type { CommandBuilder } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
-import { childrenOf, isSheetParent } from '../model/doc';
+import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
 import { inspectOpaqueSubtrees, prepareSelectionScope, selectionNodeIds } from './selectionScope';
 import { prepareSelectionOrderPlan } from './selectionOrderPlan';
 import { prepareContainerContents } from './containerContents';
@@ -22,6 +22,34 @@ export interface BoardSelectionCommandOptions {
     readonly cooperate?: () => Promise<void>;
 }
 export type SelectionOrder = 'front' | 'back' | 'forward' | 'backward';
+
+/** The structural scope rule every restructuring command enforces before it prepares: same sheet, inside focus, unlocked, no opaque content below. */
+export type SelectionBlock = 'no-selection' | 'not-groups' | 'other-sheet' | 'outside-focus' | 'locked' | 'opaque';
+export function structuralRootsBlock(doc: BoardDoc, roots: readonly Node[], state: { readonly sheet: SheetId; readonly focus: ParentId }): SelectionBlock | undefined {
+    if (!roots.length) return 'no-selection';
+    for (const node of roots) {
+        if (sheetOf(doc, node.id) !== state.sheet) return 'other-sheet';
+        let parent: ParentId = node.parent, inFocus = node.id === state.focus || parent === state.focus;
+        for (let depth = 0; !inFocus && !isSheetParent(doc, parent) && depth < 64; depth++) {
+            const ancestor = doc.nodes.get(parent as NodeId); if (!ancestor) return 'outside-focus';
+            parent = ancestor.parent; inFocus = parent === state.focus;
+        }
+        if (!inFocus) return 'outside-focus';
+        if (isLocked(doc, node)) return 'locked';
+        if (hasOpaqueDescendant(doc, node.id)) return 'opaque';
+    }
+    return undefined;
+}
+
+/** Why ungroup would refuse this selection; the same rules the ungroup command enforces before it prepares. */
+export function ungroupEligibility(doc: BoardDoc, ids: Iterable<NodeId>, state: { readonly sheet: SheetId; readonly focus: ParentId }):
+    { readonly enabled: boolean; readonly reason?: SelectionBlock } {
+    let roots: Node[];
+    try { roots = selectedRoots(doc, ids); } catch { return { enabled: false, reason: 'no-selection' }; }
+    if (roots.some(node => node.kind !== 'group')) return { enabled: false, reason: roots.length ? 'not-groups' : 'no-selection' };
+    const block = structuralRootsBlock(doc, roots, state);
+    return block ? { enabled: false, reason: block } : { enabled: true };
+}
 
 /** One real session/builder is the sole mutation authority. Geometry preparation
  * completes before opening that builder, and its lease outlives commit/rollback. */

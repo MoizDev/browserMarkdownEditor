@@ -13,6 +13,8 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 import type { NativeCanvasEntryProps, NativeEditingChromeContext } from './NativeCanvasEntry';
 import { NativeBoardChromeHost } from './NativeBoardChromeHost';
 import { createNativeBoardActions } from './nativeBoardActions';
+import { createNativeBoardContextMenu } from './nativeBoardContextMenu';
+import type { NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
 import { createNativeBoardOperations } from './nativeBoardOperations';
 import { createNativeCameraOperations } from './nativeCameraOperations';
 import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } from './nativeCommandSource';
@@ -55,17 +57,18 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     if (!runtime || runtime.session !== board) throw new Error('Native editor requires the acquired board runtime');
     const { identity, nativeCanvasHost: host } = props;
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
-    const language = useNativeBoardLanguage(onError);
+    const language = useNativeBoardLanguage(onUnavailable);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
     const [notice, setNotice] = useState<string | null>(null), [inverted, setInverted] = useState(false);
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
     const commandRef = useRef<((id: string, event: KeyboardEvent) => boolean) | null>(null), linksRef = useRef<Links | null>(null);
+    const contextMenuRef = useRef<((event: MouseEvent) => void) | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
     const [lifetime, setLifetime] = useState<AbortController | null>(null);
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false);
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
-    const [embedPort] = useState<EmbedPresentationPort | null>(null);
+    const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
@@ -78,14 +81,20 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
         void (async () => {
         try {
             const service = documentClipboard(runtime, host, identity);
-            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView, onAttachment(value) { if (live) setAttached(value); },
+            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView,
+                onEmbedInfrastructure(value) {
+                    embedControllerRef.current = value?.controller ?? null;
+                    if (!value) { embedPortRef.current = null; if (live) setEmbedPort(null); }
+                },
+                onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
                         modalOpen: () => !!getContextMenu() || !!document.querySelector('[aria-modal="true"]'),
                         isDirectPen: event => event.pointerType === 'pen' && navigator.maxTouchPoints > 0,
                         ownsWheel: event => !event.composedPath().some(target => target instanceof Element &&
                             target.matches('input,textarea,select,[contenteditable="true"],[role="dialog"],[role="menu"]')),
-                        error: report, penModeChanged(enabled) { viewRef.current?.editing?.announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.'); },
+                        error: report, contextMenu(event) { const open = contextMenuRef.current; if (!open) throw new Error('Board context menu is unavailable'); open(event); },
+                        penModeChanged(enabled) { viewRef.current?.editing?.announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.'); },
                         text: { openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
                             command(name) { const target = linksRef.current; if (name !== 'link' || !target) throw new Error('Text command is unavailable'); void target.editText().catch(report); },
                             touchHandles(show) { viewRef.current?.editing?.announce(show ? 'Text selection handles shown.' : 'Text selection handles hidden.'); },
@@ -111,11 +120,13 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     return <ConnectedEditor props={props} lease={lease} adapter={adapter} clipboard={clipboard} capabilities={capabilities}
         language={language} signal={lifetime.signal} dialogs={dialogs} current={current} report={report} notice={notice}
         setNotice={setNotice} inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef}
-        canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} renderView={renderView} />;
+        canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} contextMenuRef={contextMenuRef}
+        embedControllerRef={embedControllerRef} renderView={renderView} />;
 }
 
 function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current, report,
-    notice, setNotice, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort, renderView }: {
+    notice, setNotice, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
+    contextMenuRef, embedControllerRef, renderView }: {
     readonly props: NativeEditingViewProps; readonly lease: NativeViewLease; readonly adapter: HostedBoardAdapter<BoardSessionPort>;
     readonly clipboard: NativeClipboardService; readonly capabilities: NativeEditingCapabilities;
     readonly language: NonNullable<ReturnType<typeof useNativeBoardLanguage>>; readonly signal: AbortSignal;
@@ -126,6 +137,8 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
     readonly canMutateView: () => boolean; readonly onChromeReady: (ready: boolean) => void;
     readonly embedPort: EmbedPresentationPort | null;
+    readonly contextMenuRef: RefObject<((event: MouseEvent) => void) | null>;
+    readonly embedControllerRef: RefObject<NativeEmbedController | null>;
 }) {
     const runtime = lease.runtime, host = props.nativeCanvasHost, identity = props.identity;
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -165,8 +178,12 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             styles: () => styleRef.current, openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
             current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
-        return () => { if (commandRef.current === keys.run) commandRef.current = null; };
-    }, [commandRef, runtime, lease, owned, clipboard, current, canWrite, report]);
+        const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
+            embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });
+        contextMenuRef.current = openMenu;
+        return () => { if (commandRef.current === keys.run) commandRef.current = null;
+            if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
+    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
     const registerShortcuts = useCallback((open: () => void) => { shortcutRef.current = open; return () => { if (shortcutRef.current === open) shortcutRef.current = null; }; }, []);
     const onStyles = useCallback((value: Styles | null) => { styleRef.current = value; }, []);
     const handleChromeReady = useCallback((ready: boolean) => { onChromeReady(ready); setChromeReady(ready); }, [onChromeReady]);
@@ -183,7 +200,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             readOnly={adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
-            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
+            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
             notebook={runtime.session.doc.kind === 'notebook' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
     }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;

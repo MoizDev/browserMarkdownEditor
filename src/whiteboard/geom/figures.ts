@@ -1,5 +1,6 @@
 import type { Affine, Rect } from '../../platform/types';
 import type { FigureShape } from '../model/styles';
+import { arcToCubics } from './path';
 import type { PathOp, Vec2 } from './path';
 
 // geometry.md §3, F-FIG-001: these are independent unit-box authoring recipes.
@@ -244,18 +245,15 @@ export function* ellipseArcPath(cx: number, cy: number, rx: number, ry: number, 
     sweep: number, tolerance: number, maxPieces: number, move = true): Generator<PathOp> {
     if (![cx, cy, rx, ry, start, sweep, tolerance].every(Number.isFinite) || rx < 0 || ry < 0
         || tolerance <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) throw new RangeError('Invalid ellipse realization');
-    const radius = Math.SQRT2 * Math.max(rx, ry);
-    const step = radius === 0 ? Math.max(1, Math.abs(sweep)) : (384 * tolerance / radius) ** .25;
-    const count = Math.max(1, Math.ceil(Math.abs(sweep) / step));
-    if (!Number.isSafeInteger(count) || count > maxPieces) throw new RangeError('Ellipse realization budget exhausted');
-    const point = (t: number): Vec2 => P(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
-    const derivative = (t: number): Vec2 => P(-rx * Math.sin(t), ry * Math.cos(t));
-    if (move) yield { op: 'M', p: point(start) };
-    for (let i = 0; i < count; i++) {
-        const a = start + sweep * i / count, b = start + sweep * (i + 1) / count;
-        const p0 = point(a), p1 = point(b), d0 = derivative(a), d1 = derivative(b), dt = (b - a) / 3;
-        yield { op: 'C', c1: P(p0.x + d0.x * dt, p0.y + d0.y * dt),
-            c2: P(p1.x - d1.x * dt, p1.y - d1.y * dt), p: p1 };
+    const scale = Math.max(rx, ry);
+    if (scale === 0) { if (move) yield { op: 'M', p: P(cx, cy) }; return; }
+    const roundoff = 16 * Number.EPSILON * Math.max(1, Math.abs(cx), Math.abs(cy), scale);
+    if (roundoff >= tolerance / 2) throw new RangeError('Ellipse realization cannot certify this coordinate scale');
+    const ops = arcToCubics({ centre: P(0, 0), radius: 1, start, sweep }, (tolerance - roundoff) / scale, maxPieces);
+    const map = (p: Vec2): Vec2 => P(cx + rx * p.x, cy + ry * p.y);
+    for (const op of ops) {
+        if (op.op === 'M') { if (move) yield { op: 'M', p: map(op.p) }; }
+        else if (op.op === 'C') yield { op: 'C', c1: map(op.c1), c2: map(op.c2), p: map(op.p) };
     }
 }
 

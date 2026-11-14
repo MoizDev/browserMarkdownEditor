@@ -20,6 +20,7 @@ export interface ClipboardHtmlFrameOptions {
 export interface ClipboardHtmlProjection {
     readonly rich: RichFragment;
     readonly dataImages: readonly Readonly<{ blob: Blob; alt: string; order: number; textOffset: number }>[];
+    readonly refusedImages: readonly Readonly<{ name: string; reason: string }>[];
     /** Keeps decoded bytes accounted until the caller has retained or discarded them. */
     release(): void;
 }
@@ -126,9 +127,10 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
             signal.throwIfAborted();
             if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
             const value = result.value;
-            if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'dataImages,rich') throw new Error('Invalid clipboard HTML response');
-            const reply = value as { rich: unknown; dataImages: unknown }, text = rich(reply.rich);
-            if (!Array.isArray(reply.dataImages) || reply.dataImages.length > SECURITY_LIMITS.mediaBatch) throw new Error('Invalid clipboard image response');
+            if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'dataImages,refusedImages,rich') throw new Error('Invalid clipboard HTML response');
+            const reply = value as { rich: unknown; dataImages: unknown; refusedImages: unknown }, text = rich(reply.rich);
+            if (!Array.isArray(reply.dataImages) || !Array.isArray(reply.refusedImages)
+                || reply.dataImages.length + reply.refusedImages.length > SECURITY_LIMITS.mediaBatch) throw new Error('Invalid clipboard image response');
             const maxOffset = text.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), text.blocks.length - 1);
             let total = 0, previous = 0;
             const dataImages = reply.dataImages.map((item: unknown, index: number) => {
@@ -143,7 +145,13 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
                 previous = image.textOffset; total += image.blob.size;
                 return Object.freeze({ blob: new Blob([image.blob], { type: image.blob.type }), alt: image.alt, order: index, textOffset: image.textOffset });
             });
-            return { rich: text, dataImages: Object.freeze(dataImages), release: result.release };
+            const refusedImages = reply.refusedImages.map((item: unknown) => {
+                if (!item || typeof item !== 'object' || Object.keys(item).sort().join(',') !== 'name,reason') throw new TypeError('Invalid refused clipboard image');
+                const value = item as { name?: unknown; reason?: unknown };
+                if (typeof value.name !== 'string' || value.name.length > 10_000 || typeof value.reason !== 'string' || value.reason.length > 500) throw new TypeError('Invalid refused clipboard image');
+                return Object.freeze({ name: value.name, reason: value.reason });
+            });
+            return { rich: text, dataImages: Object.freeze(dataImages), refusedImages: Object.freeze(refusedImages), release: result.release };
         } catch (error) { result.release(); throw error; }
     };
     return {
@@ -163,7 +171,7 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
             } finally { result.release(); }
         },
         async richHTML(html, signal) { const result = await projectHTML(html, signal);
-            try { if (result.dataImages.length) throw new Error('Clipboard HTML contains images; use projectHTML'); return result.rich; }
+            try { if (result.dataImages.length || result.refusedImages.length) throw new Error('Clipboard HTML contains images; use projectHTML'); return result.rich; }
             finally { result.release(); } },
     };
 }

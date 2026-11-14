@@ -141,7 +141,8 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
         return { hasPrivate, privatePayload: payload, legacyPayload: legacy };
     }
     const blocks: Block[] = [], dataImages: { blob: Blob; alt: string; order: number; textOffset: number }[] = [];
-    let imageBytes = 0;
+    const refusedImages: { name: string; reason: string }[] = [];
+    let imageBytes = 0, imageCount = 0;
     let kind: Block['kind'] = 'p', level = 0, dir: Block['dir'] = 'auto', start: number | undefined;
     let runs: Run[] = [], length = 0;
     const flush = (force = false) => {
@@ -180,11 +181,16 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
         if (tag === 'img') {
             const src = (el.getAttribute('src') ?? '').trim(), alt = el.getAttribute('alt') ?? '';
             if (/^data:/i.test(src)) {
-                if (dataImages.length >= SECURITY_LIMITS.mediaBatch) throw new RangeError('Too many inline images');
-                const data = await inlineImage(src, SECURITY_LIMITS.inlineMediaBytes - imageBytes);
-                imageBytes += data.size;
+                if (++imageCount > SECURITY_LIMITS.mediaBatch) throw new RangeError('Too many inline images');
                 if (alt.length > MAX_TEXT_LENGTH) throw new RangeError('Inline image alt text exceeds limits');
-                dataImages.push({ blob: data, alt, order: dataImages.length, textOffset: length + blocks.length });
+                try {
+                    const data = await inlineImage(src, SECURITY_LIMITS.inlineMediaBytes - imageBytes);
+                    imageBytes += data.size;
+                    dataImages.push({ blob: data, alt, order: dataImages.length, textOffset: length + blocks.length });
+                } catch (error) {
+                    refusedImages.push({ name: alt.slice(0, 10_000) || 'Clipboard image',
+                        reason: error instanceof Error ? error.message.slice(0, 500) : 'Invalid inline image' });
+                }
             } else {
                 const link = safeLink(src);
                 await add(alt || (link && /^https?:/i.test(link) ? link : ''), ctx.marks, ctx.pre);
@@ -224,7 +230,7 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
     const fragment: RichFragment = { blocks: blocks.length ? blocks : [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] };
     const projectedLength = length + Math.max(0, blocks.length - 1);
     for (const image of dataImages) image.textOffset = Math.min(image.textOffset, projectedLength);
-    return { rich: fragment, dataImages };
+    return { rich: fragment, dataImages, refusedImages };
 }
 const initialize = (event: MessageEvent) => {
     if (event.source !== parent || event.ports.length !== 1) return;

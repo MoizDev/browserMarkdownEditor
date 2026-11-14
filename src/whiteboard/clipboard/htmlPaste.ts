@@ -56,14 +56,15 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
     let scope: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
     try {
         check();
+        const refused = projected.refusedImages.map(item => ({ ...item }));
         if (!projected.dataImages.length) {
+            if (refused.length) options.noticeRefused(refused);
             const id = await insertClipboardText({ runtime, target, current: options.current, receivingBoardId: options.receivingBoardId,
                 cameraZoom: options.cameraZoom, intent: options.intent, content: { kind: 'rich', fragment: projected.rich }, signal: context.signal, cooperate: options.cooperate });
             return id ? [id as NodeId] : [];
         }
         const records = new Map<MediaId, { entry: MediaEntry; blob: Blob; file: string | null }>();
         const images: { id: MediaId; alt: string; width: number; height: number }[] = [];
-        const refused: { name: string; reason: string }[] = [];
         for (const image of projected.dataImages) {
             check();
             try {

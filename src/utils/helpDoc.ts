@@ -347,8 +347,9 @@ the pages are ordinary PDF pages that anything can open.
 The notebook stays the original you keep writing in. Exporting again uses the
 same PDF name rather than leaving a pile of copies. An existing PDF is kept in
 the folder's Trash before replacement. The app asks first unless it is this
-notebook's unchanged last export; if the target changes during export, export
-again to review it.
+notebook's unchanged last export; if the target changes during export, it asks
+again. Close the target PDF tab before replacing it, so an open document cannot
+lose unsaved annotations. A folder with the PDF's name cannot be replaced.
 
 The exported PDF remembers which notebook it came from, so pressing the pen on
 it **opens that notebook** instead of annotating the PDF as if it were someone

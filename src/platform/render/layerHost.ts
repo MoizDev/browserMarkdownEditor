@@ -5,7 +5,8 @@ import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 export interface LayerHostBindings {
     readonly allocator: LayerAllocators;
     generation(): number;
-    resources(): CompositorResources | null;
+    /** Qualified rebuilding GPU, even while the selected presentation is still CPU. */
+    gpuResources(): CompositorResources | null;
     compositor(): PaneCompositor | null;
     invalidate(reason: string): void;
     wakeAt(deadlineMs: number | null): void;
@@ -16,7 +17,7 @@ export interface LayerHostBindings {
  */
 export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     const resources = (): CompositorResources => {
-        const current = bindings.resources();
+        const current = bindings.gpuResources();
         if (!current) throw new Error('The compositor resources are unavailable');
         return current;
     };
@@ -29,11 +30,11 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     function drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void;
     function drawTexturedQuad(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | ImageBitmap,
         source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void {
-        if ('drawImage' in target) resources().drawTexturedQuad(target, image as ImageBitmap, source, dest, options);
+        if ('drawImage' in target) compositor().resources.drawTexturedQuad(target, image as ImageBitmap, source, dest, options);
         else resources().drawTexturedQuad(target, image as TextureHandle, source, dest, options);
     }
     return {
-        device: () => bindings.resources()?.device ?? null,
+        device: () => bindings.gpuResources()?.device ?? null,
         get generation() { return bindings.generation(); },
         allocator: bindings.allocator,
         invalidate: reason => bindings.invalidate(reason),

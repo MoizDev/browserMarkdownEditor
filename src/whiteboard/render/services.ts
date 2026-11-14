@@ -331,12 +331,14 @@ export function createBoardRenderServices(options: {
         /** Commands may touch more than the idle cache's 256 nodes. Their
          * exact records/resources stay pinned until the synchronous writer ends. */
         async pinChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal, doc: BoardDoc = options.doc, current?: () => boolean): Promise<{ release(): void }> {
+            // A pre-existing Scene/export pin owns a renderer holder. Its
+            // asynchronous geometry may start after the App owner has closed;
+            // disposed (zero holders), not ownerReleased, ends that authority.
             check(signal);
-            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
             const scope = new Map<NodeId, Prepared>(), leases: { release(): void }[] = [];
             try {
                 await warmChangeGeometry(ids, signal, scope, leases, doc, current);
-                if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+                check(signal);
             } catch (error) { for (const lease of leases) lease.release(); throw error; }
             changeScopes.add(scope); holders++;
             let held = true;

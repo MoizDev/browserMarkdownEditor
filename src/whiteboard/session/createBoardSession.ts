@@ -230,7 +230,13 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             for (const key of checkpoints.keys()) if (key <= revision) checkpoints.delete(key);
             notifyPending();
         },
-        async drain() { while (outstanding.size) await Promise.allSettled([...outstanding]); await journal.drain(); },
+        async drain() {
+            // A journal append may start another session-owned build while draining.
+            do {
+                while (outstanding.size) await Promise.allSettled([...outstanding]);
+                await journal.drain();
+            } while (outstanding.size);
+        },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         journalDelta() { capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {

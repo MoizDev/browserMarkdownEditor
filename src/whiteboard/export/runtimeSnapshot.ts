@@ -77,25 +77,32 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
     let released = false, cleaned = false, ready = false, inFlight: Promise<'exact'> | null = null;
     let images: ReturnType<typeof createBoardHostImages> | null = null, raster: PreparedRaster | null = null;
     let frame: PaintFrame | null = null, paperItems: PaintItem[] = [];
-    const abort = () => { controller.abort(options.signal?.reason); release(); };
+    const abort = () => { controller.abort(options.signal?.reason); void release(); };
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve capture failure. */ } };
     const reserve = (bytes: number) => {
         validBytes(bytes); if (!bytes) return;
         const lease = memory.reserve(bytes); if (!lease) throw new Error('Insufficient shared memory for board capture');
         reservations.push(lease);
     };
-    const cleanup = () => {
-        if (cleaned) return; cleaned = true; ready = false;
-        options.signal?.removeEventListener('abort', abort);
+    const reset = () => {
+        ready = false;
         try { raster?.dispose(); } catch (error) { report(error); } raster = null;
         try { images?.dispose(); } catch (error) { report(error); } images = null;
         frame = null; paperItems = [];
         for (const lease of reservations.splice(0)) try { memory.release(lease); } catch (error) { report(error); }
+    };
+    const cleanup = () => {
+        if (cleaned) return; cleaned = true;
+        options.signal?.removeEventListener('abort', abort);
+        reset();
         if (!options.pin) try { pin.release(); } catch (error) { report(error); }
     };
+    let releasePromise: Promise<void> | null = null;
     const release = () => {
-        if (released) return; released = true; controller.abort();
-        if (inFlight) void inFlight.finally(cleanup).catch(() => {}); else cleanup();
+        if (releasePromise) return releasePromise;
+        released = true; controller.abort();
+        releasePromise = (async () => { await inFlight?.catch(() => {}); cleanup(); })();
+        return releasePromise;
     };
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
@@ -108,7 +115,7 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
     if (selected.has(PAPER)) layers.push({ id: PAPER, draw2d: draw('paper') });
     if (selected.has(UNDERLAY)) layers.push({ id: UNDERLAY, draw2d: draw('underlay') });
     if (selected.has(CONTENT)) layers.push({ id: CONTENT, draw2d: draw('content') });
-    const build = async (callerSignal: AbortSignal): Promise<'exact'> => {
+    const build = async (callerSignal: AbortSignal, plan: CaptureRequest): Promise<'exact'> => {
         const signal = AbortSignal.any([controller.signal, callerSignal]);
         const check = () => { signal.throwIfAborted(); if (released) throw new DOMException('Board capture released', 'AbortError'); };
         let work = 0, started = performance.now();
@@ -133,8 +140,8 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
             });
             const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
             if (selected.has(UNDERLAY) || selected.has(CONTENT)) {
-                const source = await pin.paintSource({ sheetId, world: frozen.worldRect, theme: 'light',
-                    deviceScale: frozen.view.camera.z * frozen.view.viewport.dpr }, signal); check();
+                const source = await pin.paintSource({ sheetId, world: plan.worldRect, theme: 'light',
+                    deviceScale: plan.view.camera.z * plan.view.viewport.dpr }, signal); check();
                 if (!sameToken(source.token, token) || source.sceneRevision !== revision) throw new Error('Board capture source identity changed');
                 let items = 0;
                 const stream = new PaintStreamJob(source, (item, band) => {
@@ -155,7 +162,7 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
             }
             if (selected.has(PAPER)) {
                 if (captured.host.kind !== 'notebook' || !pin.layout) throw new Error('Captured notebook paper is unavailable');
-                const paper = captured.host.paper, boxes = pin.layout.rects, r = frozen.worldRect;
+                const paper = captured.host.paper, boxes = pin.layout.rects, r = plan.worldRect;
                 if (boxes.length !== paper.pageCount || !Number.isFinite(paper.spacing) || paper.spacing <= 0) throw new Error('Invalid captured notebook paper');
                 for (let page = Math.max(0, pageAt(pin.layout, r.y)); page < boxes.length; page++) {
                     const box = boxes[page]; if (box.y >= r.y + r.height) break;
@@ -190,31 +197,39 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
                 await checkpoint();
             }
             reserve(estimate); check();
-            const prepared = await prepareRaster(rasterFrame, frozen.view.camera.z * frozen.view.viewport.dpr, images, signal);
+            const prepared = await prepareRaster(rasterFrame, plan.view.camera.z * plan.view.viewport.dpr, images, signal);
             if (released || signal.aborted) { prepared.dispose(); signal.throwIfAborted(); throw new DOMException('Board capture released', 'AbortError'); }
             raster = prepared; ready = true; return 'exact';
         } catch (error) {
             if (!signal.aborted) report(error);
-            release(); throw error;
+            void release(); throw error;
         }
+    };
+    const preparePlan = (plan: CaptureRequest, signal: AbortSignal): Promise<'exact'> => {
+        if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Board capture cancelled', 'AbortError'));
+        if (released) return Promise.reject(new DOMException('Board capture released', 'AbortError'));
+        if (inFlight) return Promise.reject(new Error('Board capture preparation overlaps'));
+        reset();
+        inFlight = build(signal, plan);
+        const pending = inFlight;
+        void pending.finally(() => { if (inFlight === pending) inFlight = null; }).catch(() => {});
+        return pending;
     };
     return {
         token, revision: String(revision), signal: controller.signal, layers,
         get isolation() { return ready ? [] : undefined; },
         prepare(next, route, signal) {
-            if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Board capture cancelled', 'AbortError'));
-            if (released) return Promise.reject(new DOMException('Board capture released', 'AbortError'));
             if (!sameRequest(frozen, next)) return Promise.reject(new Error('Board capture request changed'));
             if (route !== '2d') return Promise.resolve('incomplete');
             if (ready) return Promise.resolve('exact');
-            if (!inFlight) { inFlight = build(signal); void inFlight.finally(() => { inFlight = null; if (released) cleanup(); }).catch(() => {}); }
-            const pending = inFlight;
-            return new Promise((resolve, reject) => {
-                const cancel = () => { signal.removeEventListener('abort', cancel); reject(signal.reason ?? new DOMException('Board capture cancelled', 'AbortError')); };
-                signal.addEventListener('abort', cancel, { once: true });
-                pending.then(value => { signal.removeEventListener('abort', cancel); resolve(value); }, error => { signal.removeEventListener('abort', cancel); reject(error); });
-                if (signal.aborted) cancel();
-            });
+            return preparePlan(next, signal);
+        },
+        prepareTile(next, signal) {
+            if (!sameRequest(frozen, { ...next, worldRect: frozen.worldRect, view: frozen.view }) ||
+                next.view.camera.z * next.view.viewport.dpr !== frozen.view.camera.z * frozen.view.viewport.dpr) {
+                return Promise.reject(new Error('Board capture tile changed its frozen plan'));
+            }
+            return preparePlan(next, signal);
         },
         release,
     };

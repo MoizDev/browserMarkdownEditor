@@ -30,6 +30,8 @@ export interface SessionAdapter {
     dispose?(): void | Promise<void>;
     /** App subscribes once when the session is created; reload metadata stays with its source. */
     onChange(listener: (source: ContentSource, options?: SourceReportOptions) => void): () => void;
+    /** Synchronous notification when unreported engine work changes pending state. */
+    onPending?(listener: () => void): () => void;
 }
 
 /** One identity and one pending predicate, shared by editors and canvas engines. */
@@ -115,6 +117,7 @@ let nextSerial = 0;
 interface RegisteredSession {
     entry: SessionEntry;
     unsubscribe?: () => void;
+    unsubscribePending?: () => void;
     disposeSlots(): void;
 }
 
@@ -147,15 +150,19 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         const buffer = bindings.bufferState(documentId);
         return !!buffer && buffer.revision > buffer.savedRevision;
     };
+    const unsubscribeSession = (registered: RegisteredSession) => {
+        const pending = registered.unsubscribePending, change = registered.unsubscribe;
+        registered.unsubscribePending = undefined;
+        registered.unsubscribe = undefined;
+        try { pending?.(); } finally { change?.(); }
+    };
     const detach = (documentId: string): boolean => {
         const registered = sessions.get(documentId);
         if (!registered) return false;
         // Invalidate before unsubscribe: an emitter may already have queued an
         // old callback, including an ownerless string during the migration.
         sessions.delete(documentId);
-        const unsubscribe = registered.unsubscribe;
-        registered.unsubscribe = undefined;
-        try { unsubscribe?.(); } finally {
+        try { unsubscribeSession(registered); } finally {
             registered.disposeSlots();
             disposeSlot(documentId, registered.entry.adapter.dispose?.bind(registered.entry.adapter));
             notify();
@@ -203,10 +210,19 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             // onChange may emit synchronously and a caller may release/replace
             // in that callback. Do not retain its subscription after that edge.
             if (sessions.get(documentId) === registered) registered.unsubscribe = unsubscribe;
-            else unsubscribe();
+            else { unsubscribe(); return entry; }
+            const pending = adapter.onPending?.(() => {
+                if (sessions.get(documentId) === registered) notify();
+            });
+            if (pending) {
+                if (sessions.get(documentId) === registered) registered.unsubscribePending = pending;
+                else pending();
+            }
+            if (sessions.get(documentId) === registered) notify();
         } catch (error) {
             if (sessions.get(documentId) === registered) {
                 sessions.delete(documentId);
+                try { unsubscribeSession(registered); } catch (cleanupError) { console.error('Session subscription cleanup failed:', cleanupError); }
                 registered.disposeSlots();
                 disposeSlot(documentId, adapter.dispose?.bind(adapter));
                 notify();
@@ -270,9 +286,7 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             // All old callbacks are stale before any unsubscribe runs. One
             // broken adapter must not keep the rest of the vault subscribed.
             for (const registered of outgoing) {
-                const unsubscribe = registered.unsubscribe;
-                registered.unsubscribe = undefined;
-                try { unsubscribe?.(); }
+                try { unsubscribeSession(registered); }
                 catch (error) { errors.push(error); }
                 finally {
                     registered.disposeSlots();

@@ -309,8 +309,13 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const inspectedWriteRefused = !!(tiled && currentTiledSource && tiledPdfCapabilities(currentTiledSource.document.poolDocument.info).write === false);
     const editableSource = source && !inspectedWriteRefused && isEditablePdfRole(source) && !foreignHeld && canRebuildAnnotatedPdf(source.original) ? source : null;
     useLayoutEffect(() => {
-        if (inspectedWriteRefused && source) revokePdfRole(source);
-    }, [inspectedWriteRefused, source]);
+        if (!inspectedWriteRefused) return;
+        if (source) revokePdfRole(source);
+        // A remount can retain an export in the save cache without a loaded
+        // role in this view. Known unsafe disk bytes revoke that source too.
+        const parked = getPdfRenderData(file.path);
+        if (parked) revokePdfSource(parked.original);
+    }, [inspectedWriteRefused, source, file.path]);
     // The outer pages remain readable on refusal. DiskBar owns the choice;
     // don't put a competing action over the page.
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'

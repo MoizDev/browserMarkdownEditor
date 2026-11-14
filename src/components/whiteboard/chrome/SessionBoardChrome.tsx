@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
 import type { BoardCommand, BoardCommandSource, CommandState } from './boardCommands';
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
@@ -43,7 +43,6 @@ export interface SessionBoardChromeProps {
 
 export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const global = useSyncExternalStore(subscribeBoardPreferences, getBoardPreferences, getBoardPreferences);
-    const menuButton = useRef<HTMLButtonElement | null>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
@@ -75,7 +74,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const runAction = (id: MainAction) => {
         if (!actionState(id).enabled) return;
         if (id === 'keyboardShortcuts') {
-            setReturnFocus(menuButton.current);
+            setReturnFocus(null);
             setShortcutsOpen(true);
         } else return props.runAction(id);
     };
@@ -90,8 +89,10 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     return <>
         <ConnectedBoardChrome toolState={props.toolState} openMedia={props.openMedia}
             locale={props.locale} direction={props.direction} commands={commandSource}
-            menuLabel={labels.text('menu')} menuEntries={mainMenuEntries(menu)}
-            onMenuOpen={anchor => { menuButton.current = anchor; }} sheetName={props.sheetName}
+            menuLabel={labels.text('menu')} menuEntries={anchor => mainMenuEntries({ ...menu, runAction: id => {
+                if (id === 'keyboardShortcuts') { setReturnFocus(anchor); setShortcutsOpen(true); }
+                else return runAction(id);
+            } })} sheetName={props.sheetName}
             openSheets={props.openSheets} actionsLabel={labels.text('actions')}
             toolLabel={labels.toolLabel} toolShortcut={props.toolShortcut} toolsLabel={labels.text('tools')}
             moreLabel={labels.text('more')} readOnly={props.readOnly} readOnlyReason={props.readOnlyReason}

@@ -38,7 +38,7 @@ function validatedRefusal(value: unknown): PdfBuildRefusal | undefined {
         return { reason: 'editable-json-limit', limit: PDF_EDITABLE_JSON_LIMIT };
     if (value.reason === 'unsafe-pdf' && fields(value, ['reason', 'safety']) &&
         (value.safety === 'signed' || value.safety === 'encrypted' || value.safety === 'unknown'))
-        return { reason: 'unsafe-pdf', safety: value.safety } as unknown as PdfBuildRefusal;
+        return { reason: 'unsafe-pdf', safety: value.safety };
 }
 function invalidRole(generation: string): PdfRole {
     return { kind: 'unreadable', generation, alreadyAnnotated: true, attachment: 'PDF', reason: 'policy' };

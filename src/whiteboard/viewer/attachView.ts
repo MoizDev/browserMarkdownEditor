@@ -1,7 +1,10 @@
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { getBoardRuntime } from '../host/runtime';
+import { createNotebookPaperLayer, type NotebookPaperSnapshot } from '../host/notebookPaperLayer';
 import type { NodeId } from '../model/ids';
+import type { PaintFrame } from '../render/paintStream';
+import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -20,11 +23,26 @@ export const attachView: AttachView = options => {
     const runtime = acquiredRuntime;
     let view: ViewerViewParams = { ...options.view }, disposed = false, failed: Error | null = null;
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
-    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken } | null = null;
+    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame } | null = null;
     let interaction: ViewerInteractionPorts | null = null;
+    let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     const listeners = new Set<() => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
+    let paperSnapshot: NotebookPaperSnapshot | null = null;
+    const paper = options.session.doc.host.kind === 'notebook' ? createNotebookPaperLayer({
+        read() {
+            const doc = options.session.doc, host = doc.host;
+            if (host.kind !== 'notebook') throw new Error('Notebook host changed');
+            if (paperSnapshot?.revision === doc.rev) return paperSnapshot;
+            const stack = boardPageStack(host);
+            if (!stack) throw new Error('Notebook page layout unavailable');
+            const pages = stack.rects.map((rect, index) => Object.freeze({ index, width: rect.width, height: rect.height,
+                rotate: 0 as const, userUnit: 1, toUserSpace: [1, 0, 0, 1, 0, 0] as const }));
+            paperSnapshot = Object.freeze({ revision: doc.rev, host: Object.freeze({ ...host, paper: Object.freeze({ ...host.paper }) }), pages: Object.freeze(pages) });
+            return paperSnapshot;
+        }, palette: () => palettes.light, onError: error => report(error),
+    }) : null;
     const report = (error: unknown) => {
         if (disposed || (error instanceof DOMException && error.name === 'AbortError')) return;
         failed = error instanceof Error ? error : new Error(String(error));
@@ -51,9 +69,9 @@ export const attachView: AttachView = options => {
                 requestPaint();
             }
         },
-        onPresented(revision, token) {
-            drawnFrame = { sceneRevision: revision, token };
-            interaction?.presented?.(revision, token);
+        onPresented(revision, token, frame) {
+            drawnFrame = { sceneRevision: revision, token, frame };
+            interaction?.presented?.(revision, token, frame);
         },
     });
     const accessibility = createViewerAccessibility({ token: options.token, session: options.session, selection: runtime.selection, scene,
@@ -77,7 +95,9 @@ export const attachView: AttachView = options => {
         return { state: failed ? 'failed' : !runtime.scene ? 'loading' : options.session.isReadOnly ? 'read-only' : 'ready',
             readOnlyReason: failed?.message ?? runtime.session.readOnlyReason, sceneRevision: runtime.scene?.revision ?? options.session.doc.rev,
             layout: scene.layout, palette, appearance: { background: palettes[view.theme].background, inverted: view.inverted },
-            layers: [...view.backdrops ?? [], ...layers], backendPreference: BOARD_BACKEND_PREFERENCE };
+            layers: interactionLayers
+                ? [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0], interactionLayers.underlay, layers[1], interactionLayers.content]
+                : [...view.backdrops ?? [], ...paper ? [paper] : [], ...layers], backendPreference: BOARD_BACKEND_PREFERENCE };
     }
     function publish(): void {
         if (disposed) return;
@@ -156,9 +176,11 @@ export const attachView: AttachView = options => {
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;
-            if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token);
+            if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame);
             return () => { if (interaction === ports) { ports.finishGesture(); ports.finishComposition(); interaction = null; } };
         },
+        readyPaintFrame: () => disposed ? null : layers.readyFrame(),
+        setInteractionLayers(next) { if (!disposed && interactionLayers !== next) { interactionLayers = next; publish(); layers.invalidate('board-interaction-layers'); } },
         dispose,
     };
 };

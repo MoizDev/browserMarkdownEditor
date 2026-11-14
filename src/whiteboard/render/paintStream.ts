@@ -71,6 +71,7 @@ export interface PaintNodeSource {
 export interface PaintFrame {
     readonly token: RenderToken;
     readonly sceneRevision: number;
+    readonly inkNodeIds: ReadonlySet<string>;
     readonly underlay: readonly PaintItem[];
     readonly content: readonly PaintItem[];
 }

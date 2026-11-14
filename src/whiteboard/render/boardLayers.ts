@@ -17,7 +17,7 @@ export interface BoardLayersOptions {
     readonly onError: (error: unknown) => void;
     readonly requestedRevision: () => number;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
-    readonly onPresented?: (revision: number, token: RenderToken) => void;
+    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame) => void;
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -73,7 +73,11 @@ function estimateStep(state: Estimate): void {
 }
 
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
-export function createBoardLayers(options: BoardLayersOptions): readonly [PlatformLayerDefinition, PlatformLayerDefinition] & { invalidate(reason?: string): void } {
+export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
+    invalidate(reason?: string): void;
+    readyFrame(): PaintFrame | null;
+}
+export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
@@ -153,7 +157,7 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
             options.frames.presented(frame);
             const previous = presented; presented = frame; ackFrame = null; ackMask = 0;
             if (previous && previous !== frame) { options.frames.retire(previous); releaseFrame(previous); known.delete(previous); }
-            options.onPresented?.(revision, token);
+            options.onPresented?.(revision, token, frame);
         } catch (error) { report(error); }
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
@@ -200,7 +204,8 @@ export function createBoardLayers(options: BoardLayersOptions): readonly [Platfo
             return current ? { complete: true, sharp: true } : { complete: false, sharp: false, staleVersion: true };
         },
     });
-    const pair = [definition('underlay'), definition('content')] as unknown as [PlatformLayerDefinition, PlatformLayerDefinition] & { invalidate(reason?: string): void };
+    const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.readyFrame = () => disposed ? null : adapter?.readyFrame() ?? null;
     return Object.freeze(pair);
 }

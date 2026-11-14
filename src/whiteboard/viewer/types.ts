@@ -4,6 +4,7 @@ import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
+import type { PaintFrame } from '../render/paintStream';
 import type { PaintPalette } from '../render/colour';
 import type { SceneSpatial } from '../scene/types';
 import type { BoardSession } from '../session/BoardSession';
@@ -51,7 +52,7 @@ export interface ViewerInteractionPorts {
     captureText?(): TextSelectionSnapshot | undefined;
     restoreText?(snapshot: TextSelectionSnapshot): void;
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
-    presented?(revision: number, token: RenderToken): void;
+    presented?(revision: number, token: RenderToken, frame?: PaintFrame): void;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.
@@ -62,6 +63,8 @@ export interface ViewerEngine {
     setView(params: ViewerViewParams): void;
     focusNode(id: string): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
+    readyPaintFrame(): PaintFrame | null;
+    setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.
      */

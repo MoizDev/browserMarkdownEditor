@@ -23,6 +23,7 @@ import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { isSheetParent } from '../../whiteboard/model/doc';
 import type { MediaEntry, MediaId } from '../../whiteboard/model/media';
 import type { MediaSource } from '../../whiteboard/media/ingest';
+import { readPrivatePngDensity } from '../../whiteboard/media/privatePng';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
 
@@ -44,40 +45,6 @@ export interface NativeClipboardControllerOptions {
     readonly storeMedia: (entry: MediaEntry, blob: Blob, signal: AbortSignal) => Promise<string | null>;
     readonly notice: (message: string) => void;
     readonly onError: (error: unknown) => void;
-}
-
-// Only the private web clipboard type may supply density; the media inspector still
-// sniffs and admits the entire PNG. A bad or absent pHYs means natural pixel size.
-async function privatePngDensity(blob: Blob, signal: AbortSignal): Promise<number | null> {
-    if (blob.size > 10 * 1024 * 1024) throw new RangeError('Clipboard PNG exceeds 10 MiB');
-    if (blob.size < 33) throw new TypeError('Clipboard image is not a PNG');
-    const signature = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
-    signal.throwIfAborted();
-    if (![137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => signature[i] === byte)) throw new TypeError('Clipboard image is not a PNG');
-    let offset = 8;
-    for (let count = 0; count < 4096 && offset + 12 <= blob.size; count++) {
-        const header = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer());
-        signal.throwIfAborted();
-        const view = new DataView(header.buffer), size = view.getUint32(0), type = String.fromCharCode(...header.subarray(4));
-        if (size > blob.size - offset - 12 || (count === 0 && (type !== 'IHDR' || size !== 13))) return null;
-        if (type === 'IDAT' || type === 'IEND') return null;
-        if (type === 'pHYs') {
-            if (size !== 9) return null;
-            const bytes = new Uint8Array(await blob.slice(offset + 4, offset + 21).arrayBuffer());
-            signal.throwIfAborted();
-            let crc = 0xffffffff;
-            for (let i = 0; i < 13; i++) {
-                crc ^= bytes[i];
-                for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-            }
-            const data = new DataView(bytes.buffer), x = data.getUint32(4), y = data.getUint32(8);
-            const density = x * 0.0254 / 72;
-            return data.getUint32(13) === ((crc ^ 0xffffffff) >>> 0) && bytes[12] === 1 && x === y
-                && density >= 0.25 && density <= 8 ? density : null;
-        }
-        offset += size + 12;
-    }
-    return null;
 }
 
 /** Paste/drop own one serial session job; unsupported semantic converters remain explicit frontiers. */
@@ -192,23 +159,25 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 if (rejected.length) options.notice('Folders cannot be pasted onto a board.');
                 const sources: MediaSource[] = files.filter(file => !file.directory).map(file => ({ blob: file.blob, name: file.name }));
                 if (classified.kind === 'private-png') {
-                    const density = await privatePngDensity(classified.blob, context.signal); check();
+                    const density = await readPrivatePngDensity({ blob: classified.blob, signal: context.signal,
+                        identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent }); check();
                     if (density !== null) sources[0] = { ...sources[0], pixelsPerWorldUnit: density };
+                    else options.notice('Clipboard PNG has no usable density; using ordinary image size.');
                 }
                 if (!sources.length) return;
                 const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: { from: null, bounds: { x: 0, y: 0, w: 0, h: 0 } },
                     containsFrame: false, doc, cameraZoom: zoom, intent });
                 const centre = placement.worldCentre, stack = boardPageStack(doc.host);
-                let page = -1, x = centre.x, y = centre.y;
+                let page = -1, x = centre.x, y = centre.y, rotation = 0;
                 if (isSheetParent(doc, placement.parent)) {
                     if (stack) { page = pageAt(stack, y); const box = stack.rects[page]; if (!box) throw new Error('Target page is unavailable'); x -= box.x; y -= box.y; }
                 } else {
-                    const pose = worldPose(doc, placement.parent);
-                    if (pose.rotation !== 0) throw new Error('Pasting media into a rotated frame is not yet available');
-                    x -= pose.x; y -= pose.y;
+                    const pose = worldPose(doc, placement.parent), dx = x - pose.x, dy = y - pose.y;
+                    const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                    x = c * dx + s * dy; y = -s * dx + c * dy; rotation = -pose.rotation;
                 }
                 check();
-                await options.ingestor.ingestInJob(sources, { origin: 'paste', placement: { parent: placement.parent, page, x, y }, signal: context.signal }, context);
+                await options.ingestor.ingestInJob(sources, { origin: 'paste', placement: { parent: placement.parent, page, x, y, rotation }, signal: context.signal }, context);
                 return;
             }
             if (classified.kind !== 'empty') throw new Error(`Clipboard ${classified.kind} conversion is not yet available`);

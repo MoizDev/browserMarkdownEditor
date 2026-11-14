@@ -5,6 +5,7 @@ import { hashMedia } from './sha256';
 import { sniffMedia } from './sniff';
 import { webmHeader } from './webmHeader';
 import { preflightSvgText } from './svgXmlRuntime';
+import { privatePngDensityWorker } from './privatePngWorker';
 import { boardHandlers } from '../workers/protocol';
 
 interface DecoderTrack { readonly frameCount: number }
@@ -20,6 +21,7 @@ serve({
     protocol: 1,
     buildId: 'whiteboard-media-1',
     handlers: boardHandlers({
+        privatePngDensity: privatePngDensityWorker,
         async svgPreflight(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid SVG request');
             const blob = (args as { blob: Blob }).blob;

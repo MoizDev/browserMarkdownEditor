@@ -3,6 +3,7 @@ import type { RichText } from './richText';
 import { projectionLength } from './projection';
 import { textBoundaries } from './boundaries';
 import { deriveRichTextChange, deriveRichTextChangeCooperative, type RichTextChange, type RichTextDiffOptions } from './richDiff';
+import { deriveRichTextChanges, deriveRichTextChangesCooperative } from './richMultiDiff';
 
 export type TextAffinity = 'before' | 'after';
 export interface TextSpliceMap {
@@ -107,4 +108,32 @@ export async function mapRichTextChangeCooperative(before: RichText, after: Rich
     validateSelection(before, selection);
     const change = await deriveRichTextChangeCooperative(before, after, options);
     return mappedChange(before, after, selection, change, affinity);
+}
+
+export interface MappedRichTextChanges {
+    readonly changes: readonly TextSpliceMap[];
+    readonly selection: RichSelection;
+}
+function mappedChanges(after: RichText, selection: RichSelection, changes: readonly TextSpliceMap[], affinity: TextAffinity): MappedRichTextChanges {
+    let current = selection;
+    for (const map of changes) {
+        if (current.anchor === current.focus) {
+            const offset = mapTextOffset(current.anchor, map, affinity);
+            current = { anchor: offset, focus: offset };
+        } else current = mapTextSelection(current, map);
+    }
+    return { changes, selection: normalizeTextSelection(after, current, affinity) };
+}
+
+/** Preserve selection through distinct changes when a bounded diff can identify them. */
+export function mapRichTextChanges(before: RichText, after: RichText, selection: RichSelection,
+    affinity: TextAffinity = 'after'): MappedRichTextChanges {
+    validateSelection(before, selection);
+    return mappedChanges(after, selection, deriveRichTextChanges(before, after), affinity);
+}
+export async function mapRichTextChangesCooperative(before: RichText, after: RichText, selection: RichSelection,
+    options: RichTextDiffOptions, affinity: TextAffinity = 'after'): Promise<MappedRichTextChanges> {
+    validateSelection(before, selection);
+    const changes = await deriveRichTextChangesCooperative(before, after, options);
+    return mappedChanges(after, selection, changes, affinity);
 }

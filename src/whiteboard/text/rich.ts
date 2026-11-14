@@ -21,10 +21,11 @@ export { coalesceCarriersCooperative } from './carriers';
 export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
-    mapRichTextChange, mapRichTextChangeCooperative } from './rangeMap';
-export type { TextAffinity, TextSpliceMap, MappedRichTextChange } from './rangeMap';
+    mapRichTextChange, mapRichTextChangeCooperative, mapRichTextChanges, mapRichTextChangesCooperative } from './rangeMap';
+export type { TextAffinity, TextSpliceMap, MappedRichTextChange, MappedRichTextChanges } from './rangeMap';
 export { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
 export type { RichTextChange, RichTextDiffOptions } from './richDiff';
+export { deriveRichTextChanges, deriveRichTextChangesCooperative } from './richMultiDiff';
 export { applyRichTransaction, validateRichFragment, validateRichFragmentCooperative, richTransactionLength } from './richTransaction';
 export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
 export { snapshotRichFragmentCooperative } from './fragmentSnapshot';

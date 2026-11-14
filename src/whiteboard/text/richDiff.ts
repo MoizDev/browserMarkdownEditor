@@ -66,7 +66,7 @@ function* common(before: RichText, after: RichText, reverse: boolean, limit: num
  * and new endpoints are grapheme boundaries. This handles combining marks,
  * regional indicators, and a CR followed by a projected block separator.
  */
-function* changeSteps(before: RichText, after: RichText): Generator<void, RichTextChange | null> {
+export function* deriveRichTextChangeSteps(before: RichText, after: RichText): Generator<void, RichTextChange | null> {
     if (before === after) return null;
     const oldLength = projectionLength(before), newLength = projectionLength(after);
     const limit = Math.min(oldLength, newLength);
@@ -92,7 +92,7 @@ function* changeSteps(before: RichText, after: RichText): Generator<void, RichTe
 
 /** Synchronous form for small changes and callers already inside a transaction. */
 export function deriveRichTextChange(before: RichText, after: RichText): RichTextChange | null {
-    return finishTextSteps(changeSteps(before, after));
+    return finishTextSteps(deriveRichTextChangeSteps(before, after));
 }
 
 export interface RichTextDiffOptions {
@@ -104,5 +104,5 @@ export interface RichTextDiffOptions {
 
 /** Long external changes can share the same algorithm without monopolizing a frame. */
 export function deriveRichTextChangeCooperative(before: RichText, after: RichText, options: RichTextDiffOptions): Promise<RichTextChange | null> {
-    return finishTextStepsCooperative(changeSteps(before, after), options);
+    return finishTextStepsCooperative(deriveRichTextChangeSteps(before, after), options);
 }

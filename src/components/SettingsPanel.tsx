@@ -9,6 +9,7 @@ import {
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
 import { StorageDurabilitySetting } from './StorageDurabilitySetting';
+import { AVAILABLE_CANVAS_ENGINES, AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, PLATFORM_LAYER_AVAILABLE, developerEnabled, emergencyKey, engineKey, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -64,6 +65,12 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
     const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
     const titleId = useId();
+    const [developer, setDeveloper] = useState(developerEnabled);
+    const [, refreshDeveloper] = useState(0);
+    const routes = routeEngines();
+    const updateDeveloper = (key: string, value: string | boolean) => {
+        if (setDeveloperSetting(key, value)) refreshDeveloper(n => n + 1);
+    };
 
     // The terminal's two settings live in their own store (utils/terminalSettings):
     // the lazy terminal chunk reads it too, and neither side imports the other.
@@ -500,6 +507,22 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                             </div>
                         </div>
                     )}
+
+                    <h4 className="settings-section">About</h4>
+                    <div className="setting-row">
+                        <div className="setting-info"><div className="setting-name">Show developer settings</div><div className="settings-hint">Experimental engine controls, applied the next time a pane opens.</div></div>
+                        <div className="setting-control"><button type="button" role="switch" aria-label="Show developer settings" aria-checked={developer} className={`settings-toggle${developer ? ' on' : ''}`} onClick={() => { const next = !developer; if (setDeveloperSetting('bme.developer', next)) setDeveloper(next); }}><span className="settings-toggle-knob" /></button></div>
+                    </div>
+                    <div className="setting-row"><a className="settings-notices-link" href={`${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES`} target="_blank" rel="noreferrer">Third-party notices</a></div>
+                    {developer && <>
+                        <h4 className="settings-section">Developer</h4>
+                        {CANVAS_KINDS.map(kind => <React.Fragment key={kind}>
+                            <div className="setting-row"><label className="setting-info" htmlFor={`engine-${kind}`}>{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} engine</label><div className="setting-control"><select id={`engine-${kind}`} value={routes.canvas[kind].engine} onChange={e => updateDeveloper(engineKey(kind), e.target.value)}>{AVAILABLE_CANVAS_ENGINES.map(engine => <option key={engine} value={engine}>{engine}</option>)}</select></div></div>
+                            <div className="setting-row"><div className="setting-info">{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} emergency read-only</div><div className="setting-control"><button type="button" role="switch" aria-label={`${kind} emergency read-only`} aria-checked={routes.canvas[kind].emergencyReadOnly} className={`settings-toggle${routes.canvas[kind].emergencyReadOnly ? ' on' : ''}`} onClick={() => updateDeveloper(emergencyKey(kind), !routes.canvas[kind].emergencyReadOnly)}><span className="settings-toggle-knob" /></button></div></div>
+                        </React.Fragment>)}
+                        <div className="setting-row"><label className="setting-info" htmlFor="pdf-viewer-engine">PDF viewer</label><div className="setting-control"><select id="pdf-viewer-engine" value={routes.pdfViewer} onChange={e => updateDeveloper('bme.pdf.viewer', e.target.value)}>{AVAILABLE_PDF_VIEWERS.map(viewer => <option key={viewer} value={viewer}>{viewer}</option>)}</select></div></div>
+                        <div className="setting-row"><div className="setting-info">PDF platform layer</div><div className="setting-control"><button type="button" role="switch" aria-label="PDF platform layer" disabled={!PLATFORM_LAYER_AVAILABLE} aria-checked={routes.platformLayer} className={`settings-toggle${routes.platformLayer ? ' on' : ''}`} onClick={() => updateDeveloper('bme.pdf.platformLayer', !routes.platformLayer)}><span className="settings-toggle-knob" /></button></div></div>
+                    </>}
 
                     <div className="settings-footer">
                         <button

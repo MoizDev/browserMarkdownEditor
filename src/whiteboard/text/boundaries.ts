@@ -1,5 +1,6 @@
 import type { Block, RichText } from './richText';
 import { projectionLength, projectionPosition } from './projection';
+import { WeakIdentityLru } from './weakLru';
 
 export interface BoundarySelection { readonly anchor: number; readonly focus: number }
 export type BoundaryDirection = -1 | 1;
@@ -45,31 +46,23 @@ function blockString(block: Block): string {
  * even when a grapheme spans several differently styled runs.
  */
 export class TextBoundaries {
-    private readonly entries = new Map<Block, BlockEntry>();
-    private bytes = 0;
+    // LRU values retain text/ICU views, not blocks and their potentially large opaque data.
+    private readonly entries: WeakIdentityLru<Block, BlockEntry>;
 
-    constructor(private readonly byteLimit = DEFAULT_BYTES, private readonly entryLimit = DEFAULT_ENTRIES) {
-        if (!Number.isSafeInteger(byteLimit) || byteLimit < 0 || !Number.isSafeInteger(entryLimit) || entryLimit < 0)
-            throw new RangeError('Invalid text boundary cache limits');
+    constructor(byteLimit = DEFAULT_BYTES, entryLimit = DEFAULT_ENTRIES) {
+        this.entries = new WeakIdentityLru(byteLimit, entryLimit);
     }
 
     private entry(block: Block): BlockEntry {
         const cached = this.entries.get(block);
-        if (cached) { this.entries.delete(block); this.entries.set(block, cached); return cached; }
+        if (cached) return cached;
         const text = blockString(block);
         // ASCII without CR/LF has one UTF-16 unit per extended grapheme.
         const simple = /^[\x00-\x09\x0b-\x0c\x0e-\x7f]*$/.test(text);
         // Charge for the retained string and both possible ICU segmentation views.
         const bytes = 512 + text.length * 12;
         const result: BlockEntry = { text, simple, bytes };
-        if (this.entryLimit && bytes <= this.byteLimit) {
-            while (this.entries.size && (this.entries.size >= this.entryLimit || this.bytes + bytes > this.byteLimit)) {
-                const oldest = this.entries.keys().next().value!;
-                this.bytes -= this.entries.get(oldest)!.bytes;
-                this.entries.delete(oldest);
-            }
-            this.entries.set(block, result); this.bytes += bytes;
-        }
+        this.entries.set(block, result, bytes);
         return result;
     }
 
@@ -176,7 +169,7 @@ export class TextBoundaries {
         return direction < 0 ? 0 : length;
     }
 
-    clear(): void { this.entries.clear(); this.bytes = 0; }
+    clear(): void { this.entries.clear(); }
 }
 
 /** Bounded shared cache for the synchronous, view-independent rich operation API. */

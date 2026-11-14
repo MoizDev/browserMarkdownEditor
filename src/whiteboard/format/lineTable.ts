@@ -43,6 +43,13 @@ export class RecordKeyDigest {
         return { ok: true, value: this.snapshot() };
     }
 
+    clone(): RecordKeyDigest {
+        const copy = new RecordKeyDigest();
+        copy.count = this.count;
+        copy.lanes.set(this.lanes);
+        return copy;
+    }
+
     snapshot(): RecordIntegrity {
         let digest = '';
         for (const lane of this.lanes) digest += lane.toString(16).padStart(8, '0');
@@ -57,6 +64,12 @@ interface Entry {
     bytes: number;
 }
 interface DirtyRecord { readonly identity: RecordIdentity; readonly revision: number; }
+export interface LinePosition {
+    readonly identity: RecordIdentity;
+    readonly offset: number;
+    readonly length: number;
+    readonly revision: number;
+}
 export interface LineAssembly {
     readonly kind: 'built' | 'unchanged';
     readonly blob: Blob;
@@ -91,10 +104,20 @@ function compare(a: Entry, b: Entry): number {
     return a.identity.type < b.identity.type ? -1 : a.identity.type > b.identity.type ? 1 : 0;
 }
 
+function lowerBound(entries: readonly Entry[], needle: Entry): number {
+    let lo = 0, hi = entries.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (compare(entries[mid], needle) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 export class LineTable {
-    private readonly entries = new Map<string, Entry>();
-    private readonly dirty = new Map<string, DirtyRecord>();
-    private readonly keyDigest = new RecordKeyDigest();
+    private entries = new Map<string, Entry>();
+    private dirty = new Map<string, DirtyRecord>();
+    private keyDigest = new RecordKeyDigest();
     private ordered: Entry[] | null = null;
     private header: { text: string; bytes: number; } | null = null;
     private lineBytes = 0;
@@ -107,6 +130,23 @@ export class LineTable {
     get needsSave(): boolean { return this.dirty.size > 0 || this.epoch !== this.savedEpoch; }
     get dirtyCount(): number { return this.dirty.size; }
     integrity(): RecordIntegrity { return this.keyDigest.snapshot(); }
+
+    // Snapshot tables share immutable lines; edits replace entries, never mutate shared entries.
+    // The worker can therefore assemble an older pinned revision after later edits arrive.
+    fork(): LineTable {
+        const copy = new LineTable();
+        copy.entries = new Map(this.entries);
+        copy.dirty = new Map(this.dirty);
+        copy.keyDigest = this.keyDigest.clone();
+        copy.ordered = this.ordered ? [...this.ordered] : null;
+        copy.header = this.header;
+        copy.lineBytes = this.lineBytes;
+        copy.epoch = this.epoch;
+        copy.savedEpoch = this.savedEpoch;
+        copy.assembly = this.assembly;
+        copy.end = this.end;
+        return copy;
+    }
 
     setHeader(text: string): WriteResult<boolean> {
         if (!text.startsWith('{') || !text.endsWith(',"records":[')) return writeFailure('header', 'Expected the native header and opening records array');
@@ -129,15 +169,13 @@ export class LineTable {
         if (changed && !Number.isSafeInteger(this.epoch + 1)) return writeFailure('limit', 'Line-table content revision overflow');
         const integrity = this.keyDigest.replace(record.identity, previous?.revision ?? null, revision);
         if (!integrity.ok) return integrity;
-        if (previous) {
-            this.lineBytes += bytes.value - previous.bytes;
-            previous.text = record.text;
-            previous.bytes = bytes.value;
-            previous.revision = revision;
-        } else {
-            this.entries.set(key, { identity: ownIdentity(record.identity), revision, text: record.text, bytes: bytes.value });
-            this.lineBytes += bytes.value;
-            this.ordered = null;
+        const entry: Entry = { identity: previous?.identity ?? ownIdentity(record.identity), text: record.text, bytes: bytes.value, revision };
+        this.entries.set(key, entry);
+        this.lineBytes += bytes.value - (previous?.bytes ?? 0);
+        if (this.ordered) {
+            const index = lowerBound(this.ordered, entry);
+            if (previous) this.ordered[index] = entry;
+            else this.ordered.splice(index, 0, entry);
         }
         this.dirty.delete(key);
         if (changed) this.epoch++;
@@ -154,7 +192,7 @@ export class LineTable {
         this.entries.delete(key);
         this.dirty.delete(key);
         this.lineBytes -= previous.bytes;
-        this.ordered = null;
+        if (this.ordered) this.ordered.splice(lowerBound(this.ordered, previous), 1);
         this.epoch++;
         return { ok: true, value: true };
     }
@@ -232,6 +270,18 @@ export class LineTable {
         }
         this.assembly = { blob, revision: this.epoch };
         return { ok: true, value: { kind: 'built', blob, revision: this.epoch, integrity } };
+    }
+
+    /** Positions in the canonical Blob produced by assemble(). Consumed in the worker to
+     * retain a compact recovery index without posting a whole board's record table to App. */
+    *positions(): Iterable<LinePosition> {
+        if (!this.header || this.dirty.size) throw new Error('Cannot index an incomplete line table');
+        if (!this.ordered) this.ordered = [...this.entries.values()].sort(compare);
+        let offset = this.header.bytes + 1;
+        for (const entry of this.ordered) {
+            yield { identity: entry.identity, offset, length: entry.bytes, revision: entry.revision };
+            offset += entry.bytes + 2;
+        }
     }
 
     acknowledge(revision: number): WriteResult<void> {

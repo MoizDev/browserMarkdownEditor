@@ -4,7 +4,7 @@ export interface PdfFindProgress {
     done: boolean; capped: boolean; textlessPages: number; failedPages: readonly number[];
     partialPages: readonly number[];
 }
-export interface PdfFindPageText { text: string; tokenBreaks: readonly number[]; quality: 'available' | 'partial' | 'none' }
+export interface PdfFindPageText { text: string; tokenBreaks: readonly number[] | Uint32Array; quality: 'available' | 'partial' | 'none' }
 export interface PdfFindSource {
     pageCount(signal: AbortSignal): Promise<number>;
     page(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;

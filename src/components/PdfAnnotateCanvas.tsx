@@ -1,13 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
-import type { Editor, TLAssetId, TLAssetStore, TLEditorSnapshot, TLImageShape, TLShapeId } from 'tldraw';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Tldraw, getSnapshot, createTLStore, loadSnapshot, defaultShapeUtils, defaultBindingUtils, AssetRecordType, createShapeId, Box, inlineBase64AssetStore, react } from 'tldraw';
+import type { Editor, TLAssetStore, TLEditorSnapshot, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { pageLayout, openPdfPages, PAGE_RENDER_SCALE, type PdfPageSize, type PdfPageSource } from '../utils/pdfAnnotation';
 import { setPdfRenderData } from '../utils/pdfRenderCache';
+import { revokePdfSource } from '../utils/pdfRole';
+import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
+import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
 import { isEmptyOverlay, type PageOverlay } from '../utils/pdfOverlay';
 import { svgToVectorOps } from '../utils/pdfVector';
 import { CANVAS_COMPONENTS, CANVAS_ASSET_URLS, CANVAS_OPTIONS, CANVAS_SHAPE_UTILS, applyCanvasUi, applyPenDefaults, readCanvasUi, type CanvasUiState } from './canvasPen';
+import { PaperMainMenu } from './paperCanvas';
+import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
+import { protectPageBackdrops } from './protectPageBackdrops';
+import { bucketSheetsByPage, shapesBySheet, sheetThumbnail } from './pageSheetShapes';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen, recordPdfNavigation,
@@ -45,7 +52,7 @@ interface PdfAnnotateCanvasProps {
     /** Path-explicit: a debounced save can land after a tab switch. */
     onContentChange: (path: string, content: string) => void;
     /** Same, but writes to disk immediately — used when the canvas is going away. */
-    onFlushNow: (path: string, content: string) => void;
+    onFlushNow: (path: string, content: string) => Promise<void>;
     /**
      * Called synchronously as the canvas unmounts with strokes still to write.
      * Exporting them takes a moment, and until it does the tab isn't marked
@@ -53,6 +60,7 @@ interface PdfAnnotateCanvasProps {
      * was BEFORE those strokes.
      */
     onFlushStart: () => void;
+    onSaveError?: (message: string) => void;
 }
 
 /**
@@ -70,6 +78,7 @@ interface PdfAnnotateCanvasProps {
  * its own background, so it has no white page to contrast against.
  */
 const ANNOTATE_COLOR_SCHEME = 'light';
+const PAPER_COMPONENTS = { ...CANVAS_COMPONENTS, MainMenu: PaperMainMenu };
 
 /**
  * Shape types that cannot become paths in the saved PDF, so their pages carry a
@@ -84,19 +93,10 @@ const ANNOTATE_COLOR_SCHEME = 'light';
  */
 const RASTER_ONLY_SHAPES = new Set(['text', 'note', 'image', 'video', 'bookmark', 'embed']);
 
-/**
- * Deliberately far longer than DrawingPane's 400ms.
- *
- * A drawing's save is a JSON.stringify. A PDF's save rasterizes every annotated
- * page and then rebuilds the entire document — tens to hundreds of milliseconds
- * on the main thread, which is the same thread the pen is drawing on. At 400ms
- * an ordinary pause to think fires a full export, so the next stroke stutters.
- *
- * 1.5s idle means the export lands between thoughts rather than between strokes.
- * The app's own 1s save debounce then follows, so a stroke reaches disk ~2.5s
- * after you stop — still well inside the "close the tab and it's saved" flush.
- */
-const SERIALIZE_DEBOUNCE_MS = 1500;
+// Export only after the pen is lifted; the prepared revision bypasses the
+// ordinary note debounce and enters the versioned save funnel immediately.
+const SERIALIZE_DEBOUNCE_MS = 250;
+const MAX_PENDING_MS = 2000;
 
 /* ── Keeping the backdrop sharp when you zoom in ──────────────────────────
  *
@@ -183,11 +183,10 @@ async function drawBlob(ctx: CanvasRenderingContext2D, source: Blob, w: number, 
 function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: CanvasUiState } {
     if (!content.trim()) return {};
     try {
-        const { ui, ...snapshot } = JSON.parse(content) as TLEditorSnapshot & { ui?: CanvasUiState };
+        const { ui, ...snapshot } = JSON.parse(content.trim()) as TLEditorSnapshot & { ui?: CanvasUiState };
         return { snapshot: 'document' in snapshot ? snapshot as TLEditorSnapshot : undefined, ui };
     } catch (err) {
-        console.error('Could not parse PDF annotations (leaving the file untouched):', err);
-        return {};
+        throw new Error('The PDF annotations could not be loaded without losing content.', { cause: err });
     }
 }
 
@@ -199,7 +198,52 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ documentId, filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
+function AnnotationLoadNotice() {
+    return <div className="canvas-readonly-notice" role="alert" onContextMenu={event => event.preventDefault()}><div className="canvas-readonly-card">
+        <h2>PDF annotations are read-only</h2>
+        <p>The existing annotations could not be loaded safely. Switch to View to read the PDF, or use a compatible version to recover them.</p>
+        <p className="canvas-readonly-preserved">The original file has not been changed. No edits will be saved.</p>
+    </div></div>;
+}
+
+class AnnotationLoadBoundary extends Component<{ original: Uint8Array; children: ReactNode }, { failed: boolean }> {
+    state = { failed: false };
+    static getDerivedStateFromError() { return { failed: true }; }
+    componentDidCatch() { revokePdfSource(this.props.original); }
+    render() { return this.state.failed ? <AnnotationLoadNotice /> : this.props.children; }
+}
+
+export default function PdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    const sniff = useMemo(() => sniffCanvas(props.snapshot, 'pdf'), [props.snapshot]);
+    const reason = canvasReadOnlyReason(sniff);
+    useEffect(() => {
+        // P-09 owns attachment precedence. This is the final loaded-snapshot
+        // guard: no editor, pending serializer or rebuild capability survives it.
+        if (reason) revokePdfSource(props.original);
+    }, [reason, props.original]);
+    return reason ? <CanvasReadOnlyNotice sniff={sniff} /> : <AnnotationLoadBoundary original={props.original}><CheckedPdfAnnotateCanvas {...props} /></AnnotationLoadBoundary>;
+}
+
+function CheckedPdfAnnotateCanvas(props: PdfAnnotateCanvasProps) {
+    // P-09 validates the envelope; only the library can validate every record
+    // and migration. Reject before an editor, listener or save cache exists.
+    const [loadable] = useState(() => {
+        try {
+            const parsed = parseSnapshot(props.snapshot);
+            if (parsed.snapshot) {
+                const store = createTLStore({ shapeUtils: defaultShapeUtils, bindingUtils: defaultBindingUtils });
+                loadSnapshot(store, parsed.snapshot);
+            }
+            return true;
+        } catch {
+            revokePdfSource(props.original);
+            return false;
+        }
+    });
+    return loadable ? <LegacyPdfAnnotateCanvas {...props} /> : <AnnotationLoadNotice />;
+}
+
+function LegacyPdfAnnotateCanvas({ documentId, filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, onSaveError, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
@@ -226,6 +270,8 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
     useEffect(() => { onFlushNowRef.current = onFlushNow; }, [onFlushNow]);
     const onFlushStartRef = useRef(onFlushStart);
     useEffect(() => { onFlushStartRef.current = onFlushStart; }, [onFlushStart]);
+    const onSaveErrorRef = useRef(onSaveError);
+    useEffect(() => { onSaveErrorRef.current = onSaveError; }, [onSaveError]);
 
     // Parsed once, on mount. `snapshot` churns as saves round-trip, but tldraw
     // owns the document from mount on, so re-reading it would be pointless work
@@ -380,55 +426,43 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
         //
         // All of this runs BEFORE the store listener is attached, so none of it
         // marks the file dirty.
-        const existing = editor.getCurrentPageShapes().filter(s => s.meta?.pdfPage !== undefined);
-        const backdropMatchesFile = existing.length === pages.length;
-
-        if (!backdropMatchesFile) {
-            // Either a first open, or the PDF's page count changed under us —
-            // rebuild from scratch rather than leave a half-matching backdrop.
-            if (existing.length) {
-                editor.deleteShapes(existing.map(s => s.id));
-                const staleAssets = existing
-                    .map(s => (s as TLImageShape).props.assetId)
-                    .filter((id): id is TLAssetId => !!id);
-                if (staleAssets.length) editor.deleteAssets(staleAssets);
-            }
-
-            const pageShapeIds = pages.map((_, i) => createShapeId(`pdf-page-${i}`));
-            editor.createShapes(pages.map((page, i) => {
-                // Deterministic ids so a rebuild replaces these in place rather
-                // than piling up a fresh copy of every page.
+        const reconcileBackdrops = () => editor.run(() => editor.store.mergeRemoteChanges(() => {
+            const existing = editor.getCurrentPageShapes().filter(s => s.meta?.pdfPage !== undefined);
+            const keep = new Set<TLShapeId>();
+            pages.forEach((page, i) => {
                 const assetId = AssetRecordType.createId(`pdf-page-${i}`);
-                editor.createAssets([{
-                    id: assetId,
-                    type: 'image',
-                    typeName: 'asset',
-                    props: {
-                        name: `page-${i + 1}.jpg`,
-                        // Not a blob URL: see assetStore above. `meta.pdfPage` is
-                        // what the resolver keys on.
-                        src: `asset:pdf-page-${i}`,
-                        w: page.width,
-                        h: page.height,
-                        mimeType: 'image/jpeg',
-                        isAnimated: false,
-                    },
+                // One document asset is shared by all sheets; deleting it when
+                // changing sheets would make the other sheets lose their paper.
+                if (!editor.getAsset(assetId)) editor.createAssets([{
+                    id: assetId, type: 'image', typeName: 'asset',
+                    props: { name: `page-${i + 1}.jpg`, src: `asset:pdf-page-${i}`,
+                        w: page.width, h: page.height, mimeType: 'image/jpeg', isAnimated: false },
                     meta: { pdfPage: i },
                 }]);
-                return {
-                    id: pageShapeIds[i],
-                    type: 'image' as const,
-                    x: boxes[i].x,
-                    y: boxes[i].y,
-                    isLocked: true,
-                    props: { assetId, w: page.width, h: page.height },
-                    meta: { pdfPage: i },
-                };
-            }));
-            // Belt and braces: pages are backdrop and must sit beneath every
-            // annotation, whatever order they were added in.
-            editor.sendToBack(pageShapeIds);
-        }
+                const found = existing.find(s => s.meta.pdfPage === i && s.type === 'image');
+                const legacy = createShapeId(`pdf-page-${i}`);
+                const id = found?.id ?? (editor.getShape(legacy) ? createShapeId() : legacy);
+                keep.add(id);
+                const shape = { id, type: 'image' as const, x: boxes[i].x, y: boxes[i].y,
+                    isLocked: true, props: { assetId, w: page.width, h: page.height }, meta: { pdfPage: i } };
+                if (found) editor.updateShape(shape);
+                else editor.createShapes([shape]);
+            });
+            const stale = existing.filter(s => !keep.has(s.id)).map(s => s.id);
+            if (stale.length) editor.deleteShapes(stale);
+            editor.sendToBack([...keep]);
+            pageShapeIdsRef.current = keep;
+        }), { ignoreShapeLock: true });
+        reconcileBackdrops();
+        const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.pdfPage !== undefined);
+        let paperSheet = editor.getCurrentPageId();
+        const stopSheetWatch = react('pdf paper sheet', () => {
+            const sheet = editor.getCurrentPageId();
+            if (sheet === paperSheet) return;
+            paperSheet = sheet;
+            backdropGuard.allow(reconcileBackdrops);
+            thumbsRef.current?.invalidate(boxes.map((_, i) => i));
+        });
 
         // Open on the page being READ, at the reader's size — not on the whole
         // document. This used to zoomToFit() on a first open, which on a long PDF
@@ -447,9 +481,6 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
             savedPos?.offset ?? 0,
         ));
 
-        for (const shape of editor.getCurrentPageShapes()) {
-            if (shape.meta?.pdfPage !== undefined) pageShapeIdsRef.current.add(shape.id);
-        }
 
         /**
          * Keep the backdrop true to the view: rasterize pages as they come near
@@ -598,38 +629,27 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
          *        switch, tab close). The viewer re-reads the file the instant it
          *        appears, so the write cannot sit in a debounce queue.
          */
+        let revision = 0;
+        let firstPending = 0;
+        const activePointers = new Set<number>();
         const flush = async (immediate = false) => {
             serializeTimerRef.current = null;
+            const capturedRevision = revision;
+            const stagedCache = new Map(overlayCacheRef.current);
             // Cleared up front, not after: a stroke drawn while this is exporting
             // must re-arm the flag rather than be swallowed by it.
             hasUnsavedRef.current = false;
             // Export one transparent overlay per page: everything EXCEPT the page
             // backdrops, clipped to that page's box. Empty pages export nothing,
             // so the builder leaves them untouched.
-            const annotations = editor.getCurrentPageShapes()
-                .filter(s => !pageShapeIdsRef.current.has(s.id));
+            const sheets = shapesBySheet(editor, shape => shape.meta?.pdfPage !== undefined);
             // Snapshot the same revision as the overlays before any async
             // export. A later stroke belongs to the next serialized flush.
             uiRef.current = readCanvasUi(editor);
             const json = JSON.stringify({ ...getSnapshot(editor.store), ui: uiRef.current });
 
-            // Bucket the shapes by page ONCE, rather than re-filtering the whole
-            // annotation set per page. The old form called getShapePageBounds
-            // for every shape on every page — pages x shapes lookups (600k on a
-            // 300-page document with 2000 strokes) on the same main thread the
-            // pen draws on, every 1.5s while annotating.
-            const shapesByPage: Array<typeof annotations> = boxes.map(() => []);
-            for (const shape of annotations) {
-                const b = editor.getShapePageBounds(shape.id);
-                if (!b) continue;
-                for (let i = 0; i < boxes.length; i++) {
-                    const box = boxes[i];
-                    // Pages are stacked downward, so once a box starts below the
-                    // shape's bottom edge no later box can overlap it either.
-                    if (box.y >= b.maxY) break;
-                    if (b.minY < box.y + box.height) shapesByPage[i].push(shape);
-                }
-            }
+            // Collect once across every sheet; the active sheet is only a view.
+            const shapesByPage = bucketSheetsByPage(editor, sheets, boxes);
 
             const overlays: Array<PageOverlay | undefined> = [];
             for (let i = 0; i < boxes.length; i++) {
@@ -645,8 +665,8 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 const cached = overlayCacheRef.current.get(i);
                 if (cached?.signature === signature) { overlays.push(cached.overlay); continue; }
 
-                if (!onThisPage.length) {
-                    overlayCacheRef.current.set(i, { signature, overlay: undefined });
+                if (!onThisPage.some(shapes => shapes.length)) {
+                    stagedCache.set(i, { signature, overlay: undefined });
                     overlays.push(undefined);
                     continue;
                 }
@@ -657,39 +677,44 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 const exportOptions = { background: false, bounds, padding: 0, darkMode: false } as const;
 
                 try {
-                    const overlay: PageOverlay = { geometry: pages[i] };
-                    const rasterShapes = onThisPage.filter(s => RASTER_ONLY_SHAPES.has(s.type));
-                    const vectorShapes = onThisPage.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
+                    const layers: PageOverlay[] = [];
+                    for (const shapes of onThisPage) {
+                        if (!shapes.length) continue;
+                        const overlay: PageOverlay = {};
+                        const rasterShapes = shapes.filter(s => RASTER_ONLY_SHAPES.has(s.type));
+                        const vectorShapes = shapes.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
 
-                    // Strokes as paths: sharp at any zoom in the saved PDF, and
-                    // an order of magnitude smaller than the equivalent PNG.
-                    if (vectorShapes.length) {
-                        const svg = await editor.getSvgString(vectorShapes.map(s => s.id), {
-                            ...exportOptions,
-                            // Positions are read back out of the viewBox, which is
-                            // in page units — so keep the two the same and no
-                            // scale has to be undone later.
-                            scale: 1,
-                        });
-                        const ops = svg ? svgToVectorOps(svg.svg) : null;
-                        // Anything that cannot be drawn exactly as paths falls
-                        // back to pixels, which is where this code came from —
-                        // never a wrong drawing, just a softer one.
-                        if (ops) overlay.vector = ops;
-                        else rasterShapes.push(...vectorShapes);
+                        // Strokes as paths: sharp at any zoom in the saved PDF, and
+                        // an order of magnitude smaller than the equivalent PNG.
+                        if (vectorShapes.length) {
+                            const svg = await editor.getSvgString(vectorShapes.map(s => s.id), {
+                                ...exportOptions,
+                                // Positions are read back out of the viewBox, which is
+                                // in page units — so keep the two the same and no
+                                // scale has to be undone later.
+                                scale: 1,
+                            });
+                            const ops = svg ? svgToVectorOps(svg.svg) : null;
+                            // Anything that cannot be drawn exactly as paths falls
+                            // back to pixels, which is where this code came from —
+                            // never a wrong drawing, just a softer one.
+                            if (ops) overlay.vector = ops;
+                            else rasterShapes.push(...vectorShapes);
+                        }
+
+                        if (rasterShapes.length) {
+                            const image = await editor.toImage(rasterShapes.map(s => s.id), {
+                                ...exportOptions,
+                                format: 'png',
+                                scale: 2,
+                            });
+                            overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
+                        }
+
+                        if (!isEmptyOverlay(overlay)) layers.push(overlay);
                     }
-
-                    if (rasterShapes.length) {
-                        const image = await editor.toImage(rasterShapes.map(s => s.id), {
-                            ...exportOptions,
-                            format: 'png',
-                            scale: 2,
-                        });
-                        overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
-                    }
-
-                    const result = isEmptyOverlay(overlay) ? undefined : overlay;
-                    overlayCacheRef.current.set(i, { signature, overlay: result });
+                    const result: PageOverlay | undefined = layers.length ? { geometry: pages[i], layers } : undefined;
+                    stagedCache.set(i, { signature, overlay: result });
                     overlays.push(result);
                 } catch (err) {
                     // A new editable snapshot with an old/missing overlay is a
@@ -699,10 +724,14 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 }
             }
 
-            // Hand the binary to the save path, then report the snapshot as this
-            // tab's content — that marks it dirty and triggers the write.
+            // The live exporter may have crossed a later edit while awaiting
+            // SVG/image work. Never publish a mixed snapshot and overlay, nor
+            // poison the unchanged-page cache with that partial export.
+            if (capturedRevision !== revision) { hasUnsavedRef.current = true; return; }
+            overlayCacheRef.current = stagedCache;
+            firstPending = 0;
             setPdfRenderData(filePath, { original, overlays });
-            if (immediate) onFlushNowRef.current(filePath, json);
+            if (immediate) await onFlushNowRef.current(filePath, json);
             else onContentChangeRef.current(filePath, json);
         };
 
@@ -721,10 +750,11 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                 unregisterPending = undefined;
             }
         };
-        const runFlush = (immediate = false): Promise<void> => {
+        const runFlush = (immediate = true): Promise<void> => {
             if (pendingFlush) return pendingFlush.then(() => hasUnsavedRef.current ? runFlush(immediate) : undefined);
             const run = flush(immediate).catch(error => {
                 hasUnsavedRef.current = true;
+                onSaveErrorRef.current?.('Could not export PDF annotations. The PDF was not changed; keep the tab open and retry saving.');
                 throw error;
             }).finally(() => {
                 if (pendingFlush === run) {
@@ -738,10 +768,10 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
         };
         const flushPending = async () => {
             if (serializeTimerRef.current) { clearTimeout(serializeTimerRef.current); serializeTimerRef.current = null; }
-            if (hasUnsavedRef.current) await runFlush();
-            else if (pendingFlush) await pendingFlush;
+            if (pendingFlush) await pendingFlush;
+            while (hasUnsavedRef.current) await runFlush();
         };
-        const flushInBackground = (immediate = false) => {
+        const flushInBackground = (immediate = true) => {
             // Coordinator callers get the rejection; timers/unmount have no
             // caller to await them and must not create an unhandled rejection.
             void runFlush(immediate).catch(error => console.error('Could not save PDF annotations:', error));
@@ -866,10 +896,33 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
            colour was clicked would stall the pen for nothing. The pen is
            captured by the next stroke's flush instead, which is the moment it
            first matters. */
-        const markUnsaved = () => {
-            hasUnsavedRef.current = true;
+        const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(() => flushInBackground(), SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = null;
+            if (activePointers.size || !hasUnsavedRef.current) return;
+            const delay = firstPending && performance.now() - firstPending >= MAX_PENDING_MS ? 0 : SERIALIZE_DEBOUNCE_MS;
+            serializeTimerRef.current = setTimeout(() => flushInBackground(), delay);
+        };
+        const pointerDown = (event: PointerEvent) => {
+            if (event.target instanceof Node && canvasWrapRef.current?.contains(event.target)) {
+                activePointers.add(event.pointerId);
+                if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
+                serializeTimerRef.current = null;
+            }
+        };
+        const pointerEnd = (event: PointerEvent) => { activePointers.delete(event.pointerId); schedule(); };
+        const pointerBlur = () => { activePointers.clear(); schedule(); };
+        window.addEventListener('pointerdown', pointerDown, true);
+        window.addEventListener('pointerup', pointerEnd, true);
+        window.addEventListener('pointercancel', pointerEnd, true);
+        window.addEventListener('blur', pointerBlur);
+        const markUnsaved = () => {
+            revision++;
+            hasUnsavedRef.current = true;
+            onFlushStartRef.current();
+            if (!firstPending) firstPending = performance.now();
+            thumbsRef.current?.invalidate(boxes.map((_, i) => i));
+            schedule();
             reportPending();
         };
         // store.listen delivers on a later frame: an immediate flush/mode
@@ -884,9 +937,15 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
 
         return () => {
             unregisterView();
+            window.removeEventListener('pointerdown', pointerDown, true);
+            window.removeEventListener('pointerup', pointerEnd, true);
+            window.removeEventListener('pointercancel', pointerEnd, true);
+            window.removeEventListener('blur', pointerBlur);
             stopDirty.forEach(stop => stop());
             disposePen();
             disposeInvert();
+            stopSheetWatch();
+            backdropGuard.dispose();
             closed = true;
             releaseEmphasis?.();
             activePaint?.abort();
@@ -899,9 +958,9 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
             // Write on the way out so the viewer (which re-reads immediately) sees
             // the strokes — but only if there are any. Flushing unconditionally
             // would rewrite the whole PDF every time the mode was toggled.
-            if (hasUnsavedRef.current) {
+            if (hasUnsavedRef.current || pendingFlush) {
                 onFlushStartRef.current();   // synchronous: beats the viewer's read
-                flushInBackground(true);
+                if (hasUnsavedRef.current) flushInBackground(true);
             }
             // An in-flight export can outlive the pane. Its finally releases
             // the registration only after the funnel owns the complete revision.
@@ -909,10 +968,18 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
         };
     }, [documentId, filePath, original, session, pages, boxes]);
 
-    const renderThumbnail = useCallback((index: number, scale: number) => {
+    const renderThumbnail = useCallback(async (index: number, scale: number) => {
         const source = sourceRef.current;
-        return source ? source.renderPage(index, scale) : Promise.reject(new Error('The PDF is closed'));
-    }, []);
+        const editor = editorRef.current;
+        const box = boxes[index];
+        if (!source || !editor || !box) throw new Error('The PDF is closed');
+        const url = await source.renderPage(index, scale);
+        try {
+            const result = await sheetThumbnail(editor, box, url, scale, shape => shape.meta?.pdfPage !== undefined);
+            try { source.health.assertComplete(index); } catch (error) { URL.revokeObjectURL(result); throw error; }
+            return result;
+        } finally { URL.revokeObjectURL(url); }
+    }, [boxes]);
 
     /** Put page `index` at the top of the view, centred, at the current zoom. */
     const jumpToPage = useCallback((index: number) => {
@@ -956,11 +1023,12 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, sess
                     snapshot={parsed.snapshot}
                     assets={assetStore}
                     onMount={handleMount}
-                    components={CANVAS_COMPONENTS}
+                    components={PAPER_COMPONENTS}
                     shapeUtils={CANVAS_SHAPE_UTILS}
                     options={CANVAS_OPTIONS}
                 assetUrls={CANVAS_ASSET_URLS}
                     colorScheme={ANNOTATE_COLOR_SCHEME}
+                    user={PAPER_USER}
                     licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY}
                 />
             </div>

@@ -414,6 +414,16 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
+export interface BoardAssetAccess {
+  root: FileSystemDirectoryHandle;
+  parent: FileSystemDirectoryHandle;
+  owner: FileSystemFileHandle;
+  hash: string;
+  preferredName?: string | null;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+}
+
 export interface VaultHandleIO {
   file: (handle: FileSystemFileHandle) => Promise<File>;
   fileIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemFileHandle>;
@@ -479,6 +489,9 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
+  /** Board media are content-addressed but retain their actual collision-free leaf name. */
+  readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
   /** Move an asset into the folder's .Garbage only while its activation and
    *  reference proof remain valid, including after the copy. */
   retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
@@ -513,6 +526,8 @@ export interface FileSystemContextValue {
   /** readFile, plus the DiskVersion of exactly the bytes read. */
   readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
   readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  inspectExportTarget: (dir: FileSystemDirectoryHandle, name: string) => Promise<DiskVersion | null>;
+  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }>;
   /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
   statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
   /** THE document write: writes only if the file still is `expected` (equal

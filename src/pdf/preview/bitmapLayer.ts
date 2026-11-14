@@ -80,6 +80,16 @@ export class PreviewBitmapLayer implements Layer {
         return { complete: true, sharp: true };
     }
 
+    hasGpuWork(view: ViewState): boolean {
+        const device = this.host.device();
+        if (!device || this.disposed) return false;
+        for (const [index, page] of this.bitmaps.entries) {
+            if (this.expected.get(index)?.key !== page.key) continue;
+            if (page.tiles.some(tile => onScreen(tile.destination, view) && this.uploaded.get(tile)?.device !== device)) return true;
+        }
+        return false;
+    }
+
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
         const device = this.host.device();
@@ -123,7 +133,7 @@ export class PreviewBitmapLayer implements Layer {
             for (const tile of page.tiles) {
                 const uploaded = this.uploaded.get(tile);
                 if (!uploaded || uploaded.device !== this.host.device() || !onScreen(tile.destination, view)) continue;
-                this.host.drawTexturedQuad(pass, uploaded.texture, { x: 0, y: 0, width: tile.bitmap.width, height: tile.bitmap.height },
+                this.host.drawTexturedQuad(pass, uploaded.texture, tile.source,
                     project(tile.destination, view), { opacity: 1, sampling: 'linear' });
             }
         }
@@ -134,14 +144,15 @@ export class PreviewBitmapLayer implements Layer {
             if (this.expected.get(index)?.key !== page.key) continue;
             for (const tile of page.tiles) {
                 if (!onScreen(tile.destination, view)) continue;
-                this.host.drawTexturedQuad(ctx, tile.bitmap, { x: 0, y: 0, width: tile.bitmap.width, height: tile.bitmap.height },
+                this.host.drawTexturedQuad(ctx, tile.bitmap, tile.source,
                     project(tile.destination, view), { opacity: 1, sampling: 'linear' });
             }
         }
     }
 
-    releaseGpu(_reason: GpuReleaseReason): void {
-        for (const [tile, uploaded] of this.uploaded) this.retire(tile, uploaded);
+    releaseGpu(reason: GpuReleaseReason): void {
+        if (reason === 'context-lost') this.uploaded.clear();
+        else for (const [tile, uploaded] of this.uploaded) this.retire(tile, uploaded);
         this.pendingFrame = false;
     }
 
@@ -168,6 +179,6 @@ export class PreviewBitmapLayer implements Layer {
 
     private retire(tile: PreviewTile, uploaded: UploadedTile): void {
         this.uploaded.delete(tile);
-        if (this.host.device() === uploaded.device) uploaded.device.destroy(uploaded.texture);
+        uploaded.device.destroy(uploaded.texture);
     }
 }

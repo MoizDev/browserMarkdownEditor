@@ -13,6 +13,7 @@ export interface BitmapAllocator {
 export interface PreviewTile {
     readonly bitmap: ImageBitmap;
     readonly destination: PreviewRect;
+    readonly source: PreviewRect;
     readonly bytes: number;
     readonly lease: BitmapLease;
 }
@@ -26,7 +27,7 @@ interface PendingCopy {
     cancelled: boolean;
 }
 
-// A 512×512 RGBA crop fits the scheduler's normal one-tile upload admission.
+// The 512px interior plus one real texel per side fits the scheduler's one-tile progress admission.
 const CROP_SIDE = 512;
 
 function closeTiles(tiles: readonly PreviewTile[], allocator: BitmapAllocator): void {
@@ -60,22 +61,22 @@ export class PreviewBitmapStore {
 
     /** The caller's current predicate checks document identity, request serial and source canvas.
      * Check it after every await: createImageBitmap can finish after eviction, hide or a new blit. */
-    async publish(index: number, key: string, canvas: HTMLCanvasElement, destination: PreviewRect, current: () => boolean, interest?: PreviewRect): Promise<void> {
+    async publish(index: number, key: string, canvas: HTMLCanvasElement, destination: PreviewRect, current: () => boolean, interest?: PreviewRect): Promise<boolean> {
         this.cancel(index);
-        if (this.disposed || !this.visible || !current()) return;
+        if (this.disposed || !this.visible || !current()) return false;
         const width = canvas.width;
         const height = canvas.height;
         if (width <= 0 || height <= 0 || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)
             || !Number.isFinite(destination.width) || !Number.isFinite(destination.height)
-            || destination.width <= 0 || destination.height <= 0) return;
+            || destination.width <= 0 || destination.height <= 0) return false;
         if (interest && (!Number.isFinite(interest.x) || !Number.isFinite(interest.y)
             || !Number.isFinite(interest.width) || !Number.isFinite(interest.height)
-            || interest.width <= 0 || interest.height <= 0)) return;
+            || interest.width <= 0 || interest.height <= 0)) return false;
         const x0 = interest ? Math.max(0, Math.floor((interest.x - destination.x) * width / destination.width)) : 0;
         const y0 = interest ? Math.max(0, Math.floor((interest.y - destination.y) * height / destination.height)) : 0;
         const x1 = interest ? Math.min(width, Math.ceil((interest.x + interest.width - destination.x) * width / destination.width)) : width;
         const y1 = interest ? Math.min(height, Math.ceil((interest.y + interest.height - destination.y) * height / destination.height)) : height;
-        if (x1 <= x0 || y1 <= y0) return;
+        if (x1 <= x0 || y1 <= y0) return false;
         const pending: PendingCopy = { cancelled: false };
         this.pending.set(index, pending);
         const tiles: PreviewTile[] = [];
@@ -85,13 +86,16 @@ export class PreviewBitmapStore {
                 for (let x = x0; x < x1; x += CROP_SIDE) {
                     const w = Math.min(CROP_SIDE, x1 - x);
                     const h = Math.min(CROP_SIDE, y1 - y);
-                    const bytes = w * h * 4;
+                    const cropX = Math.max(0, x - 1), cropY = Math.max(0, y - 1);
+                    const cropRight = Math.min(width, x + w + 1), cropBottom = Math.min(height, y + h + 1);
+                    const cropWidth = cropRight - cropX, cropHeight = cropBottom - cropY;
+                    const bytes = cropWidth * cropHeight * 4;
                     const lease = this.allocator.reserve(bytes);
-                    if (!lease) return;
+                    if (!lease) return false;
                     this.pendingBytes += bytes;
                     let bitmap: ImageBitmap;
                     try {
-                        bitmap = await createImageBitmap(canvas, x, y, w, h);
+                        bitmap = await createImageBitmap(canvas, cropX, cropY, cropWidth, cropHeight, { premultiplyAlpha: 'premultiply' });
                     } catch (error) {
                         this.pendingBytes -= bytes;
                         this.allocator.release(lease);
@@ -100,6 +104,7 @@ export class PreviewBitmapStore {
                     tiles.push({
                         bitmap,
                         lease,
+                        source: { x: x - cropX, y: y - cropY, width: w, height: h },
                         destination: {
                             x: destination.x + destination.width * x / width,
                             y: destination.y + destination.height * y / height,
@@ -109,7 +114,7 @@ export class PreviewBitmapStore {
                         bytes,
                     });
                     if (pending.cancelled || this.disposed || !this.visible || !current()
-                        || canvas.width !== width || canvas.height !== height) return;
+                        || canvas.width !== width || canvas.height !== height) return false;
                 }
             }
             const old = this.pages.get(index);
@@ -122,6 +127,7 @@ export class PreviewBitmapStore {
             } finally {
                 if (old) closeTiles(old.tiles, this.allocator);
             }
+            return true;
         } finally {
             if (this.pending.get(index) === pending) this.pending.delete(index);
             if (!promoted) {

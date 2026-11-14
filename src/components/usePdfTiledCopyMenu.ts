@@ -97,13 +97,15 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
                 const range = selectionRange(selected), count = current.document.info.pageCount;
                 const first = selected.wholeDocument ? 0 : Math.max(0, Math.min(count - 1, range.start.page));
                 const last = selected.wholeDocument ? count - 1 : Math.max(first, Math.min(count - 1, range.end.page));
+                let previousEndsInLF = false;
                 for (let page = first; page <= last; page++) {
                     const cached = cache.cached(page)?.text ?? peekText(live.current.reader, page);
                     const text = cached ?? (await source.text(page, 1, task.signal)).text;
                     if (task.signal.aborted || !live.current.isVisible || current.selection.getSnapshot().selection !== selected || current.selection.getSnapshot().docKey !== key) return;
                     const from = !selected.wholeDocument && page === first ? Math.max(0, Math.min(text.length, range.start.offset)) : 0;
                     const to = !selected.wholeDocument && page === last ? Math.max(from, Math.min(text.length, range.end.offset)) : text.length;
-                    const piece = (page > first ? '\n' : '') + text.slice(from, to);
+                    const part = text.slice(from, to), piece = (page > first && !previousEndsInLF ? '\n' : '') + part;
+                    previousEndsInLF = part.endsWith('\n');
                     if (preview.length + piece.length > 256) { preview += piece.slice(0, 257 - preview.length); complete = false; break; }
                     preview += piece;
                 }
@@ -137,7 +139,12 @@ export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
         let available = 0;
         for (let page = first; page <= last && available < 20_000; page++) {
             const text = pages.get(page) ?? peekText(current.reader, page);
-            if (text !== undefined) { pages.set(page, text); available += text.length; }
+            if (text !== undefined) {
+                pages.set(page, text);
+                const from = !selection.wholeDocument && page === first ? Math.max(0, Math.min(text.length, range.start.offset)) : 0;
+                const to = !selection.wholeDocument && page === last ? Math.max(from, Math.min(text.length, range.end.offset)) : text.length;
+                available += to - from;
+            }
         }
         return cachedSelectionText(selection, count, pages);
     }, []);

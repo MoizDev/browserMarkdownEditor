@@ -50,6 +50,7 @@ export interface AgentHostDeps {
     root: FileSystemDirectoryHandle | null;
     searchToken: object;
     searchAgent: VaultToolHost['searchAgent'];
+    closedPdfAgent?: VaultToolHost['closedPdfAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -67,6 +68,7 @@ export interface AgentHostDeps {
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
     /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
+    snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
     /** The save funnel (App.updateTabContent). */
     updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
@@ -214,6 +216,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const toolHost: VaultToolHost = {
         vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
         searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
 
         getFileTree: () => getDeps().fileTree,
 
@@ -440,7 +443,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const route = routeEngines().canvas[pdf ? 'pdfInk' : isNotebookFile(path) ? 'notebook' : 'drawing'];
             if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
             if (!pdf) {
-                let text = open?.content;
+                const captured = open ? deps.snapshotOf(path) : undefined;
+                if (open && captured && typeof captured.data !== 'string') return null;
+                let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
+                if (open && text === undefined) return null;
                 if (text === undefined) {
                     const found = deps.root && await fileAt(deps.root, path);
                     if (!found) return null;

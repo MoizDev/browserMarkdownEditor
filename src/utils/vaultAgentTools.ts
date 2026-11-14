@@ -48,6 +48,7 @@ import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
+import { routeEngines } from './engineRouting';
 import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
@@ -446,6 +447,28 @@ async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution>
     return ok(body.join('\n'));
 }
 
+async function withClosedPdfDeadline<T>(ctx: Ctx, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    ctx.ensureLive();
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    ctx.signal?.addEventListener('abort', stop, { once: true });
+    if (ctx.signal?.aborted) controller.abort();
+    const timeout = setTimeout(stop, REPORTER_TIMEOUT_MS);
+    const vaultCheck = setInterval(() => { try { ctx.ensureLive(); } catch { controller.abort(); } }, 100);
+    try {
+        controller.signal.throwIfAborted();
+        const cancelled = new Promise<never>((_, reject) => controller.signal.addEventListener('abort',
+            () => reject(new DOMException('PDF agent operation cancelled or timed out', 'AbortError')), { once: true }));
+        const result = await Promise.race([work(controller.signal), cancelled]);
+        ctx.ensureLive();
+        controller.signal.throwIfAborted();
+        return result;
+    } finally {
+        clearTimeout(timeout); clearInterval(vaultCheck);
+        ctx.signal?.removeEventListener('abort', stop);
+    }
+}
+
 function pdfExtractionWarning(page: { quality?: 'partial'; warnings?: readonly string[] }): string {
     return page.quality === 'partial' ? `[Extraction warning: ${(page.warnings?.join(' ') || 'Text may be incomplete or out of order.').slice(0, 1000)}]` : '';
 }
@@ -484,8 +507,12 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
     } else {
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
-        const { readPdfText } = await import('./pdfText');
-        const r = await readPdfText(bytes, first, maxPages, budget);
+        const tiled = routeEngines().pdfViewer === 'tiled';
+        const access = tiled ? ctx.host.closedPdfAgent?.() : null;
+        if (tiled && !access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
+        const r = access
+            ? await withClosedPdfDeadline(ctx, signal => access.read(path, bytes, first, maxPages, budget, signal))
+            : await (await import('./pdfText')).readPdfText(bytes, first, maxPages, budget);
         pageCount = r.pageCount;
         if (first > pageCount) throw new ToolError(`page ${first} is past the end of "${path}", which has ${pageCount} page${pageCount === 1 ? '' : 's'}.`);
         pages = r.pages;
@@ -689,9 +716,13 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         }
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
-        const { renderPdfPage } = await import('./pdfText');
         const target = page ?? 1;
-        const r = await renderPdfPage(bytes, target, max);
+        const tiled = routeEngines().pdfViewer === 'tiled';
+        const access = tiled ? ctx.host.closedPdfAgent?.() : null;
+        if (tiled && !access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
+        const r = access
+            ? await withClosedPdfDeadline(ctx, signal => access.render(path, bytes, target, max, signal))
+            : await (await import('./pdfText')).renderPdfPage(bytes, target, max);
         ctx.ensureLive();
         if (!r.png) throw new ToolError(`page ${target} is past the end of "${path}", which has ${r.pageCount} page${r.pageCount === 1 ? '' : 's'}.`);
         return pngResult(r.png, `${path}, page ${target} of ${r.pageCount}:`, `page ${target}`);
@@ -1051,6 +1082,10 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const changed = r.created.length + r.updated.length + r.deleted.length;
     const lines = [`${changed ? 'Applied to' : 'Nothing was applied to'} ${path}${changed ? ' as one undo step' : ''}: created ${r.created.length}, updated ${r.updated.length}, deleted ${r.deleted.length}.`];
     if (r.created.length) lines.push(`created ids (in op order): ${r.created.join(', ')}`);
+    if (r.updatedShapes?.length) {
+        lines.push('updated geometry (read after applying):', ...r.updatedShapes.map(shape =>
+            `- ${shape.id}: x=${shape.x}, y=${shape.y}, w=${shape.w}, h=${shape.h}${shape.page === undefined ? '' : `, page=${shape.page}`}${shape.rotation === undefined ? '' : `, rotation=${shape.rotation}`}`));
+    }
     if (r.errors.length) lines.push('problems:', ...r.errors.map(e => `- ${e}`));
     if (!changed) return { result: textResult(`Error: ${lines.join('\n')}`, true) };
     return ok(lines.join('\n'), {

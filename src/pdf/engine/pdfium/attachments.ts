@@ -2,16 +2,19 @@ import { PdfEngineError } from '../types';
 import type { PdfiumRuntime } from './loader';
 import { heapView, readPdfiumUtf16, withPdfiumMemory } from './memory';
 
-/** This is only PDFium's EmbeddedFiles name tree and Params marker, NOT the
- * Filespec /Desc or /AF union. It cannot authorize a role or a write alone. */
+/** This is only PDFium's EmbeddedFiles name tree, not the /AF union. The
+ * separate Filespec and Params markers must never silently override each other. */
 export interface PdfiumAttachment {
     index: number;
     name: string;
     /** PDFium's public size query decodes the stream; unknown until demanded. */
     size: null;
+    description?: string;
+    descriptionKnown: boolean;
     paramsMarker?: string;
+    paramsKnown: boolean;
 }
-const MAX_ATTACHMENTS = 10_000, MAX_NAME_UNITS = 1024, MAX_MARKER_BYTES = 256;
+const MAX_ATTACHMENTS = 10_000, MAX_NAME_UNITS = 1024, MAX_MARKER_BYTES = 256, MAX_DESCRIPTION_UNITS = 8192;
 
 function attachmentHandle(runtime: PdfiumRuntime, document: number, index: number): number {
     const handle = runtime.call('FPDFDoc_GetAttachment', document, index) >>> 0;
@@ -47,9 +50,16 @@ export function pdfiumAttachmentInventory(runtime: PdfiumRuntime, document: numb
             const handle = attachmentHandle(runtime, document, index);
             const name = utf16Value(runtime, 'FPDFAttachment_GetName', [handle], MAX_NAME_UNITS, false);
             if (name === undefined) throw new PdfEngineError('FileError', 'PDF attachment name is unreadable');
-            const marker = utf16Value(runtime, 'FPDFAttachment_GetStringValue', [handle, keyPointer], MAX_MARKER_BYTES, true);
-            if (marker && new TextEncoder().encode(marker).length > MAX_MARKER_BYTES) throw new PdfEngineError('ResourceLimit', 'PDF attachment marker is too long');
-            result.push({ index, name, size: null, ...(marker ? { paramsMarker: marker } : {}) });
+            let description: string | undefined;
+            try { description = utf16Value(runtime, 'FPDFAttachment_GetDescription', [handle], MAX_DESCRIPTION_UNITS, true); }
+            catch (error) { if (!(error instanceof PdfEngineError) || error.name !== 'ResourceLimit') throw error; }
+            let marker: string | undefined;
+            try { marker = utf16Value(runtime, 'FPDFAttachment_GetStringValue', [handle, keyPointer], MAX_MARKER_BYTES, true); }
+            catch (error) { if (!(error instanceof PdfEngineError) || error.name !== 'ResourceLimit') throw error; }
+            const markerValid = marker === undefined || new TextEncoder().encode(marker).length <= MAX_MARKER_BYTES;
+            result.push({ index, name, size: null, descriptionKnown: description !== undefined,
+                paramsKnown: marker !== undefined && markerValid, ...(description ? { description } : {}),
+                ...(marker && markerValid ? { paramsMarker: marker } : {}) });
         }
         return result;
     });

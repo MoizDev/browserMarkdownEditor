@@ -47,9 +47,9 @@ export async function copyBoardJsonFresh(options: {
                 add(work++ ? ',"' : '"');
                 for (let offset = 0; offset < line.length; offset += 65536) {
                     context.assertCurrent(); check();
-                    const segment = line.slice(offset, offset + 65536), scratch = memory.reserve(segment.length * 12 + 512);
+                    const size = Math.min(65536, line.length - offset), scratch = memory.reserve(size * 18 + 512);
                     if (!scratch) throw new Error('Insufficient memory to encode clipboard JSON');
-                    try { add(JSON.stringify(segment).slice(1, -1)); }
+                    try { add(JSON.stringify(line.slice(offset, offset + size)).slice(1, -1)); }
                     finally { memory.release(scratch); }
                     await cooperate();
                 }

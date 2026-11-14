@@ -46,6 +46,7 @@ export interface TextInputRoutingPorts {
     isCurrent(): boolean;
     error(error: unknown): void;
     containsActive(clientX: number, clientY: number): boolean;
+    hitHandle(clientX: number, clientY: number): 'anchor' | 'focus' | null;
     clientToWorld(clientX: number, clientY: number): { readonly x: number; readonly y: number };
     worldToClient(x: number, y: number): { readonly x: number; readonly y: number };
 }

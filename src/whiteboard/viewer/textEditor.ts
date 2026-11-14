@@ -265,6 +265,14 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return () => current() && rev === doc.rev && font === render.text.fonts.epoch && camera.camera.x === cam.x && camera.camera.y === cam.y
                 && camera.camera.z === cam.z && state.sheet === runtime.selection.getSnapshot().sheet && state.focus === runtime.selection.getSnapshot().focus;
         },
+        hitHandle(x, y) {
+            if (!handles || !manager.current) return null;
+            const chrome = manager.current.editor.chrome(performance.now(), options.ui.reducedMotion(), options.viewport().dpr);
+            const a = Math.hypot(x - chrome.handles.anchor.x, y - chrome.handles.anchor.y);
+            const b = Math.hypot(x - chrome.handles.focus.x, y - chrome.handles.focus.y);
+            if (Math.min(a, b) > 22) return null;
+            return a <= b ? 'anchor' : 'focus';
+        },
         containsActive(x, y) {
             if (!active || !paint || !currentWorld) return false;
             const back = inverse(clientMatrix(currentWorld), 1e12); if (!back) return false;

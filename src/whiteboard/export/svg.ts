@@ -38,11 +38,34 @@ export function createSvgWriter(bounds: Readonly<Rect>): { append(item: PageDisp
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
   let nextClip = 0
   const definitions: string[] = [], body: string[] = []
+  const clips = new Map<string, string>()
+  const clipCacheLimit = 2 * 1024 * 1024
+  let clipCacheBytes = 0
   let finished = false, written = 256
+  function clipKey(clip: NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>): string | null {
+    // Exported text fragments repeat their enclosing frame clips. Keep this cache bounded even
+    // for arbitrary user paths; large, unique clips still serialize normally.
+    return clip.d.length <= 512 ? `${clip.fillRule ?? 'nonzero'}\0${pathData(clip.d)}` : null
+  }
+  function rememberClip(key: string, id: string): void {
+    const size = key.length * 2 + 64
+    if (size > clipCacheLimit) return
+    while (clipCacheBytes + size > clipCacheLimit) {
+      const oldest = clips.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      clips.delete(oldest)
+      clipCacheBytes -= oldest.length * 2 + 64
+    }
+    clips.set(key, id)
+    clipCacheBytes += size
+  }
   function estimate(item: PageDisplayItem, depth: number): number {
     if (depth > 64) throw new RangeError('SVG group nesting exceeds 64 levels')
-    if (item.kind === 'group') return 512 + (item.clip ? pathLength(item.clip.d) : 0)
-      + item.items.reduce((sum, child) => sum + estimate(child, depth + 1), 0)
+    if (item.kind === 'group') {
+      const key = item.clip ? clipKey(item.clip) : null
+      return 512 + (item.clip && !(key && clips.has(key)) ? pathLength(item.clip.d) : 0)
+        + item.items.reduce((sum, child) => sum + estimate(child, depth + 1), 0)
+    }
     if (item.kind === 'path') return 512 + pathLength(item.d) + (item.stroke?.dash?.length ?? 0) * 32
     const bytes = item.kind === 'image' ? item.bytes : item.png
     return 512 + 4 * Math.ceil(bytes.byteLength / 3)
@@ -53,8 +76,14 @@ export function createSvgWriter(bounds: Readonly<Rect>): { append(item: PageDisp
       case 'group': {
         let clip = ''
         if (item.clip) {
-          const id = `clip${nextClip++}`
-          definitions.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(item.clip.d)}" clip-rule="${item.clip.fillRule ?? 'nonzero'}"/></clipPath>`)
+          const key = clipKey(item.clip)
+          let id = key ? clips.get(key) : undefined
+          if (id && key) { clips.delete(key); clips.set(key, id) }
+          else {
+            id = `clip${nextClip++}`
+            definitions.push(`<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="${pathData(item.clip.d)}" clip-rule="${item.clip.fillRule ?? 'nonzero'}"/></clipPath>`)
+            if (key) rememberClip(key, id)
+          }
           clip = ` clip-path="url(#${id})"`
         }
         const transform = item.transform ? ` transform="${matrix(item.transform)}"` : ''

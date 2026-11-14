@@ -24,6 +24,7 @@ import { languages } from '@codemirror/language-data';
 import { LanguageDescription } from '@codemirror/language';
 import { obsidianDarkTheme, obsidianHighlightStyle, obsidianLightTheme, obsidianLightHighlightStyle } from './cmTheme';
 import { createLivePreviewPlugin, livePreviewField } from './livePreview';
+import { docAnalysisField } from './docAnalysis';
 import type { ImageEmbedActions } from './imageWidget';
 import { modeExtensions } from './readingMode';
 import type { Theme } from '../types';
@@ -63,6 +64,7 @@ function replyState(text: string, theme: Theme): EditorState {
             }),
             themeCompartment.of(themeExtensions(theme)),
             readOnlyCompartment.of(modeExtensions('read')),
+            docAnalysisField,
             livePreviewField,
             readPreview,
             EditorView.contentAttributes.of({ 'aria-label': 'Agent reply' }),

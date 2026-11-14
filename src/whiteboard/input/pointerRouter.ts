@@ -16,6 +16,7 @@ export interface PointerRouterOptions<Context> {
   sampleChanged?(sample: RealSample): void
   penTransitions?(sample: RealSample): boolean
   settled?(signal: AbortSignal): Promise<void>
+  cancelPending?(): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<Context> | null
   ended(reason: FinishReason): void
   hover?(event: PointerEvent): void
@@ -57,6 +58,11 @@ export class PointerRouter<Context> {
                 const next = options.resolve(point, { ...keys, shift: false }, source)
                 return !!next && options.router.begin(options.token, next.tool, point, keys, next.context)
               },
+              prepareInk: (point, keys, source) => {
+                const next = options.resolve(point, { ...keys, shift: false }, source)
+                return next?.tool.begin(point, keys, next.context) ?? null
+              },
+              cancelPending: () => options.cancelPending?.(),
               settled: signal => options.settled!(signal),
               ended: reason => {
                 if (this.pen !== transition) return

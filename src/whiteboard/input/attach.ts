@@ -162,6 +162,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
     penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
     settled: signal => session.enqueueAfterGesture(signal, () => undefined),
+    cancelPending: services.cancelPendingGestures,
     hover: services.hover,
     claim, releaseClaim,
     resolve(sample, modifiers, event) {

@@ -8,6 +8,8 @@ export interface PenTransitionHost {
     interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean;
     update(samples: readonly RealSample[], modifiers: Modifiers): void;
     begin(sample: RealSample, modifiers: Modifiers, event: PointerEvent): boolean;
+    prepareInk(sample: RealSample, modifiers: Modifiers, event: PointerEvent): GestureOwner | null;
+    cancelPending(): void;
     /** Resolves only after the previous gesture's async commits release their holds. */
     settled(signal: AbortSignal): Promise<void>;
     ended(reason: FinishReason): void;
@@ -28,18 +30,52 @@ export class PenContactTransitions {
     private terminal = false;
     private closed = false;
     private mode: PenContactMode;
-    constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) { this.mode = initial; }
+    private waiting = false;
+    private shadowMode: PenContactMode;
+    private shadows: { readonly sequence: number; readonly owner: GestureOwner }[] = [];
+    private shadow: { readonly sequence: number; readonly owner: GestureOwner } | null = null;
+    private readonly shadowed = new WeakSet<Batch>();
+    constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) {
+        this.mode = initial; this.shadowMode = initial;
+    }
     move(samples: readonly RealSample[], modifiers: Modifiers, event: PointerEvent): void {
         if (this.terminal || this.closed) return;
-        this.queue.push({ type: 'move', samples, modifiers, event }); this.drain();
+        const batch: Batch = { type: 'move', samples, modifiers, event };
+        if (this.waiting) this.stage(batch, 0);
+        this.queue.push(batch); this.drain();
     }
     modifiersChanged(modifiers: Modifiers): void {
         if (this.terminal || this.closed) return;
+        if (this.waiting) this.shadow?.owner.update([], modifiers);
         this.queue.push({ type: 'modifiers', modifiers }); this.drain();
     }
     end(samples: readonly RealSample[], modifiers: Modifiers, reason: FinishReason): void {
         if (this.terminal || this.closed) return;
+        if (this.waiting && samples.length) this.shadow?.owner.update(samples, modifiers);
         this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
+    }
+    /** A shadow is a real, unsaved ink builder, not a second presentation.
+     * It is discarded on normal replay and sealed only at a synchronous barrier. */
+    private stage(batch: Extract<Batch, { type: 'move' }>, start: number): void {
+        if (this.shadowed.has(batch)) return;
+        this.shadowed.add(batch);
+        for (let i = start; i < batch.samples.length; i++) {
+            const sample = batch.samples[i], mode: PenContactMode = (sample.buttons & 32) !== 0 ? 'eraser' : 'ink';
+            if (mode !== this.shadowMode) { this.shadowMode = mode; this.shadow = null; }
+            if (mode !== 'ink') continue;
+            if (!this.shadow) {
+                const owner = this.host.prepareInk(sample, batch.modifiers, batch.event);
+                if (!owner || owner.kind !== 'ink' || !owner.discard) throw new Error('Pen prefix cannot be preserved');
+                this.shadow = { sequence: sample.sequence, owner }; this.shadows.push(this.shadow);
+            } else this.shadow.owner.update([sample], batch.modifiers);
+        }
+    }
+    private discardShadow(sequence: number): void {
+        const index = this.shadows.findIndex(value => value.sequence === sequence);
+        if (index < 0) return;
+        const [shadow] = this.shadows.splice(index, 1);
+        if (this.shadow === shadow) this.shadow = null;
+        shadow.owner.discard?.();
     }
     private drain(): void {
         if (this.running || this.closed) return;
@@ -58,6 +94,8 @@ export class PenContactTransitions {
             if (batch.type === 'end') {
                 if (batch.samples.length) this.host.update(batch.samples, batch.modifiers);
                 this.closed = true;
+                for (const shadow of this.shadows) shadow.owner.discard?.();
+                this.shadows = []; this.shadow = null;
                 try {
                     if (batch.reason === 'up') this.host.finish('up');
                     else if (batch.reason === 'escape' || batch.reason === 'undo' || batch.reason === 'flush') this.host.interrupt(batch.reason);
@@ -75,8 +113,13 @@ export class PenContactTransitions {
                     // Resolve and commit the previous mode before starting the next;
                     // queued raw samples remain owned here while the sweep completes.
                     this.host.finish('tool-change');
+                    this.waiting = true;
+                    if (!this.shadowed.has(batch) && !this.shadows.length) { this.shadowMode = this.mode; this.shadow = null; }
+                    this.stage(batch, start);
                     await this.host.settled(this.controller.signal);
+                    this.waiting = false;
                     if (this.closed || this.controller.signal.aborted || !this.host.current()) { this.stop('os-cancel'); return; }
+                    if (desired === 'ink') this.discardShadow(batch.samples[start].sequence);
                     if (!this.host.begin(batch.samples[start], batch.modifiers, batch.event)) throw new Error('Pen contact transition could not start');
                     this.mode = desired; start++;
                 }
@@ -91,7 +134,7 @@ export class PenContactTransitions {
      * sweep is finishing. The ordinary gesture owner still implements policy. */
     interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
-        if (reason === 'os-cancel' || !this.running || (this.host.owner() && this.cursor >= this.queue.length)) return this.stop(reason);
+        if (reason === 'os-cancel' || reason === 'flush' || !this.running || (this.host.owner() && this.cursor >= this.queue.length)) return this.stop(reason);
         let samples: readonly RealSample[] = [], modifiers: Modifiers = { shift: false, alt: false, accel: false, control: false };
         for (let index = this.queue.length - 1; index >= this.cursor; index--) {
             const batch = this.queue[index];
@@ -104,10 +147,17 @@ export class PenContactTransitions {
     stop(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
         this.closed = true; this.terminal = true; this.controller.abort(); this.queue.length = 0; this.cursor = 0;
-        const owner = this.host.owner();
+        const owner = this.host.owner(), shadows = this.shadows; this.shadows = []; this.shadow = null;
+        let interrupted = false;
         try {
-            if (owner) return this.host.interrupt(reason);
-            return false;
+            if (shadows.length) { try { this.host.cancelPending(); } catch (error) { this.host.error(error); } }
+            if (owner) interrupted = this.host.interrupt(shadows.length ? 'flush' : reason);
+            for (let i = 0; i < shadows.length; i++) {
+                const final = i === shadows.length - 1;
+                shadows[i].owner.finish(final && reason === 'undo' ? 'undo' : final && reason === 'escape' ? 'escape' : 'flush');
+                interrupted = true;
+            }
+            return interrupted;
         } finally { this.host.ended(reason); }
     }
     cancel(_reason: CancelReason): void { this.stop('os-cancel'); }

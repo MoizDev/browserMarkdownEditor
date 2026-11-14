@@ -66,6 +66,7 @@ export interface PaintNode {
 export interface PaintNodeSource {
     readonly token: RenderToken;
     readonly sceneRevision: number;
+    readonly sensitiveNodes?: ReadonlySet<string>;
     readonly nodeCount: number;
     readNode(index: number): PaintNode;
     isCurrent(): boolean;
@@ -74,6 +75,7 @@ export interface PaintFrame {
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;
+    readonly sensitiveNodes?: ReadonlySet<string>;
     /** View-only suppression; never evidence that dry ink was presented. */
     readonly occludedInkNodeIds?: ReadonlySet<string>;
     readonly underlay: readonly PaintItem[];

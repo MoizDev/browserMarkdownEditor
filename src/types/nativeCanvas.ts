@@ -1,3 +1,5 @@
+import type { SessionAdapter } from '../utils/documentSessions';
+
 export interface NativeCanvasIdentity {
     readonly documentId: string;
     readonly session: number;
@@ -15,6 +17,7 @@ export interface NativeCanvasMedia {
 
 export interface NativeCanvasHost {
     identity(documentId: string): NativeCanvasIdentity | undefined;
+    session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
     readMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia, signal: AbortSignal): Promise<{ name: string; blob: Blob } | null>;

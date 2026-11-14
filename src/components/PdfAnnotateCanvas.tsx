@@ -31,7 +31,7 @@ import {
 } from './canvasAgentOps';
 
 interface PdfAnnotateCanvasProps {
-    /** OpenTab.id from reading.identity; absent until the host seam is wired. */
+    /** OpenTab.id from reading.identity, never the mutable file path. */
     documentId?: string;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;

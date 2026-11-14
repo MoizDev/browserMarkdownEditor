@@ -4,17 +4,15 @@ import type { RenderToken } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
-import { TranslationPlan } from '../geom/translation';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
 import type { GestureOwner, Modifiers, RealSample } from '../input/tool';
-import { leafResizeHandleGesture, rotationHandleGesture } from '../input/transformGestures';
+import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import type { createBoardRenderServices } from '../render/services';
-import { TransformGesture } from '../tools/transform';
-import { translationDriver } from '../tools/transformDrivers';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
@@ -37,6 +35,7 @@ export interface BoardSelectServicesOptions {
     current(token: RenderToken): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
+    readonly alwaysSnap?: () => boolean;
     onError(error: unknown): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
@@ -45,7 +44,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const token = Object.freeze({ ...options.token });
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
-    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, scheduled: (() => void) | null = null;
+    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let guides: readonly BoardSnapGuide[] = [];
     let warmedRevision = -1, warmed = new Set<NodeId>();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && !session.isReadOnly;
@@ -145,13 +145,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         beginTransform(sample, hit, modifiers) {
             check(); const ids = runtime.selection.getSnapshot().selected, revision = doc.rev;
             if (warmedRevision !== revision || !warmed.has(hit) || ids.some(id => !warmed.has(id))) throw new Error('Selection geometry is not preflighted');
-            const plan = new TranslationPlan(doc, ids, render.changeGeometry);
-            return new TransformGesture(sample, modifiers, translationDriver(plan, sample), {
-                hold: () => session.beginGesture(), registerPending,
-                isCurrent: () => mutable() && doc.rev === revision,
-                showPreview: ops => options.preview.showOps(ops), clearPreview: () => options.preview.clear(),
-                apply(transaction) { check(); if (doc.rev !== revision) throw new DOMException('Transform became stale', 'AbortError'); const applied = session.apply(transaction); applied.release(); },
-                error: report,
+            return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
+                zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
+                hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
+                show: ops => options.preview.showOps(ops), guides(value) { guides = value; requestFrame(); },
+                clear() { guides = []; options.preview.clear(); requestFrame(); }, error: report,
             });
         },
         onError: report,
@@ -171,6 +169,20 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame);
+        if (guides.length) {
+            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+                options.overlay.append(guideSvg); }
+            guideSvg.replaceChildren();
+            for (const guide of guides) {
+                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+                const a = worldToSurface(from, frame.view.camera), b = worldToSurface(to, frame.view.camera);
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
+                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+            }
+        } else { guideSvg?.remove(); guideSvg = null; }
         if (!regionPreview) { svg?.remove(); svg = null; shape = null; return; }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -225,6 +237,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         };
     };
     return { select, eraser, beginHandle, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); svg = null; shape = null; },
+        dispose() { if (disposed) return; cancelPending(); disposed = true; selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

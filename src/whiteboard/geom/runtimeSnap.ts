@@ -27,6 +27,26 @@ interface Winner { readonly delta: number; readonly guide: BoardSnapGuide; reado
 
 /** Complete Scene strip traversal followed by actual logical geometry, never a hint or a prefix. */
 export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardSnapResult> {
+    const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
+    const selection = runtime.selection.getSnapshot(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const valid = () => !options.signal?.aborted && options.current() && session.owner === owner && session.doc === doc
+        && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+    for (;;) {
+        options.signal?.throwIfAborted(); if (!valid()) throw new DOMException('Snap source changed', 'AbortError');
+        const scene = runtime.scene; if (!scene) throw new Error('Snap scene is unavailable');
+        while (!scene.ready) { options.signal?.throwIfAborted(); if (!valid()) throw new DOMException('Snap source changed', 'AbortError');
+            scene.step(64, performance.now() + 3); await cooperate(); }
+        const epoch = runtime.render.text.fonts.epoch;
+        try { return await snapAttempt(options); }
+        catch (error) {
+            if (!valid()) throw error;
+            if (runtime.render.text.fonts.epoch === epoch && scene.ready) throw error;
+            // Font loads invalidate the index; repeat only after the actual Scene publishes its new bounds.
+        }
+    }
+}
+
+async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> {
     const { runtime, bounds } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const state = runtime.selection.getSnapshot(), scene = runtime.scene, signal = options.signal ?? new AbortController().signal;
     const threshold = (options.thresholdCss ?? 8) / options.zoom, font = runtime.render.text.fonts.epoch;

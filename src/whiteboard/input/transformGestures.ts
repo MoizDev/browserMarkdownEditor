@@ -1,6 +1,8 @@
 import type { Op } from '../change/ops';
 import { createBoardLeafResizePlan, type BoardLeafResizePlan, type BoardLeafResizePlanOptions, type BoardLeafResizePreview } from '../geom/runtimeLeafPlan';
 import { createBoardRotationPlan, type BoardRotationOptions, type BoardRotationPlan, type BoardRotationPreview } from '../geom/runtimeTransforms';
+import { createBoardTranslationPlan, type BoardTranslationOptions, type BoardTranslationPreview } from '../geom/runtimeTranslation';
+import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
 export interface AsyncTransformGestureHost {
@@ -8,12 +10,14 @@ export interface AsyncTransformGestureHost {
     registerPending(cancel: () => void): () => void;
     current(): boolean;
     show(ops: readonly Op[]): void;
+    guides?(guides: readonly BoardSnapGuide[]): void;
     clear(): void;
     error(error: unknown): void;
 }
 interface Plan<Preview extends { readonly ops: readonly Op[] }> {
     preview(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Preview>;
     commit(preview: Preview): void;
+    display?(preview: Preview): void;
     cancel(): void;
 }
 
@@ -59,7 +63,7 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
             const value = await plan.preview(sample, modifiers, request.signal);
             if (request.signal.aborted || this.controller.signal.aborted || generation !== this.generation || !this.host.current()) return;
             if (commit) { plan.commit(value); this.cleanup(); }
-            else this.host.show(value.ops);
+            else { plan.display?.(value); this.host.show(value.ops); }
         } catch (error) {
             if (!request.signal.aborted && !this.controller.signal.aborted && generation === this.generation) {
                 try { this.host.error(error); } finally { this.cancel('invalidated'); }
@@ -83,6 +87,15 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
         this.ended = true; this.generation++; this.controller.abort(); this.request?.abort();
         try { this.plan?.cancel(); } finally { this.cleanup(); }
     }
+}
+
+export function translationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardTranslationOptions, 'down' | 'signal'>,
+    host: AsyncTransformGestureHost): GestureOwner {
+    return new AsyncTransformGesture<BoardTranslationPreview>(sample, modifiers, async signal => {
+        const plan = await createBoardTranslationPlan({ ...options, down: sample, signal });
+        return { preview: (point, keys, request) => plan.preview(point, keys.shift, keys.accel, request),
+            display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
+    }, host);
 }
 
 export function rotationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardRotationOptions, 'down' | 'signal'>,

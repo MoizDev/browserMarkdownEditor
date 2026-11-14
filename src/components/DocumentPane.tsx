@@ -51,7 +51,7 @@ import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_R
 import { useFileSystem } from '../context/FileSystemContext';
 import { ASSETS_DIR } from '../utils/assets';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
-import { readRecord, flushRecord, scopedKey } from '../utils/storage';
+import { readRecord, flushRecord, scopedKey, removeStoredValue } from '../utils/storage';
 import { openContextMenu } from '../utils/contextMenu';
 import type { ContextMenuEntry } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
@@ -110,11 +110,7 @@ let legacyScrollPositionsDropped = false;
 function scrollAnchorRecord(): Record<string, unknown> {
     if (!legacyScrollPositionsDropped) {
         legacyScrollPositionsDropped = true;
-        try {
-            localStorage.removeItem(LEGACY_SCROLL_POSITIONS_KEY);
-        } catch {
-            // Storage blocked outright: nothing reads the old key anyway.
-        }
+        removeStoredValue(LEGACY_SCROLL_POSITIONS_KEY);
     }
     return readRecord<unknown>(SCROLL_ANCHORS_KEY);
 }

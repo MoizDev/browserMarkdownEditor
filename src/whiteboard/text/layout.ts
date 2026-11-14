@@ -1,5 +1,6 @@
+import { sha256 } from '../../utils/sha256';
 import { reorderBidiLine } from './bidi';
-import { BoardFonts, fontCss, fontDescriptor, type FontKey } from './fonts';
+import { BoardFonts, fontCss, fontDescriptor, fontSupports, type FontKey } from './fonts';
 import { itemizeBlock, type ItemizedBlock, type TextItem } from './itemize';
 import { ReferenceMeasurer } from './measure';
 import { makeCaretIndex } from './caretIndex';
@@ -66,9 +67,9 @@ export class BoardTextLayout implements TextLayoutEngine {
             const key = faceKey(request.style.font, item.marks, heading);
             const face = this.face(key, size), text = block.text.slice(a, b);
             const width = this.measurer.measure(this.faces[face], text, !!(item.level & 1), request.fontEpoch).width * size / 64;
-            // Canvas exposes no glyph fallback information. Rasterising uncertain non-ASCII
-            // fragments on export preserves their appearance rather than claiming outlines.
-            const fallback = !this.fonts.isLoaded(key) || /[^\u0020-\u007e]/u.test(text);
+            // Canvas exposes no glyph IDs: cmap rules out unsupported codepoints, while
+            // presentation sequences remain conservative for export's raster fallback.
+            const fallback = !this.fonts.isLoaded(key) || !fontSupports(key, text);
             pieces.push({ from: a, to: b, item, face, ink: role(request.style.ink, item.marks), text, width, fallback });
         }
         return pieces;
@@ -91,7 +92,17 @@ export class BoardTextLayout implements TextLayoutEngine {
         return indexed.map(x => x.piece);
     }
     private build(request: TextLayoutRequest): { paint: TextPaint; measurement: TextMeasurement } {
-        const key = JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch]);
+        const states = new Map<string, boolean>();
+        for (const block of request.text.blocks) {
+            const heading = block.kind[0] === 'h';
+            for (const run of block.runs) {
+                const font = faceKey(request.style.font, run.marks, heading);
+                states.set(JSON.stringify(font), this.fonts.isLoaded(font));
+            }
+            const font = faceKey(request.style.font, {}, heading);
+            states.set(JSON.stringify(font), this.fonts.isLoaded(font));
+        }
+        const key = sha256(new TextEncoder().encode(JSON.stringify([request.revision, request.text, request.style, request.width, request.fontEpoch, [...states].sort()])));
         const old = this.layouts.get(key);
         if (old) return old;
         const style = request.style, pad = style.padding;

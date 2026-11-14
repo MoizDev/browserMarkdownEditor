@@ -9,3 +9,4 @@ export type { BorrowedMirror, MirrorEntry, MirrorStorage, MirrorView } from './m
 export type { TileKey } from './tiles/geometry';
 export { createPlatformMirrors } from './createPlatformMirrors';
 export { renderTokenKey } from './tiles/geometry';
+export { attachPlatformPane } from './attachPlatformPane';

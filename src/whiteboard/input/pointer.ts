@@ -43,7 +43,7 @@ interface Contact {
 }
 
 function modifiers(event: PointerEvent, mac: boolean): Modifiers {
-  return { shift: event.shiftKey, alt: event.altKey, accel: mac ? event.metaKey : event.ctrlKey }
+  return { shift: event.shiftKey, alt: event.altKey, accel: mac ? event.metaKey : event.ctrlKey, control: event.ctrlKey }
 }
 
 function tuple(event: PointerEvent): string {

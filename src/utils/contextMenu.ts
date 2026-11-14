@@ -136,6 +136,8 @@ export interface ContextMenuRequest {
     entries: ContextMenuEntry[];
     /** The menu's aria-label. */
     label: string;
+    lang?: string;
+    dir?: 'ltr' | 'rtl';
     /** Focus returns here on close, if it is still `isConnected`. */
     opener: HTMLElement | null;
     /**

@@ -1,6 +1,6 @@
 import { createWorkerClient } from '../../platform/workers';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { MediaId, MediaMime } from '../model/media';
+import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import type { InspectedMedia } from './ingest';
 import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
@@ -10,7 +10,7 @@ import { svgFrameFactory } from './svgFrameHost';
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
 // port deliberately cannot fall back to a detached parser in the vault origin.
 export interface SvgAdmissionProfile {
-    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number }>;
+    header(blob: Blob, signal: AbortSignal): Promise<{ readonly width: number; readonly height: number; readonly rgbaBytes: number }>;
     probe(blob: Blob, signal: AbortSignal): Promise<void>;
 }
 interface WorkerInspection {
@@ -19,6 +19,7 @@ interface WorkerInspection {
     readonly width: number;
     readonly height: number;
     readonly animated: boolean;
+    readonly decodePixels: number;
 }
 const worker = createWorkerClient({
     name: 'whiteboard-media-decode', protocol: 1,
@@ -79,10 +80,12 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         signal.throwIfAborted();
         const size = await svg.header(blob, AbortSignal.any([signal, AbortSignal.timeout(5000)]));
         signal.throwIfAborted();
-        if (!validSize(size.width, size.height)) throw new RangeError('Invalid SVG dimensions');
+        if (!validSize(size.width, size.height) || !Number.isSafeInteger(size.rgbaBytes)
+            || size.rgbaBytes < 4 * size.width * size.height || size.rgbaBytes > 4 * (2 ** 26)) throw new RangeError('Invalid SVG dimensions');
         const id = await worker.request<MediaId>('hash', { blob }, { priority: 1, deadlineMs: 10000, signal });
         signal.throwIfAborted();
-        const lease = options.memory.reserve(4 * size.width * size.height);
+        if (typeof id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(id)) throw new Error('Invalid media worker reply');
+        const lease = options.memory.reserve(size.rgbaBytes);
         if (!lease) throw new Error('Not enough memory to decode this picture');
         try {
             const typed = blob.slice(0, blob.size, 'image/svg+xml');
@@ -99,8 +102,12 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
     }
     const result = await worker.request<WorkerInspection>('inspect', { blob }, { priority: 1, deadlineMs: 10000, signal });
     signal.throwIfAborted();
-    if (!/^sha256:[0-9a-f]{64}$/.test(result.id) || !validSize(result.width, result.height)) throw new Error('Invalid media worker reply');
-    const lease = options.memory.reserve(4 * result.width * result.height);
+    if (!result || typeof result !== 'object' || typeof result.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.id)
+        || !MEDIA_MIMES.includes(result.mime) || !validSize(result.width, result.height) || typeof result.animated !== 'boolean'
+        || !Number.isSafeInteger(result.decodePixels) || result.decodePixels < result.width * result.height || result.decodePixels > 2 ** 26) {
+        throw new Error('Invalid media worker reply');
+    }
+    const lease = options.memory.reserve(4 * result.decodePixels);
     if (!lease) throw new Error('Not enough memory to decode this media');
     try {
         const duration = result.mime.startsWith('video/') ? await videoProbe(blob, result, signal) : null;
@@ -114,6 +121,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             }
         }
         signal.throwIfAborted();
-        return { ...result, duration };
+        return { id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration };
     } finally { options.memory.release(lease); }
 }

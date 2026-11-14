@@ -1,7 +1,7 @@
 import type { PageGeometry } from '../../platform/types';
 import type { PageTextReply, PdfTextDetail } from '../worker/protocol';
 
-const fail = (): never => { throw new Error('The PDF text worker returned invalid page data.'); };
+function fail(): never { throw new Error('The PDF text worker returned invalid page data.'); }
 const channel = new MessageChannel(), waiters: Array<() => void> = [];
 channel.port1.onmessage = () => { waiters.shift()?.(); };
 const yieldTask = () => new Promise<void>(resolve => { waiters.push(resolve); channel.port2.postMessage(0); });

@@ -610,7 +610,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         }
         return { scroll, camera: { x, y, z }, inverted, pages };
     };
-    const syncPreview = usePdfPlatformPreview(rootRef, previewIdentity, session, isVisible, isActive, readPreview);
+    const syncPreview = usePdfPlatformPreview(rootRef, previewIdentity, session, isVisible, isActive, readPreview, onNotify);
 
     // ── Page rendering (windowed) ───────────────────────────────────────────
     const getState = useCallback((i: number): PageState => {

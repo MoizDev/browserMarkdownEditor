@@ -11,7 +11,11 @@ import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
 import type { PdfDocumentSession, PdfPageLease } from '../utils/pdfDocumentSession';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
 import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
-import { bindPdfNativeEmphasis, pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import { bindPdfNativeEmphasis, makePdfEmphasisPlan, pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import { completedClassicDisplayList } from '../utils/pdfClassicDisplayList';
+import { classicEmphasisPageKey } from '../utils/pdfEmphasisProfile';
+import { getPdfEmphasisPlan, rememberPdfEmphasisPlan } from '../utils/pdfEmphasisPlanCache';
+import { watchPdfEmphasis } from '../utils/pdfEmphasisWatch';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
@@ -1067,6 +1071,30 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         return st.linksPromise;
     }, [getState, getPage, createLinkElement]);
 
+    const emphasisWatch = useRef<{ index: number; release: () => void } | undefined>(undefined);
+    useEffect(() => () => { emphasisWatch.current?.release(); emphasisWatch.current = undefined; }, [session]);
+    useEffect(() => {
+        if (!isVisible) { emphasisWatch.current?.release(); emphasisWatch.current = undefined; }
+    }, [isVisible]);
+    const watchShown = useCallback((index: number) => {
+        if (emphasisWatch.current?.index === index) return;
+        emphasisWatch.current?.release();
+        emphasisWatch.current = undefined;
+        if (!visibleRef.current || !pageStatesRef.current.get(index)?.rendered) return;
+        const gen = docGenRef.current;
+        const release = watchPdfEmphasis(session, session.emphasisIdentity, index, result => {
+            if (docGenRef.current !== gen || !visibleRef.current || shownPageRef.current !== index) return;
+            if (result) nativePages.current.set(index, result); else nativePages.current.delete(index);
+            showNativeNotice(index);
+            if (result?.supported && result.eligible && emphasisRef.current) {
+                const state = pageStatesRef.current.get(index);
+                if (state) state.rendered = undefined;
+                updateWindowRef.current?.();
+            }
+        });
+        emphasisWatch.current = { index, release };
+    }, [session, showNativeNotice]);
+
     /** Render one page's canvas, chasing `st.want` until the bitmap answers it
      *  (a zoom or a scroll mid-render cancels the task and the loop goes again
      *  against the new target). */
@@ -1080,10 +1108,15 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 let work: HTMLCanvasElement | undefined;
                 let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
                 let ownedTask: RenderTask | undefined;
+                let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
                 st.rendering = target;
                 try {
-                    const page = await getPage(i);
+                    await getPage(i);
+                    if (st.rendered && (st.rendered.scale !== target.scale || st.rendered.dpr !== target.dpr)) session.emphasisVerdicts.yieldProbes();
+                    renderLease = await session.acquireRender(i);
+                    const page = renderLease.page;
                     if (!current()) continue;
+                    session.markRendered(i);
                     const canvas = canvasElsRef.current[i];
                     if (!canvas) return;
                     const { rect, dpr } = target;
@@ -1101,18 +1134,18 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     work.height = ch;
                     const ctx = work.getContext('2d');
                     if (!ctx) throw new Error('Could not allocate a PDF render context');
-                    emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                    const key = classicEmphasisPageKey(session.emphasisIdentity.token, i, page);
+                    const verdict = session.emphasisVerdicts.getVerdict(key);
+                    const useOn = target.emphasis && verdict.kind === 'verified' && verdict.result.supported && verdict.result.eligible > 0;
+                    const plan = useOn ? getPdfEmphasisPlan(page) : undefined;
+                    if (plan) emphasis = await bindPdfNativeEmphasis(page, ctx, true, plan);
                     if (!current()) continue;
-                    const task = page.render({ operationsFilter: emphasis.operationsFilter,
+                    const task = page.render({ operationsFilter: emphasis?.operationsFilter,
                         canvas: work, canvasContext: ctx, viewport: vp, transform });
                     ownedTask = st.renderTask = task;
-                    await task.promise;
+                    await session.health.guard(task.promise);
+                    session.health.assertComplete(i);
                     if (st.renderTask === task) st.renderTask = undefined;
-                    if (!current()) continue;
-                    await emphasis.verify({ viewport: vp, transform }, probe => {
-                        ownedTask = st.renderTask = probe;
-                        if (!current()) cancelPageRender(st);
-                    }, current, !!rect);
                     if (!current()) continue;
                     const display = canvas.getContext('2d');
                     if (!display) throw new Error('Could not allocate a PDF display context');
@@ -1121,10 +1154,23 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     display.drawImage(work, 0, 0);
                     placeCanvas(canvas, rect);
                     st.rendered = target;
-                    canvas.dataset.nativeEmphasis = String(target.emphasis);
-                    canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
-                    nativePages.current.set(i, { ...emphasis.result });
-                    if (shownPageRef.current === i) showNativeNotice(i);
+                    canvas.dataset.nativeEmphasis = String(!!emphasis);
+                    canvas.dataset.emphasizedGlyphs = String(emphasis?.result.painted ?? 0);
+                    if (shownPageRef.current === i) watchShown(i);
+                    // A cleaned page can retain its verdict but not its plan.
+                    // Show the ordinary stand-in first, then rebuild from this
+                    // very display list without repeating the capability proof.
+                    if (useOn && !plan) {
+                        const list = completedClassicDisplayList(task);
+                        if (!list) session.emphasisVerdicts.rejectPlan(key, 'renderer-version');
+                        else {
+                            const rebuilt = makePdfEmphasisPlan(list);
+                            const reason = !rebuilt.result.supported ? rebuilt.result.reason ?? 'glyph-data'
+                                : !rememberPdfEmphasisPlan(page, rebuilt) ? 'page-budget' : undefined;
+                            if (reason) session.emphasisVerdicts.rejectPlan(key, reason);
+                            else st.rendered = undefined;
+                        }
+                    }
                 } catch (err) {
                     const cancelled = err instanceof pdfjs.RenderingCancelledException || (err instanceof DOMException && err.name === 'AbortError');
                     if (!cancelled && current()) {
@@ -1132,7 +1178,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                         reportClassicPageRenderFailure(err, i);
                     }
                 } finally {
+                    if (ownedTask) { ownedTask.cancel(); await ownedTask.promise.catch(() => {}); }
                     emphasis?.dispose();
+                    renderLease?.release();
                     if (st.renderTask === ownedTask) st.renderTask = undefined;
                     if (st.rendering === target) st.rendering = undefined;
                     if (work) { work.width = 0; work.height = 0; }
@@ -1149,7 +1197,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 st.rendered = undefined;
             }
         }
-    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
+    }, [getPage, ensureText, ensureLinks, clearCanvas, session, watchShown]);
 
     const ensurePage = useCallback((i: number) => {
         const L = layoutRef.current;
@@ -1323,6 +1371,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         const shown = maxScroll > 1 && top >= maxScroll - 1 ? last : first;
         shownPageRef.current = shown;
         showNativeNotice(shown);
+        watchShown(shown);
         thumbsRef.current?.setCurrentPage(shown);
         // Written straight to the DOM rather than through state — see
         // pageInputRef. Never while it's focused: that would fight the typing.
@@ -1330,7 +1379,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         if (input && document.activeElement !== input) input.value = String(shown + 1);
         writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
         schedulePersist();
-    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice]);
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice, watchShown]);
     /** So the hide/show effect above can call the latest `updateWindow` without
      *  being re-created (and re-evicting) every time one of its deps moves. */
     const updateWindowRef = useRef(updateWindow);

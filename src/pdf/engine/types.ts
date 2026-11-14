@@ -68,6 +68,8 @@ export interface DocInfo {
     hasForms: boolean;
     attachments: PdfAttachmentInfo[];
     pdfVersion: number | null;
+    /** Unknown is not clean: public engines may not expose whether recovery repaired the file. */
+    repairStatus: 'clean' | 'repaired' | 'unknown';
 }
 export interface PageComplexity {
     objects: number; textObjects: number; imageObjects: number;

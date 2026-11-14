@@ -14,7 +14,7 @@ export function installTiledPdfPool(pool: PdfPool, isFocused: (documentId: strin
             return !!identity && identity.serial === document.token.session && identity.bytesGeneration === document.token.bytesGeneration;
         },
         isFocused: () => isFocused(document.token.documentId),
-        variant: () => ({ variant: 'plain' }), annotations: true, forms: true,
+        variant: () => ({ variant: 'plain', profileKey: 'plain' }), annotations: true, forms: true,
     })));
     return installPdfTiledSourceFactory(factory);
 }

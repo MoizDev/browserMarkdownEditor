@@ -1,4 +1,4 @@
-import type { ContentSource, DocumentBuffer, SourceOwner } from './documentBuffers';
+import type { ContentSource, DocumentBuffer, SourceOwner, SourceReportOptions } from './documentBuffers';
 import type { JournalCapture } from './recoveryFunnel';
 
 // Share the source types without a runtime dependency; App's bindings are the
@@ -22,8 +22,10 @@ export interface SessionAdapter {
     journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */
     recover?(payload: unknown): void | Promise<void>;
-    /** App subscribes once when the session is created, never through the lifetime of a pane. */
-    onChange(listener: (source: ContentSource) => void): () => void;
+    /** Entry release only, after detaching; never called when a pane hides or unmounts. */
+    dispose?(): void | Promise<void>;
+    /** App subscribes once when the session is created; reload metadata stays with its source. */
+    onChange(listener: (source: ContentSource, options?: SourceReportOptions) => void): () => void;
 }
 
 /** One identity and one pending predicate, shared by editors and canvas engines. */
@@ -49,7 +51,7 @@ export type SessionBufferState = Pick<DocumentBuffer, 'source' | 'revision' | 's
 /** Both callbacks are App-lifetime; the report callback resolves the current path by documentId. */
 export interface SessionStoreBindings {
     bufferState(documentId: string): SessionBufferState | undefined;
-    reportChange(documentId: string, source: ContentSource): void;
+    reportChange(documentId: string, source: ContentSource, options?: SourceReportOptions): void;
 }
 
 export type SessionReleaseCause = 'tab-close' | 'trash' | 'vault-switch' | 'kind-change';

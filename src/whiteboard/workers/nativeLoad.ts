@@ -54,24 +54,29 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
             ...(draft?.savedView === undefined ? {} : { savedView: draft.savedView }) };
         if (!draft || parsed.readOnly || !parsed.complete) return { ...report, ...diagnostics, readOnly: true, repaired: null };
         let serial = 0, scanned = 0;
-        const occupied = new Set<string>();
+        const prefixes = new Set<string>();
+        const reserve = (id: string) => {
+            const match = /^repair-([0-9]+)-/.exec(id);
+            if (match) prefixes.add(match[1]);
+        };
         for (const sheet of draft.input.sheets) {
             if ((scanned++ & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }
-            occupied.add(sheet.id);
+            reserve(sheet.id);
         }
         for (const node of draft.input.nodes ?? []) {
             if ((scanned++ & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }
-            occupied.add(node.id);
+            reserve(node.id);
         }
+        let namespace = 0;
+        while (prefixes.has(String(namespace))) {
+            if ((namespace++ & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }
+        }
+        // A source-free namespace gives the synchronous repair allocator O(1) per id.
+        const prefix = `repair-${namespace}-`;
         let repaired: LoadRepairResult;
         try {
             repaired = await repairLoad({ input: draft.input, sources: draft.sources, unmapped: draft.unmapped, savedView: draft.savedView }, {
-                samples, newId: () => {
-                    let id: string;
-                    do { id = `repair-${++serial}`; } while (occupied.has(id));
-                    occupied.add(id);
-                    return id;
-                },
+                samples, newId: () => `${prefix}${++serial}`,
                 sampleWire(ref) {
                     const wire = wires.get(ref);
                     if (!wire) throw new Error('Missing encoded sample for repaired stroke');

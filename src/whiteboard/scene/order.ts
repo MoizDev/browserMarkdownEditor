@@ -2,7 +2,8 @@
 // edits to splices of touched runs; Fenwick counts provide ranks without renumbering every node.
 export const PAINT_ORDER_CHUNK = 256;
 const EMPTY = new Uint32Array(0);
-interface Block { readonly id: number; readonly sheet: number; readonly slots: Uint32Array; size: number; index: number }
+export interface PaintOrderChunk { readonly slots: Uint32Array; readonly count: number }
+interface Block extends PaintOrderChunk { readonly id: number; readonly sheet: number; index: number }
 interface SheetOrder { blocks: Block[]; fenwick: Uint32Array; size: number }
 export class PaintOrder {
     private readonly sheets = new Map<number, SheetOrder>();
@@ -52,8 +53,15 @@ export class PaintOrder {
     }
     copy(sheet: number, first: number, count: number, target: Uint32Array, offset = 0): void {
         if (!Number.isInteger(first) || !Number.isInteger(count) || first < 0 || count < 0 || first + count > this.size(sheet)
-            || offset < 0 || offset + count > target.length) throw new RangeError('Invalid paint-order range');
-        for (let i = 0; i < count; i++) target[offset + i] = this.at(sheet, first + i);
+            || !Number.isInteger(offset) || offset < 0 || offset + count > target.length) throw new RangeError('Invalid paint-order range');
+        const order = this.sheets.get(sheet);
+        if (!order || !count) return;
+        let block = this.locate(order, first), local = first - this.prefix(order, block), remaining = count;
+        while (remaining) {
+            const chunk = order.blocks[block++], take = Math.min(remaining, chunk.count - local);
+            for (let i = 0; i < take; i++) target[offset++] = chunk.slots[local + i];
+            remaining -= take; local = 0;
+        }
     }
     splice(sheetId: number, first: number, deleted: number, inserted: ArrayLike<number>): void {
         let sheet = this.sheets.get(sheetId);
@@ -65,7 +73,7 @@ export class PaintOrder {
         const firstBlock = sheet.blocks[begin], lastBlock = sheet.blocks[end];
         const prefix = firstBlock ? first - beginRank : 0;
         const suffixStart = lastBlock ? first + deleted - endRank : 0;
-        const suffix = lastBlock ? lastBlock.size - suffixStart : 0;
+        const suffix = lastBlock ? lastBlock.count - suffixStart : 0;
         const combined = new Uint32Array(prefix + inserted.length + suffix);
         for (let i = 0; i < prefix; i++) combined[i] = firstBlock.slots[i];
         for (let i = 0; i < inserted.length; i++) {
@@ -79,29 +87,35 @@ export class PaintOrder {
             if (this.nextBlock > 0x7fffffff) throw new RangeError('Paint-order chunk identifiers exhausted');
             const slots = new Uint32Array(PAINT_ORDER_CHUNK), size = Math.min(PAINT_ORDER_CHUNK, combined.length - i);
             for (let j = 0; j < size; j++) slots[j] = combined[i + j];
-            replacement.push({ id: this.nextBlock++, sheet: sheetId, slots, size, index: 0 });
+            replacement.push({ id: this.nextBlock++, sheet: sheetId, slots, count: size, index: 0 });
         }
         const removed = firstBlock ? end - begin + 1 : 0;
         for (let i = begin; i < begin + removed; i++) {
             const block = sheet.blocks[i]; this.blocks.delete(block.id);
-            for (let j = 0; j < block.size; j++) this.locations[block.slots[j]] = -1;
+            for (let j = 0; j < block.count; j++) this.locations[block.slots[j]] = -1;
         }
         sheet.blocks.splice(begin, removed, ...replacement);
         for (const block of replacement) {
             this.blocks.set(block.id, block);
-            for (let i = 0; i < block.size; i++) { this.locations[block.slots[i]] = block.id; this.offsets[block.slots[i]] = i; }
+            for (let i = 0; i < block.count; i++) { this.locations[block.slots[i]] = block.id; this.offsets[block.slots[i]] = i; }
         }
         sheet.size += inserted.length - deleted;
         // Only chunk headers/counts change here, never an O(N) rank/key rewrite or full re-sort.
         sheet.fenwick = new Uint32Array(sheet.blocks.length + 1);
         for (let i = 0; i < sheet.blocks.length; i++) {
             sheet.blocks[i].index = i;
-            for (let j = i + 1; j < sheet.fenwick.length; j += j & -j) sheet.fenwick[j] += sheet.blocks[i].size;
+            const index = i + 1, parent = index + (index & -index);
+            sheet.fenwick[index] += sheet.blocks[i].count;
+            if (parent < sheet.fenwick.length) sheet.fenwick[parent] += sheet.fenwick[index];
         }
     }
     remove(sheet: number, first: number, count: number): void { this.splice(sheet, first, count, EMPTY); }
-    *chunks(sheet: number): Iterable<Readonly<{ slots: Uint32Array; count: number }>> {
-        for (const block of this.sheets.get(sheet)?.blocks ?? []) yield { slots: block.slots, count: block.size };
+    *chunks(sheet: number): Iterable<PaintOrderChunk> {
+        for (const block of this.sheets.get(sheet)?.blocks ?? []) yield block;
+    }
+    forEachChunk(sheet: number, visit: (chunk: PaintOrderChunk) => void): void {
+        const order = this.sheets.get(sheet);
+        if (order) for (const block of order.blocks) visit(block);
     }
     get byteLength(): number {
         let bytes = this.locations.byteLength + this.offsets.byteLength;

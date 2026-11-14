@@ -2,6 +2,8 @@ import { NODE_DEFAULTS } from '../model/defaults';
 import { MEDIA_MIMES } from '../model/media';
 import type { MediaMime } from '../model/media';
 import { SECURITY_LIMITS } from '../security/limits';
+import { NATIVE_FORMAT_ID } from './identity';
+export { NATIVE_FORMAT_ID } from './identity';
 export { MEDIA_MIMES } from '../model/media';
 export type { MediaMime } from '../model/media';
 
@@ -37,7 +39,7 @@ export type RecordCategory = 'pen' | 'view' | 'paper' | 'host' | 'media' | 'shee
 export const RECORD_ORDER: readonly RecordCategory[] = ['pen', 'view', 'paper', 'host', 'media', 'sheet', 'node', 'opaque', 'end'];
 
 export interface NativeHeader extends FutureFields {
-    readonly format: 'board';
+    readonly format: typeof NATIVE_FORMAT_ID;
     readonly version: readonly [number, number];
     readonly kind: BoardFileKind;
     readonly fence?: string;
@@ -522,7 +524,7 @@ export function validateHeader(value: unknown): ValidationResult<{
 }> {
     return result(() => {
         const o = object(value, 'header');
-        if (o.format !== 'board') refuse('format', 'format', 'Not a native board');
+        if (o.format !== NATIVE_FORMAT_ID) refuse('format', 'format', 'Not a native board');
         const version = array(o.version, 'version');
         if (version.length !== 2) refuse('value', 'version', 'Version must be [major,minor]');
         integer(version[0], 'version.major', 1, Number.MAX_SAFE_INTEGER); integer(version[1], 'version.minor', 0, Number.MAX_SAFE_INTEGER);

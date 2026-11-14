@@ -22,6 +22,8 @@ export type PdfInkWrittenContext = ReturnType<ReturnType<typeof createPdfInkBuil
 
 export interface PdfInkRebindSnapshot {
     readonly source: PdfRuntimeInkSource;
+    /** Actual admitted source token. Existing frames retain their original token until a new view presents this source. */
+    readonly token: RenderToken;
     readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
     readonly reason?: string;
 }
@@ -39,7 +41,7 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
         !sameToken(tokenOf(admittedIdentity), initialSource.source.token) || !host.isCurrent(admittedIdentity) || !initialSource.isCurrent()) {
         throw new Error('The PDF ink source does not match the admitted owner');
     }
-    let snapshot: PdfInkRebindSnapshot = Object.freeze({ source: initialSource, status: 'ready' });
+    let snapshot: PdfInkRebindSnapshot = Object.freeze({ source: initialSource, token: initialSource.source.token, status: 'ready' });
     let disposed = false, serial = 0, tail: Promise<void> = Promise.resolve(), pending: AbortController | undefined;
     const failures: unknown[] = [], listeners = new Set<() => void>();
     const report = (error: unknown) => { failures.push(error); try { options.onError(error); } catch { /* drain retains the original error. */ } };
@@ -75,12 +77,12 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                 report(error);
                 if (!disposed) {
                     const reason = 'The saved PDF could not be safely rebound; editing is paused.';
-                    publish({ source: snapshot.source, status: 'failed', reason });
+                    publish({ source: snapshot.source, token: snapshot.token, status: 'failed', reason });
                     try { options.onReadOnly(reason); } catch (failure) { report(failure); }
                 }
                 return Promise.reject(error);
             }
-            publish({ source: snapshot.source, status: 'rebinding' });
+            publish({ source: snapshot.source, token: snapshot.token, status: 'rebinding' });
             const job = tail.then(async () => {
                 const current = () => {
                     if (matches(target, attempt)) return true;
@@ -100,14 +102,14 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                         const reason = acquired.reason;
                         await release(acquired); acquired = undefined;
                         if (!current()) return;
-                        publish({ source: snapshot.source, status: 'read-only', reason });
+                        publish({ source: snapshot.source, token: snapshot.token, status: 'read-only', reason });
                         options.onReadOnly(reason);
                         return;
                     }
                     if (!sameToken(acquired.source.token, tokenOf(target))) throw new Error('PDF rebind returned a different outer generation');
                     sources.replace(acquired, tokenOf(target));
                     const accepted = acquired; acquired = undefined;
-                    publish({ source: accepted, status: 'ready' });
+                    publish({ source: accepted, token: accepted.source.token, status: 'ready' });
                 } finally {
                     if (pending === controller) pending = undefined;
                     if (acquired) await release(acquired);
@@ -121,7 +123,7 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                 }
                 report(error);
                 const reason = 'The saved PDF could not be safely rebound; editing is paused.';
-                publish({ source: snapshot.source, status: 'failed', reason });
+                publish({ source: snapshot.source, token: snapshot.token, status: 'failed', reason });
                 try { options.onReadOnly(reason); } catch (failure) { report(failure); }
                 throw error;
             });

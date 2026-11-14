@@ -538,7 +538,7 @@ export interface FileSystemContextValue {
   /** THE document write: writes only if the file still is `expected` (equal
    *  stat, or equal hash when only the stat moved). Never recreates a missing
    *  file. Every document save goes through it. */
-  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
+  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array | Blob, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
   /** Write `data` beside `filePath` as `stem (conflict).ext` (then
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one

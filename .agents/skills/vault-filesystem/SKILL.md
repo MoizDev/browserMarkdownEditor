@@ -5,8 +5,10 @@ description: How this app reads and writes the user's real files — the File Sy
 
 # The vault: reading and writing the user's real files
 
-`context/FileSystemContext.tsx` is the **only** thing that touches the File System Access API.
-Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
+`context/FileSystemContext.tsx` owns the File System Access API on the main thread.
+The one worker-side exception is `context/vaultIndex/reader.ts`: it reads file handles sent from the
+main-thread tree, but never lists directories, prompts, or mutates the vault. Other app code goes
+through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
 `importFiles`, `keepCopyInGarbage`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
 `listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`,
@@ -240,7 +242,15 @@ whole vault to discover nothing had changed. So:
   Individual external edits invalidate paths; self-write observer echoes are checked once, not swept.
 - **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
   bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
-- **The first full index runs `onIdle`**, behind the notes the reader actually asked for.
+- **The index starts after session restoration and, when present, the first pane's paint, then on
+  idle** (a user search can demand it sooner). Eight shared worker IO slots pause while foreground document reads
+  are active; graph sweeps run at background CPU priority, and search at user-waiting priority.
+- **Search text belongs to the activation-owned worker index**, not a separate sidebar or agent cache.
+  It is lazy, admitted in full-tree order by source bytes (4 MiB/file, 128 MiB total), and optional
+  text snapshots and graph facts persist per vault in IndexedDB. Dirty readable buffers, including an
+  empty buffer, overlay disk on demand. A scoped agent search filters reads/results, not membership;
+  tree deltas, revisions and vault sessions fence late work. Rebuild index discards the browser copy
+  and rereads the vault; neither persistence nor index facts authorize an asset retirement.
 - **Do not refresh the tree for something the tree cannot show.** `saveAsset` walked every folder in
   the vault after writing a pasted image into a `.Assets` the tree hides. Same trap as
   `App.writeEntryStyles`.

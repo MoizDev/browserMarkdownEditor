@@ -351,6 +351,13 @@ export class TextEditSession {
     pointerMove(pointer: TextPointer): void { this.pointer.move(pointer); }
     pointerUp(id: number): void { this.pointer.up(id); }
     focus(): void { this.sync(); this.host.focus(); }
+    insertText(text: string): void {
+        if (this.closed || !text) return;
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        const offset = from + text.length;
+        this.replace({ from, to, text, selection: { anchor: offset, focus: offset } }, 'typing');
+        this.host.sync();
+    }
     close(commitComposition = true): void {
         if (this.closed) return;
         this.host.finishComposition(commitComposition);
@@ -359,7 +366,7 @@ export class TextEditSession {
         this.blinkTimer = null;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().length) {
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
             const history = this.services.history;
             const tokens = this.typingHistory.stepTokens;
             try {

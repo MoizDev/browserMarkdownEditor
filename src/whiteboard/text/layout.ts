@@ -53,7 +53,14 @@ export class BoardTextLayout implements TextLayoutEngine {
     private pieces(block: ItemizedBlock, from: number, to: number, request: TextLayoutRequest, size: number, heading: boolean): Piece[] {
         const end = from + block.text.slice(from, to).replace(hardBreak, '').length;
         const pieces: Piece[] = [];
-        for (const item of block.items) {
+        let lo = 0, hi = block.items.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (block.items[mid].to <= from) lo = mid + 1;
+            else hi = mid;
+        }
+        for (let i = lo; i < block.items.length && block.items[i].from < end; i++) {
+            const item = block.items[i];
             const a = Math.max(from, item.from), b = Math.min(end, item.to);
             if (a >= b) continue;
             const key = faceKey(request.style.font, item.marks, heading);
@@ -139,12 +146,23 @@ export class BoardTextLayout implements TextLayoutEngine {
             const inner = Math.max(0, boxWidth - pad.left - pad.right - draft.indent);
             const alignment = style.align === 'middle' ? (inner - draft.width) / 2 : (style.align === 'end') !== (direction === 'rtl') ? inner - draft.width : 0;
             let x = pad.left + (direction === 'ltr' ? draft.indent : 0) + alignment;
-            const face = this.faces[draft.pieces[0]?.face ?? draft.markerFace];
-            const baseline = y + (draft.height - face.ascent - face.descent) / 2 + face.ascent;
+            const lineX = x;
+            let ascent = this.faces[draft.markerFace].ascent, descent = this.faces[draft.markerFace].descent;
+            for (const piece of draft.pieces) {
+                ascent = Math.max(ascent, this.faces[piece.face].ascent);
+                descent = Math.max(descent, this.faces[piece.face].descent);
+            }
+            const baseline = y + (draft.height - ascent - descent) / 2 + ascent;
             const fragments: PaintFragment[] = [];
             if (draft.marker) {
                 const markerX = direction === 'ltr' ? x - draft.markerWidth : x + draft.width + draft.markerWidth * 0.35;
-                fragments.push({ text: draft.marker, x: markerX, width: draft.markerWidth * 0.65, rtl: false, face: draft.markerFace, ink: style.ink, systemFallback: true, src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
+                const markerFace = this.faces[draft.markerFace];
+                const metric = this.measurer.measure(markerFace, draft.marker, false, request.fontEpoch);
+                const scale = markerFace.size / 64;
+                const markerWidth = metric.width * scale;
+                left = Math.min(left, markerX - metric.left * scale); right = Math.max(right, markerX + metric.right * scale);
+                top = Math.min(top, baseline - metric.ascent * scale); bottom = Math.max(bottom, baseline + metric.descent * scale);
+                fragments.push({ text: draft.marker, x: markerX, width: markerWidth, rtl: false, face: draft.markerFace, ink: style.ink, systemFallback: true, src: [draft.block.offset + draft.from, draft.block.offset + draft.from] });
             }
             for (const piece of draft.pieces) {
                 const f = this.faces[piece.face], scale = f.size / 64;
@@ -161,7 +179,7 @@ export class BoardTextLayout implements TextLayoutEngine {
                 x += piece.width;
             }
             fragments.sort((a, b) => a.x - b.x);
-            lines.push({ top: y, bottom: y + draft.height, baseline, direction, src: [draft.block.offset + draft.from, draft.block.offset + draft.to], fragments });
+            lines.push({ top: y, bottom: y + draft.height, baseline, x: lineX, direction, src: [draft.block.offset + draft.from, draft.block.offset + draft.to], fragments });
             y += draft.height;
         }
         const ink = { x: left, y: top, width: right - left, height: bottom - top };

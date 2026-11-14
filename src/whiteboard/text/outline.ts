@@ -2,6 +2,7 @@ import type { PageDisplayItem, Rgba } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import { BoardFonts } from './fonts';
 import type { PaintRect } from './paint';
+import type { OutlineWorkerRequest } from './outlineTypes';
 import { rasterTextFragment } from './outlineRaster';
 import { clearOutlineGlyphCaches, shapeTextFragment } from './outlineShape';
 import { validOutlineRequest } from './outlineValidation';
@@ -15,11 +16,13 @@ function box(rect: PaintRect, color: Rgba, blend: 'normal' | 'multiply'): PageDi
 
 /** The pinned layout owns line breaks and faces; HarfBuzz supplies export glyph outlines only. */
 export async function* streamTextOutline(payload: unknown, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
-    if (!validOutlineRequest(payload)) throw new RangeError('Invalid text export request or face generation');
-    const { paint, faces, material, pageScale } = payload;
+    if (!await validOutlineRequest(payload, context)) throw new RangeError('Invalid text export request or face generation');
+    context.signal.throwIfAborted();
+    const { paint, faces, material, pageScale } = payload as OutlineWorkerRequest;
     activeStreams++;
     try {
         for (let i = 0; i < paint.backgrounds.length; i++) {
+            context.signal.throwIfAborted();
             yield box(paint.backgrounds[i], material.backgrounds[i], material.blend);
             if ((i & 255) === 255) { context.signal.throwIfAborted(); await context.slice(); }
         }
@@ -34,6 +37,7 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
             await context.slice();
         }
         for (let i = 0; i < paint.decorations.length; i++) {
+            context.signal.throwIfAborted();
             yield box(paint.decorations[i], material.decorations[i], material.blend);
             if ((i & 255) === 255) { context.signal.throwIfAborted(); await context.slice(); }
         }

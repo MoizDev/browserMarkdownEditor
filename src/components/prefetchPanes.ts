@@ -1,10 +1,10 @@
 // Warm the heavy panes before they are clicked.
 //
-// A PDF, a drawing and a notebook each live behind `React.lazy`, which is what
-// keeps pdf.js (~450kB) and tldraw (~1.7MB) out of a markdown-only session's
-// bundle. The cost of that is paid on the FIRST click: measured at ~0.8s for a
-// PDF and ~1.2s for a drawing, nearly all of it fetching and parsing the chunk
-// rather than doing anything with the document.
+// Dynamic imports keep pdf.js (~450kB) and tldraw (~1.7MB) out of a markdown-only
+// session's bundle. PDF demand and prefetch also share the resolved component,
+// avoiding a separate React.lazy payload after the import has already finished.
+// Measured cold cost: ~0.8s for a PDF and ~1.2s for a drawing, nearly all of it
+// fetching and parsing the chunk rather than doing anything with the document.
 //
 // So fetch them while nothing is happening instead. Two rules keep this from
 // undoing the split it is built on top of:
@@ -19,6 +19,8 @@
 // The import specifiers must match the ones `EditorPane`/`DocumentPane` use, or
 // the bundler emits a second copy of each chunk instead of warming theirs.
 
+import { loadPdfPane } from './pdfPaneModule';
+
 export interface CanvasKinds {
     epub: boolean;
     pdf: boolean;
@@ -32,8 +34,8 @@ const started = new Set<string>();
 function warm(key: string, load: () => Promise<unknown>): void {
     if (started.has(key)) return;
     started.add(key);
-    // A failed prefetch is not an error the reader should ever see: the real
-    // import on click will surface anything that actually matters.
+    // Idle failures stay quiet; the demand host supplies the loading error
+    // and explicit Retry rather than letting an idle refresh retry a PDF.
     load().catch(() => started.delete(key));
 }
 
@@ -53,7 +55,7 @@ export function prefetchPanes(kinds: CanvasKinds): void {
         // Starting the shared worker here too takes the ~1MB worker boot off the
         // first click — dynamically, or pdf.js would land in the main bundle.
         if (kinds.pdf) {
-            warm('pdf', () => import('./PdfPane'));
+            warm('pdf', loadPdfPane);
             warm('pdf-worker', () => import('../utils/pdfWorker').then(m => { m.pdfWorker(); }));
         }
         // A notebook IS a tldraw canvas, so either kind warms the big one.

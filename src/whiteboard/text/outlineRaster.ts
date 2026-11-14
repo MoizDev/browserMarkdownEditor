@@ -1,4 +1,4 @@
-import type { PageDisplayItem, Rgba } from '../../platform/types';
+import type { Affine, PageDisplayItem, Rgba } from '../../platform/types';
 import type { WorkerContext } from '../../platform/workers';
 import type { BoardFonts } from './fonts';
 import type { Face, PaintFragment } from './paint';
@@ -19,10 +19,17 @@ function nonempty(data: Uint8ClampedArray): boolean {
     for (let index = 3; index < data.length; index += 4) if (data[index]) return true;
     return false;
 }
+function maxStretch(matrix: Affine): number {
+    const scale = Math.max(Math.abs(matrix[0]), Math.abs(matrix[1]), Math.abs(matrix[2]), Math.abs(matrix[3]));
+    if (!scale) return 0;
+    const a = matrix[0] / scale, b = matrix[1] / scale, c = matrix[2] / scale, d = matrix[3] / scale;
+    const x = a * a + b * b, y = c * c + d * d, cross = a * c + b * d;
+    return scale * Math.sqrt((x + y + Math.hypot(x - y, 2 * cross)) / 2);
+}
 
 /** Each fallback bitmap stays small even when one source fragment spans a very wide page. */
 export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, lineTop: number, lineBottom: number,
-    color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
+    localToWorld: Affine, color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     context.signal.throwIfAborted();
     if (face.loaded && !await awaitOutlineResource(fonts.load(face.key), context.signal, 30_000, 'Export canvas font'))
         throw new Error('Export canvas font could not be loaded');
@@ -37,7 +44,9 @@ export async function* rasterTextFragment(fragment: PaintFragment, face: Face, b
     const descent = Math.max(0, metrics.actualBoundingBoxDescent * factor, face.descent, lineBottom - baseline);
     const left = inkLeft - padding, top = baseline - ascent - padding;
     const width = Math.max(factor, inkRight - inkLeft + 2 * padding), height = Math.max(factor, ascent + descent + 2 * padding);
-    const density = 4 * pageScale, pixelWidth = Math.max(1, Math.ceil(width * density)), pixelHeight = Math.max(1, Math.ceil(height * density));
+    const stretch = maxStretch(localToWorld);
+    if (stretch === 0) return;
+    const density = 4 * pageScale * stretch, pixelWidth = Math.max(1, Math.ceil(width * density)), pixelHeight = Math.max(1, Math.ceil(height * density));
     if (![left, top, width, height, density].every(Number.isFinite) || !(factor > 0 && density > 0)
         || !Number.isSafeInteger(pixelWidth) || !Number.isSafeInteger(pixelHeight)) throw new RangeError('Text raster geometry is out of range');
     for (let py = 0; py < pixelHeight; py += TILE_SIDE) for (let px = 0; px < pixelWidth; px += TILE_SIDE) {

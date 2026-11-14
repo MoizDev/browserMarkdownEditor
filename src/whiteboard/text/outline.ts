@@ -18,7 +18,7 @@ function box(rect: PaintRect, color: Rgba, blend: 'normal' | 'multiply'): PageDi
 export async function* streamTextOutline(payload: unknown, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     if (!await validOutlineRequest(payload, context)) throw new RangeError('Invalid text export request or face generation');
     context.signal.throwIfAborted();
-    const { paint, faces, material, pageScale } = payload as OutlineWorkerRequest;
+    const { paint, faces, material, pageScale, localToWorld } = payload as OutlineWorkerRequest;
     activeStreams++;
     try {
         for (let i = 0; i < paint.backgrounds.length; i++) {
@@ -33,7 +33,7 @@ export async function* streamTextOutline(payload: unknown, context: WorkerContex
             if (!fragment.text) continue;
             const commands = await shapeTextFragment(fragment, face, line.baseline, context);
             if (commands !== null) yield { kind: 'path', d: commands, fill: color, blend: material.blend };
-            else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, color, pageScale, material.blend, fonts, context);
+            else yield* rasterTextFragment(fragment, face, line.baseline, line.top, line.bottom, localToWorld, color, pageScale, material.blend, fonts, context);
             await context.slice();
         }
         for (let i = 0; i < paint.decorations.length; i++) {

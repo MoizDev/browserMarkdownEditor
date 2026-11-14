@@ -85,13 +85,16 @@ export class PdfTextHighlightLayer implements Layer {
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed) return;
         const colors = [this.palette.find, this.palette.current, this.palette.selection];
-        [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
-            ctx.fillStyle = css(colors[index]);
-            for (const rect of rects) {
-                const destination = deviceRect(rect, view);
-                if (visible(destination, view)) ctx.fillRect(destination.x, destination.y, destination.width, destination.height);
-            }
-        });
+        ctx.save();
+        try {
+            [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
+                ctx.fillStyle = css(colors[index]);
+                for (const rect of rects) {
+                    const destination = deviceRect(rect, view);
+                    if (visible(destination, view)) ctx.fillRect(destination.x, destination.y, destination.width, destination.height);
+                }
+            });
+        } finally { ctx.restore(); }
     }
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.texture && reason !== 'context-lost') this.texture.device.destroy(this.texture.handle);

@@ -48,6 +48,15 @@ function trim() {
     }
 }
 
+export function parsedPageReservation(owner: object): { idlePages: number; reservationBytes: number } {
+    let idlePages = 0, reservationBytes = 0;
+    for (const entry of idle) if (entry.owner === owner) {
+        idlePages++;
+        if (entry.rendered) reservationBytes += UNKNOWN_RENDERED;
+    }
+    return { idlePages, reservationBytes };
+}
+
 export function discardParsedPage(entry: ParsedPageCacheEntry) { idle.delete(entry); }
 
 export function parsedPageBusy(entry: ParsedPageCacheEntry) {

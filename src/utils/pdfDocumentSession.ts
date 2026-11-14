@@ -4,7 +4,7 @@ import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpe
 import { createClassicPdfHealth } from './pdfClassicHealth';
 import type { ClassicPdfHealth } from './pdfClassicHealth';
 import { mapPool } from './pool';
-import { discardParsedPage, forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
+import { discardParsedPage, forgetParsedPages, parsedPageBusy, parsedPageIdle, parsedPageReservation, parsedPageVisibility, type ParsedPageCacheEntry } from './pdfParsedPageCache';
 
 export interface PdfPageLease { page: PDFPageProxy; release(): void }
 export interface PdfDocumentSession {
@@ -17,6 +17,7 @@ export interface PdfDocumentSession {
     handoff(index0: number): void;
     setVisible(visible: boolean, currentPage?: number): void;
     markRendered(index0: number): void;
+    memory(): { idlePages: number; reservationBytes: number; parsedBytes: null; decodedImageBytes: null; canvasBytes: null; workerHeapBytes: null };
     dispose(): Promise<void>;
 }
 
@@ -217,6 +218,9 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
         markRendered(index0) {
             const entry = pages.get(index0);
             if (entry) entry.rendered = true;
+        },
+        memory() {
+            return { ...parsedPageReservation(owner), parsedBytes: null, decodedImageBytes: null, canvasBytes: null, workerHeapBytes: null };
         },
         dispose() {
             if (disposal) return disposal;

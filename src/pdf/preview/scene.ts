@@ -28,7 +28,8 @@ export class PreviewScene {
     private sceneRevision = 0;
     private snapshotValue: PreviewSnapshot | null = null;
 
-    constructor(readonly layer: PreviewBitmapLayer, private readonly invalidate: () => void) {}
+    constructor(readonly layer: PreviewBitmapLayer, private readonly invalidate: () => void,
+        private readonly onPressure: () => void) {}
 
     get revision(): number { return this.sceneRevision + this.layer.bitmaps.revision; }
     get snapshot(): PreviewSnapshot | null { return this.snapshotValue; }
@@ -50,8 +51,6 @@ export class PreviewScene {
             x: view.x, y: view.y,
             width: snapshot.scroll.clientWidth / view.z, height: snapshot.scroll.clientHeight / view.z,
         };
-        const margin = { x: viewport.x - viewport.width / 4, y: viewport.y - viewport.height / 4,
-            width: viewport.width * 1.5, height: viewport.height * 1.5 };
         const expected = new Map<number, PreviewExpectedPage>();
         const live = new Set<number>();
         for (const page of snapshot.pages) {
@@ -60,7 +59,8 @@ export class PreviewScene {
             expected.set(page.index, { rect: page.pageRect, key });
             if (!page.canvas || !page.rasterKey) continue;
             const needed = intersect(viewport, page.pageRect);
-            const interest = intersect(margin, page.canvasRect);
+            // The preview's optional margin is cut first: copy only the mandatory visible crop.
+            const interest = needed && intersect(needed, page.canvasRect);
             if (!needed || !interest) continue;
             const current = this.layer.bitmaps.entries.get(page.index);
             if (current?.key === key && current.tiles.length) {
@@ -79,7 +79,7 @@ export class PreviewScene {
                     if (copied || this.requests.get(page.index) !== next || !page.current()) return;
                     // Replacement can exceed the grant while the old crop is still held.
                     // Fall back to the classic canvas, free it and retry once without it.
-                    if (!this.layer.bitmaps.entries.has(page.index)) return;
+                    if (!this.layer.bitmaps.entries.has(page.index)) { this.onPressure(); return; }
                     this.requests.delete(page.index);
                     this.layer.bitmaps.remove(page.index);
                     this.sync(this.snapshotValue);

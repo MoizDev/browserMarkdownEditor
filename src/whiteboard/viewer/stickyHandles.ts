@@ -83,7 +83,7 @@ export function createStickyHandles(options: StickyHandleOptions) {
                 }
             }
         },
-        hide() { pending?.abort(); pending = undefined; clear(); },
+        hide() { pending?.abort(); pending = undefined; clear(); if (current()) options.invalidate(); },
         dispose() { if (disposed) return; disposed = true; pending?.abort(); pending = undefined; stopSelection(); stopSession(); clear(); },
     };
 }

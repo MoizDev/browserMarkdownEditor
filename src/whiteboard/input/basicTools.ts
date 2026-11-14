@@ -45,14 +45,21 @@ class EraserGesture implements GestureOwner {
       if (!this.cancelled && ids.size) this.context.commit(ids)
     }).catch(error => {
       if (!this.cancelled) this.context.error(error)
-    }).finally(() => { this.unregister?.(); this.unregister = null; this.context.clearPreview(); this.release() })
+    }).finally(() => {
+      try { this.unregister?.() } finally {
+        this.unregister = null
+        try { this.context.clearPreview() } finally { this.release() }
+      }
+    })
   }
   cancel(): void {
     if (this.cancelled) return
     this.cancelled = true
-    this.queue.cancel()
-    this.context.clearPreview()
-    if (!this.ended) { this.ended = true; this.release() }
+    try { this.queue.cancel() } finally {
+      try { this.context.clearPreview() } finally {
+        if (!this.ended) { this.ended = true; this.release() }
+      }
+    }
   }
   private collect(point: InkPoint, modifiers: Modifiers): void {
     const from = this.last

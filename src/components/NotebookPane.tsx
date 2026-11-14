@@ -20,11 +20,14 @@ import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView, type PageBox, type PageLock } from './pagedCanvas';
 import { flushCanvasViewPositions, readCanvasViewPos, writeCanvasViewPos } from '../utils/canvasViewState';
 import { registerView, type NotebookViewInfo } from '../utils/viewRegistry';
+import { registerPending } from '../utils/unloadCoordinator';
 import {
     captureRegion, createCanvasAgentOps, dominantPage, pagesInView, selectedAgentShapeIds, summarizeShapes, type CanvasPageModel,
 } from './canvasAgentOps';
 
 interface NotebookPaneProps {
+    /** OpenTab.id from the host, never a path or a snapshot record id. */
+    documentId?: string;
     /** The notebook's vault path. Every change is reported against it explicitly
      *  (never "the active tab") so a save landing after a tab switch cannot
      *  write notebook JSON into another file's buffer. */
@@ -93,7 +96,7 @@ function pageShapeId(index: number): TLShapeId {
  * the strokes already there instead of rewriting the document, and no page ever
  * gets re-created on top of the writing it belongs under.
  */
-export default function NotebookPane({ filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
+export default function NotebookPane({ documentId, filePath, content, onContentChange, onConfirm }: NotebookPaneProps) {
     // Parsed once per FILE, not per render: `content` changes on every save
     // round-trip, but tldraw owns the document after mount, so re-reading it
     // would be pointless work (and could clobber in-progress edits).
@@ -305,6 +308,18 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
 
     const handleMount = useCallback((editor: Editor) => {
         editorRef.current = editor;
+        let unregisterPending: (() => void) | undefined;
+        const hasPendingEdits = () => serializeTimerRef.current !== null;
+        const flushPending = () => {
+            if (!serializeTimerRef.current) return;
+            clearTimeout(serializeTimerRef.current);
+            flush();
+        };
+        const reportPending = () => {
+            if (documentId && !unregisterPending) {
+                unregisterPending = registerPending({ documentId, hasPendingEdits, flushPending });
+            }
+        };
 
         // Below 50% zoom tldraw degrades draw-shapes to a thin centerline (an
         // LOD for huge boards). Fidelity beats that perf saving at this app's
@@ -437,12 +452,8 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             // Strokes inside the serialize debounce are edits App cannot see yet
             // (App.checkOpenDocs): a reload from disk over them would lose them.
             // Called only after this effect has run, so `flush` below is set.
-            hasPendingEdits: () => serializeTimerRef.current !== null,
-            flushPending: () => {
-                if (!serializeTimerRef.current) return;
-                clearTimeout(serializeTimerRef.current);
-                flush();
-            },
+            hasPendingEdits,
+            flushPending,
             renderPage: async (page, maxSide) => {
                 const box = boxesRef.current[page - 1];
                 if (!box) return null;
@@ -486,7 +497,6 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         let lastUi = JSON.stringify(readUi());
 
         const flush = () => {
-            serializeTimerRef.current = null;
             // Before serializing, not after: a page appended here has to be in
             // the same write as the stroke that called for it.
             growIfNeeded(editor);
@@ -494,6 +504,9 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             lastUi = JSON.stringify(ui);
             uiRef.current = ui;
             persist();
+            serializeTimerRef.current = null;
+            unregisterPending?.();
+            unregisterPending = undefined;
         };
 
         // Mid-stroke the document is about to change again, and serializing a
@@ -510,13 +523,28 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         const schedule = () => {
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
             serializeTimerRef.current = setTimeout(tick, serializeDelay(editor, SERIALIZE_DEBOUNCE_MS));
+            reportPending();
+        };
+        const armFirstChange = () => {
+            if (serializeTimerRef.current !== null) return;
+            // Protect the first edit's task; the later batched listener still
+            // decides the ordinary size-aware save deadline.
+            serializeTimerRef.current = setTimeout(tick, SERIALIZE_DEBOUNCE_MS);
+            reportPending();
         };
 
         // source: 'user'    → a programmatic load or a re-papering never dirties.
         // scope: 'document' → panning and zooming do not either.
         // The agent's canvas edits are 'user' too (editor API, no remote merge
         // — see canvasAgentOps.ts), so they are saved exactly like ink.
-        const unlistenDoc = editor.store.listen(schedule, { source: 'user', scope: 'document' });
+        const stopPending = (['shape', 'asset', 'binding', 'page', 'document'] as const).flatMap(type => [
+            editor.sideEffects.registerAfterCreateHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
+            editor.sideEffects.registerAfterChangeHandler(type, (_before, _after, source) => { if (source === 'user') armFirstChange(); }),
+            editor.sideEffects.registerAfterDeleteHandler(type, (_record, source) => { if (source === 'user') armFirstChange(); }),
+        ]);
+        const unlistenDoc = editor.store.listen(() => {
+            if (hasPendingEdits()) schedule();
+        }, { source: 'user', scope: 'document' });
         // The pickers live in session scope alongside camera noise that must NOT
         // dirty the file, so compare just the slice that gets persisted.
         const saveUiIfChanged = () => {
@@ -529,8 +557,8 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
         const unlistenPen = subscribePenScale(saveUiIfChanged);
 
         return () => {
-            editorRef.current = null;
             unregisterView();
+            stopPending.forEach(stop => stop());
             window.removeEventListener('pagehide', onPageHide);
             // The memory record is current (every view pass writes it); only
             // the flush can still be pending.
@@ -547,12 +575,13 @@ export default function NotebookPane({ filePath, content, onContentChange, onCon
             lockRef.current = null;
             // Unmounting mid-debounce (tab switch, tab close) must not drop the
             // last strokes — flush them while the editor is still alive.
-            if (serializeTimerRef.current) {
-                clearTimeout(serializeTimerRef.current);
-                flush();
-            }
+            flushPending();
+            unregisterPending?.();
+            // persist() reads this ref: clearing it before the final drain made
+            // an unmount's notebook save a silent no-op.
+            editorRef.current = null;
         };
-    }, [filePath, growIfNeeded, layOutPages, parsed.snapshot, persist]);
+    }, [documentId, filePath, growIfNeeded, layOutPages, parsed.snapshot, persist]);
 
     /**
      * Park what an export needs where the app's export handler can pick it up.

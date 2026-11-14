@@ -26,6 +26,8 @@ const NotebookPane = lazy(() => import('./NotebookPane'));
 
 export interface CanvasPaneProps {
     file: ActiveFile;
+    /** OpenTab.id, forwarded by EditorPane independently of the mutable file path. */
+    documentId?: string;
     /** Is this document some column's showing tab right now? */
     isVisible: boolean;
     /** The column it stands over: the index addresses the editor's CSS
@@ -51,7 +53,7 @@ export interface CanvasPaneProps {
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
 }
 
-function CanvasPane({ file, isVisible, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, content, onContentChange, onConfirm, theme, disk, onDiskAction }: CanvasPaneProps) {
+function CanvasPane({ file, documentId, isVisible, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, content, onContentChange, onConfirm, theme, disk, onDiskAction }: CanvasPaneProps) {
     const activated = useActivated(isVisible);
     const rootRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +86,7 @@ function CanvasPane({ file, isVisible, slotIndex, slotLeft, slotWidth, onFocusPa
                     <Suspense fallback={<div className="drawing-pane drawing-pane-loading">{label}</div>}>
                         {isNotebook ? (
                             <NotebookPane
+                                documentId={documentId}
                                 filePath={file.path}
                                 content={content}
                                 onContentChange={onContentChange}
@@ -91,6 +94,7 @@ function CanvasPane({ file, isVisible, slotIndex, slotLeft, slotWidth, onFocusPa
                             />
                         ) : (
                             <DrawingPane
+                                documentId={documentId}
                                 filePath={file.path}
                                 content={content}
                                 onContentChange={onContentChange}

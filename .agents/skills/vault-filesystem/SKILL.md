@@ -8,7 +8,7 @@ description: How this app reads and writes the user's real files — the File Sy
 `context/FileSystemContext.tsx` is the **only** thing that touches the File System Access API.
 Everything else goes through `useFileSystem()`: `readFile`/`writeFile`, binary
 `readFileBytes`/`writeFileBytes`, `createFile`/`createFolder`, `moveFile`/`renameFile`/`moveToTrash`,
-`importFiles`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
+`importFiles`, `keepCopyInGarbage`, `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`,
 `listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`,
 `pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault` — and, for open DOCUMENTS, the
 versioned IO (`readFileVersioned`/`readBytesVersioned`/`statFile`/`writeFileVersioned`/
@@ -27,6 +27,11 @@ There is no backend and no undo stack behind these calls — a mistake here dest
   buffers, saved output and vault-search match offsets all stay in agreement. The vault-search cache
   normalizes identically.
 - `writeFileBytes` hands the *view*, not `.buffer`, so a subarray does not write the whole buffer.
+- `keepCopyInGarbage(dir, name, bytes)` preserves the supplied bytes in that folder's `.Garbage`,
+  returning the collision-free physical basename only after close. It never opens or changes the
+  source. Backup calls have a recoverable queue; callers still coordinate with other Trash mutations
+  and retain document-version checks before backup and at the final versioned save. A failure throws
+  and must stop the rebuild. The hidden backup needs no tree refresh.
 
 ## There is no native move
 

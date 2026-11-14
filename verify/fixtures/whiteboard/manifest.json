@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "stream": "whiteboard",
+  "fixtures": [
+    {
+      "id": "CLASSIC-ONE-STROKE",
+      "file": "classic-one-stroke.tldraw",
+      "tier": 2,
+      "storage": "external-sha256-cache",
+      "sha256": "4498e2dc1ade504f5c6ace3bc1eb58403f7f82a433c693234baa37cbe5c93f1e",
+      "bytes": 1944,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "admission": "local-authored-use-only; committing or distributing the bytes awaits the owner licence decision",
+      "sourceNotice": "One independently authored pen stroke, written by the real classic app. No private content or imported assets. The saved serialization is compatibility data, not copied implementation. Never rename this .tldraw sample as native .drawing.",
+      "writtenBy": {
+        "sourceCommit": "ff3d755",
+        "branch": "impl/reference",
+        "build": "production",
+        "browser": "Chrome for Testing 157.0.8103.39",
+        "dpr": 1,
+        "viewport": [1440, 1000],
+        "gestures": "Open Vault, open empty classic drawing, trusted CDP pen stroke, app autosave",
+        "evidence": "verify/whiteboard/w-a/reference-manifest.json at impl/lane/w-a e8d3762"
+      },
+      "purpose": "Identical real app-written one-stroke input for the two fresh V-06 picture containers; no per-run random shape IDs or reconstructed schema.",
+      "gates": ["V-06"],
+      "expected": { "pane": "classic tldraw drawing", "shapes": 1, "kind": "draw", "ink": "black", "assets": 0 },
+      "cacheLoss": "Report not run until the cache is restored by exact hash, or a newly app-written sample is explicitly reviewed with a new manifest identity; never accept different bytes under this hash."
+    }
+  ]
+}

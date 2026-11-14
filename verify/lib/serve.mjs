@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildIdentity } from './identity.mjs';
+import { currentGrants } from './resources.mjs';
 
 const lock = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const howto = '/Users/adham/Developer/bme-impl/scratch/HOWTO.md';
@@ -14,16 +15,7 @@ let signalsInstalled = false;
 
 async function preparationGrants() {
     await access(howto);
-    const state = JSON.parse(await readFile(join(process.env.BME_LOCK_DIR ?? '/Users/adham/Developer/bme-impl/scratch/locks', 'state.json'), 'utf8'));
-    const ancestors = new Set();
-    let pid = process.pid;
-    for (let depth = 0; pid > 0 && depth < 64; depth++) {
-        ancestors.add(pid);
-        const parent = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
-        if (!parent || parent === pid) break;
-        pid = parent;
-    }
-    const grants = new Set(state.holders.filter(holder => ancestors.has(holder.pid)).map(holder => holder.cls));
+    const grants = await currentGrants();
     // With a 6-unit VM, four runs waiting for nested builds can fill the whole
     // pool forever. Preparation and browser execution must be separate phases.
     if (grants.has('run') || grants.has('bench')) throw new Error('Refusing to build or prepare under a run/bench grant; use --prepare under build first, then serveApp({build:false}) under run');
@@ -122,16 +114,16 @@ async function checkDevSource(prepared) {
 
 /** Preparation only: run under build, never run/bench (HOWTO §1, verification.md §2).
  * Reuses an ancestor build grant rather than nesting another one.
- * @param {{root?: string, scratch: string, mode?: 'dev'|'production'|'benchmark'}} options
+ * @param {{root?: string, scratch: string, mode?: 'dev'|'production'|'benchmark', manifest?: boolean, sourcemap?: boolean}} options
  */
-export async function prepareApp({ root = sourceRoot, scratch, mode = 'production' }) {
+export async function prepareApp({ root = sourceRoot, scratch, mode = 'production', manifest = false, sourcemap = false }) {
     await preparationGrants();
     if (!scratch || !['dev', 'production', 'benchmark'].includes(mode)) throw new Error('Preparation needs scratch and a known build mode');
     root = resolve(root); scratch = resolve(scratch);
     if (scratch === root || scratch.startsWith(`${root}/`)) throw new Error('Vite scratch must be outside the source root');
     await mkdir(scratch, { recursive: true });
     const config = join(scratch, 'vite.config.mjs'), dist = join(scratch, 'dist');
-    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true}};\n`);
+    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true${manifest ? ',manifest:true' : ''}${sourcemap ? ",sourcemap:'hidden'" : ''}}};\n`);
     let mutant;
     try { mutant = JSON.parse(await readFile(join(root, '.bme-mutant.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const repository = mutant?.sourceRoot ?? root;

@@ -30,9 +30,14 @@ export interface PdfInkAttemptInput {
     onNotice(message: string): void;
     onError(cause: unknown): void;
     onHistoryLimit(): void;
-    /** A read-only result that names a notebook source hands off only while this returns true. */
-    canHandOff(): boolean;
-    onOpenNotebookSource(path: string): void | Promise<void>;
+    /**
+     * Optional. A read-only result that names a notebook source hands off only when this is supplied and
+     * canHandOff() is true. Omitted by callers with no handoff (the cold agent path), which then refuses.
+     */
+    readonly notebookHandoff?: {
+        canHandOff(): boolean;
+        open(path: string): void | Promise<void>;
+    };
 }
 
 /**
@@ -54,10 +59,11 @@ export async function preparePdfInkAttempt(input: PdfInkAttemptInput, signal: Ab
     if (result.kind === 'read-only') {
         try {
             signal.throwIfAborted();
-            if (result.notebookSource && result.isCurrent?.() && input.canHandOff()) {
-                await input.onOpenNotebookSource(result.notebookSource.path);
+            const handoff = input.notebookHandoff;
+            if (handoff && result.notebookSource && result.isCurrent?.() && handoff.canHandOff()) {
+                await handoff.open(result.notebookSource.path);
                 signal.throwIfAborted();
-                if (!result.isCurrent() || !input.canHandOff()) throw new DOMException('PDF notebook handoff ended', 'AbortError');
+                if (!result.isCurrent() || !handoff.canHandOff()) throw new DOMException('PDF notebook handoff ended', 'AbortError');
             }
             throw new Error(result.reason);
         } finally { await result.dispose(); }

@@ -6349,8 +6349,7 @@ export default function App() {
       if (!pdfPinHolds(pin)) throw changed();
       const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: 100,
         legacyConversion: false, requireExistingNative: true, onError,
-        onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.'),
-        canHandOff: () => false, onOpenNotebookSource: () => {} }, prepareSignal);
+        onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.') }, prepareSignal);
       if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
       // ensureNativeBoard calls take inside attachCanvasSession, so this covers the attachment too.
       return { ...prepared, take(owner: Parameters<typeof prepared.take>[0], isLiveOwner: Parameters<typeof prepared.take>[1], readOnlyReason: Parameters<typeof prepared.take>[2]) {

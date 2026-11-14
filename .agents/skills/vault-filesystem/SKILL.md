@@ -85,8 +85,8 @@ anywhere in the open vault. **`walkForTrash` and the four mutually-recursive col
 hides them and nothing else looks.
 
 - **The crawl is DELIBERATELY UNCACHED**, a stated exception to AGENTS.md's whole-vault-walk rule. It
-  runs on a click and never on a save, so the `(lastModified, size)` cache `graph.ts`/`vaultSearch.ts`
-  need would only be a second vault-sized index in a tab that already holds one. It must **never
+  runs on a click and never on a save, so the vault index's `(lastModified, size)` cache would only
+  be a second vault-sized index in a tab that already holds one. It must **never
   subscribe to `saveEpoch`**, holds metadata only (name, size, mtime — never a file's bytes), and the
   panel re-crawls on every open and after nothing else. An unreadable folder is logged and skipped:
   one locked directory must not cost the reader the rest of their trash.
@@ -227,12 +227,11 @@ A cache HIT still costs a `getFile()` — one browser round trip per note. Measu
 vault paid 1,004 of them every time the autosave landed, because `buildGraph` re-validated the whole
 vault to discover nothing had changed. So:
 
-- **`flushTab` primes rather than re-reads.** `graph.primeLinks(path, mtime, size, text)` puts the
-  text the app just wrote into the link cache and returns whether that note's links MOVED. They
-  usually have not, and then no rebuild runs at all. When they have, `rebuildGraph(false)` runs
-  without revalidating: pure arithmetic over what is in memory.
-- **`revalidate: true` is for somebody ELSE's write** — a tree change, a watcher rescan, a vault
-  open. Never for one of ours.
+- **`flushTab` primes rather than re-reads.** It captures the index owner before the write, then
+  sends its saved text and stat to that same activation. The worker parses it, publishing a graph
+  only when links changed; no save walks the vault. Old-activation primes are dropped.
+- **Sweep on somebody ELSE's change**, a watcher rescan or vault open; path invalidations handle
+  individual external edits. Self-write observer echoes are deferred and checked once, not swept.
 - **No `Promise.all` over the vault.** `utils/pool.ts` (`mapPool`, `Limiter`, `VAULT_CONCURRENCY`)
   bounds it; `Limiter` is counted across a whole recursion, which is what the tree walk needs.
 - **The first full index runs `onIdle`**, behind the notes the reader actually asked for.
@@ -322,15 +321,13 @@ should spell `'.Assets'`.**
   and `restoreAsset` require a guard, checked before copying and immediately before source removal.
   A copy finishing after cancellation may leave both copies; it must not delete either source or
   revoke another activation's blob. Reference proofs also validate the edit/tree revision and open
-  readable buffers; undecided drops retry only on a later actual save, never a per-keystroke scan.
+  readable buffers; blocked folders retry on vault change, a later save or renewed access, never on a
+  timer or a per-keystroke scan.
 - **The diff is taken against the last SAVED text, not per keystroke** (`assetRefsRef`, seeded when a
-  tab opens). Until a removal reaches the disk it isn't one; the 1s save debounce doubles as the undo
-  grace period; and it is one regex pass per second instead of one per character. `flushTab` reads
-  the baseline and replaces it **in one synchronous step, before the write**, then hands both sets to
-  the async reconcile. Two things race that hand-over otherwise: `removeTab` drops the entry the
-  moment after it calls `flushTab` (so a closing tab's last save has to capture first — it does,
-  being synchronous up to the write), and a second save landing mid-reconcile would read a baseline
-  the first had yet to replace and could retire a picture that save had just put back.
+  tab opens). Until a removal reaches disk it isn't one, and the 1s debounce doubles as an undo grace
+  period. `flushTab` captures the shared baseline record before a close can drop it; serialized writes
+  advance the record and enqueue their diff only after a successful write. A failed write leaves it
+  unchanged, so a later successful save still retires or restores the picture it changed.
 - **Nothing is taken away while a neighbour still shows it.** The set consulted is the folder's own
   notes **and its whole subtree**, with open tabs read from their *buffers* so an unsaved reference
   counts. The subtree is not optional: the legacy walk above means a note in any descendant folder

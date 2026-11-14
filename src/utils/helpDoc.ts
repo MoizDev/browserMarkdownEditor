@@ -395,6 +395,10 @@ The pane header’s **Word emphasis** toggle paints supported glyphs directly on
 
 The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** searches extracted text while Text is focused; Original keeps the browser’s find. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
+If the PDF reader's code cannot load, its column offers **Retry**. This retries
+the reader, not your files. If the browser retains the loading failure, reload
+the app to try again.
+
 A PDF opens in a reader: scroll it, select its text, search it with the browser's
 own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
@@ -563,6 +567,8 @@ function helloWorld() {
   console.log("Hello");
 }
 \`\`\`
+
+Code blocks may use backticks or tildes (at least three matching characters; the closing run may be longer). In Reading mode the fence lines stay hidden; Copy code copies only the lines between them. Use mermaid after either opening fence to draw a diagram. In Edit mode, move the caret into the block to reveal its source.
 
 ### Tables
 | Syntax | Description |

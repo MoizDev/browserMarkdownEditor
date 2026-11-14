@@ -110,6 +110,24 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
     };
 }
 
+/** Pin before an asynchronous OS read; ownership transfers only once paste actually starts. */
+export function pasteWithCapturedClipboard(
+    adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste'>,
+    acquire: (signal: AbortSignal) => Promise<ClipboardInput>, intent: TextPasteIntent, signal: AbortSignal,
+): Promise<boolean> {
+    const captured = adapter.capturePaste();
+    return (async () => {
+        let transferred = false;
+        try {
+            signal.throwIfAborted();
+            const input = await acquire(signal);
+            signal.throwIfAborted();
+            transferred = true;
+            return await adapter.paste(input, intent, signal, captured);
+        } finally { if (!transferred) captured?.release(); }
+    })();
+}
+
 export interface TextClipboardDocumentOwner {
     readonly clipboardCopy: ClipboardCopy;
     bindTextAuthority(authority: {

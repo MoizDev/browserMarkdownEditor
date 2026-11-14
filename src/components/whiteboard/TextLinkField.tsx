@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { linkUrl } from '../../whiteboard/text/edit/format';
 
 interface TextLinkFieldProps {
     readonly x: number;
     readonly y: number;
     readonly initial: string;
+    readonly normalizeUrl: (value: string) => string | null;
     readonly commit: (url: string) => void;
     readonly cancel: () => void;
     readonly visit: (url: string) => void;
@@ -13,27 +13,24 @@ interface TextLinkFieldProps {
 
 // The edit selection lives in the board session, not in this field. Enter and
 // Escape stop here so neither can become an edit-host text operation (WB-D26).
-export function TextLinkField({ x, y, initial, commit, cancel, visit, contextMenu }: TextLinkFieldProps) {
+export function TextLinkField({ x, y, initial, normalizeUrl, commit, cancel, visit, contextMenu }: TextLinkFieldProps) {
     const [value, setValue] = useState(initial);
     const [invalid, setInvalid] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLInputElement>(null);
-    const current = useRef({ value, commit });
-    current.current = { value, commit };
+    useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
     useEffect(() => {
-        input.current?.focus();
-        input.current?.select();
         const outside = (event: PointerEvent) => {
             if (root.current?.contains(event.target as Node)) return;
-            const url = linkUrl(current.current.value);
-            if (url) current.current.commit(url);
+            const url = normalizeUrl(value);
+            if (url) commit(url);
             else setInvalid(true);
         };
         document.addEventListener('pointerdown', outside, true);
         return () => document.removeEventListener('pointerdown', outside, true);
-    }, []);
+    }, [value, normalizeUrl, commit]);
     const accept = () => {
-        const url = linkUrl(value);
+        const url = normalizeUrl(value);
         if (!url) { setInvalid(true); return; }
         commit(url);
     };
@@ -47,7 +44,7 @@ export function TextLinkField({ x, y, initial, commit, cancel, visit, contextMen
                 if (event.key === 'Escape') cancel(); else accept();
             }} /></label>
         <button type="button" onClick={accept}>Apply</button>
-        <button type="button" disabled={!linkUrl(value)} onClick={() => { const url = linkUrl(value); if (url) visit(url); }}>Visit link</button>
+        <button type="button" disabled={!normalizeUrl(value)} onClick={() => { const url = normalizeUrl(value); if (url) visit(url); }}>Visit link</button>
         {invalid && <div role="alert">Enter an http, https or mailto URL.</div>}
     </div>;
 }

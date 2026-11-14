@@ -53,10 +53,12 @@ type Listener = (epoch: number, key: FontKey) => void;
 /** One instance per document or worker FontFaceSet. Loading starts only on ensure(). */
 export class BoardFonts {
     private readonly loads = new Map<string, Promise<boolean>>();
+    private readonly loaded = new Set<string>();
     private readonly listeners = new Set<Listener>();
     private currentEpoch = 0;
     constructor(private readonly fontSet: FontFaceSet) {}
     get epoch(): number { return this.currentEpoch; }
+    isLoaded(key: FontKey): boolean { return this.loaded.has(fontDescriptor(key).url); }
     subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
     async ensure(key: FontKey, waitMs = 100): Promise<boolean> {
         const descriptor = fontDescriptor(key);
@@ -65,6 +67,7 @@ export class BoardFonts {
             const face = new FontFace(descriptor.familyName, `url("${descriptor.url}")`, { weight: String(descriptor.weight), style: descriptor.style });
             load = face.load().then(loaded => {
                 this.fontSet.add(loaded);
+                this.loaded.add(descriptor.url);
                 this.currentEpoch++;
                 for (const listener of this.listeners) listener(this.currentEpoch, descriptor.key);
                 return true;

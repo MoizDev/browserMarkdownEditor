@@ -77,6 +77,7 @@ export function coalesceCarriers(carriers: readonly BlockCarrier[]): readonly Bl
     return result.map(carrier => {
         const stored = { ...carrier };
         carrierOrigins.set(stored, carrierOrigin(carrier));
+        carrierSources.set(stored, carrierSource(carrier));
         return stored;
     });
 }

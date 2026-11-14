@@ -11,6 +11,11 @@ import { acquireNativeBoard } from './nativeAcquisition';
 import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
 
+function yieldAgentWork(): Promise<void> {
+    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+    return scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0));
+}
+
 async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometry: AgentGeometry, query: ShapeQuery,
     revision: number, labelled: boolean, guard: () => void, include?: (summary: ShapeSummary) => boolean): Promise<ShapePage> {
     const page = query.page, requested = query.offset ?? 0, limit = query.limit ?? 200;
@@ -27,7 +32,7 @@ async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], geometr
         while (stack.length) {
             if ((work++ & 255) === 0) {
                 guard();
-                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                await yieldAgentWork();
                 guard();
             }
             const top = stack[stack.length - 1];

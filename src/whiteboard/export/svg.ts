@@ -1,5 +1,6 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand, Rect, Rgba } from '../../platform/types'
 import type { WorkerContext } from '../../platform/workers'
+import type { TextDisplayFrame } from './displayList'
 import { ExportTooLarge } from './png'
 
 const SVG_LIMIT = 512 * 1024 * 1024
@@ -57,6 +58,7 @@ function pathAttributes(item: Extract<PageDisplayItem, { kind: 'path' }>): strin
 export function createSvgWriter(bounds: Readonly<Rect>): {
   append(item: PageDisplayItem): void
   appendCooperative(item: PageDisplayItem, context: WorkerContext, isCurrent: () => boolean): Promise<void>
+  appendTextCooperative(frame: TextDisplayFrame, items: AsyncIterable<PageDisplayItem>, context: WorkerContext, isCurrent: () => boolean): Promise<void>
   finish(): Blob
 } {
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new RangeError('Invalid SVG extent')
@@ -135,8 +137,8 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
       case 'raster': return `<image ${rect(item.rect)} preserveAspectRatio="none" href="data:image/png;base64,${bytes64(item.png)}"${effects(item.opacity, item.blend)}/>`
     }
   }
-  return {
-    async appendCooperative(item, context, isCurrent) {
+  async function writeCooperative(item: PageDisplayItem | null, frame: TextDisplayFrame | null, items: AsyncIterable<PageDisplayItem> | null,
+    context: WorkerContext, isCurrent: () => boolean): Promise<void> {
       if (finished || poisoned || busy) throw new Error('SVG writer is unavailable')
       busy = true
       let work = 0
@@ -164,29 +166,32 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
           if ((++work & 15) === 0) await context.slice()
         }
       }
+      const openGroup = async (group: Extract<PageDisplayItem, { kind: 'group' }>) => {
+        let clip = ''
+        if (group.clip) {
+          const key = clipKey(group.clip)
+          let id = key ? clips.get(key) : undefined
+          if (id && key) { clips.delete(key); clips.set(key, id) }
+          else {
+            id = `clip${nextClip++}`
+            put(definitions, `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="`)
+            await path(definitions, group.clip.d)
+            put(definitions, `" clip-rule="${rule(group.clip.fillRule)}"/></clipPath>`)
+            if (key) rememberClip(key, id)
+          }
+          clip = ` clip-path="url(#${id})"`
+        }
+        const transform = group.transform ? ` transform="${matrix(group.transform)}"` : ''
+        const isolation = group.isolation ? ` opacity="${number(group.isolation.opacity)}" style="isolation:isolate${group.isolation.blend === 'multiply' ? ';mix-blend-mode:multiply' : ''}"` : ''
+        put(body, `<g${transform}${clip}${isolation}>`)
+      }
       const visit = async (current: PageDisplayItem, depth: number): Promise<void> => {
         check()
         if (depth > 64) throw new RangeError('SVG group nesting exceeds 64 levels')
         if ((++work & 255) === 0) await context.slice()
         switch (current.kind) {
           case 'group': {
-            let clip = ''
-            if (current.clip) {
-              const key = clipKey(current.clip)
-              let id = key ? clips.get(key) : undefined
-              if (id && key) { clips.delete(key); clips.set(key, id) }
-              else {
-                id = `clip${nextClip++}`
-                put(definitions, `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><path d="`)
-                await path(definitions, current.clip.d)
-                put(definitions, `" clip-rule="${rule(current.clip.fillRule)}"/></clipPath>`)
-                if (key) rememberClip(key, id)
-              }
-              clip = ` clip-path="url(#${id})"`
-            }
-            const transform = current.transform ? ` transform="${matrix(current.transform)}"` : ''
-            const isolation = current.isolation ? ` opacity="${number(current.isolation.opacity)}" style="isolation:isolate${current.isolation.blend === 'multiply' ? ';mix-blend-mode:multiply' : ''}"` : ''
-            put(body, `<g${transform}${clip}${isolation}>`)
+            await openGroup(current)
             for (const child of current.items) await visit(child, depth + 1)
             put(body, '</g>')
             break
@@ -208,10 +213,23 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
             break
         }
       }
-      try { await visit(item, 0); check() }
-      catch (error) { poisoned = true; throw error }
+      try {
+        if (frame && items) {
+          if (frame.clips.length > 62) throw new RangeError('SVG group nesting exceeds 64 levels')
+          for (const clip of frame.clips) { check(); await openGroup({ kind: 'group', clip, items: [] }) }
+          check()
+          await openGroup({ kind: 'group', transform: frame.transform, items: [] })
+          for await (const child of items) await visit(child, frame.clips.length + 1)
+          for (let i = 0; i <= frame.clips.length; i++) put(body, '</g>')
+        } else if (item) await visit(item, 0)
+        else throw new TypeError('Invalid SVG writer input')
+        check()
+      } catch (error) { poisoned = true; throw error }
       finally { busy = false }
-    },
+  }
+  return {
+    appendCooperative: (item, context, isCurrent) => writeCooperative(item, null, null, context, isCurrent),
+    appendTextCooperative: (frame, items, context, isCurrent) => writeCooperative(null, frame, items, context, isCurrent),
     append(item) {
       if (finished || poisoned || busy) throw new Error('SVG writer is unavailable')
       try {

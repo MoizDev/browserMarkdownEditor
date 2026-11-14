@@ -3,7 +3,6 @@ import type { WorkerContext } from '../../platform/workers/serve'
 import { streamTextOutline } from '../text/outline'
 import { handleOutlineStream, holdOutlineStream } from '../text/outlineStream'
 import type { BoardJobIdentity } from '../workers/protocol'
-import { wrapCapturedTextDisplay } from './displayList'
 import type { TextDisplayFrame } from './displayList'
 import { createSvgWriter } from './svg'
 
@@ -46,14 +45,17 @@ export async function svgChunk(args: unknown, context: WorkerContext): Promise<n
     if (text) {
       const release = holdOutlineStream(text.id, text.owner)
       try {
-        for (;;) {
-          context.signal.throwIfAborted()
-          const batch = await handleOutlineStream({ outlineStream: 1, mode: 'nextBatch', id: text.id, owner: text.owner },
-            context, streamTextOutline, false)
-          if (batch.kind !== 'batch') throw new TypeError('Invalid SVG text outline batch')
-          if (batch.items.length) await entry.writer.appendCooperative(wrapCapturedTextDisplay(text.frame, batch.items), context, () => !entry.cancelled)
-          if (batch.done) break
+        const outlines = async function* (): AsyncGenerator<PageDisplayItem> {
+          for (;;) {
+            context.signal.throwIfAborted()
+            const batch = await handleOutlineStream({ outlineStream: 1, mode: 'nextBatch', id: text.id, owner: text.owner },
+              context, streamTextOutline, false)
+            if (batch.kind !== 'batch') throw new TypeError('Invalid SVG text outline batch')
+            yield* batch.items
+            if (batch.done) return
+          }
         }
+        await entry.writer.appendTextCooperative(text.frame, outlines(), context, () => !entry.cancelled)
       } finally { release() }
     } else {
       let count = 0

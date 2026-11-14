@@ -8,7 +8,7 @@ export function safePdfUri(value: string | Uint8Array): string | null {
         text = value;
     } else {
         if (value.byteLength > MAX_URI_BYTES) return null;
-        try { text = new TextDecoder('utf-8', { fatal: true }).decode(value); }
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(value); }
         catch { return null; }
     }
     if (!text || text.length > MAX_URI_BYTES || text !== text.trim() || new TextEncoder().encode(text).length > MAX_URI_BYTES) return null;

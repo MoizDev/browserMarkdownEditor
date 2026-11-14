@@ -40,6 +40,7 @@ export interface NativeClipboardControllerOptions {
     readonly pointer: () => ClipboardPoint | null;
     readonly surfacePoint: (clientX: number, clientY: number) => ClipboardPoint;
     readonly editingText: () => boolean;
+    readonly canWriteView: () => boolean;
     readonly finishGesture: () => void;
     readonly pinClipboard: () => ClipboardCachePin | null;
     readonly readMedia: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
@@ -63,9 +64,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
             && session.owner.documentId === identity.documentId && session.owner.session === identity.session;
     };
     const targetNow = (pointer?: ClipboardPoint | null) => {
-        if (!current() || session.isReadOnly) throw new Error(session.readOnlyReason ?? 'Board is not editable');
+        if (!current() || !options.canWriteView() || session.isReadOnly) throw new Error(session.readOnlyReason ?? 'Board is not editable');
         options.finishGesture();
-        if (!current() || session.isReadOnly || session.isGestureActive) throw new Error('Board is not ready for paste');
+        if (!current() || !options.canWriteView() || session.isReadOnly || session.isGestureActive) throw new Error('Board is not ready for paste');
         const selection = runtime.selection.getSnapshot(), camera = options.camera.camera, viewport = options.camera.viewport;
         if (!Number.isFinite(camera.z) || camera.z <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new Error('Board viewport is unavailable');
         const chosen = selection.selected.length === 1 ? doc.nodes.get(selection.selected[0]) : undefined;
@@ -77,7 +78,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             pasteAtCursor: options.pasteAtCursor() });
         return { target, zoom: camera.z };
     };
-    const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && !session.isReadOnly
+    const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && options.canWriteView() && !session.isReadOnly
         && target.session === `${identity.documentId}:${identity.session}` && target.vaultEpoch === identity.vaultActivation
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
     const execute = (input: Promise<ClipboardInput> | null, captured: ReturnType<typeof targetNow>, intent: ClipboardIntent,

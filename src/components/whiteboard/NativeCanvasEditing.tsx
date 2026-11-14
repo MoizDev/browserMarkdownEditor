@@ -36,6 +36,7 @@ export interface NativeEditingRenderContext {
     readonly notice: string | null;
     readonly setNotice: (value: string) => void;
     readonly editable: boolean;
+    readonly canMutate: () => boolean;
 }
 
 /** This mounts actual editing input and chrome against the acquired document. The temporary
@@ -188,7 +189,8 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
     return <>{dialogs.dialogs}{attached && chromeReady && <span role="status">Canvas editing services are attached; document remains read-only until all source services are ready.</span>}
         {renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
-            editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity) })}</>;
+            editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
+            canMutate: lease.canMutateView })}</>;
 }
 
 function NativeChromeAttachment({ context, bind, children }: { readonly context: NativeEditingChromeContext;

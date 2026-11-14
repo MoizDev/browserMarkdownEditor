@@ -17,6 +17,7 @@ export function createNativeTextClipboard(options: {
     readonly identity: NativeCanvasIdentity;
     readonly clipboard: NativeClipboardService;
     readonly binding: NativeClipboardBinding;
+    canWriteView(): boolean;
     onError(error: unknown): void;
 }) {
     const { runtime, host, identity, binding, clipboard, editor } = options;
@@ -26,9 +27,10 @@ export function createNativeTextClipboard(options: {
     const lifetime = new AbortController();
     const current = () => !disposed && host.isCurrent(identity) && runtime.session.owner.documentId === identity.documentId
         && runtime.session.owner.session === identity.session;
-    const make = (pasteBoard: Parameters<typeof createTextClipboardAdapter>[0]['pasteBoard'], writable = false) => {
+    const writable = () => options.canWriteView() && host.canWrite(identity);
+    const make = (pasteBoard: Parameters<typeof createTextClipboardAdapter>[0]['pasteBoard'], requiresWrite = false) => {
         const job: BoardJobIdentity = { session: `${identity.documentId}:${identity.session}`, epoch: identity.vaultActivation, revision: runtime.session.doc.rev };
-        const isCurrent = (candidate: BoardJobIdentity) => current() && (!writable || host.canWrite(identity)) && candidate.session === job.session && candidate.epoch === job.epoch
+        const isCurrent = (candidate: BoardJobIdentity) => current() && (!requiresWrite || writable()) && candidate.session === job.session && candidate.epoch === job.epoch
             && candidate.revision === job.revision && runtime.session.doc.rev === job.revision;
         const html = createClipboardHtmlFrameHost({ memory: clipboard.memory, identity: job, isCurrent });
         return createTextClipboardAdapter({ editor, copy: binding.commands.clipboardCopy, memory: clipboard.memory, html,
@@ -60,7 +62,7 @@ export function createNativeTextClipboard(options: {
     const copy = (event: ClipboardEvent, cut: boolean) => {
         if (!inlineEvent(event) || (!active && !editor.manager.current)) return;
         event.preventDefault();
-        if (!current() || (cut && !host.canWrite(identity))) return;
+        if (!current() || (cut && !writable())) return;
         try {
             setActive(true);
             copyAdapter?.dispose();
@@ -70,7 +72,7 @@ export function createNativeTextClipboard(options: {
     };
     const onCopy = (event: ClipboardEvent) => copy(event, false), onCut = (event: ClipboardEvent) => copy(event, true);
     const copyMenu = async (cut = false) => {
-        if ((!active && !editor.manager.current) || !current() || (cut && !host.canWrite(identity))) return;
+        if ((!active && !editor.manager.current) || !current() || (cut && !writable())) return;
         try {
             setActive(true);
             copyAdapter?.dispose();
@@ -79,7 +81,7 @@ export function createNativeTextClipboard(options: {
         } catch (error) { report(error); }
     };
     const paste = (input: ReturnType<typeof captureTransfer>, intent: TextPasteIntent) => {
-        if (!active || !current() || !host.canWrite(identity)) return;
+        if (!active || !current() || !writable()) return;
         const forward = binding.controller.capturePaste(input, intent);
         let adapter: ReturnType<typeof createTextClipboardAdapter>;
         try { adapter = make((_input, _intent, signal, cache) => {
@@ -91,7 +93,7 @@ export function createNativeTextClipboard(options: {
         void adapter.paste(input, intent, lifetime.signal, forward.cachePin).catch(report).finally(() => { forward.release(); pasteAdapters.delete(adapter); adapter.dispose(); });
     };
     const pasteSystem = async (intent: TextPasteIntent) => {
-        if ((!active && !editor.manager.current) || !current() || !host.canWrite(identity)) return;
+        if ((!active && !editor.manager.current) || !current() || !writable()) return;
         try {
             setActive(true);
             const before = editor.clipboardContext();
@@ -99,7 +101,7 @@ export function createNativeTextClipboard(options: {
             const forward = binding.controller.capturePasteTarget(intent);
             try {
                 const input = await binding.controller.readClipboard(), after = editor.clipboardContext();
-                if (!active || !current() || !host.canWrite(identity) || !after || after.node.id !== before.node.id || after.revision !== before.revision ||
+                if (!active || !current() || !writable() || !after || after.node.id !== before.node.id || after.revision !== before.revision ||
                     after.selection.anchor !== before.selection.anchor || after.selection.focus !== before.selection.focus) {
                     throw new DOMException('Text selection changed', 'AbortError');
                 }

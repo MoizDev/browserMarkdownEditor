@@ -2,6 +2,7 @@ import type { BoardKind, Sheet } from './doc';
 import { isValidId, type NodeId, type ParentId, type SheetId } from './ids';
 import type { NodeRecord } from './nodes';
 import { isValidKey, keysBetween } from './orderKey';
+import { NODE_FILE_FIELDS } from './fileFields';
 import type { LoadRepairNotice } from './loadTypes';
 
 export interface GraphRepairOptions {
@@ -64,6 +65,9 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
     let refusal: string | null = null;
     const makeRoot = (item: Item, reason: string) => {
         if (item.node.kind === 'opaque') { refusal = 'Repair would move an opaque record'; return; }
+        if (['parent', 'page', 'x', 'y'].some(key => NODE_FILE_FIELDS[key as 'parent' | 'page' | 'x' | 'y'].some(token => item.node.ext?.raw.has(token)))) {
+            refusal = 'Repair would override preserved node properties'; return;
+        }
         const pos = options.kind === 'whiteboard' ? { page: -1, x: item.node.x, y: item.node.y }
             : options.rootPlacement(item.node, root, item.ordinal);
         item.node = { ...item.node, parent: root, ...pos };
@@ -121,7 +125,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             seen.add(order);
         }
         if (!bad) continue;
-        if (list.some(item => item.node.kind === 'opaque')) return result(items, 'Repairing order would change an opaque record');
+        if (list.some(item => item.node.kind === 'opaque' || NODE_FILE_FIELDS.order.some(token => item.node.ext?.raw.has(token)))) return result(items, 'Repairing order would change an opaque or preserved record');
         const keys = keysBetween(null, null, list.length);
         for (let i = 0; i < list.length; i++) {
             list[i].node = { ...list[i].node, order: keys[i] };
@@ -206,7 +210,11 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             return { x: end.x, y: end.y, attach: null };
         };
         const start = detach(node.start), end = detach(node.end);
-        if (start !== node.start || end !== node.end) { item.node = { ...node, start, end }; record(item, 'detached-attachment'); }
+        if (start !== node.start || end !== node.end) {
+            if ((start !== node.start && NODE_FILE_FIELDS.start.some(token => node.ext?.raw.has(token)))
+                || (end !== node.end && NODE_FILE_FIELDS.end.some(token => node.ext?.raw.has(token)))) return result(items, 'Repair would override a preserved connector endpoint');
+            item.node = { ...node, start, end }; record(item, 'detached-attachment');
+        }
     }
     return result(items.filter(item => live.has(item.node.id)), null);
 }

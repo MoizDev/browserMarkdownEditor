@@ -46,7 +46,7 @@ Under the tabs, while the file tree is showing, is a row of buttons for the tree
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
 
-In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; engine changes apply when you next open a pane. Only engines included in this build are offered. An emergency read-only switch for each native canvas kind permits viewing, copying and export but prevents edits and saves. **Incremental live preview** can be turned off to recalculate a whole note on each change. Turning developer settings off restores the normal engine choices without deleting your saved selections.
+In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; engine changes apply when you next open a pane. **PDF platform layer** previews the new renderer in the classic PDF viewer; the classic view remains available if the preview cannot attach. Only engines included in this build are offered. An emergency read-only switch for each native canvas kind permits viewing, copying and export but prevents edits and saves. **Incremental live preview** can be turned off to recalculate a whole note on each change. Turning developer settings off restores the normal engine choices without deleting your saved selections.
 
 To recover a converted canvas's old file, right-click it and choose **Restore the copy from before conversion**. The app finds the matching backup in Trash and restores a separate file under a free name; it leaves the converted file and backup alone. For a converted PDF, open its annotation view first. In Trash, **Restore a copy** likewise copies a selected file back without consuming it or replacing an existing file.
 
@@ -432,6 +432,8 @@ The **⋯ → Read extracted text** action is a separate, manual reading choice 
 
 **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
 
+In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.
+
 When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
 
 **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
@@ -448,7 +450,7 @@ In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, incl
 - Chrome's **Edit → Find** menu still opens Chrome's own bar, which sees only built text layers, not necessarily every page. Use the keyboard shortcut for complete PDF find.
 
 A PDF opens in a reader: scroll it, select its text, search every page with the
-app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a page with the box at the bottom.
+app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a physical page by typing its number in the box at the bottom and pressing \`Enter\`. The thumbnails use those same page numbers; the current page is highlighted. \`Home\` and \`End\` go to the first and last page, and \`Page Up\` / \`Page Down\` scroll by a screenful.
 Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
 beside the page box opens a **strip of page thumbnails** down the left; click one
 to go to that page. The button next to it **inverts the pages** so they are easy on the
@@ -476,7 +478,7 @@ whose page is unknown appears above the document. Its thumbnail says
 **Try again** reopens the PDF; it does not repair or change the original file.
 In Annotate, switch to View to retry without disturbing your ink.
 
-**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Form fields and XFA are not interactive here; scripts and active PDF content do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
+**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
 
 If rendering makes no progress for a while, **This PDF is taking longer than usual**
 lets you keep waiting or choose **Try again** to restart the renderer. Slow scans

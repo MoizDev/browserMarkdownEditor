@@ -63,6 +63,8 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
     const board = async (): Promise<TextEditorPasteResult> => { check(); await options.pasteBoard(context, options.cache); context.assertCurrent(); return 'board'; };
     check();
     const classification = await classifyClipboard(input, options.intent, options.classifier, context.signal);
+    let released = false;
+    const releaseMarker = () => { if (!released) { released = true; if ('release' in classification) classification.release?.(); } };
     try {
     check();
     if (classification.kind === 'empty') return 'handled';
@@ -95,13 +97,13 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
             check();
             const source = acquisition.load.doc, roots = source.children.get(acquisition.payload.from.sheet) ?? [];
             if (source.nodes.size !== 1 || roots.length !== 1 || roots[0].kind !== 'text') {
-                acquisition.dispose(); acquisition = undefined; decoded.release(); classification.release?.(); return await board();
+                acquisition.dispose(); acquisition = undefined; decoded.release(); releaseMarker(); return await board();
             }
             options.editor.replaceSelection(roots[0].text); return 'handled';
         } finally { acquisition?.dispose(); decoded.release(); }
     }
     return board();
-    } finally { if ('release' in classification) classification.release?.(); }
+    } finally { releaseMarker(); }
 }
 export function pasteIntoTextEditor(options: TextEditorPasteOptions, signal?: AbortSignal): Promise<TextEditorPasteResult> {
     const input = captureInput(options.input), cache = options.cache;

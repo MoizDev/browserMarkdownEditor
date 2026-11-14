@@ -4,7 +4,8 @@ import { exactLineBetween, exactPoint, exactPointIntervals, exactSide, type Exac
 import { createCurveDiskCertificate } from './curveDiskCertificate';
 import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, subtract } from './numeric';
-import { strokeRadiusBounds } from './strokeRadiusBounds';
+import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
+import { createAnisotropicPointJob } from './anisotropicPointJob';
 import { strokeSeparatedFromPoint } from './strokeSupport';
 import { lowerPointHullDistance, splitCertifiedCurve, upperPointIntervalDistance,
     type BoundsPoint, type CertifiedCurve } from './pointPathJob';
@@ -87,6 +88,8 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
     const stroke = strokeRadiusBounds(query.localToSurface, options.strokeRadiusLocal);
     if (!stroke) finished = { status: 'uncertain', reason: 'Clipped stroke scale overflows' };
     const radius = stroke ?? interval(0), threshold = add(radius, interval(margin));
+    const anisotropic = margin > 0 && !isUniformDistanceMatrix(query.localToSurface);
+    let anisotropicJob: ReturnType<typeof createAnisotropicPointJob> | undefined;
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped stroke radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
     const allowed = (box: CertifiedClipBox) => frames.every(region => classifyCertifiedClipBox(box, region) === 'inside') && exclusions.every(region => classifyCertifiedClipBox(box, region) === 'outside');
@@ -111,6 +114,14 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped point work limit exhausted' });
+                if (anisotropicJob) {
+                    const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    anisotropicJob.cancel(); anisotropicJob = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
+                    if (result.status === 'uncertain') uncertain = true;
+                    deferred = undefined; continue;
+                }
                 if (certificate) {
                     const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
@@ -138,6 +149,9 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                         if (queryAllowed && distance <= radius.lo) return finish({ status: 'hit', distanceCss: 0 });
                         if (distance <= margin && allowed(certifiedIntervalPointBox(endpoint))) return finish({ status: 'hit', distanceCss: distance });
                     }
+                    if (anisotropic && allowed(bounds)) {
+                        deferred = item; anisotropicJob = createAnisotropicPointJob(item.exact, query.localToSurface, options.strokeRadiusLocal, query.point, margin); continue;
+                    }
                     if (allowed(bounds)) {
                         deferred = item; certificatePhase = 'inner'; certificate = createCurveDiskCertificate(item.exact, centre, low); continue;
                     }
@@ -162,6 +176,6 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
     };
 }

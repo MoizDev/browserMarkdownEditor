@@ -31,13 +31,18 @@ export interface TextInputBridge {
     doubleClick(clientX: number, clientY: number): boolean;
     /** Close on click-away or return a gesture owner for selection inside the edited text. */
     pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null;
+    /** Invalidate a deferred hit without closing an existing editor. */
+    cancelPending(): boolean;
     flush(): void;
 }
+export type TextInputHit = { readonly node: NodeId; readonly offset: number } | 'blank' | null;
 export interface TextInputRoutingPorts {
     readonly manager: TextEditingManager;
     selected(): NodeId | null;
     /** null means a non-text hit; 'blank' permits double-click creation. */
-    locate(clientX: number, clientY: number, signal: AbortSignal): { readonly node: NodeId; readonly offset: number } | 'blank' | null | Promise<{ readonly node: NodeId; readonly offset: number } | 'blank' | null>;
+    locate(clientX: number, clientY: number, signal: AbortSignal): TextInputHit | Promise<TextInputHit>;
+    /** Capture document/session, layout and camera generations BEFORE requesting a hit. */
+    captureHit(): () => boolean;
     isCurrent(): boolean;
     error(error: unknown): void;
     containsActive(clientX: number, clientY: number): boolean;

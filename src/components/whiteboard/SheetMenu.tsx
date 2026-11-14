@@ -33,7 +33,7 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
     const rect = anchor.getBoundingClientRect();
     useEffect(() => {
         panel.current?.querySelector<HTMLButtonElement>('button')?.focus();
-        const escape = dismissOnEscape(() => closeRef.current());
+        const escape = dismissOnEscape(() => { closeRef.current(); if (anchor.isConnected) anchor.focus(); });
         const outside = (event: PointerEvent) => {
             if (event.target instanceof Element && event.target.closest('.context-menu-panel')) return;
             if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.contains(event.target)) closeRef.current();

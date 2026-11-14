@@ -8,7 +8,7 @@ import type { NodeRecord } from '../model/nodes';
 import { scanRawMedia, visitExtRaw, visitHostRaw, visitNodeRaw, visitPreservedRaw } from '../model/rawMedia';
 import type { UiBlock } from '../model/styles';
 import type { SavedView } from './encode';
-import { hasNativeMarker, JsonReadError, parseJson } from './jsonRead';
+import { hasNativeMarker, hasNativeMarkerIncremental, JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
 import type { JsonSpan } from './jsonRead';
 import { readHeader, readRecord } from './readModel';
 import type { MappedRecord } from './readModel';
@@ -264,10 +264,10 @@ function recordType(root: JsonSpan): string | null {
     for (const [key, value] of root.fields()) if (key === 'type') return value.kind === 'string' ? value.string(128) : null;
     return null;
 }
-function headerLine(text: string): JsonSpan | null {
+async function headerLine(text: string, cooperate?: () => Promise<void>): Promise<JsonSpan | null> {
     if (!text.endsWith('[')) return null;
     try {
-        const root = parseJson(text + ']}');
+        const root = cooperate ? await parseJsonIncremental(text + ']}', cooperate) : parseJson(text + ']}');
         let last: readonly [string, JsonSpan] | undefined;
         for (const field of root.fields()) last = field;
         return last?.[0] === 'records' && last[1].kind === 'array' ? root : null;
@@ -324,9 +324,9 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 // mistake a compact nested object in a pretty legacy snapshot for an envelope.
                 if (rootLine) {
                     rootLine = false;
-                    native ||= hasNativeMarker(text);
-                    const header = headerLine(text);
-                    if (header && hasNativeMarker(header.source)) {
+                    native ||= options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
+                    const header = await headerLine(text, options.cooperate);
+                    if (header && (options.cooperate ? await hasNativeMarkerIncremental(header.source, options.cooperate) : hasNativeMarker(header.source))) {
                         native = true; streaming = true; records.open(header);
                     }
                 }
@@ -348,7 +348,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             haveRecord = true; lastComma = comma;
             let root: JsonSpan;
             try {
-                root = parseJson(body);
+                root = options.cooperate ? await parseJsonIncremental(body, options.cooperate) : parseJson(body);
                 if (recordType(root) !== null) { recordLines = true; state.fallback = null; }
             } catch (error) {
                 if (!(error instanceof JsonReadError)) throw error;
@@ -371,7 +371,8 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
     if (!native && state.probeBytes) {
         // A prefix may end inside a multi-byte character. This probe only recognizes the marker;
         // full line/fallback decoding is fatal and remains the authority for UTF-8 admission.
-        native = hasNativeMarker(new TextDecoder().decode(state.probe.subarray(0, state.probeBytes)));
+        const probe = new TextDecoder().decode(state.probe.subarray(0, state.probeBytes));
+        native = options.cooperate ? await hasNativeMarkerIncremental(probe, options.cooperate) : hasNativeMarker(probe);
     }
     state.probe = new Uint8Array(0);
     if (!fatal && state.whitespaceOnly) return result('empty', null, true);
@@ -384,9 +385,10 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             const bomBytes = text.startsWith('\ufeff') ? 3 : 0;
             if (bomBytes) { text = text.slice(1); reformatted = true; }
             if (!white(text)) return result('empty', null, true);
-            native ||= hasNativeMarker(text);
-            const root = parseJson(text);
-            if (!hasNativeMarker(text)) return result('other', null, true);
+            const marked = options.cooperate ? await hasNativeMarkerIncremental(text, options.cooperate) : hasNativeMarker(text);
+            native ||= marked;
+            const root = options.cooperate ? await parseJsonIncremental(text, options.cooperate) : parseJson(text);
+            if (!marked) return result('other', null, true);
             native = true;
             records = new Records(safeOptions); // Failed line guesses admitted no samples.
             records.open(root);

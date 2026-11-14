@@ -42,8 +42,8 @@ export async function streamSvg(
     await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
   }
   try {
-    await client.request('svgStart', { streamId, bounds: { ...bounds } }, identity, opts, current)
     started = true
+    await client.request('svgStart', { streamId, bounds: { ...bounds } }, identity, opts, current)
     if (background) await send([{ kind: 'path', fill: background, d: [
       ['M', bounds.x, bounds.y], ['L', bounds.x + bounds.width, bounds.y],
       ['L', bounds.x + bounds.width, bounds.y + bounds.height], ['L', bounds.x, bounds.y + bounds.height], ['Z'],
@@ -62,6 +62,7 @@ export async function streamSvg(
       }
       chunk.length = 0
       await send(items)
+      if (!complete && !items.length) await new Promise<void>(resolve => setTimeout(resolve, 0))
     }
     signal.throwIfAborted()
     const result = await client.request<Blob>('svgFinish', { streamId }, identity, opts, current)

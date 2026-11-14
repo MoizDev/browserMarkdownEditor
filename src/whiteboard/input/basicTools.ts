@@ -1,23 +1,30 @@
 import type { GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import type { NodeId } from '../model/ids'
+import { SweepQueue, type SweepQueueServices } from './sweepQueue'
 
 export interface InkPoint { readonly x: number; readonly y: number }
-export interface EraserContext {
-  // The shared hierarchy/pick service applies locks and parent/group policy.
-  sweep(from: InkPoint, to: InkPoint, topOnly: boolean): readonly string[]
-  preview(ids: ReadonlySet<string>): void
-  commit(ids: ReadonlySet<string>): void
+export interface EraserContext extends SweepQueueServices {
+  hold(): () => void
+  registerPending(cancel: () => void): () => void
+  commit(ids: ReadonlySet<NodeId>): void
   clearPreview(): void
+  error(error: unknown): void
 }
 
 class EraserGesture implements GestureOwner {
   readonly kind = 'erase' as const
   readonly pointerIds: ReadonlySet<number>
-  private readonly ids = new Set<string>()
+  private readonly queue: SweepQueue
+  private readonly release: () => void
+  private unregister: (() => void) | null = null
   private last: InkPoint
   private ended = false
+  private cancelled = false
   constructor(sample: RealSample, modifiers: Modifiers, private readonly context: EraserContext) {
     this.pointerIds = new Set([sample.pointerId])
     this.last = sample
+    this.release = context.hold()
+    this.queue = new SweepQueue(context)
     this.collect(sample, modifiers)
   }
   update(samples: readonly RealSample[], modifiers: Modifiers): void {
@@ -27,13 +34,24 @@ class EraserGesture implements GestureOwner {
   finish(): void {
     if (this.ended) return
     this.ended = true
-    try { if (this.ids.size) this.context.commit(this.ids) } finally { this.context.clearPreview() }
+    this.unregister = this.context.registerPending(() => this.cancel())
+    void this.queue.finish().then(ids => {
+      if (!this.cancelled && ids.size) this.context.commit(ids)
+    }).catch(error => {
+      if (!this.cancelled) this.context.error(error)
+    }).finally(() => { this.unregister?.(); this.unregister = null; this.context.clearPreview(); this.release() })
   }
-  cancel(): void { if (!this.ended) { this.ended = true; this.context.clearPreview() } }
+  cancel(): void {
+    if (this.cancelled) return
+    this.cancelled = true
+    this.queue.cancel()
+    this.context.clearPreview()
+    if (!this.ended) { this.ended = true; this.release() }
+  }
   private collect(point: InkPoint, modifiers: Modifiers): void {
-    for (const id of this.context.sweep(this.last, point, modifiers.accel)) this.ids.add(id)
+    const from = this.last
     this.last = point
-    this.context.preview(this.ids)
+    this.queue.add(from, point, modifiers.accel)
   }
 }
 export const eraserTool: Tool<EraserContext> = {

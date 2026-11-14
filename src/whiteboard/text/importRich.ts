@@ -6,6 +6,7 @@ import type { RichImportResult } from './rich';
 import { repairLegacyCharacterSteps } from './repair';
 import type { PlainTextOptions } from './plainText';
 import { materializeLegacySpan, RichImportSchedulerError } from './legacySpanMaterialize';
+import { encodeOpaqueJsonSteps } from './opaqueJson';
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue | null {
@@ -27,8 +28,7 @@ function* raw(value: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): 
             return encoded;
         }
     }
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined || encoded.length > MAX_TEXT_LENGTH * 4) throw new RangeError('Unsupported rich data exceeds preservation limit');
+    const encoded = yield* encodeOpaqueJsonSteps(value);
     return requireRaw(yield { kind: 'parse', text: encoded });
 }
 function validLink(value: unknown): value is string {
@@ -93,8 +93,9 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
                 if (work > 1_000_000) fail('Rich text structure exceeds safe limits');
                 if (!Object.hasOwn(object, key)) fail('Inherited rich node fields cannot be preserved');
                 if (keep(key, object[key])) {
+                    const name = yield* encodeOpaqueJsonSteps(key);
                     const encoded = yield* raw(object[key], originals);
-                    add(`${JSON.stringify(key)}:${encoded}`);
+                    add(`${name}:${encoded}`);
                 }
             }
         }

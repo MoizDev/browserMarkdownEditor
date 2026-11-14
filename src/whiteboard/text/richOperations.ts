@@ -24,8 +24,11 @@ export function plain(value: RichText): string {
     return projectionText(value);
 }
 export function fromPlain(value: string): RichText {
-    const lines = value.replace(/\r\n?/g, '\n').split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS || value.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
+    const normalized = value.replace(/\r\n?/g, '\n');
+    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    const lines = normalized.split('\n');
+    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
 }
 export function marksAt(value: RichText, offset: number): Marks {
@@ -46,8 +49,11 @@ export function insertionFragment(value: RichText, from: number, inserted: strin
     check(value, from);
     const { block } = position(value, from);
     const marks = storedMarks ?? marksAt(value, from);
-    const lines = inserted.replace(/\r\n?/g, '\n').split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS || inserted.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    if (inserted.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
+    const normalized = inserted.replace(/\r\n?/g, '\n');
+    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
+    const lines = normalized.split('\n');
+    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
     return { blocks: lines.map((text, index) => ({ ...(index === 0 ? block : continuation(block)), runs: [{ text, marks }] })) };
 }
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {

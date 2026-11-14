@@ -9,7 +9,7 @@ const PENDING: CurveDiskResult = Object.freeze({ status: 'pending' });
 const ZERO: Dyadic = Object.freeze({ n: 0n, e: 0 });
 function add(a: Dyadic, b: Dyadic): Dyadic { return dyadicSubtract(a, { n: -b.n, e: b.e }); }
 function times(a: Dyadic, coefficient: bigint): Dyadic { return { n: a.n * coefficient, e: a.e }; }
-function power(values: readonly Dyadic[], origin: Dyadic): Dyadic[] {
+export function bernsteinPower(values: readonly Dyadic[], origin: Dyadic): Dyadic[] {
     if (values.length === 2) return [dyadicSubtract(values[0], origin), dyadicSubtract(values[1], values[0])];
     if (values.length !== 4) throw new RangeError('Unsupported curve degree');
     return [dyadicSubtract(values[0], origin), times(dyadicSubtract(values[1], values[0]), 3n),
@@ -25,7 +25,7 @@ export function createCurveDiskCertificate(curve: Curve, centre: ExactCurvePoint
     if (!Number.isFinite(radius) || radius < 0 || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid curve disk certificate');
     const arithmetic = createPolynomialArithmetic(maxBits);
     const calculate = function* (): Generator<void, CurveDiskResult> {
-        const x = power(curve.map(point => point.x), centre.x), y = power(curve.map(point => point.y), centre.y), count = x.length * 2 - 1;
+        const x = bernsteinPower(curve.map(point => point.x), centre.x), y = bernsteinPower(curve.map(point => point.y), centre.y), count = x.length * 2 - 1;
         const polynomial: Dyadic[] = Array.from({ length: count }, () => ZERO);
         for (let i = 0; i < x.length; i++) for (let j = 0; j < x.length; j++) {
             polynomial[i + j] = add(polynomial[i + j], add(dyadicMultiply(x[i], x[j]), dyadicMultiply(y[i], y[j]))); yield;

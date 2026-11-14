@@ -1,7 +1,7 @@
 import { exactAffinePoint } from './exactAffine';
 import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
 import { exactSegmentsIntersect } from './exactSegments';
-import { createCubicLineCertificate } from './cubicLineCertificate';
+import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
 import type { ExactCurvePoint } from './cubicRootCertificate';
 import { createFillPointJob } from './fillPoint';
 import { add, interval, multiply, sqrtInterval, subtract, type Interval } from './numeric';
@@ -62,7 +62,9 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, segment: CertifiedCurve | undefined, segmentRadius = strokeRadius;
     let startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined, segmentExact: readonly [ExactPoint, ExactPoint] | undefined;
     let segmentCubic: readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
-    let lineCertificate: ReturnType<typeof createCubicLineCertificate> | undefined, deferred: Pair | undefined;
+    let capsuleCertificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, deferred: Pair | undefined;
+    let capsulePhase: 'inner' | 'outer' = 'inner', exactCurve: readonly [ExactCurvePoint, ExactCurvePoint] | readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint] | undefined;
+    let exactSweep: readonly [ExactCurvePoint, ExactCurvePoint] | undefined;
     const stack: Pair[] = [];
     const finish = (result: SweptPathResult): SweptPathResult => { finished = Object.freeze(result); return finished; };
     return {
@@ -81,13 +83,18 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     if (state.status === 'uncertain') fillUncertain = true;
                     fill = undefined; fillIndex++; continue;
                 }
-                if (lineCertificate) {
-                    const result = lineCertificate.step({ deadline: budget.deadline, maxWork: 1 });
+                if (capsuleCertificate) {
+                    const result = capsuleCertificate.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
-                    lineCertificate.cancel(); lineCertificate = undefined;
-                    if (result.status === 'hit') return finish({ status: 'hit' });
-                    if (result.status === 'uncertain') curveUncertain = true;
-                    stack.push(deferred!); deferred = undefined; continue;
+                    capsuleCertificate.cancel(); capsuleCertificate = undefined;
+                    if (capsulePhase === 'inner' && result.status === 'hit') return finish({ status: 'hit' });
+                    const low = Math.max(0, deferred!.radius.lo), high = Math.max(0, deferred!.radius.hi);
+                    if (capsulePhase === 'inner' && result.status === 'miss' && low === high) { deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
+                    if (capsulePhase === 'inner' && result.status === 'miss') {
+                        capsulePhase = 'outer'; capsuleCertificate = createCurveCapsuleCertificate(exactCurve!, exactSweep![0], exactSweep![1], high); continue;
+                    }
+                    if (capsulePhase === 'outer' && result.status === 'miss') { deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue; }
+                    stack.push(deferred!); deferred = undefined; exactCurve = undefined; exactSweep = undefined; continue;
                 }
                 const pair = stack.pop();
                 if (pair) {
@@ -115,9 +122,8 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                         if (segmentExact && exactSegmentsIntersect(segmentExact[0], segmentExact[1], exactPoint(first), exactPoint(last))) return finish({ status: 'hit' });
                         sweepIndex++; if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                         const pair: Pair = { path: segment, sweep: { points: [a, b], depth }, radius: segmentRadius };
-                        if (query.radiusCss === 0 && segmentCubic) {
-                            lineCertificate = createCubicLineCertificate(segmentCubic, exactPoint(first), exactPoint(last)); deferred = pair;
-                        } else stack.push(pair);
+                        exactCurve = segmentCubic ?? segmentExact; exactSweep = [exactPoint(first), exactPoint(last)]; deferred = pair; capsulePhase = 'inner';
+                        capsuleCertificate = createCurveCapsuleCertificate(exactCurve!, exactSweep[0], exactSweep[1], Math.max(0, segmentRadius.lo));
                         continue;
                     }
                     segment = undefined; segmentExact = undefined; segmentCubic = undefined; sweepIndex = 0; continue;
@@ -153,6 +159,6 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
             }
             return PENDING;
         },
-        cancel() { cancelled = true; lineCertificate?.cancel(); lineCertificate = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; capsuleCertificate?.cancel(); capsuleCertificate = undefined; deferred = undefined; exactCurve = undefined; exactSweep = undefined; stack.length = 0; },
     };
 }

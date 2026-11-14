@@ -6,6 +6,7 @@ import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { flipBoardLeaves } from '../commands/flipLeaves';
+import { stretchBoardLeaves } from '../commands/stretchLeaves';
 import type { StickyDirection } from '../commands/stickyNeighbour';
 import { isLocked } from '../change/commands';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
@@ -207,8 +208,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const angles: Record<string, number> = { 'rotate.clockwise': Math.PI / 12, 'rotate.counterclockwise': -Math.PI / 12,
             'rotate.fineClockwise': Math.PI / 180, 'rotate.fineCounterclockwise': -Math.PI / 180 };
         const flip = command === 'flip.horizontal' ? 'x' : command === 'flip.vertical' ? 'y' : null;
+        const stretch = command === 'stretch.horizontal' ? 'x' : command === 'stretch.vertical' ? 'y' : null;
         const factor = command === 'scale.enlarge' ? 1.1 : command === 'scale.shrink' ? 1 / 1.1 : null;
-        if (!(command in angles) && !flip && factor === null) return false;
+        if (!(command in angles) && !flip && !stretch && factor === null) return false;
         const selection = runtime.selection.getSnapshot();
         if (!mutable() || !selection.selected.length) return false;
         const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
@@ -222,6 +224,10 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
             try {
                 unregister = registerPending(() => controller.abort());
+                if (stretch) {
+                    await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal });
+                    return;
+                }
                 if (factor !== null) {
                     const plan = await createBoardLeafResizePlan({ runtime, ids, down: { x: 0, y: 0 }, handle: { x: 1, y: 1 },
                         current: active, signal: controller.signal });

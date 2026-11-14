@@ -349,6 +349,7 @@ export class TextEditSession {
     /** Local boxes share the same caret index as selection and IME geometry. */
     rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
     rangeBounds(from: number, to: number): Rect | null { return this.services.layout().caret.selectionBounds(from, to); }
+    visitRange(from: number, to: number, visit: (rect: Rect) => void): void { this.services.layout().caret.forEachSelection(from, to, visit); }
     offsetAtClient(x: number, y: number): number {
         const layout = this.services.layout(), local = point(layout.clientToLocal, x, y);
         return layout.caret.hitTest(local.x, local.y).offset;

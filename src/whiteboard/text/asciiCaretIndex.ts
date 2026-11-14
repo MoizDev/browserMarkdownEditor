@@ -145,6 +145,7 @@ export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint
             return result;
         },
         selectionBounds,
+        forEachSelection(start, end, visit) { for (const rect of result.selection(start, end)) visit(rect); },
         characterBounds(start, end) {
             const result: Rect[] = [];
             for (let offset = start; offset < end; offset++) {

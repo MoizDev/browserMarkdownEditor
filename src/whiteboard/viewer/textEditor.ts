@@ -459,12 +459,16 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             if (!editor || !node || !transform) return null;
             const selection = editor.getSelection(), from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
             if (from === to) return null;
-            const bounds = editor.rangeBounds(from, to);
-            if (!bounds) return null;
             const world = new Float64Array(4);
-            transformBox(world, 0, [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height], 0, transform, 0);
+            let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+            editor.visitRange(from, to, box => {
+                transformBox(world, 0, [box.x, box.y, box.x + box.width, box.y + box.height], 0, transform, 0);
+                left = Math.min(left, world[0]); top = Math.min(top, world[1]);
+                right = Math.max(right, world[2]); bottom = Math.max(bottom, world[3]);
+            });
+            if (left === Infinity) return null;
             return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
-                bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
+                bounds: { x: left, y: top, w: right - left, h: bottom - top } };
         },
         linkContext() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);

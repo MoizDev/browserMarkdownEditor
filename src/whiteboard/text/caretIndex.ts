@@ -261,5 +261,6 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         }
         return null;
     }
-    return { paintKey: paint.key, lines, hitTest, caret, clusterAt, selection, selectionBounds, characterBounds };
+    return { paintKey: paint.key, lines, hitTest, caret, clusterAt, selection, selectionBounds,
+        forEachSelection: (start, end, visit) => visitSelection(start, end, visit), characterBounds };
 }

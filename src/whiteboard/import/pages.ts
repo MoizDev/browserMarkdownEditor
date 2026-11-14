@@ -1,3 +1,5 @@
+import { backdropRole, type LegacyShape } from './records/common';
+
 // IMP-3, E-IMP-7/9: legacy rectangles come from the saved backdrop, not a new PDF layout.
 export interface LegacyPageRect { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 export interface DisplayPage { readonly w: number; readonly h: number }
@@ -17,6 +19,24 @@ export function mapLegacyPdfPages(rects: readonly LegacyPageRect[], pages: reado
         }
         return { rect, scale };
     });
+}
+
+export function legacyPdfPages(shapes: readonly LegacyShape[], pages: readonly DisplayPage[]): readonly LegacyPageMapping[] {
+    const rects: (LegacyPageRect | undefined)[] = new Array(pages.length);
+    for (const shape of shapes) {
+        if (backdropRole(shape, 'pdf-ink') !== 'backdrop') continue;
+        const index = shape.meta.pdfPage;
+        if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= pages.length || rects[index]) {
+            throw new Error('Invalid or duplicate saved PDF page geometry');
+        }
+        const { w, h } = shape.props;
+        if (typeof w !== 'number' || typeof h !== 'number') throw new Error(`Missing geometry for page ${index + 1}`);
+        rects[index] = { x: shape.x, y: shape.y, w, h };
+    }
+    if (rects.some(rect => rect === undefined) || rects.filter(Boolean).length !== pages.length) {
+        throw new Error('Missing saved PDF page geometry');
+    }
+    return mapLegacyPdfPages(rects as LegacyPageRect[], pages);
 }
 
 export function notebookPages(width: number, height: number, count: number): readonly LegacyPageMapping[] {

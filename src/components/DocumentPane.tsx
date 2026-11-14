@@ -45,6 +45,8 @@ import { canWrite, modeExtensions } from '../editor/readingMode';
 import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
 import { tabIntoText } from '../editor/tabIntoText';
 import { docString } from '../editor/docCache';
+import { wordCountField } from '../editor/wordCount';
+import { publishWordCounts } from '../utils/wordCountStore';
 import { externalReload, reloadSpec } from '../editor/externalReload';
 import { registerView, type LineCol, type MarkdownViewInfo, type TextChange } from '../utils/viewRegistry';
 import { onTableInsertRequest, requestTableInsert, TABLE_GRID_COLS, TABLE_GRID_ROWS } from '../utils/tableInsertRequest';
@@ -945,8 +947,11 @@ function DocumentPane({
             scrollAnchorTracking,
             ...(isCode ? [] : [markdownFormatExtension]),
             revealHighlightField,
+            ...(isCode ? [] : [wordCountField]),
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
+                    const words = update.state.field(wordCountField, false);
+                    if (words !== undefined) publishWordCounts(path, { words, chars: update.state.doc.length });
                     // A reload from disk is the file's own text, not an edit:
                     // marked dirty, it would be saved straight back over the
                     // file it came from (editor/externalReload.ts).
@@ -1391,12 +1396,8 @@ function DocumentPane({
                 split and unsplit. */}
             <div
                 className="editor-slot-header"
-                // A file dropped from the desktop on an UNCANCELLED target
-                // navigates the whole app away to that file, taking every
-                // unsaved buffer with it. Every other surface a drop can
-                // land on cancels its own (`.view-content` below, the
-                // divider in EditorPane); this strip is one too, and it is
-                // the natural place to aim at if you mean "into that pane".
+                // This strip refuses drops locally; the window fallback also
+                // refuses unclaimed file drops elsewhere.
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => e.preventDefault()}
             >
@@ -1462,9 +1463,7 @@ function DocumentPane({
                         // status, not alert: this pane remounts on every tab
                         // switch, and an alert would be read out each time.
                         role="status"
-                        // Nothing else in this slot cancels a desktop drop,
-                        // and an uncancelled one navigates the app away (see
-                        // the header's note).
+                        // Refuse drops on the unreadable document locally.
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
@@ -1492,8 +1491,7 @@ function DocumentPane({
                         // CodeMirror's own scroller is: what a tab-bar click
                         // hands the keyboard to (see registerKeyboardTarget).
                         tabIndex={-1}
-                        // Nothing else in this branch cancels a desktop drop,
-                        // and an uncancelled one navigates the whole app away.
+                        // Refuse drops on the reading surface locally.
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
@@ -1585,9 +1583,9 @@ function DocumentPane({
                            being read replaced it, and autosave wrote it to disk.
                            So Reading mode refuses here, and SAYS so: a drop that
                            does nothing looks broken. Both cancels stay
-                           unconditional (an uncancelled file drop navigates the
-                           app away with every unsaved buffer), and the cursor is
-                           not turned into a no-drop one: `dropEffect = 'none'`
+                           unconditional to prevent the browser opening an unclaimed
+                           file, and the cursor is not turned into a no-drop one:
+                           `dropEffect = 'none'`
                            would swallow the drop, and the explanation with it. */
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={async (e) => {

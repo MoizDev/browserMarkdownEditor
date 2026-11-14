@@ -93,7 +93,7 @@ export function resetFileTimes(): void {
  * rather than failing the walk. Nothing is published unless `isCurrent()` still
  * holds when the walk ends — a newer tree or a newer walk has superseded it.
  */
-export async function statFileTimes(files: FileTreeFileNode[], isCurrent: () => boolean): Promise<void> {
+export async function statFileTimes(files: FileTreeFileNode[], isCurrent: () => boolean, readSnapshot: (handle: FileSystemFileHandle) => Promise<File>): Promise<void> {
     const startGeneration = generation;
     const stillWanted = () => generation === startGeneration && isCurrent();
     const read = new Map<string, number>();
@@ -106,7 +106,7 @@ export async function statFileTimes(files: FileTreeFileNode[], isCurrent: () => 
             while (next < files.length && stillWanted()) {
                 const file = files[next++];
                 try {
-                    read.set(file.path, (await file.handle.getFile()).lastModified);
+                    read.set(file.path, (await readSnapshot(file.handle)).lastModified);
                 } catch {
                     read.set(file.path, 0);
                 }

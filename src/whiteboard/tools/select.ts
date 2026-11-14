@@ -47,7 +47,10 @@ class SelectGesture implements GestureOwner {
         this.pointerIds = new Set([down.pointerId]); this.modifiers = modifiers; this.sweepLast = point(down);
         this.release = context.hold();
         this.initial = context.selection.getSnapshot().selected; this.scribbleIntent = modifiers.alt; this.startModifiers = modifiers;
-        context.hit(down, this.controller.signal).then(id => {
+        let hit: Promise<NodeId | null>;
+        try { hit = context.hit(down, this.controller.signal); }
+        catch (error) { this.releaseLifetime(); throw error; }
+        hit.then(id => {
             if (!this.valid()) { this.cancel('invalidated'); return; }
             this.hitId = id;
             if (this.dragging) this.activateDrag();
@@ -69,8 +72,10 @@ class SelectGesture implements GestureOwner {
         if (!this.valid() || this.hitId === undefined || this.transform) return;
         if (this.hitId !== null) {
             if (!this.context.selection.getSnapshot().selected.includes(this.hitId)) this.context.selection.replace([this.hitId]);
-            this.transform = this.context.beginTransform(this.down, this.hitId, this.startModifiers);
-            if (this.samples.length) this.transform.update(this.samples, this.modifiers);
+            try {
+                this.transform = this.context.beginTransform(this.down, this.hitId, this.startModifiers);
+                if (this.samples.length) this.transform.update(this.samples, this.modifiers);
+            } catch (error) { this.cancel('invalidated'); this.context.onError(error); }
         } else {
             if (this.scribbleIntent && !this.sweep) {
                 this.sweep = new SweepQueue(this.context.scribble);
@@ -105,13 +110,19 @@ class SelectGesture implements GestureOwner {
         if (!this.valid()) { this.cancel('invalidated'); return; }
         if (this.ended) return;
         if (reason !== 'up' && !this.transform) { this.cancel(reason === 'undo' ? 'undo' : reason === 'escape' ? 'escape' : 'invalidated'); return; }
-        this.ended = reason; this.unregister = this.context.registerPending(() => this.cancel('invalidated'));
+        this.ended = reason;
+        try { this.unregister = this.context.registerPending(() => this.cancel('invalidated')); }
+        catch (error) { this.cancel('invalidated'); throw error; }
         if (this.hitId !== undefined) this.complete(reason);
     }
     private complete(reason: FinishReason): void {
         if (!this.valid()) return;
         this.context.preview(null);
-        if (this.transform) { this.transform.finish(reason); this.cancelled = true; this.controller.abort(); this.releaseLifetime(); return; }
+        if (this.transform) {
+            try { this.transform.finish(reason); }
+            finally { this.cancelled = true; this.controller.abort(); this.releaseLifetime(); }
+            return;
+        }
         if (!this.dragging) {
             if (this.hitId === null) { if (!this.modifiers.shift) this.context.selection.clear(); }
             else if (this.hitId !== undefined) {
@@ -133,7 +144,7 @@ class SelectGesture implements GestureOwner {
         if (this.cancelled) return;
         this.cancelled = true; this.controller.abort(); this.sweep?.cancel(); this.context.preview(null);
         if (this.sweep) this.context.scribble.preview(new Set());
-        this.transform?.cancel(reason); this.releaseLifetime();
+        try { this.transform?.cancel(reason); } finally { this.releaseLifetime(); }
     }
 }
 export const selectTool: Tool<SelectToolContext> = {

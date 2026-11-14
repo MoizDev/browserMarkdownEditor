@@ -156,7 +156,8 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
 async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
     const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await session.health.guard(lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true }));
+        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        session.health.assertComplete(pageNumber - 1);
         return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
     } finally { lease.release(); }
 }

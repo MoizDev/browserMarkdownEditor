@@ -128,7 +128,6 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
             const releaseDocument = hold();
             parsedPageBusy(entry);
             entry.users++;
-            let timer: ReturnType<typeof setTimeout>;
             const release = () => {
                 if (handoffs.get(index0) !== release) return;
                 handoffs.delete(index0);
@@ -137,7 +136,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number, 
                 releaseDocument();
             };
             handoffs.set(index0, release);
-            timer = setTimeout(release, 5000);
+            const timer = setTimeout(release, 5000);
         },
         geometry() {
             if (!geometryPromise) {

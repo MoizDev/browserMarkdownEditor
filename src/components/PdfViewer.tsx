@@ -787,8 +787,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
     const renderThumbnail = useCallback(async (index: number, scale: number) => {
         const doc = docStateRef.current?.doc;
         if (!doc) throw new Error('The document is not open');
-        const lease = await session.acquirePage(index, 'thumbnail');
+        const lease = await session.acquireRender(index);
         const canvas = document.createElement('canvas');
+        let task: RenderTask | undefined;
         try {
             const page = lease.page;
             const viewport = page.getViewport({ scale });
@@ -796,14 +797,20 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const ctx = canvas.getContext('2d');
             if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
-            await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+            session.markRendered(index);
+            task = page.render({ canvas, canvasContext: ctx, viewport });
+            await session.health.guard(task.promise);
             session.health.assertComplete(index);
             const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
             canvas.width = 0;
             canvas.height = 0;
             if (!blob) throw new Error('Could not encode a thumbnail');
             return URL.createObjectURL(blob);
-        } finally { canvas.width = canvas.height = 0; lease.release(); }
+        } finally {
+            if (task) { task.cancel(); await task.promise.catch(() => {}); }
+            canvas.width = canvas.height = 0;
+            lease.release();
+        }
     }, [session]);
 
     /** 0-based pages at least partly inside the scroll box, from the layout —
@@ -939,8 +946,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
             const dims = ds?.dims[pageNumber - 1];
             if (!ds || !dims || !(maxSide > 0)) return null;
             const gen = docGenRef.current;
-            const lease = await session.acquirePage(pageNumber - 1, 'agent');
+            const lease = await session.acquireRender(pageNumber - 1);
             let canvas: HTMLCanvasElement | undefined;
+            let task: RenderTask | undefined;
             try {
                 const page = lease.page;
                 const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
@@ -949,7 +957,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 canvas.height = Math.max(1, Math.ceil(viewport.height));
                 const ctx = canvas.getContext('2d');
                 if (!ctx) return null;
-                await session.health.guard(page.render({ canvas, canvasContext: ctx, viewport }).promise);
+                session.markRendered(pageNumber - 1);
+                task = page.render({ canvas, canvasContext: ctx, viewport });
+                await session.health.guard(task.promise);
                 session.health.assertComplete(pageNumber - 1);
                 const output = canvas;
                 const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
@@ -958,6 +968,7 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                 session.health.assertComplete(pageNumber - 1);
                 return docGenRef.current === gen && docStateRef.current === ds ? png : null;
             } finally {
+                if (task) { task.cancel(); await task.promise.catch(() => {}); }
                 if (canvas) { canvas.width = 0; canvas.height = 0; }
                 lease.release();
             }
@@ -1074,10 +1085,12 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
         try {
             while (visibleRef.current && !st.failed && st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
                 const target = st.want;
-                const current = () => docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
+                let retiring = false;
+                const current = () => !retiring && docGenRef.current === gen && visibleRef.current && !!st.wantRender && st.want === target;
                 let work: HTMLCanvasElement | undefined;
                 let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
                 let ownedTask: RenderTask | undefined;
+                let pendingWork: Promise<unknown> | undefined;
                 let renderLease: Awaited<ReturnType<PdfDocumentSession['acquireRender']>> | undefined;
                 st.rendering = target;
                 try {
@@ -1103,7 +1116,16 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     work.height = ch;
                     const ctx = work.getContext('2d');
                     if (!ctx) throw new Error('Could not allocate a PDF render context');
-                    emphasis = await session.health.guard(bindPdfNativeEmphasis(page, ctx, target.emphasis));
+                    const binding = bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                    pendingWork = binding;
+                    try { emphasis = await session.health.guard(binding); }
+                    catch (error) {
+                        const late = await binding.catch(() => undefined);
+                        late?.dispose();
+                        pendingWork = undefined;
+                        throw error;
+                    }
+                    pendingWork = undefined;
                     if (!current()) continue;
                     const task = page.render({ operationsFilter: emphasis.operationsFilter,
                         canvas: work, canvasContext: ctx, viewport: vp, transform });
@@ -1111,10 +1133,13 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                     await session.health.guard(task.promise);
                     if (st.renderTask === task) st.renderTask = undefined;
                     if (!current()) continue;
-                    await session.health.guard(emphasis.verify({ viewport: vp, transform }, probe => {
+                    const verifying = emphasis.verify({ viewport: vp, transform }, probe => {
                         ownedTask = st.renderTask = probe;
                         if (!current()) cancelPageRender(st);
-                    }, current, !!rect));
+                    }, current, !!rect);
+                    pendingWork = verifying;
+                    await session.health.guard(verifying);
+                    pendingWork = undefined;
                     if (!current()) continue;
                     const display = canvas.getContext('2d');
                     if (!display) throw new Error('Could not allocate a PDF display context');
@@ -1133,6 +1158,9 @@ function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, 
                         recordClassicRenderFailure(session.health, err, i);
                     }
                 } finally {
+                    retiring = true;
+                    if (ownedTask) { ownedTask.cancel(); await ownedTask.promise.catch(() => {}); }
+                    if (pendingWork) await pendingWork.catch(() => {});
                     emphasis?.dispose();
                     renderLease?.release();
                     if (st.renderTask === ownedTask) st.renderTask = undefined;

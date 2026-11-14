@@ -28,7 +28,8 @@ async function withPdf<T>(bytes: Uint8Array, read: (session: PdfDocumentSession,
 async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
     const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await session.health.guard(lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true }));
+        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        session.health.assertComplete(pageNumber - 1);
         return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
     } finally { lease.release(); }
 }
@@ -64,6 +65,7 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
         const lease = await session.acquireRender(pageNumber - 1);
         const page = lease.page;
         let canvas: HTMLCanvasElement | undefined;
+        let task: import('pdfjs-dist').RenderTask | undefined;
         try {
             session.markRendered(pageNumber - 1);
             const unit = page.getViewport({ scale: 1 });
@@ -75,13 +77,15 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
             if (!context) throw new Error('no 2D canvas context');
             context.fillStyle = '#ffffff';
             context.fillRect(0, 0, canvas.width, canvas.height);
-            await session.health.guard(page.render({ canvas, canvasContext: context, viewport }).promise);
+            task = page.render({ canvas, canvasContext: context, viewport });
+            await session.health.guard(task.promise);
             session.health.assertComplete(pageNumber - 1);
             const output = canvas;
             const png = await new Promise<Blob | null>(resolve => output.toBlob(resolve, 'image/png'));
             if (!png) throw new Error(`could not rasterize page ${pageNumber}`);
             return { png, pageCount };
         } finally {
+            if (task) { task.cancel(); await task.promise.catch(() => {}); }
             if (canvas) canvas.width = canvas.height = 0;
             lease.release();
         }

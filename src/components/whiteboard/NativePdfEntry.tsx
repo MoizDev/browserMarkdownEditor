@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
 import { getPdfInkSourceState, preparePdfInkSession } from '../../whiteboard/host/preparePdfInkSession';
+import { prepareLegacyPdfInkSession } from '../../whiteboard/host/prepareLegacyPdfInkSession';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import type { NativeCanvasEntryProps } from './NativeCanvasEntry';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
@@ -10,6 +11,9 @@ import NativePdfViewer from './NativePdfViewer';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 export interface NativePdfEntryProps extends NativeCanvasEntryProps {
+    /** Only an explicit legacy-conversion route may set this. */
+    readonly legacyConversion?: boolean;
+    readonly onLegacyConversionRefused?: (message: string) => void;
     readonly emphasisEnabled: boolean;
     readonly onViewOriginal: () => void;
     readonly onNotice: (message: string) => void;
@@ -25,10 +29,17 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     const identity = useMemo(() => ({ documentId, session, vaultActivation, bytesGeneration, kind, path, name }),
         [documentId, session, vaultActivation, bytesGeneration, kind, path, name]);
     const [error, setError] = useState<string | null>(null);
-    const onError = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)), []);
+    const onError = useCallback((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (latest.current.legacyConversion && latest.current.onLegacyConversionRefused) {
+            latest.current.onLegacyConversionRefused(message); return;
+        }
+        setError(message);
+    }, []);
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
-        const result = await preparePdfInkSession({ host: nativeCanvasHost, identity, signal, deadlineMs, zMax,
+        const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;
+        const result = await create({ host: nativeCanvasHost, identity, signal, deadlineMs, zMax,
             prepareOwned: prepareOwnedPdfInk, createHost: createPdfInkHost, validateLoadedHost: validateLoadedPdfInkHost,
             readLegacyDigest: readPdfInkLegacyDigest, pinHost: pinPdfInkHostForSave, rebind: rebindPdfInkSource,
             currentReadOnly: () => VIEW_REASON, onReadOnly: reason => setError(reason), onError,
@@ -47,7 +58,7 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
             } finally { await result.dispose(); }
         }
         return result;
-    }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);
+    }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError, props.legacyConversion]);
     const emergencyReadOnly = props.emergencyReadOnly;
     const emergencyPolicy = useCallback(() => emergencyReadOnly, [emergencyReadOnly]);
     const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,

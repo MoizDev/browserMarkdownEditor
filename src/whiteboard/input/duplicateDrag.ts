@@ -116,8 +116,8 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 if (node.kind === 'connector') node = { ...node,
                     start: { ...node.start, attach: attachment(node.start.attach) }, end: { ...node.end, attach: attachment(node.end.attach) } };
                 else if (node.kind === 'polyline') node = { ...node,
-                    startAttach: node.startAttach === undefined ? undefined : attachment(node.startAttach),
-                    endAttach: node.endAttach === undefined ? undefined : attachment(node.endAttach) };
+                    ...(node.startAttach === undefined ? {} : { startAttach: attachment(node.startAttach) }),
+                    ...(node.endAttach === undefined ? {} : { endAttach: attachment(node.endAttach) }) };
                 additions.push(node); await tick(request);
             }
             if (drop) {

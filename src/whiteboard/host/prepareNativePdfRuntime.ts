@@ -1,5 +1,6 @@
 import type { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
-import type { PdfEditableInkSource } from '../../pdf/session/inkAcquisition.types';
+import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
+import { isConvertedPdfInkSource } from '../../pdf/session/convertedInkBrand';
 import type { RenderToken } from '../../platform/render/types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
@@ -31,7 +32,7 @@ export interface PrepareNativePdfRuntimeOptions {
     readonly host: NativeCanvasHost;
     readonly identity: NativeCanvasIdentity;
     /** Ownership transfers on entry, including on preparation failure. */
-    readonly accepted: PdfEditableInkSource;
+    readonly accepted: PdfRuntimeInkSource;
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
@@ -61,7 +62,8 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     };
     let sources: SourceOwnerPort;
     try {
-        if (identity.kind !== 'pdfInk' || !host.isCurrent(identity) || !tokenCurrent(accepted.source.token)) throw new Error('PDF source owner does not match the canvas');
+        if (identity.kind !== 'pdfInk' || !host.isCurrent(identity) || !tokenCurrent(accepted.source.token)
+            || accepted.kind === 'legacy-converted' && !isConvertedPdfInkSource(accepted)) throw new Error('PDF source owner does not match the canvas');
         sources = createPdfInkSourceOwner(accepted, { currentOwner: tokenCurrent, onError: options.onError });
     } catch (error) { await accepted.release(); throw error; }
     let acquired: Awaited<ReturnType<typeof acquireNativeBoard>> | undefined;
@@ -100,7 +102,8 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         if (acquired.status !== 'editable') throw new Error('PDF ink board could not be admitted for editing');
         const { load, samples } = acquired, doc = load.doc;
         if (doc.kind !== 'pdf-ink' || !options.validateLoadedHost(accepted, doc.host)) throw new Error('PDF ink host does not match its inspected source');
-        const legacyOriginalSha256 = accepted.kind === 'native' ? options.readLegacyDigest(accepted, doc.host) : null;
+        const legacyOriginalSha256 = accepted.kind === 'native' ? options.readLegacyDigest(accepted, doc.host)
+            : accepted.kind === 'legacy-converted' ? accepted.legacyOriginalSha256 : null;
         const visual = await inspectPdfVisualModel(load, { signal });
         check();
         if (visual.status !== 'known') throw new Error('This PDF contains ink that cannot be safely displayed or rewritten. Open it in the PDF reader instead.');
@@ -237,7 +240,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                     }, pinPdf: build.pinPdf } });
                     releaseCreators(); acquired?.dispose();
                     transferred = true;
-                    return { board: owned.board, sources, dispose: close };
+                    return { board: owned.board, runtime: owned.runtime, sources, dispose: close };
                 } catch (error) {
                     try { journal?.dispose(); } finally { void close(); }
                     throw error;

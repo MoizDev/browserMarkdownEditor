@@ -398,8 +398,22 @@ otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Native drawings and notebooks currently open in a **read-only viewer**: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
-jump through a notebook, zoom with − / +, and invert the view. These controls
-change the view only; drawing and editing are not available there.
+jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
+opens a notebook's page strip; click a preview to jump to that page. A drawing's
+**Minimap** shows its artwork and your current viewport. Click or drag in it to
+navigate; with the minimap focused, arrow keys move a quarter viewport (a full
+viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
+An empty board has no invented overview.
+
+With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
+copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
+exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
+artwork, not a screenshot of the controls. SVG is copied as text; board data is
+native JSON records, with media referenced by hash rather than a portable asset
+bundle. Context-menu image exports use the selection, or the whole sheet when
+nothing is selected. These operations
+and navigation do not edit the source; drawing, Cut and Paste remain unavailable
+in this native viewer.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
@@ -458,6 +472,8 @@ the reader, not your files. If the browser retains the loading failure, reload
 the app to try again. The tiled reader offers **Open in Classic** as an explicit alternative; it never switches PDF engines by itself. A password-protected PDF asks for its password in the tiled reader; cancelling leaves the file unchanged, and Retry lets you enter it again. The password is kept only in that open source session, never saved. Classic may instead report that a password is required. Editing and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
 
 Signed or certified PDFs—and PDFs whose write safety cannot be established—are read-only for in-place annotation and rotation in **both Classic and tiled readers**. The outer PDF and any embedded pristine original must both pass the safety check before an editor can open or a save can write. Keeping a foreign write mark does not override this protection. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims that its signatures cover the new copy. Unsupported copies are refused without changing the original.
+
+In the tiled reader, Annotate on an eligible unannotated PDF currently opens a **read-only native ink view**; it does not yet enable drawing or change the PDF. When the tiled reader encounters eligible annotations in the Classic format, Annotate offers **Convert legacy annotations…** and **Open in Classic**. Conversion is your choice: it checks the source, asks for confirmation, warns about an unverifiable foreign write mark, and keeps the original in the folder's Trash before conversion. The converted native annotation view is currently **read-only**; opening it does not save over the PDF. Cancelling or a refused conversion returns to the original PDF. Choose **Open in Classic** explicitly to use the Classic route instead.
 
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.

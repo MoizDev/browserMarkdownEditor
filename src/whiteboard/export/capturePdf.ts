@@ -2,6 +2,7 @@ import type { PageDisplayList, Rect } from '../../platform/types'
 import type { PaintFrame } from '../render/paintStream'
 import { paintFrameDisplayList } from './displayList'
 import type { ExportImage, ExportText } from './displayList'
+import type { IncrementalPdfWriter } from './incrementalPdf'
 
 /** Structural writer boundary: the lazy host passes the PDF domain's buildDisplayPdf. */
 export type DisplayPdfWriter = (input: {
@@ -9,6 +10,8 @@ export type DisplayPdfWriter = (input: {
   pages: readonly { width: number; height: number; displayList: PageDisplayList; paper?: PageDisplayList }[]
   notebookSource?: { path: string }
 }, options: { signal?: AbortSignal }) => Promise<Uint8Array>
+
+export type PdfExportWriter = DisplayPdfWriter | IncrementalPdfWriter
 
 export interface PdfCapturePage {
   readonly frame: PaintFrame

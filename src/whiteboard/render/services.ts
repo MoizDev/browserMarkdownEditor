@@ -4,6 +4,10 @@ import { worldPose } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import { createBoardChangeGeometry } from '../geom/changeGeometry';
 import { compose, inverse } from '../geom/affine';
+import { transformBox } from '../geom/bounds';
+import { nextUp } from '../geom/numeric';
+import type { PaintNode } from './paintStream';
+import type { PaintNodeOrder } from './paintOrder';
 import { geometrySceneBounds, transformedPathBounds } from '../geom/providers';
 import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/resolveConnector';
 import type { AttachmentSurface, ConnectorGeometry } from '../geom/connectorTypes';
@@ -40,6 +44,18 @@ interface Prepared {
     readonly connector?: ConnectorGeometry;
     readonly inkPrecision?: string;
     readonly inkLod?: boolean;
+}
+const allocationScratch = new Float64Array(4);
+function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneResolveContext): PaintNode {
+    const ink = geometry.bounds.ink;
+    if (!ink) return paint;
+    // Rewalking every realised command for every dense tile left a 1000-polyline view blank.
+    // The canonical prepared ink envelope already covers all this node's contributions.
+    transformBox(allocationScratch, 0, ink, 0, context.world);
+    const [x, y, right, bottom] = allocationScratch;
+    const bounds = { x, y, width: nextUp(right - x), height: nextUp(bottom - y) };
+    if (Object.values(bounds).some(value => !Number.isFinite(value)) || bounds.width < 0 || bounds.height < 0) return paint;
+    return { ...paint, allocationBounds: Object.freeze(bounds) };
 }
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -271,9 +287,9 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
-    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
+    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-        return prepareScenePaintSource(doc, options.token, request, {
+        return prepareScenePaintSource(doc, sourceToken, request, {
             cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
             // Physical-page capture owns its final clip. A stored pg is an
             // origin, not a certificate that overflowing geometry is invisible.
@@ -281,31 +297,34 @@ export function createBoardRenderServices(options: {
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
                 const geometry = await prepare(node, doc, itemSignal, context);
-                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                    { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
             },
         }, signal);
     };
-    const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
+    const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-        return prepareScenePaintSourceNow(doc, options.token, request, {
+        return prepareScenePaintSourceNow(doc, sourceToken, request, {
             ...(orderedIds ? { orderedIds } : {}), intersectsPage: () => true,
             resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
                 const geometry = prepareNow(node, doc, itemSignal, context);
-                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                return paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
-                    { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
+                    : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
+                    : paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
+                        { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                return withAllocation(paint, geometry, context);
             },
         }, signal);
     };
     const requireLoadedText = (value: PreparedBoardText | null) => {
         if (!value) return;
+        const faces = value.paint.faceTable ?? text.faces;
         if (!text.fonts.isLoaded({ family: value.request.style.font, bold: false, italic: false })
-            || value.paint.lines.some(line => line.fragments.some(fragment => !text.faces.faces[fragment.face]?.loaded))) {
+            || value.paint.lines.some(line => line.fragments.some(fragment => !faces.faces[fragment.face]?.loaded))) {
             throw new ApplyFailed('geometry-unavailable', 'Text faces must finish loading before a geometric content operation');
         }
     };
@@ -438,16 +457,32 @@ export function createBoardRenderServices(options: {
             return value ? { paint: value.paint, localToWorld: [1, 0, 0, 1, value.placement.x, value.placement.y] } : undefined;
         },
     });
+    /** A save/export pin may finish after its App session closes. Releasing
+     * the runtime owner must not invalidate that pin's geometry/fonts. */
+    const retainRenderer = () => {
+        check();
+        if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
+        holders++;
+        let held = true;
+        return { release() { if (held) { held = false; releaseHolder(); } } };
+    };
     return {
-        text, bounds, changeGeometry,
-        /** A save/export pin may finish after its App session closes. Releasing
-         * the runtime owner must not invalidate that pin's geometry/fonts. */
-        retainRenderer() {
+        text, bounds, changeGeometry, retainRenderer,
+        /** Actual source admission belongs to the App owner. This captures publication identity
+         * for NEW work over the same canonical model/cache; existing sources are never retagged. */
+        capturePaintBinding(token: RenderToken) {
             check();
-            if (ownerReleased) throw new DOMException('Board render owner ended', 'AbortError');
-            holders++;
-            let held = true;
-            return { release() { if (held) { held = false; releaseHolder(); } } };
+            const captured = Object.freeze({ ...token });
+            if (captured.vaultEpoch !== options.token.vaultEpoch || captured.documentId !== options.token.documentId
+                || captured.session !== options.token.session || !Number.isSafeInteger(captured.bytesGeneration)
+                || captured.bytesGeneration < options.token.bytesGeneration) throw new TypeError('Paint binding is not the same document source');
+            return Object.freeze({
+                token: captured, retainRenderer,
+                preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paint(doc, request, signal, order, captured),
+                prepareOverlayNow: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => {
+                    check(signal); return paintNow(doc, request, signal, ids, captured);
+                },
+            });
         },
         prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
         prepareForPickNow(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepareNow(node, doc, signal); },

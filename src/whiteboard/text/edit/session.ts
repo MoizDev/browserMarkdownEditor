@@ -283,6 +283,7 @@ export class TextEditSession {
         handleEditKey(event, {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
+            adjacent: (offset, direction) => this.words.adjacent(this.services.readText(), offset, direction),
             move: (offset, direction) => this.move(offset, direction),
             collapse: (selection, direction) => {
                 const index = this.services.layout().caret;

@@ -8,6 +8,8 @@ import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCo
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
+import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
+import type { MediaEntry } from '../../whiteboard/model/media';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
@@ -34,6 +36,7 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
     const current = () => host.isCurrent(identity) && runtime.session.owner.documentId === identity.documentId
         && runtime.session.owner.session === identity.session;
     if (!current()) throw new Error('Clipboard document is no longer current');
+    if (identity.kind === 'pdfInk' && !getPdfInkSourceState(identity.documentId)) throw new Error('The PDF ink source is unavailable');
     const now = performance.now();
     let live = 0, disposed = false, active: ViewBinding | undefined;
     const controllers = new Set<ReturnType<typeof createNativeClipboardController>>(), bindings = new Set<ViewBinding>();
@@ -48,14 +51,30 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
     const fail = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error instanceof Error ? error.message : String(error)); };
     const finishGesture = () => { if (runtime.session.isGestureActive) throw new Error('Finish the current gesture before pasting.'); };
     const ports = createNativeMediaPorts(host, identity);
-    const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia: ports.restore,
+    const pdfSource = () => {
+        const source = getPdfInkSourceState(identity.documentId);
+        if (!source || !current()) throw new Error('The PDF ink source is unavailable');
+        return source;
+    };
+    const readMedia = async (entry: MediaEntry, signal: AbortSignal) => identity.kind === 'pdfInk'
+        ? pdfSource().readMedia(entry.id, signal) : (await ports.read(entry, signal))?.blob ?? null;
+    const storeMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal) => {
+        if (identity.kind === 'pdfInk') return Promise.reject(new Error('PDF media cannot be changed in this view'));
+        return ports.restore(entry, blob, signal);
+    };
+    const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
             prepareExport: (route, signal) => prepareNativeExport({ runtime, route, signal,
                 boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
-                transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail }),
+                transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
+                ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
+                    const source = pdfSource();
+                    if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+                    return source.retainSource();
+                } } : {}) }),
             duplicate: snapshot => {
                 if (!active) return Promise.reject(new Error('The board view is unavailable'));
                 return active.controller.duplicate(snapshot);
@@ -90,8 +109,7 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
                 pasteAtCursor: () => false, pointer: () => pointer, surfacePoint, editingText, finishGesture,
-                matchClipboard: commands.matchClipboard, readMedia: async (entry, signal) => (await ports.read(entry, signal))?.blob ?? null,
-                storeMedia: ports.restore, notice: report, onError: fail });
+                matchClipboard: commands.matchClipboard, readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice }; bindings.add(binding); active = binding;
             const focus = () => { active = binding; };

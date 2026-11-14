@@ -61,10 +61,11 @@ as live tldraw shapes.
   NAMES through the live theme and its dark theme maps `black` → `#f2f2f2`; a PDF page is white in
   either theme, so following the app theme drew near-white ink on white paper, on screen and in the
   saved file. Snapshots store the name, so old files heal themselves.
-- `stampRaster`/`stampVector` share `displaySpace()`, which handles the `/Rotate` trap: pdf.js
-  *applies* `/Rotate` (canvas is landscape) but pdf-lib *ignores* it (`getSize()` returns the
-  portrait MediaBox). The raster half anchors + rotates the image per angle; the vector half
-  concatenates the same mapping as a CTM and draws inside it.
+- PDF annotations carry each page's inverse pdf.js viewport with the overlay. Raster and vector
+  ink are drawn on a clipped page-sized Form and placed with that same transform, including crop,
+  origin, rotation and UserUnit. The source page's resource dictionaries are forked before adding
+  the Form; pdf-lib otherwise mutates inherited/shared dictionaries. Notebook pages use their own
+  generated zero-origin geometry.
 - `withPdf` always slices the buffer (pdf.js detaches it) and always destroys the worker.
 - `pdfBuildClient` keeps one warm `Worker` for the app's life, and on `worker.onerror` rejects every
   in-flight build and nulls the worker so the next call re-spawns it.

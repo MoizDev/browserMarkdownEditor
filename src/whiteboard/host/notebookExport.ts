@@ -12,6 +12,15 @@ export interface NotebookExportPage {
 }
 
 /** The caller pins a document revision and its media before supplying this reader. */
+export interface NotebookPdfStream {
+    append(page: NotebookExportPage, signal: AbortSignal): Promise<void>;
+    finish(signal: AbortSignal): Promise<Uint8Array>;
+    cancel(): void | Promise<void>;
+}
+export interface NotebookPdfStreamWriter {
+    open(options: { readonly sourcePath: string; readonly pageCount: number }, signal: AbortSignal): Promise<NotebookPdfStream>;
+}
+
 export interface NotebookExportSnapshot {
     readonly paper: Readonly<NotebookPaper>;
     readonly sheets: readonly SheetId[];
@@ -62,4 +71,27 @@ export async function exportNotebookPdf(
     const pages = await notebookExportPages(snapshot, signal);
     signal.throwIfAborted();
     return writer({ schema: 1, pages, notebookSource: { path: sourcePath } }, { signal });
+}
+
+/** A physical page is handed off before the next one is built, including every sheet. */
+export async function streamNotebookPdf(snapshot: NotebookExportSnapshot, sourcePath: string,
+    writer: NotebookPdfStreamWriter, signal: AbortSignal): Promise<Uint8Array> {
+    signal.throwIfAborted();
+    const paper = { ...snapshot.paper }, sheets = [...snapshot.sheets];
+    if (!Number.isSafeInteger(paper.pageCount) || paper.pageCount < 1) throw new RangeError('Invalid notebook page count');
+    const size = paperPageSize(paper), paperItems = notebookPaperList(paper, 0).items;
+    const output = await writer.open({ sourcePath, pageCount: paper.pageCount }, signal);
+    let complete = false;
+    try {
+        for (let page = 0; page < paper.pageCount; page++) {
+            signal.throwIfAborted();
+            const displayList = await contentOnPage(snapshot, sheets, page, signal);
+            await output.append({ ...size, paper: { page, items: paperItems }, displayList }, signal);
+        }
+        signal.throwIfAborted();
+        const bytes = await output.finish(signal);
+        signal.throwIfAborted();
+        complete = true;
+        return bytes;
+    } finally { if (!complete) await output.cancel(); }
 }

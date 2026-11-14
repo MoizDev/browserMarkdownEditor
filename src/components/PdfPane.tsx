@@ -508,6 +508,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     <PdfAnnotateCanvas
                         key={file.path}
                         filePath={file.path}
+                        documentId={reading?.identity.documentId}
                         original={editableSource.original}
                         emphasisEnabled={reading?.emphasisEnabled ?? false}
                         onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}

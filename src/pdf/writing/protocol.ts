@@ -36,7 +36,7 @@ export interface AttachmentDescriptor {
 }
 export interface AttachmentInput extends AttachmentDescriptor {
     bytes: Blob;
-    role: 'pristine' | 'editable' | 'media' | 'fence' | 'notebook-source' | 'unknown';
+    role: 'pristine' | 'editable' | 'media' | 'fence' | 'notebook-source' | 'write-mark' | 'unknown';
     /** The owning format supplies this stable identifier, never an inferred one. */
     format?: string;
 }

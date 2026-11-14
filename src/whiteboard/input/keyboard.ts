@@ -42,6 +42,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', shift: true },
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
+  { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter', accel: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
@@ -132,6 +133,8 @@ export interface KeyboardActions {
   readonly cursor?: KeyboardCursor
   navigation?(): KeyboardNavigationPriority
   gestureActive?(): boolean
+  /** Printable text on a selected editable node is offered before tool shortcuts. */
+  typeText?(text: string): boolean
   clearLatches(): void
 }
 
@@ -175,6 +178,10 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
         const handled = navigation.hasSelection && actions.enabled() ? navigation.nudge(event.key, event.shiftKey) : navigation.pan(event.key, event.shiftKey)
         if (handled) { event.preventDefault(); event.stopPropagation(); return }
       }
+    }
+    if (actions.enabled() && !accel && !event.altKey && !event.ctrlKey && !event.metaKey
+      && event.key.length === 1 && actions.typeText?.(event.key)) {
+      event.preventDefault(); event.stopPropagation(); return
     }
     if (actions.shortcutsEnabled?.() !== false && !accel && !event.altKey && (event.key === ' ' || key === 'z')) {
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }

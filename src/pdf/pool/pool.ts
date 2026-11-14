@@ -774,8 +774,8 @@ class Pool implements PdfPool {
                 const notebookInput = op === 'writer.buildNotebook' ? args as WriterOperations['writer.buildNotebook']['args'] : undefined;
                 const notebookSpec = notebookInput ? notebookOutputSpec(notebookInput) : undefined;
                 const notebookIdentity = notebookInput ? notebookInput.kind === 'pre-emitted'
-                    ? { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: [...notebookInput.pages] }
-                    : { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: [...notebookInput.pages] } : undefined;
+                    ? { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: notebookInput.pages.map(page => ({ ...page })) }
+                    : { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: notebookInput.pages.map(page => ({ ...page })) } : undefined;
                 const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] :
                     op === 'writer.verifyUnsignedCopy' ? args as WriterOperations['writer.verifyUnsignedCopy']['args'] :
                         op === 'writer.verifyRotation' ? args as WriterOperations['writer.verifyRotation']['args'] : undefined;

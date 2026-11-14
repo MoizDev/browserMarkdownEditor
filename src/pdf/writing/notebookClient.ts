@@ -3,6 +3,8 @@ import type { DisplayPdfInput } from './types';
 import { newPdfWriteId } from './writeIdentity';
 import { typedPdfWriter } from './writerClient';
 import { validNotebookSourcePath } from './notebookPointer';
+import type { IncrementalEmittedPdf } from './incrementalTypes';
+export type { IncrementalEmittedPdf } from './incrementalTypes';
 
 /** One immutable output identity survives retries; any caller abort cancels the shared attempt. */
 export function createNativeNotebookPdfBuild(input: DisplayPdfInput, options: { readonly revision: number }) {
@@ -51,10 +53,8 @@ export function buildNativeNotebookPdf(input: DisplayPdfInput,
 }
 
 /** The incremental PDF is generated output, never an imported-source editing capability. */
-export async function buildNativeNotebookFromEmittedPdf(emitted: {
-    readonly revision: number; readonly bytes: Uint8Array; readonly hashes: readonly string[];
-    readonly pages: readonly { readonly index: number; readonly width: number; readonly height: number }[];
-}, notebookSource: { readonly path: string }, options: { readonly signal: AbortSignal }): Promise<Uint8Array> {
+export async function buildNativeNotebookFromEmittedPdf(emitted: IncrementalEmittedPdf,
+    notebookSource: { readonly path: string }, options: { readonly signal: AbortSignal }): Promise<Uint8Array> {
     options.signal.throwIfAborted();
     if (!emitted || !Number.isSafeInteger(emitted.revision) || emitted.revision < 0 || !(emitted.bytes instanceof Uint8Array) ||
         emitted.bytes.byteLength < 8 || emitted.bytes.byteLength >= 0x80000000 || !validNotebookSourcePath(notebookSource?.path) ||

@@ -88,8 +88,9 @@ function unzigzag(value: number): number { return value % 2 === 0 ? value / 2 : 
 
 const MAX_BYTES = POINT_LIMITS.encodedChars / 4 * 3;
 class Bytes {
-    private bytes = new Uint8Array(256);
+    private bytes: Uint8Array;
     length = 0;
+    constructor(capacity = 256) { this.bytes = new Uint8Array(capacity); }
     private reserve(extra: number) {
         const length = this.length + extra;
         if (!Number.isSafeInteger(length) || length > MAX_BYTES) refuse('limit', 'Point payload exceeds 48 MiB of base64');
@@ -105,9 +106,30 @@ class Bytes {
         while (value >= 128) { this.byte(value % 128 + 128); value = Math.floor(value / 128); }
         this.byte(value);
     }
-    append(bytes: Uint8Array) { this.reserve(bytes.length); this.bytes.set(bytes, this.length); this.length += bytes.length; }
+    *reserveSteps(extra: number): Generator<void, void> {
+        const length = this.length + extra;
+        if (!Number.isSafeInteger(length) || length > MAX_BYTES) refuse('limit', 'Point payload exceeds 48 MiB of base64');
+        if (length > this.bytes.length) {
+            const grown = new Uint8Array(Math.min(MAX_BYTES, Math.max(length, this.bytes.length * 2)));
+            for (let offset = 0; offset < this.length; offset += 16_384) {
+                grown.set(this.bytes.subarray(offset, Math.min(offset + 16_384, this.length)), offset);
+                yield;
+            }
+            this.bytes = grown;
+        }
+    }
     view() { return this.bytes.subarray(0, this.length); }
-    channel(id: number, bytes: Uint8Array) { this.varint(id); this.varint(bytes.length); this.append(bytes); }
+    *channelSteps(id: number, bytes: Uint8Array): Generator<void, void> {
+        const varintLength = (value: number) => { let length = 1; while (value >= 128) { value = Math.floor(value / 128); length++; } return length; };
+        yield* this.reserveSteps(varintLength(id) + varintLength(bytes.length) + bytes.length);
+        this.varint(id); this.varint(bytes.length);
+        if (!bytes.length) yield;
+        for (let offset = 0; offset < bytes.length; offset += 16_384) {
+            const part = bytes.subarray(offset, Math.min(offset + 16_384, bytes.length));
+            this.bytes.set(part, this.length); this.length += part.length;
+            yield;
+        }
+    }
 }
 class Cursor {
     constructor(readonly bytes: Uint8Array, public offset = 0, readonly end = bytes.length) { }
@@ -173,24 +195,23 @@ async function runStepsIncremental<T>(steps: Generator<void, T>, cooperate: () =
         if (performance.now() - started >= 3) { await cooperate(); started = performance.now(); }
     }
 }
-function base64Text(bytes: Uint8Array): string {
+function* base64TextSteps(bytes: Uint8Array): Generator<void, string> {
+    if (Math.ceil(bytes.length / 3) * 4 > POINT_LIMITS.encodedChars) refuse('limit', 'Point string exceeds 48 MiB');
     const parts: string[] = [];
-    // Bounded strings avoid an argument-list/stack limit even for a million-point stroke.
-    for (let start = 0; start < bytes.length; start += 16_384) {
-        const end = Math.min(bytes.length, start + 16_384);
-        let part = '';
-        for (let i = start; i < end; i++) part += String.fromCharCode(bytes[i]);
-        parts.push(part);
+    // 3072 is divisible by three, so concatenating these bounded btoa results is exact.
+    for (let start = 0; start < bytes.length; start += 3072) {
+        const part = bytes.subarray(start, Math.min(start + 3072, bytes.length));
+        parts.push(btoa(String.fromCharCode(...part)));
+        yield;
     }
-    const text = btoa(parts.join(''));
-    if (text.length > POINT_LIMITS.encodedChars) refuse('limit', 'Point string exceeds 48 MiB');
-    return text;
+    return parts.join('');
 }
 
-function safeExponent(xy: Float64Array, requested: number): number {
+function* safeExponentSteps(xy: Float64Array, requested: number): Generator<void, number> {
     if (!Number.isInteger(requested) || requested < 0 || requested > POINT_LIMITS.exponent) refuse('input', 'Point exponent must be an integer from 0 to 20');
     for (let i = 0; i < xy.length; i++) {
         if (!Number.isFinite(xy[i]) || Math.abs(xy[i]) > POINT_LIMITS.world) refuse('coordinate', 'Point coordinate is outside ±10^7 world units');
+        if ((i & 511) === 511) yield;
     }
     for (let k = requested; k >= 0; k--) {
         const scale = 2 ** k;
@@ -203,66 +224,77 @@ function safeExponent(xy: Float64Array, requested: number): number {
             if (Math.abs(qx) > POINT_LIMITS.quantized || Math.abs(qy) > POINT_LIMITS.quantized
                 || Math.abs(ex) > POINT_LIMITS.quantized || Math.abs(ey) > POINT_LIMITS.quantized) { safe = false; break; }
             dx = qx - x; dy = qy - y; x = qx; y = qy;
+            if ((i & 1023) === 1022) yield;
         }
         if (safe) return k;
     }
     return refuse('coordinate', 'Quantized coordinates cannot be represented safely');
 }
 
+function* encodePointsSteps(samples: PointSamples, k: number): Generator<void, EncodedPoints> {
+    const { xy, pressure, runs, unknownChannels } = samples;
+    if (!(xy instanceof Float64Array) || xy.length === 0 || xy.length % 2 !== 0) refuse('input', 'Coordinates must be non-empty interleaved Float64 x,y pairs');
+    const count = xy.length / 2;
+    if (count > POINT_LIMITS.count) refuse('limit', 'Stroke exceeds one million points');
+    if (pressure != null && (!(pressure instanceof Float64Array) || pressure.length !== count)) refuse('pressure', 'Pressure count does not match point count');
+    k = yield* safeExponentSteps(xy, k);
+    const coords = new Bytes();
+    coords.byte(k);
+    const scale = 2 ** k;
+    let x = 0, y = 0, dx = 0, dy = 0;
+    for (let i = 0; i < xy.length; i += 2) {
+        if ((i & 1023) === 0) yield* coords.reserveSteps(Math.min(512, count - i / 2) * 16);
+        const qx = roundEven(xy[i] * scale), qy = roundEven(xy[i + 1] * scale);
+        coords.varint(zigzag(i === 0 ? qx : i === 2 ? qx - x : qx - x - dx));
+        coords.varint(zigzag(i === 0 ? qy : i === 2 ? qy - y : qy - y - dy));
+        dx = qx - x; dy = qy - y; x = qx; y = qy;
+        if ((i & 1023) === 1022) yield;
+    }
+    const payload = new Bytes();
+    payload.byte(1); payload.varint(count); yield* payload.channelSteps(1, coords.view());
+    if (pressure != null) {
+        const data = new Bytes();
+        let previous = 0;
+        for (let i = 0; i < count; i++) {
+            if ((i & 511) === 0) yield* data.reserveSteps(Math.min(512, count - i) * 8);
+            const p = pressure[i];
+            if (!Number.isFinite(p) || p < 0 || p > POINT_LIMITS.pressure) refuse('pressure', 'Pressure is outside the finite 0…16 domain');
+            const q = Math.round(p * POINT_LIMITS.pressureQuantum);
+            data.varint(i === 0 ? q : zigzag(q - previous));
+            previous = q;
+            if ((i & 511) === 511) yield;
+        }
+        yield* payload.channelSteps(2, data.view());
+    }
+    if (runs != null) {
+        const { starts, kinds } = runs;
+        if (!(starts instanceof Uint32Array) || !(kinds instanceof Uint8Array) || starts.length === 0
+            || starts.length > count || starts.length !== kinds.length) refuse('runs', 'Invalid segment run arrays');
+        const data = new Bytes();
+        data.varint(starts.length);
+        let previous = 0;
+        for (let i = 0; i < starts.length; i++) {
+            if ((i & 511) === 0) yield* data.reserveSteps(Math.min(512, starts.length - i) * 9);
+            if ((i === 0 ? starts[i] !== 0 : starts[i] <= previous) || starts[i] >= count || kinds[i] > 1) refuse('runs', 'Invalid segment start or kind');
+            data.varint(starts[i] - previous); data.byte(kinds[i]); previous = starts[i];
+            if ((i & 511) === 511) yield;
+        }
+        yield* payload.channelSteps(3, data.view());
+    }
+    if (unknownChannels) {
+        for (const channel of unknownChannels) {
+            if (!Number.isSafeInteger(channel.id) || channel.id < 0 || (channel.id >= 1 && channel.id <= 3)
+                || !(channel.data instanceof Uint8Array)) refuse('channel', 'Invalid opaque channel');
+            yield* payload.channelSteps(channel.id, channel.data);
+        }
+    }
+    return { pts: yield* base64TextSteps(payload.view()), count, k };
+}
 export function encodePoints(samples: PointSamples, k = 7): PointResult<EncodedPoints> {
-    return result(() => {
-        const { xy, pressure, runs, unknownChannels } = samples;
-        if (!(xy instanceof Float64Array) || xy.length === 0 || xy.length % 2 !== 0) refuse('input', 'Coordinates must be non-empty interleaved Float64 x,y pairs');
-        const count = xy.length / 2;
-        if (count > POINT_LIMITS.count) refuse('limit', 'Stroke exceeds one million points');
-        if (pressure != null && (!(pressure instanceof Float64Array) || pressure.length !== count)) refuse('pressure', 'Pressure count does not match point count');
-        k = safeExponent(xy, k);
-        const coords = new Bytes();
-        coords.byte(k);
-        const scale = 2 ** k;
-        let x = 0, y = 0, dx = 0, dy = 0;
-        for (let i = 0; i < xy.length; i += 2) {
-            const qx = roundEven(xy[i] * scale), qy = roundEven(xy[i + 1] * scale);
-            coords.varint(zigzag(i === 0 ? qx : i === 2 ? qx - x : qx - x - dx));
-            coords.varint(zigzag(i === 0 ? qy : i === 2 ? qy - y : qy - y - dy));
-            dx = qx - x; dy = qy - y; x = qx; y = qy;
-        }
-        const payload = new Bytes();
-        payload.byte(1); payload.varint(count); payload.channel(1, coords.view());
-        if (pressure != null) {
-            const data = new Bytes();
-            let previous = 0;
-            for (let i = 0; i < count; i++) {
-                const p = pressure[i];
-                if (!Number.isFinite(p) || p < 0 || p > POINT_LIMITS.pressure) refuse('pressure', 'Pressure is outside the finite 0…16 domain');
-                const q = Math.round(p * POINT_LIMITS.pressureQuantum);
-                data.varint(i === 0 ? q : zigzag(q - previous));
-                previous = q;
-            }
-            payload.channel(2, data.view());
-        }
-        if (runs != null) {
-            const { starts, kinds } = runs;
-            if (!(starts instanceof Uint32Array) || !(kinds instanceof Uint8Array) || starts.length === 0
-                || starts.length > count || starts.length !== kinds.length) refuse('runs', 'Invalid segment run arrays');
-            const data = new Bytes();
-            data.varint(starts.length);
-            let previous = 0;
-            for (let i = 0; i < starts.length; i++) {
-                if ((i === 0 ? starts[i] !== 0 : starts[i] <= previous) || starts[i] >= count || kinds[i] > 1) refuse('runs', 'Invalid segment start or kind');
-                data.varint(starts[i] - previous); data.byte(kinds[i]); previous = starts[i];
-            }
-            payload.channel(3, data.view());
-        }
-        if (unknownChannels) {
-            for (const channel of unknownChannels) {
-                if (!Number.isSafeInteger(channel.id) || channel.id < 0 || (channel.id >= 1 && channel.id <= 3)
-                    || !(channel.data instanceof Uint8Array)) refuse('channel', 'Invalid opaque channel');
-                payload.channel(channel.id, channel.data);
-            }
-        }
-        return { pts: base64Text(payload.view()), count, k };
-    });
+    return result(() => runSteps(encodePointsSteps(samples, k)));
+}
+export function encodePointsIncremental(samples: PointSamples, cooperate: () => Promise<void>, k = 7): Promise<PointResult<EncodedPoints>> {
+    return incrementalResult(() => runStepsIncremental(encodePointsSteps(samples, k), cooperate));
 }
 
 interface PayloadRead { readonly inspection: PointInspection; readonly decoded?: DecodedPoints; }

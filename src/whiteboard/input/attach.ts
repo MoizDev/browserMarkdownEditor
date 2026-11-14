@@ -41,6 +41,7 @@ export interface BoardInputServices {
   readonly shortcutsEnabled: () => boolean
   readonly modalOpen: () => boolean
   readonly editing: () => boolean
+  readonly isDirectPen: (event: PointerEvent) => boolean
   readonly commands: { run(id: string, event: KeyboardEvent): boolean }
   ink(tool: 'pen' | 'highlighter', sample: RealSample): Omit<SessionInkServices, 'session' | 'tool' | 'clearRedoAtDown'>
   resolveTool(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null
@@ -215,7 +216,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.clientToSurface(event.clientX, event.clientY), id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
     if (!current()) return
-    if (event.pointerType === 'pen') touch.penDown(event.pointerId, navigator.maxTouchPoints > 0)
+    if (event.pointerType === 'pen') touch.penDown(event.pointerId, services.isDirectPen(event))
     else if (event.pointerType === 'touch') {
       touchAdmission.set(event.pointerId, touch.touchDown(contact(event)))
       try { view.surface.setPointerCapture(event.pointerId) } catch { /* A later cancel ends the contact. */ }

@@ -18,7 +18,7 @@ export interface SessionInkServices {
   readonly width: number
   readonly declaredMaxScale: number
   readonly captureDeviceScale: number
-  readonly nextSequence: () => number
+  readonly nextSequence: () => number // Monotone per session, shared by every attached view.
   readonly admit: (builder: SampleBuilder) => SampleLease
   readonly clearRedoAtDown: () => void
   readonly invalidate: () => void

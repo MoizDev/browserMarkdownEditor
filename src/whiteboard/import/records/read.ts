@@ -26,7 +26,9 @@ export interface LegacyRecordOptions {
     readonly admitMedia: AdmitLegacyMedia;
     readonly signal?: AbortSignal;
     // Uses the node's world bounds, including parent transforms, and the saved legacy page layout.
-    readonly pageForRoot: (shape: LegacyShape) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number };
+    readonly preparePages: (shapes: readonly LegacyShape[]) => (shape: LegacyShape) => {
+        readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
+    };
 }
 export interface LegacyRecordDraft {
     readonly source: string;
@@ -91,6 +93,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         else ends.set(binding.terminal, binding);
     }
     const nodes: Node[] = [];
+    const pageForRoot = options.kind === 'whiteboard' ? null : options.preparePages(shapes);
     const roots = new Map<NodeId, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
     for (const shape of shapes) {
         options.signal?.throwIfAborted();
@@ -101,7 +104,8 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             const extras = unknownShapeProperties(shape);
             if (extras.length) report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
             const root = sheetIds.has(shape.parentId as SheetId);
-            const position = options.kind !== 'whiteboard' && root ? options.pageForRoot(shape) : null;
+            const position = pageForRoot && root ? pageForRoot(shape) : null;
+            if (position?.pastEnd) report.repair(shape.id, 'Content past the last page retained on the last page');
             let base = shapeBase(shape, position?.page ?? -1);
             if (shape.type === 'note' && shape.props.textLastEditedBy != null) {
                 const fields = new Map(base.ext?.fields ?? []);

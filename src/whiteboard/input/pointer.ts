@@ -31,6 +31,7 @@ export interface PointerSink {
   cancel(pointerId: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void
   hover?(event: PointerEvent): void
   captured?(pointerId: number): void
+  prediction?(pointerId: number, event: PointerEvent | null): void
   contextMenu?(event: MouseEvent): void
   error?(error: unknown, pointerId: number): void
 }
@@ -120,6 +121,7 @@ export class PointerAcquisition {
   }
 
   private down = (event: PointerEvent): void => {
+    this.sink.prediction?.(event.pointerId, null)
     if (this.contacts.has(event.pointerId)) return
     try {
       const sample = this.sample(event)
@@ -134,9 +136,11 @@ export class PointerAcquisition {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) { if (!raw) this.sink.hover?.(event); return }
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return
+    this.sink.prediction?.(event.pointerId, null)
     try {
       const samples = this.batch(contact, event)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
+      if (!raw) this.sink.prediction?.(event.pointerId, event)
     } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
   }
   private move = (event: PointerEvent): void => { this.process(event, false) }
@@ -144,6 +148,7 @@ export class PointerAcquisition {
   private up = (event: PointerEvent): void => {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) return
+    this.sink.prediction?.(event.pointerId, null)
     try {
       const samples = this.batch(contact, event)
       this.contacts.delete(event.pointerId)
@@ -152,6 +157,7 @@ export class PointerAcquisition {
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return
+    this.sink.prediction?.(id, null)
     this.sink.cancel(id, reason)
     try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ }
   }

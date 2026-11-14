@@ -1,4 +1,5 @@
 import type { MediaId } from '../model/media';
+import type { BoardRuntime } from '../host/runtime';
 import { compressClipboard, encodeClipboardNow, prepareInlineMedia, type ClipboardEnvelope } from './encode';
 import type { CopySnapshot } from './snapshot';
 
@@ -97,27 +98,31 @@ export class ClipboardCopy {
     }
 
     /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
-    async copyMenuFresh(capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
+    async copyMenuFresh(runtime: BoardRuntime, capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
         if (this.disposed) throw new Error('Clipboard cache is closed');
-        const controller = new AbortController();
+        const controller = new AbortController(), session = runtime.session;
         let held: HeldSnapshot | undefined, finished = false;
-        const prepared = capture(controller.signal).then(async snapshot => {
+        const prepared = runtime.jobs.run(async context => {
+            const snapshot = await capture(context.signal);
             const owner: HeldSnapshot = { snapshot, count: 1 };
             if (finished || this.disposed) { release(owner); throw new DOMException('Clipboard capture ended', 'AbortError'); }
             held = owner;
-            if (!this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
+            context.assertCurrent();
+            if (runtime.session !== session || !this.host.isCurrent(snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${snapshot.skippedOpaque.join(', ')}`);
             const commitCut = cut ? this.host.prepareCut(snapshot) : undefined;
             let inline: ReadonlyMap<MediaId, string> = new Map();
-            try { inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), controller.signal); }
-            catch { controller.signal.throwIfAborted(); }
-            if (finished || this.disposed || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
+            try { inline = await prepareInlineMedia(snapshot, (id, signal) => this.host.readMedia(id, signal), context.signal); }
+            catch { context.assertCurrent(); }
+            context.assertCurrent();
+            if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
             let envelope = encodeClipboardNow(snapshot, inline);
-            try { envelope = await compressClipboard(snapshot, envelope, controller.signal); }
-            catch { controller.signal.throwIfAborted(); }
-            if (finished || this.disposed || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
+            try { envelope = await compressClipboard(snapshot, envelope, context.signal); }
+            catch { context.assertCurrent(); }
+            context.assertCurrent();
+            if (finished || this.disposed || runtime.session !== session || !this.host.isCurrent(snapshot)) throw new DOMException('Clipboard capture became stale', 'AbortError');
             return { owner, envelope, commitCut };
-        });
+        }, { signal: controller.signal, deadlineMs: 120_000 });
         const plain = prepared.then(value => new Blob([value.envelope.plain], { type: 'text/plain' }));
         const html = prepared.then(value => new Blob([value.envelope.html], { type: 'text/html' }));
         void plain.catch(() => undefined); void html.catch(() => undefined);

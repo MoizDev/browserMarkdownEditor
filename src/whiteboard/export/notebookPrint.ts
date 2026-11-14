@@ -9,6 +9,7 @@ import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
 import type { PagedPrintStreamWriter } from './pagedPrintSnapshot';
 import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
+import { createLazyIncrementalPdfWriter } from './lazyPdfWriter';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
@@ -17,7 +18,7 @@ import { streamRasterPng } from './streamRaster';
 export interface NativeNotebookPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter;
+    readonly writer?: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
@@ -35,7 +36,7 @@ export function pinNativeNotebookPrint(options: NativeNotebookPrintOptions): Boa
     const pin = createBoardExportSnapshot({ runtime, request: { sheetId: selection.sheet, theme: 'light' },
         ...(selected ? { selectedNodeIds: selected } : {}), includeNotebookPaper: !selected,
         readMedia: options.readMedia, onError: options.onError });
-    const snapshot = pin(), lifetime = new AbortController(), writer = options.writer, memory = options.memory;
+    const snapshot = pin(), lifetime = new AbortController(), writer = options.writer ?? createLazyIncrementalPdfWriter(), memory = options.memory;
     let released = false, boundsWork: Promise<Readonly<Rect>> | undefined, selectionSource: Promise<PaintNodeSource> | undefined;
     const selectedSource = () => selectionSource ??= snapshotPaintSource(snapshot, lifetime.signal)
         .catch(error => { selectionSource = undefined; throw error; });

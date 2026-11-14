@@ -2,6 +2,7 @@ import type { PageDisplayList, Rect } from '../../platform/types';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
 import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
+import { createLazyIncrementalPdfWriter } from './lazyPdfWriter';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource, type PinExportSnapshot } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
@@ -17,7 +18,7 @@ export interface PagedPrintStreamWriter {
 
 /** The supplied pin includes all sheets and the host's real backdrop at one revision. */
 export function pinPagedPrintSource(pin: PinExportSnapshot, pageRects: readonly Readonly<Rect>[],
-    writer: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter): BoardPrintSource {
+    writer: DisplayPdfWriter | PagedPrintStreamWriter | IncrementalPdfWriter = createLazyIncrementalPdfWriter()): BoardPrintSource {
     const pages = pageRects.map(page => ({ ...page }));
     if (!pages.length || pages.some(page => ![page.x, page.y, page.width, page.height].every(Number.isFinite)
         || page.width <= 0 || page.height <= 0)) throw new RangeError('Invalid print pages');

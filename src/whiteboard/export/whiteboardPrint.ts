@@ -8,6 +8,7 @@ import { createBoardExportSnapshot } from './boardSnapshot';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
 import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
+import { createLazyIncrementalPdfWriter } from './lazyPdfWriter';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
@@ -16,14 +17,14 @@ import { streamRasterPng } from './streamRaster';
 export interface NativeWhiteboardPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
-    readonly writer: DisplayPdfWriter | IncrementalPdfWriter;
+    readonly writer?: DisplayPdfWriter | IncrementalPdfWriter;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly onError: (error: unknown) => void;
 }
 
 /** Print is always light; this captures the selected roots or current sheet before any await. */
 export function pinNativeWhiteboardPrint(options: NativeWhiteboardPrintOptions): BoardPrintSource {
-    const { runtime, memory, writer } = options, doc = runtime.session.doc, scene = runtime.scene;
+    const { runtime, memory } = options, writer = options.writer ?? createLazyIncrementalPdfWriter(), doc = runtime.session.doc, scene = runtime.scene;
     if (doc.host.kind !== 'whiteboard' || !scene || !scene.ready || scene.revision !== doc.rev)
         throw new Error('Whiteboard print scene is not ready');
     const selection = runtime.selection.getSnapshot();

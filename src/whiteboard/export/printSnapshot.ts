@@ -2,13 +2,15 @@ import type { Rect } from '../../platform/types';
 import type { DisplayPdfWriter } from './capturePdf';
 import { createExportImageResolver } from './exportImage';
 import { streamIncrementalPdf, type IncrementalPdfWriter } from './incrementalPdf';
+import { createLazyIncrementalPdfWriter } from './lazyPdfWriter';
 import type { BoardPrintSource } from './print';
 import { snapshotPaintSource, type PinExportSnapshot } from './snapshot';
 import { streamPageDisplayList } from './streamPage';
 import { streamRasterPng } from './streamRaster';
 
 /** A whiteboard print source takes exactly one scene/media lease for PDF and fallback. */
-export function pinBoardPrintSource(pin: PinExportSnapshot, world: Readonly<Rect>, writer: DisplayPdfWriter | IncrementalPdfWriter): BoardPrintSource {
+export function pinBoardPrintSource(pin: PinExportSnapshot, world: Readonly<Rect>,
+    writer: DisplayPdfWriter | IncrementalPdfWriter = createLazyIncrementalPdfWriter()): BoardPrintSource {
     const bounds = { ...world };
     if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0)
         throw new RangeError('Invalid print bounds');

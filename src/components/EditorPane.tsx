@@ -140,6 +140,7 @@ interface EditorPaneProps {
     onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
+    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean }>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -306,7 +307,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1119,6 +1120,7 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             content={tab.content}
                             onContentChange={onContentChange}
                             onFlushNow={onFlushNow}
+                            onPreparePrint={onPreparePdfPrint}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
                             isDirty={tab.dirty}

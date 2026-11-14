@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
 import type { BoardCommand, BoardCommandSource, CommandState } from './boardCommands';
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
@@ -14,6 +14,7 @@ import { boardThemeMenu } from './themeMenu';
 /** Values come from the owning session and viewer; the chrome does not invent capability state. */
 export interface SessionBoardChromeProps {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
+    readonly isVisible: boolean;
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
     readonly translate: BoardTranslate;
@@ -43,14 +44,17 @@ export interface SessionBoardChromeProps {
 
 export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const global = useSyncExternalStore(subscribeBoardPreferences, getBoardPreferences, getBoardPreferences);
-    const menuButton = useRef<HTMLButtonElement | null>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
-    useEffect(() => props.registerShortcuts?.(() => {
-        setReturnFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-        setShortcutsOpen(true);
-    }), [props.registerShortcuts]);
+    useEffect(() => { if (!props.isVisible) setShortcutsOpen(false); }, [props.isVisible]);
+    useEffect(() => {
+        if (!props.isVisible) return;
+        return props.registerShortcuts?.(() => {
+            setReturnFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+            setShortcutsOpen(true);
+        });
+    }, [props.registerShortcuts, props.isVisible]);
     const labels = localizeBoardChrome(props.translate);
     const canRead = (id: BoardCommand) => id === 'copy' || id === 'selectAll' || id === 'copyAsPng'
         || id === 'copyAsSvg' || id === 'copyAsJson' || id === 'exportPng' || id === 'exportSvg';
@@ -75,7 +79,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const runAction = (id: MainAction) => {
         if (!actionState(id).enabled) return;
         if (id === 'keyboardShortcuts') {
-            setReturnFocus(menuButton.current);
+            setReturnFocus(null);
             setShortcutsOpen(true);
         } else return props.runAction(id);
     };
@@ -87,11 +91,14 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         transparent: props.localPreferences.view.transparent, debugMode: props.localPreferences.view.debugMode,
         toggleTransparent: () => props.localPreferences.setView('transparent', !props.localPreferences.view.transparent),
     };
+    if (!props.isVisible) return null;
     return <>
         <ConnectedBoardChrome toolState={props.toolState} openMedia={props.openMedia}
             locale={props.locale} direction={props.direction} commands={commandSource}
-            menuLabel={labels.text('menu')} menuEntries={mainMenuEntries(menu)}
-            onMenuOpen={anchor => { menuButton.current = anchor; }} sheetName={props.sheetName}
+            menuLabel={labels.text('menu')} menuEntries={anchor => mainMenuEntries({ ...menu, runAction: id => {
+                if (id === 'keyboardShortcuts') { setReturnFocus(anchor); setShortcutsOpen(true); }
+                else return runAction(id);
+            } })} sheetName={props.sheetName}
             openSheets={props.openSheets} actionsLabel={labels.text('actions')}
             toolLabel={labels.toolLabel} toolShortcut={props.toolShortcut} toolsLabel={labels.text('tools')}
             moreLabel={labels.text('more')} readOnly={props.readOnly} readOnlyReason={props.readOnlyReason}

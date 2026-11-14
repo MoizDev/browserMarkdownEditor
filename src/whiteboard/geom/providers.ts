@@ -5,6 +5,7 @@ import { InkPickJob } from '../ink/pick';
 import type { InkPickQuery } from '../ink/pick';
 import type { Fill } from '../model/styles';
 import type { TextLayoutRequest, TextPaint } from '../text/paint';
+import { transformPoint } from './affine';
 import { cubicBounds } from './bounds';
 import type { Box } from './bounds';
 import { ContourClipper, hatchLines, reflectHatch } from './clip';
@@ -136,6 +137,40 @@ function pathBounds(ops: readonly PathOp[]): Rect | null {
     }
     return result;
 }
+export function transformedPathBounds(ops: readonly PathOp[], matrix: Affine): Rect | null {
+    if (!matrix.every(Number.isFinite)) throw new RangeError('Invalid path transform');
+    const mapped = ops.map((op): PathOp => {
+        if (op.op === 'Z') return op;
+        if (op.op === 'C') return { op: 'C', c1: transformPoint(matrix, op.c1), c2: transformPoint(matrix, op.c2), p: transformPoint(matrix, op.p) };
+        return { op: op.op, p: transformPoint(matrix, op.p) };
+    });
+    return pathBounds(mapped);
+}
+
+export interface FigureWorldBoundsOptions {
+    readonly kernelVersion: number; readonly pathError: number; readonly lengthError: number; readonly maxPieces: number;
+}
+
+/** Preserve the approximation enclosure so page-centre callers can defer an ambiguous boundary. */
+export function figureWorldSemanticBounds(node: Readonly<FigureNode>, matrix: Affine,
+    options: FigureWorldBoundsOptions): Readonly<{ bounds: Rect; errorWorld: number }> {
+    if (!Number.isFinite(options.pathError) || options.pathError <= 0 || !Number.isFinite(options.lengthError) || options.lengthError <= 0
+        || !Number.isSafeInteger(options.maxPieces) || options.maxPieces < 1) throw new RangeError('Invalid figure bounds budget');
+    const height = node.h + node.growY;
+    const contour = figureOutline(node.shape, node.w, height, node.flipX, node.flipY).primary;
+    let paths = Array.from(realiseFigureContour(contour, options.pathError, options.maxPieces));
+    if (paths.length > options.maxPieces) throw new RangeError('Figure bounds budget exhausted');
+    if (node.dash === 'draw') paths = Array.from(drawPath(paths, { nodeId: node.id, kernelVersion: options.kernelVersion,
+        width: node.width, referenceWidth: styleGeometryMetrics.actualWidth('figure', node.size, 1),
+        boxWidth: node.w, boxHeight: height }, options.lengthError, options.maxPieces));
+    const bounds = transformedPathBounds(paths, matrix);
+    if (!bounds) throw new RangeError('Figure has no outline');
+    const scale = Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]);
+    const errorWorld = contour.kind === 'path' && node.dash !== 'draw' ? 0 : options.pathError * scale;
+    if (!Number.isFinite(errorWorld)) throw new RangeError('Figure bounds error overflows');
+    return { bounds: errorWorld ? expand(bounds, errorWorld) : bounds, errorWorld };
+}
+
 function expand(rect: Rect, radius: number): Rect {
     return { x: rect.x - radius, y: rect.y - radius, width: rect.width + 2 * radius, height: rect.height + 2 * radius };
 }

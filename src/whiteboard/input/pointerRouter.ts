@@ -32,10 +32,10 @@ export class PointerRouter<Context> {
       down: (sample, modifiers, event) => {
         if (!options.current()) return false
         options.sampleChanged?.(sample)
-        const route = options.resolve(sample, modifiers, event)
-        if (!route || !options.claim()) return false
+        if (!options.claim()) return false
         try {
-          if (!options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
+          const route = options.resolve(sample, modifiers, event)
+          if (!route || !options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
           this.pointerId = sample.pointerId
           return true
         } catch (error) { options.releaseClaim(); throw error }

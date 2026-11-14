@@ -5,6 +5,7 @@ import { projectionLength } from './projection';
 import { mapTextSelectionTo, normalizeTextSelection, type TextAffinity, type TextSpliceMap } from './rangeMap';
 import { sliceRichText, spliceRichText, type Block, type RichFragment, type RichText } from './richText';
 import type { RichSelection } from './rich';
+import type { PlainTextOptions } from './plainText';
 
 export interface RichSpliceOperation {
     readonly from: number;
@@ -25,7 +26,17 @@ export interface RichTransactionResult {
 const kinds = new Set<Block['kind']>(['p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const flags = ['b', 'i', 'u', 's', 'code', 'hl'] as const;
 const markKeys = new Set<string>([...flags, 'link', 'x']);
+const fragmentKeys = new Set(['blocks']);
+const blockKeys = new Set(['kind', 'level', 'dir', 'start', 'runs', 'tail', 'carriers']);
+const runKeys = new Set(['text', 'marks', 'tail']);
+const carrierKeys = new Set(['from', 'to', 'kind', 'level', 'dir', 'start', 'tail']);
 const validFragments = new WeakSet<RichFragment>();
+
+function closed(value: unknown, keys: ReadonlySet<string>): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    for (const key in value) if (!Object.hasOwn(value, key) || !keys.has(key)) return false;
+    return true;
+}
 
 function rawArray(value: unknown): boolean {
     if (typeof value !== 'string') return false;
@@ -39,7 +50,8 @@ function link(value: unknown): boolean {
         return !parsed.username && !parsed.password && (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:');
     } catch { return false; }
 }
-function plainRun(value: string): boolean {
+function* plainRun(value: string): Generator<void, boolean> {
+    let checkpoint = 4096;
     for (let index = 0; index < value.length; index++) {
         const unit = value.charCodeAt(index);
         if (unit === 10) return false;
@@ -48,6 +60,7 @@ function plainRun(value: string): boolean {
             if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
             index++;
         } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+        if (index >= checkpoint) { checkpoint = index + 4096; yield; }
     }
     return true;
 }
@@ -58,20 +71,21 @@ function attributes(value: Pick<Block, 'kind' | 'level' | 'dir' | 'start'>): boo
         && (value.start === undefined || (value.kind === 'ol' && Number.isFinite(value.start)));
 }
 
-/** Validate only the incoming immutable fragment, never rescan the whole document on each edit. */
-export function validateRichFragment(fragment: RichFragment): void {
-    if (validFragments.has(fragment)) return;
-    if (!Array.isArray(fragment.blocks) || !fragment.blocks.length || fragment.blocks.length > MAX_TEXT_BLOCKS)
+function* validationSteps(fragment: RichFragment): Generator<void, void> {
+    if (fragment && typeof fragment === 'object' && validFragments.has(fragment)) return;
+    if (!closed(fragment, fragmentKeys) || !Array.isArray(fragment.blocks) || !fragment.blocks.length || fragment.blocks.length > MAX_TEXT_BLOCKS)
         throw new RangeError('Invalid rich fragment blocks');
-    let length = fragment.blocks.length - 1;
+    let length = fragment.blocks.length - 1, visited = 0;
     for (const block of fragment.blocks) {
-        if (!attributes(block) || !Array.isArray(block.runs) || !block.runs.length || (block.tail !== undefined && !rawArray(block.tail)))
+        if ((++visited & 255) === 0) yield;
+        if (!closed(block, blockKeys) || !attributes(block) || !Array.isArray(block.runs) || !block.runs.length || (block.tail !== undefined && !rawArray(block.tail))
+            || (block.carriers !== undefined && !Array.isArray(block.carriers)))
             throw new RangeError('Invalid rich fragment block');
         let blockLength = 0;
         for (const run of block.runs) {
-            if (typeof run.text !== 'string' || !plainRun(run.text) || !run.marks || typeof run.marks !== 'object'
-                || (run.tail !== undefined && !rawArray(run.tail))) throw new RangeError('Invalid rich fragment run');
-            for (const key of Object.keys(run.marks)) if (!markKeys.has(key)) throw new RangeError('Invalid rich fragment mark');
+            if (!closed(run, runKeys) || typeof run.text !== 'string' || !closed(run.marks, markKeys)
+                || (run.tail !== undefined && !rawArray(run.tail)) || !(yield* plainRun(run.text))) throw new RangeError('Invalid rich fragment run');
+            if ((++visited & 255) === 0) yield;
             for (const flag of flags) if (run.marks[flag] !== undefined && run.marks[flag] !== true) throw new RangeError('Invalid rich fragment mark');
             if (run.marks.link !== undefined && !link(run.marks.link)) throw new RangeError('Invalid rich fragment link');
             if (run.marks.x !== undefined && typeof run.marks.x !== 'string') throw new RangeError('Invalid rich opaque mark');
@@ -80,11 +94,35 @@ export function validateRichFragment(fragment: RichFragment): void {
             if (length > MAX_TEXT_LENGTH) throw new RangeError('Rich fragment exceeds text limit');
         }
         for (const carrier of block.carriers ?? []) {
-            if (!attributes(carrier) || !rawArray(carrier.tail) || !Number.isSafeInteger(carrier.from) || !Number.isSafeInteger(carrier.to)
+            if ((++visited & 255) === 0) yield;
+            if (!closed(carrier, carrierKeys) || !attributes(carrier) || !rawArray(carrier.tail) || !Number.isSafeInteger(carrier.from) || !Number.isSafeInteger(carrier.to)
                 || carrier.from < 0 || carrier.to < carrier.from || carrier.to > blockLength) throw new RangeError('Invalid rich block carrier');
         }
     }
     validFragments.add(fragment);
+}
+
+/** Validate only the incoming immutable fragment, never rescan the whole document on each edit. */
+export function validateRichFragment(fragment: RichFragment): void {
+    const steps = validationSteps(fragment);
+    while (!steps.next().done) { /* complete synchronously for an atomic transaction */ }
+}
+
+/** Large admitted fragments can be validated before a synchronous transaction is opened. */
+export async function validateRichFragmentCooperative(fragment: RichFragment, options: PlainTextOptions): Promise<void> {
+    const budget = options.sliceMilliseconds ?? 3;
+    if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich fragment validation time slice');
+    const steps = validationSteps(fragment);
+    let started = performance.now();
+    for (;;) {
+        options.signal?.throwIfAborted();
+        if (steps.next().done) return;
+        if (performance.now() - started >= budget) {
+            await options.cooperate();
+            options.signal?.throwIfAborted();
+            started = performance.now();
+        }
+    }
 }
 
 function selectionMap(before: RichText, operation: RichSpliceOperation): TextSpliceMap | null {

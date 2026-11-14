@@ -1101,7 +1101,7 @@ function DocumentPane({
             // Every grammar is a dynamic import, so a code pane paints at once
             // in plain text and takes its colours a tick later. A cached state
             // already carries one, and loadCodeLanguage leaves it alone.
-            if (codeLanguage) void loadCodeLanguage(view, codeLanguage);
+            if (isCode) void loadCodeLanguage(view, codeLanguage, codeLanguage === null);
 
             if (cached) {
                 const restoreSelection = captureReadingSelection(view);
@@ -1168,6 +1168,13 @@ function DocumentPane({
        changes still require a full render, while a context change touches only
        the image widgets. */
     const settled = useRef(false);
+    const previousCodeLanguage = useRef(codeLanguage?.description);
+    useEffect(() => {
+        if (previousCodeLanguage.current === codeLanguage?.description) return;
+        previousCodeLanguage.current = codeLanguage?.description;
+        const view = viewRef.current;
+        if (view && isCode) void loadCodeLanguage(view, codeLanguage, true);
+    }, [codeLanguage, isCode]);
 
     useEffect(() => {
         if (!settled.current) return;

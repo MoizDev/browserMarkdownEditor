@@ -1031,6 +1031,7 @@ export default function App() {
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
   const sessionReportRef = useRef<(documentId: string, source: ContentSource, options?: ContentChangeOptions) => void>(() => {});
+  const nativeTransitionRef = useRef<(documentId: string, source: import('./utils/documentBuffers').DeferredSource, revision: number, prior: ContentSource) => void>(() => { throw new Error('Canvas source coordinator is not ready'); });
   const bytesGenerationsRef = useRef(new Map<string, number>());
   const bufferPathIdsRef = useRef(new Map<string, string>());
   const [documentBuffers] = useState(() => createDocumentBuffers(path => bufferPathIdsRef.current.get(path)));
@@ -1141,6 +1142,20 @@ export default function App() {
     showRestoreNotice();
     return unsubscribe;
   }, [announce]);
+  const ensureCanvasBridge = useCallback((tab: OpenTab) => {
+    const kind = tab.representation.loadedKind;
+    if (tab.readError || !kind || !['pdf', 'drawing', 'notebook'].includes(kind)) {
+      throw new Error('Canvas representation is not ready');
+    }
+    const entry = documentSessions.ensure(tab.id, kind, bytesGenerationsRef.current.get(tab.id) ?? 0,
+      owner => createCanvasSessionBridge(owner, () => documentBuffers.get(tab.id)?.source ?? ''));
+    if (kind === 'pdf') ensurePdfSessionRoute(entry);
+    documentBuffers.setOwner(tab.id, { documentId: tab.id, session: entry.serial });
+    if (!entry.getSlot(RECOVERY_SESSION_BINDING)) {
+      entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
+    }
+    return entry;
+  }, [documentBuffers, documentSessions]);
   // A binary host acquires in its passive effect. Publish the new tab first;
   // lazy dev imports hid this parent/child effect ordering race in production.
   useLayoutEffect(() => {
@@ -1155,17 +1170,11 @@ export default function App() {
       const tab = tabs.find(t => t.file.path === path);
       const kind = tab?.representation.loadedKind;
       if (!tab || tab.readError || !kind || !['pdf', 'drawing', 'notebook'].includes(kind)) continue;
-      const entry = documentSessions.ensure(tab.id, kind, bytesGenerationsRef.current.get(tab.id) ?? 0,
-        owner => createCanvasSessionBridge(owner, () => documentBuffers.get(tab.id)?.source ?? ''));
-      if (kind === 'pdf') ensurePdfSessionRoute(entry);
-      documentBuffers.setOwner(tab.id, { documentId: tab.id, session: entry.serial });
-      if (!entry.getSlot(RECOVERY_SESSION_BINDING)) {
-        entry.setSlot(RECOVERY_SESSION_BINDING, bindRecoveryAdapter(tab.id, entry.adapter), dispose => dispose());
-      }
+      ensureCanvasBridge(tab);
     }
-  }, [tabs, layout, documentBuffers, documentSessions]);
+  }, [tabs, layout, documentBuffers, ensureCanvasBridge]);
   const attachNativeCanvasSession = useCallback<AttachCanvasSession>(
-    (documentId, create) => attachCanvasSession(documentSessions, documentId, create), [documentSessions]);
+    (documentId, create, commit) => attachCanvasSession(documentSessions, documentId, create, commit), [documentSessions]);
   const nativePoliciesRef = useRef(new Map<string, { session: number; sourceGeneration: number; retainedThroughGeneration: number; activation: number; kind: 'drawing' | 'notebook' | 'pdfInk'; emergencyReadOnly: boolean; pdfWriteAuthority?: { canWrite(): boolean } }>());
   const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
     const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
@@ -1260,6 +1269,8 @@ export default function App() {
       },
       async acquireBytes(identity, signal) {
         await awaitSessionDisposals(identity.documentId);
+        const bridge = documentSessions.get(identity.documentId)?.adapter;
+        if (bridge && 'settled' in bridge && typeof bridge.settled === 'function') await (bridge as CanvasSessionBridge).settled();
         signal.throwIfAborted();
         const tab = current(identity);
         if (!tab?.file.handle) throw new DOMException('Canvas session ended', 'AbortError');
@@ -1275,6 +1286,60 @@ export default function App() {
           if (isNativeDrawingFile(latest.file.name) && !currentBaseline) setBaseline(identity.documentId, version);
           return bytes;
         } finally { snapshot.dispose(); }
+      },
+      pinBoardSource(identity) {
+        const tab = current(identity), buffer = documentBuffers.get(identity.documentId);
+        if (!tab || identity.kind === 'pdfInk' || !buffer) throw new DOMException('Canvas source is unavailable', 'AbortError');
+        const captured = documentBuffers.retainSnapshotForDocument(identity.documentId);
+        if (!captured || captured.revision !== buffer.revision) { captured?.release(); throw new DOMException('Canvas source changed', 'AbortError'); }
+        const dirty = buffer.revision > buffer.savedRevision, prior = buffer.source, revision = buffer.revision;
+        const baselineAtPin = getBaseline(identity.documentId);
+        if (dirty && !baselineAtPin) { captured.release(); throw new Error('The unsaved canvas has no verified disk baseline.'); }
+        const acquireDisk = (signal: AbortSignal) => this.acquireBytes(identity, signal);
+        let released = false, observedDiskHash: string | undefined;
+        const isCurrent = () => {
+          const latest = documentBuffers.get(identity.documentId);
+          return !released && !!current(identity) && !!latest && latest.revision === revision && latest.source === prior
+            && (!dirty || getBaseline(identity.documentId) === baselineAtPin)
+            && latest.owner.documentId === identity.documentId && latest.owner.session === identity.session;
+        };
+        return { dirty, isCurrent,
+          async read(signal) {
+            signal.throwIfAborted();
+            if (!isCurrent()) throw new DOMException('Canvas source changed', 'AbortError');
+            const disk = await acquireDisk(signal);
+            const baseline = getBaseline(identity.documentId);
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            if (dirty && (!baseline || baseline !== baselineAtPin)) throw new Error('The canvas disk baseline changed during acquisition.');
+            let diskHash: string;
+            if (baseline) diskHash = baseline.hash;
+            else { const { hashBytes } = await import('./utils/diskVersion'); diskHash = await hashBytes(await disk.arrayBuffer()); }
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            observedDiskHash = diskHash;
+            if (!dirty) return { input: disk, diskHash };
+            const data = captured.data;
+            const resolved = typeof data === 'object' && data !== null && 'kind' in data && data.kind === 'build'
+              ? await data.run(signal) : data;
+            if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
+            const input = typeof resolved === 'string' ? new Blob([resolved]) : resolved instanceof Blob ? resolved
+              : resolved instanceof Uint8Array ? new Blob([resolved.slice().buffer as ArrayBuffer]) : null;
+            if (!input) throw new Error('The captured canvas source is not binary or text.');
+            return { input, diskHash };
+          },
+          async verify(signal) {
+            signal.throwIfAborted();
+            if (!isCurrent() || !observedDiskHash) throw new DOMException('Canvas source changed', 'AbortError');
+            const disk = await acquireDisk(signal);
+            const { hashBytes } = await import('./utils/diskVersion');
+            const hash = await hashBytes(await disk.arrayBuffer());
+            if (!isCurrent() || signal.aborted || hash !== observedDiskHash) throw new DOMException('Canvas disk baseline changed', 'AbortError');
+          },
+          accept(source) {
+            if (!dirty || !isCurrent()) throw new DOMException('Canvas source changed', 'AbortError');
+            nativeTransitionRef.current(identity.documentId, source, revision, prior);
+          },
+          release() { if (!released) { released = true; captured.release(); } },
+        };
       },
       async confirmLegacyPdfConversion(identity, request, signal) {
         signal.throwIfAborted();
@@ -3132,8 +3197,14 @@ export default function App() {
   // `fromDisk`: the text was just reloaded from the file (a reload in place —
   // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
   // so the tab stays clean and nothing is scheduled to write it back.
-  const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions) => {
+  const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions & {
+    nativeTransition?: { revision: number; prior: ContentSource };
+  }) => {
     const target = tabsRef.current.find(t => t.file.path === path);
+    const transition = options?.nativeTransition, transitionBuffer = target && transition && documentBuffers.get(target.id);
+    if (transition && (!target || typeof content === 'string' || !transitionBuffer || transitionBuffer.revision !== transition.revision
+      || transitionBuffer.source !== transition.prior || transitionBuffer.owner.documentId !== content.owner.documentId
+      || transitionBuffer.owner.session !== content.owner.session)) return;
     const policy = target && nativePoliciesRef.current.get(target.id);
     const liveNativePolicy = !!target && !!policy && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
       && policy.activation === getVaultActivation()
@@ -3164,7 +3235,7 @@ export default function App() {
     }
     if (!accepted) return;
     const prior = documentBuffers.get(target.id)?.source;
-    if (!options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
+    if (!transition && !options?.fromDisk && typeof content !== 'string' && prior && typeof prior !== 'string'
       && prior.owner.documentId === content.owner.documentId && prior.owner.session === content.owner.session
       && content.revision <= prior.revision) {
       if (content.revision === prior.revision && !options?.fromJournal) scheduleSave(path);
@@ -3208,6 +3279,23 @@ export default function App() {
     }
     if (!options?.fromJournal) scheduleSave(path);
   }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
+  nativeTransitionRef.current = (id, source, revision, prior) => {
+    const tab = tabsRef.current.find(item => item.id === id), before = documentBuffers.get(id);
+    if (!tab || !before || before.revision !== revision || before.source !== prior || !documentBuffers.isDirty(id)
+      || !documentSessions.isLiveOwner(id, source.owner)) throw new DOMException('Canvas source changed', 'AbortError');
+    try { updateTabContent(tab.file.path, source, { nativeTransition: { revision, prior } }); }
+    catch (error) {
+      const accepted = documentBuffers.get(id);
+      if (!accepted || accepted.source !== source || accepted.revision !== revision + 1) throw error;
+      // Once published, the bridge must keep the source even if a subscriber failed.
+      console.error('Canvas source notification failed:', error);
+      try { syncExitGuard(); scheduleSave(tab.file.path); } catch (notifyError) { console.error('Canvas source follow-up failed:', notifyError); }
+    }
+    const after = documentBuffers.get(id);
+    if (!after || after.source !== source || after.revision !== revision + 1 || !documentBuffers.isDirty(id)) {
+      throw new Error('The canvas source transition was not accepted');
+    }
+  };
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
@@ -6199,6 +6287,48 @@ export default function App() {
     };
   }, [getVaultActivation]);
 
+  const ensureNativeAgentRuntime = useCallback<NonNullable<AgentHostDeps['ensureNativeAgentRuntime']>>(async (path, signal) => {
+    signal.throwIfAborted();
+    const tab = tabsRef.current.find(item => item.file.path === path);
+    const kind = tab?.representation.loadedKind;
+    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook')) {
+      throw new Error('The open canvas representation is not available for native reading.');
+    }
+    ensureCanvasBridge(tab);
+    const identity = nativeCanvasHost.identity(tab.id);
+    if (!identity || identity.kind !== kind) throw new DOMException('Canvas session ended', 'AbortError');
+    const pinned = nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    let pinTransferred = false;
+    try {
+    const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
+      import('./components/whiteboard/acquireNativeBoard'), import('./components/whiteboard/nativeAcquisitionOptions'),
+      import('./whiteboard/host/prepareNativeRuntime'), import('./whiteboard/host/runtime'),
+    ]);
+    signal.throwIfAborted();
+    if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
+    const reason = 'This native canvas is currently available in read-only mode.';
+    const onError = (error: unknown) => console.error('Native canvas session failed:', error);
+    const options = createNativeAcquisitionOptions({ host: nativeCanvasHost, identity,
+      attachCanvasSession: attachNativeCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason: reason,
+      emergencyReadOnly: () => !!nativePoliciesRef.current.get(tab.id)?.emergencyReadOnly,
+      onError, prepare: prepareSignal => {
+        pinTransferred = true;
+        return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, readOnlyReason: reason, onError,
+          onHistoryLimit: () => announce('The board history limit was reached.') });
+      },
+    });
+    const acquired = await ensureNativeBoard(options, signal);
+    signal.throwIfAborted();
+    const runtime = getBoardRuntime(acquired.adapter.board);
+    if (!runtime || !nativeCanvasHost.isCurrent(identity) || nativeCanvasHost.session(tab.id) !== acquired.adapter) {
+      throw new DOMException('Canvas session ended', 'AbortError');
+    }
+    return { identity, runtime, isCurrent: () => nativeCanvasHost.isCurrent(identity)
+      && nativeCanvasHost.session(tab.id) === acquired.adapter };
+    } finally { if (!pinTransferred) pinned?.release(); }
+  }, [announce, attachNativeCanvasSession, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
+
   const [closedCanvasVersions] = useState(() => createClosedCanvasVersions());
   const closedCanvasReads = useRef(new Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>());
   useLayoutEffect(() => {
@@ -6243,6 +6373,7 @@ export default function App() {
       readFileBytes,
       closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
       acquireClosedCanvasSource: acquireClosedAgentCanvas,
+      ensureNativeAgentRuntime,
       readFileVersioned,
       statFile,
       writeFileVersioned,

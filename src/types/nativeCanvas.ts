@@ -27,6 +27,15 @@ export interface NativeCanvasHost {
     session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;
+    /** Capture the actual cold buffer before any asynchronous source preparation. */
+    pinBoardSource(identity: NativeCanvasIdentity): {
+        readonly dirty: boolean;
+        read(signal: AbortSignal): Promise<{ readonly input: Blob; readonly diskHash: string }>;
+        verify(signal: AbortSignal): Promise<void>;
+        isCurrent(): boolean;
+        accept(source: DeferredSource): void;
+        release(): void;
+    };
     keepConversionBackup(identity: NativeCanvasIdentity, original: Blob, digest: string, signal: AbortSignal): Promise<TrashItem>;
     confirmLegacyPdfConversion(identity: NativeCanvasIdentity, request: { originalSha256: string;
         foreign: Extract<import('../utils/pdfWriteMark').PdfWriteMarkCheck, { kind: 'foreign' }> | null }, signal: AbortSignal): Promise<boolean>;

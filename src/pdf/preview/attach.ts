@@ -94,7 +94,9 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
             },
             onError(error) { conceal(); console.error('PDF platform preview failed:', error); },
             onNotice(message) {
-                if (message === 'memory-pressure' && !pressureNotified) {
+                // GPU cache pressure can fall back to CPU without losing the preview. Only an
+                // actually denied visible CPU floor makes this fallback notice appropriate.
+                if (message === 'cpu-floor-denied' && !pressureNotified) {
                     pressureNotified = true;
                     options.onNotice('PDF platform preview could not fit in memory; showing the classic view.');
                 }

@@ -14,6 +14,7 @@ import { PaperMainMenu } from './paperCanvas';
 import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { protectPageBackdrops } from './protectPageBackdrops';
+import { bucketSheetsByPage, shapesBySheet, sheetThumbnail } from './pageSheetShapes';
 import {
     flushPdfViewPositions, getPdfInverted, readPdfViewPos, readThumbnailsOpen, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen, recordPdfNavigation,
@@ -633,30 +634,14 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
             // Export one transparent overlay per page: everything EXCEPT the page
             // backdrops, clipped to that page's box. Empty pages export nothing,
             // so the builder leaves them untouched.
-            const annotations = editor.getCurrentPageShapes()
-                .filter(s => !pageShapeIdsRef.current.has(s.id));
+            const sheets = shapesBySheet(editor, shape => shape.meta?.pdfPage !== undefined);
             // Snapshot the same revision as the overlays before any async
             // export. A later stroke belongs to the next serialized flush.
             uiRef.current = readCanvasUi(editor);
             const json = JSON.stringify({ ...getSnapshot(editor.store), ui: uiRef.current });
 
-            // Bucket the shapes by page ONCE, rather than re-filtering the whole
-            // annotation set per page. The old form called getShapePageBounds
-            // for every shape on every page — pages x shapes lookups (600k on a
-            // 300-page document with 2000 strokes) on the same main thread the
-            // pen draws on, every 1.5s while annotating.
-            const shapesByPage: Array<typeof annotations> = boxes.map(() => []);
-            for (const shape of annotations) {
-                const b = editor.getShapePageBounds(shape.id);
-                if (!b) continue;
-                for (let i = 0; i < boxes.length; i++) {
-                    const box = boxes[i];
-                    // Pages are stacked downward, so once a box starts below the
-                    // shape's bottom edge no later box can overlap it either.
-                    if (box.y >= b.maxY) break;
-                    if (b.minY < box.y + box.height) shapesByPage[i].push(shape);
-                }
-            }
+            // Collect once across every sheet; the active sheet is only a view.
+            const shapesByPage = bucketSheetsByPage(editor, sheets, boxes);
 
             const overlays: Array<PageOverlay | undefined> = [];
             for (let i = 0; i < boxes.length; i++) {
@@ -672,7 +657,7 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                 const cached = overlayCacheRef.current.get(i);
                 if (cached?.signature === signature) { overlays.push(cached.overlay); continue; }
 
-                if (!onThisPage.length) {
+                if (!onThisPage.some(shapes => shapes.length)) {
                     overlayCacheRef.current.set(i, { signature, overlay: undefined });
                     overlays.push(undefined);
                     continue;
@@ -684,38 +669,43 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
                 const exportOptions = { background: false, bounds, padding: 0, darkMode: false } as const;
 
                 try {
-                    const overlay: PageOverlay = {};
-                    const rasterShapes = onThisPage.filter(s => RASTER_ONLY_SHAPES.has(s.type));
-                    const vectorShapes = onThisPage.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
+                    const layers: PageOverlay[] = [];
+                    for (const shapes of onThisPage) {
+                        if (!shapes.length) continue;
+                        const overlay: PageOverlay = {};
+                        const rasterShapes = shapes.filter(s => RASTER_ONLY_SHAPES.has(s.type));
+                        const vectorShapes = shapes.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
 
-                    // Strokes as paths: sharp at any zoom in the saved PDF, and
-                    // an order of magnitude smaller than the equivalent PNG.
-                    if (vectorShapes.length) {
-                        const svg = await editor.getSvgString(vectorShapes.map(s => s.id), {
-                            ...exportOptions,
-                            // Positions are read back out of the viewBox, which is
-                            // in page units — so keep the two the same and no
-                            // scale has to be undone later.
-                            scale: 1,
-                        });
-                        const ops = svg ? svgToVectorOps(svg.svg) : null;
-                        // Anything that cannot be drawn exactly as paths falls
-                        // back to pixels, which is where this code came from —
-                        // never a wrong drawing, just a softer one.
-                        if (ops) overlay.vector = ops;
-                        else rasterShapes.push(...vectorShapes);
+                        // Strokes as paths: sharp at any zoom in the saved PDF, and
+                        // an order of magnitude smaller than the equivalent PNG.
+                        if (vectorShapes.length) {
+                            const svg = await editor.getSvgString(vectorShapes.map(s => s.id), {
+                                ...exportOptions,
+                                // Positions are read back out of the viewBox, which is
+                                // in page units — so keep the two the same and no
+                                // scale has to be undone later.
+                                scale: 1,
+                            });
+                            const ops = svg ? svgToVectorOps(svg.svg) : null;
+                            // Anything that cannot be drawn exactly as paths falls
+                            // back to pixels, which is where this code came from —
+                            // never a wrong drawing, just a softer one.
+                            if (ops) overlay.vector = ops;
+                            else rasterShapes.push(...vectorShapes);
+                        }
+
+                        if (rasterShapes.length) {
+                            const image = await editor.toImage(rasterShapes.map(s => s.id), {
+                                ...exportOptions,
+                                format: 'png',
+                                scale: 2,
+                            });
+                            overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
+                        }
+
+                        if (!isEmptyOverlay(overlay)) layers.push(overlay);
                     }
-
-                    if (rasterShapes.length) {
-                        const image = await editor.toImage(rasterShapes.map(s => s.id), {
-                            ...exportOptions,
-                            format: 'png',
-                            scale: 2,
-                        });
-                        overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
-                    }
-
-                    const result = isEmptyOverlay(overlay) ? undefined : overlay;
+                    const result: PageOverlay | undefined = layers.length ? { layers } : undefined;
                     overlayCacheRef.current.set(i, { signature, overlay: result });
                     overlays.push(result);
                 } catch (err) {
@@ -897,7 +887,10 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
         const markUnsaved = () => {
             hasUnsavedRef.current = true;
             if (serializeTimerRef.current) clearTimeout(serializeTimerRef.current);
-            serializeTimerRef.current = setTimeout(() => flushInBackground(), SERIALIZE_DEBOUNCE_MS);
+            serializeTimerRef.current = setTimeout(() => {
+                thumbsRef.current?.invalidate(boxes.map((_, i) => i));
+                flushInBackground();
+            }, SERIALIZE_DEBOUNCE_MS);
             reportPending();
         };
         // store.listen delivers on a later frame: an immediate flush/mode
@@ -938,10 +931,18 @@ function LegacyPdfAnnotateCanvas({ documentId, filePath, original, snapshot, onC
         };
     }, [documentId, filePath, original, pages, boxes]);
 
-    const renderThumbnail = useCallback((index: number, scale: number) => {
+    const renderThumbnail = useCallback(async (index: number, scale: number) => {
         const source = sourceRef.current;
-        return source ? source.renderPage(index, scale) : Promise.reject(new Error('The PDF is closed'));
-    }, []);
+        const editor = editorRef.current;
+        const box = boxes[index];
+        if (!source || !editor || !box) throw new Error('The PDF is closed');
+        const url = await source.renderPage(index, scale);
+        try {
+            const result = await sheetThumbnail(editor, box, url, scale, shape => shape.meta?.pdfPage !== undefined);
+            try { source.health.assertComplete(index); } catch (error) { URL.revokeObjectURL(result); throw error; }
+            return result;
+        } finally { URL.revokeObjectURL(url); }
+    }, [boxes]);
 
     /** Put page `index` at the top of the view, centred, at the current zoom. */
     const jumpToPage = useCallback((index: number) => {

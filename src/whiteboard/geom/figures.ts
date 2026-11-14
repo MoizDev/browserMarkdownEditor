@@ -1,4 +1,4 @@
-import type { Rect } from '../../platform/types';
+import type { Affine, Rect } from '../../platform/types';
 import type { FigureShape } from '../model/styles';
 import type { PathOp, Vec2 } from './path';
 
@@ -166,6 +166,75 @@ export function placeFigurePath(ops: readonly PathOp[], width: number, height: n
     });
 }
 
+export type FigureContour =
+    | Readonly<{ kind: 'path'; ops: readonly PathOp[] }>
+    | Readonly<{ kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }>
+    | Readonly<{ kind: 'stadium'; width: number; height: number; radius: number }>
+    | Readonly<{ kind: 'cloud'; shape: Extract<CurvedFigure, { kind: 'cloud' }>; transform: Affine }>;
+export interface FigureOutline {
+    readonly primary: FigureContour;
+    readonly marks: readonly (readonly PathOp[])[];
+}
+
+/** One semantic outline shared by paint, selection, attachments and export. */
+export function figureOutline(shape: FigureShape, width: number, height: number,
+    flipX: boolean, flipY: boolean): FigureOutline {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) throw new RangeError('Invalid figure box');
+    const paths = polygonFigure(shape);
+    if (paths) return {
+        primary: { kind: 'path', ops: placeFigurePath(paths[0], width, height, flipX, flipY, shape) },
+        marks: paths.slice(1).map(path => placeFigurePath(path, width, height, flipX, flipY, shape)),
+    };
+    if (shape === 'heart') return {
+        primary: { kind: 'path', ops: placeFigurePath(heart(1, 1), width, height, flipX, flipY, shape) }, marks: [],
+    };
+    if (shape === 'cloud') {
+        const profile = CREATION_FIT.cloud!;
+        const sx = width * profile.xScale * (flipX ? -1 : 1), sy = height * profile.yScale * (flipY ? -1 : 1);
+        const tx = width * (flipX ? 1 - profile.xInset : profile.xInset);
+        const ty = height * (flipY ? 1 - profile.yInset : profile.yInset);
+        return { primary: { kind: 'cloud', shape: { kind: 'cloud', width: 1, height: 1, yExtent: CLOUD_Y_EXTENT },
+            transform: [sx, 0, 0, sy, tx, ty] }, marks: [] };
+    }
+    if (shape === 'ellipse') return { primary: { kind: 'ellipse', cx: width / 2, cy: height / 2, rx: width / 2, ry: height / 2 }, marks: [] };
+    return { primary: { kind: 'stadium', width, height, radius: Math.min(width, height) / 2 }, marks: [] };
+}
+
+// Ellipse and capsule arcs remain analytic in FigureContour; this emits bounded paint paths.
+export function* ellipseArcPath(cx: number, cy: number, rx: number, ry: number, start: number,
+    sweep: number, tolerance: number, maxPieces: number, move = true): Generator<PathOp> {
+    if (![cx, cy, rx, ry, start, sweep, tolerance].every(Number.isFinite) || rx < 0 || ry < 0
+        || tolerance <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) throw new RangeError('Invalid ellipse realization');
+    const radius = Math.SQRT2 * Math.max(rx, ry);
+    const step = radius === 0 ? Math.max(1, Math.abs(sweep)) : (384 * tolerance / radius) ** .25;
+    const count = Math.max(1, Math.ceil(Math.abs(sweep) / step));
+    if (!Number.isSafeInteger(count) || count > maxPieces) throw new RangeError('Ellipse realization budget exhausted');
+    const point = (t: number): Vec2 => P(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
+    const derivative = (t: number): Vec2 => P(-rx * Math.sin(t), ry * Math.cos(t));
+    if (move) yield { op: 'M', p: point(start) };
+    for (let i = 0; i < count; i++) {
+        const a = start + sweep * i / count, b = start + sweep * (i + 1) / count;
+        const p0 = point(a), p1 = point(b), d0 = derivative(a), d1 = derivative(b), dt = (b - a) / 3;
+        yield { op: 'C', c1: P(p0.x + d0.x * dt, p0.y + d0.y * dt),
+            c2: P(p1.x - d1.x * dt, p1.y - d1.y * dt), p: p1 };
+    }
+}
+
+export function* stadiumPath(stadium: Extract<FigureContour, { kind: 'stadium' }>, tolerance: number,
+    maxPieces: number): Generator<PathOp> {
+    const { width: w, height: h, radius: r } = stadium;
+    if (w >= h) {
+        yield* ellipseArcPath(w - r, r, r, r, -Math.PI / 2, Math.PI, tolerance, maxPieces);
+        yield { op: 'L', p: P(r, h) };
+        yield* ellipseArcPath(r, r, r, r, Math.PI / 2, Math.PI, tolerance, maxPieces, false);
+    } else {
+        yield* ellipseArcPath(r, h - r, r, r, 0, Math.PI, tolerance, maxPieces);
+        yield { op: 'L', p: P(0, r) };
+        yield* ellipseArcPath(r, r, r, r, Math.PI, Math.PI, tolerance, maxPieces, false);
+    }
+    yield { op: 'Z' };
+}
+
 export function cloudPoint(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, theta: number): Vec2 {
     const r = 1 + .08 * Math.cos(10 * theta);
     return P(cloud.width * (r * Math.cos(theta) / 1.08 + 1) / 2,
@@ -180,7 +249,7 @@ export function* cloudPath(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, tole
     }
     // Product-to-sum gives frequencies 1, 9 and 11; this bounds both fourth derivatives.
     const fourth = 1 + .04 * (11 ** 4 + 9 ** 4);
-    const scale = Math.max(cloud.width / (2 * 1.08), cloud.height / (2 * cloud.yExtent));
+    const scale = Math.SQRT2 * Math.max(cloud.width / (2 * 1.08), cloud.height / (2 * cloud.yExtent));
     const step = scale === 0 ? 2 * Math.PI : (384 * tolerance / (fourth * scale)) ** .25;
     const count = Math.max(1, Math.ceil(2 * Math.PI / step));
     if (!Number.isSafeInteger(count) || count > maxPieces) throw new RangeError('Cloud realization budget exhausted');

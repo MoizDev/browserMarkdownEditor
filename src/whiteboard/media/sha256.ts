@@ -80,21 +80,23 @@ class Sha256 {
 
 export async function hashMedia(blob: Blob, signal?: AbortSignal, yieldWork?: () => Promise<void>): Promise<`sha256:${string}`> {
     const hash = new Sha256();
-    const reader = blob.stream().getReader();
-    try {
-        for (;;) {
-            signal?.throwIfAborted();
-            const { value, done } = await reader.read();
-            signal?.throwIfAborted();
-            if (done) break;
-            for (let offset = 0; offset < value.length; offset += 64 * 1024) {
-                hash.update(value.subarray(offset, offset + 64 * 1024));
-                if (yieldWork) await yieldWork();
+    for (let start = 0; start < blob.size; start += 4 * 1024 * 1024) {
+        const reader = blob.slice(start, start + 4 * 1024 * 1024).stream().getReader();
+        try {
+            for (;;) {
+                signal?.throwIfAborted();
+                const { value, done } = await reader.read();
+                signal?.throwIfAborted();
+                if (done) break;
+                for (let offset = 0; offset < value.length; offset += 64 * 1024) {
+                    hash.update(value.subarray(offset, offset + 64 * 1024));
+                    if (yieldWork) await yieldWork();
+                }
             }
+        } finally {
+            await reader.cancel();
+            reader.releaseLock();
         }
-    } finally {
-        await reader.cancel();
-        reader.releaseLock();
     }
     return `sha256:${hash.finish()}`;
 }

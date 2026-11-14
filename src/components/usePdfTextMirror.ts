@@ -24,7 +24,7 @@ interface MirrorController {
 /** A view owns only its window; the pool and canonical selection remain session-owned. */
 export function usePdfTextMirror(options: MirrorOptions): MirrorController {
     const latest = useRef(options);
-    latest.current = options;
+    useEffect(() => { latest.current = options; });
     const controller = useRef<MirrorController | null>(null);
     const { host, visible, fileName, document: pdf, session, pageRects } = options;
     useEffect(() => {

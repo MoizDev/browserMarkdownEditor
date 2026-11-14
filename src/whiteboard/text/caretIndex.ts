@@ -1,6 +1,6 @@
 import type { Rect } from '../../platform/types';
 import { graphemeBoundaries } from './graphemes';
-import { projectionSlice } from './projection';
+import { projectionLength, projectionSlice } from './projection';
 import type { ReferenceMeasurer } from './measure';
 import type { CaretIndex, CaretLine, CaretPosition, CaretStop, FaceTable, TextCluster, TextLayoutRequest, TextPaint } from './paint';
 
@@ -21,6 +21,7 @@ export class CaretLineCache {
 
 /** Prefix measurements use the same face and reference-size canvas as the paint. */
 export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer, cache?: CaretLineCache): CaretIndex {
+    const length = projectionLength(request.text);
     const buildLine = (lineIndex: number): CaretLine => {
         const line = paint.lines[lineIndex];
         const content = projectionSlice(request.text, line.src[0], line.src[1]);
@@ -170,7 +171,9 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             }
             const boundary = paintLine.src[1];
             const consumedBreak = boundary > paintLine.src[0] && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary - 1, boundary));
-            const crossesLine = consumedBreak ? start < boundary && end >= boundary : start < boundary && end > boundary;
+            const breakAfter = !consumedBreak && boundary < length && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary, boundary + 1));
+            const crossesLine = consumedBreak ? start < boundary && end >= boundary
+                : breakAfter ? start <= boundary && end > boundary : start < boundary && end > boundary;
             if (crossesLine && i + 1 < lines.length) {
                 const offset = consumedBreak ? boundary - 1 : boundary;
                 const stops = line.stops.filter(stop => stop.offset === offset);

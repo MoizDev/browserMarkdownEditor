@@ -204,9 +204,14 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             signal.throwIfAborted(); options.download(blob, job.filename(extension));
         } finally { job.release(); }
     };
+    // One export or copy of this view at a time: a new one supersedes the one still running, so the older capture stops
+    // instead of finishing into a clipboard or download the user has already replaced.
+    let latest: AbortController | undefined;
     const withController = async (work: (signal: AbortSignal) => Promise<void>) => {
-        const owned = new AbortController(); active.add(owned);
-        try { await work(owned.signal); } finally { active.delete(owned); owned.abort(); }
+        latest?.abort(new DOMException('Export superseded', 'AbortError'));
+        const owned = new AbortController(); active.add(owned); latest = owned;
+        try { await work(owned.signal); }
+        finally { active.delete(owned); if (latest === owned) latest = undefined; owned.abort(); }
     };
     return {
         /** Borrowed by inline text clipboard adapters; this document remains its owner. */

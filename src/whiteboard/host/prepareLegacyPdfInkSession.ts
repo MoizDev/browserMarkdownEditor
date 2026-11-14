@@ -14,7 +14,13 @@ const stale = () => new DOMException('PDF conversion ended', 'AbortError');
 
 function visualFailure(phase: 'preview' | 'final', visual: Awaited<ReturnType<typeof inspectPdfVisualModel>>): Error {
     const counts = new Map<string, number>();
-    for (const issue of visual.issues) counts.set(issue.kind, (counts.get(issue.kind) ?? 0) + 1);
+    const families = new Set(['legacy-document', 'legacy-user', 'legacy-shape', 'legacy-binding', 'legacy-unknown-record',
+        'legacy-unreadable-record', 'legacy-bookmark-asset', 'legacy-orphan-asset', 'legacy-unreadable-asset']);
+    for (const issue of visual.issues) {
+        const key = issue.kind === 'preserved-record'
+            ? `${issue.kind}/${families.has(issue.type) ? issue.type : 'other'}` : issue.kind;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
     const summary = [...counts].map(([kind, count]) => `${kind}: ${count}`).join(', ');
     return new Error(`Legacy PDF ${phase} visual preflight is unknown (${summary || 'unclassified'}). The original is unchanged.`);
 }

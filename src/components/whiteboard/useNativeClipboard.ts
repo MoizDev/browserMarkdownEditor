@@ -9,6 +9,9 @@ import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
 import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
+import { createPdfEmbeddedMediaStorage } from '../../whiteboard/host/pdfEmbeddedMedia';
+import { issueMediaStorageReceipt } from '../../whiteboard/media/storage';
+import type { StoreMedia } from '../../whiteboard/media/storage.types';
 import type { MediaEntry } from '../../whiteboard/model/media';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
@@ -65,10 +68,13 @@ function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identi
         if (!current() || pdfSource() !== source) throw new DOMException('PDF media source changed', 'AbortError');
         return blob;
     };
-    const storeMedia = (entry: MediaEntry, blob: Blob, signal: AbortSignal) => {
-        if (identity.kind === 'pdfInk') return Promise.reject(new Error('PDF media cannot be changed in this view'));
-        return ports.restore(entry, blob, signal);
-    };
+    const storeMedia: StoreMedia = identity.kind === 'pdfInk'
+        ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
+        : (entry, blob, signal) => {
+            signal.throwIfAborted();
+            if (!current() || !host.canWrite(identity)) return Promise.reject(new DOMException('Board media source changed', 'AbortError'));
+            return ports.restore(entry, blob, signal);
+        };
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;

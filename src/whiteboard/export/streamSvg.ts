@@ -14,13 +14,17 @@ function transferBytes(item: PageDisplayItem): number {
   return item.d.length * 64
 }
 
-function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDisplayItem {
-  if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers)) }
+function transferable(item: PageDisplayItem, transfers: Transferable[], owned: boolean): PageDisplayItem {
+  if (item.kind === 'group') return { ...item, items: item.items.map(child => transferable(child, transfers, owned)) }
   if (item.kind === 'image') {
     const bytes = Uint8Array.from(item.bytes); transfers.push(bytes.buffer)
     return { ...item, bytes }
   }
   if (item.kind === 'raster') {
+    if (owned && item.png.buffer instanceof ArrayBuffer && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) {
+      transfers.push(item.png.buffer)
+      return item
+    }
     const png = Uint8Array.from(item.png); transfers.push(png.buffer)
     return { ...item, png }
   }
@@ -44,7 +48,7 @@ export async function streamSvg(
   const chunk: PaintItem[] = []
   const job = new PaintStreamJob(source, item => { chunk.push(item) })
   let started = false, finished = false
-  async function send(items: PageDisplayItem[]): Promise<void> {
+  async function send(items: PageDisplayItem[], owned = false): Promise<void> {
     let offset = 0
     while (offset < items.length) {
       signal.throwIfAborted()
@@ -55,8 +59,8 @@ export async function streamSvg(
         bytes += next; end++
       }
       const transfer: Transferable[] = []
-      const owned = items.slice(offset, end).map(item => transferable(item, transfer))
-      await client.request('svgChunk', { streamId, items: owned }, identity, { ...opts, transfer }, current)
+      const payload = items.slice(offset, end).map(item => transferable(item, transfer, owned))
+      await client.request('svgChunk', { streamId, items: payload }, identity, { ...opts, transfer }, current)
       offset = end
     }
   }
@@ -82,7 +86,7 @@ export async function streamSvg(
           const wrap = createTextDisplayWrapper(item)
           for await (const part of text(item, scale, signal)) {
             signal.throwIfAborted()
-            await send([wrap([part])])
+            await send([wrap([part])], true)
             if (!source.isCurrent()) throw new Error('Paint capture stale')
           }
         } else items.push(await paintItemDisplay(item, scale, image, signal))

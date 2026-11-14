@@ -112,7 +112,10 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
         context.signal.throwIfAborted();
         if (context.cancelled || slot.closing) throw new DOMException('Text export cancelled', 'AbortError');
         if (result.done) { dispose(slot); return { kind: 'done' }; }
-        return { kind: 'item', item: result.value };
+        const item = result.value;
+        if (item.kind === 'raster' && item.png.buffer instanceof ArrayBuffer
+            && item.png.byteOffset === 0 && item.png.byteLength === item.png.buffer.byteLength) context.transfer(item.png.buffer);
+        return { kind: 'item', item };
     } catch (error) {
         dispose(slot);
         throw error;

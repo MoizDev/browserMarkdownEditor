@@ -293,6 +293,7 @@ third-party code included (normally "none") · date.
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
 | `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
 | `tools/transform.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; cancellable derived preview, pending preflight and atomic pointer-up apply | none | 2026-11-13 |
+| `tools/transformDrivers.ts` | lane w-g | GE-4; F-XFORM-001/004/008 | geometry §6.1–6.3 | Design; input adapters for translation, resize and rotation snapshot plans | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

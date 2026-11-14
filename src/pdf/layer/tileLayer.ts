@@ -82,6 +82,7 @@ export class PdfTileLayer implements Layer {
         if (this.disposed || !this.isCurrent()) return;
         const device = this.host.device();
         if (device && this.frameTexture?.device !== device) {
+            if (this.frameTexture) { this.frameTexture.device.destroy(this.frameTexture.handle); this.frameTexture = null; }
             if (budget.shouldYield() || !budget.claimUpload(8)) { this.pendingFrame = true; return; }
             const lease = this.host.allocator.gpu.reserve(8);
             if (lease) {
@@ -142,7 +143,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded();
+                this.evictUnneeded(input.viewport);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -174,6 +175,9 @@ export class PdfTileLayer implements Layer {
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
         if (this.disposed || !this.isCurrent()) return { complete: false, sharp: false };
         const input = this.demand(view);
+        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) {
+            return { complete: false, sharp: false };
+        }
         const device = gpu ? this.host.device() : null;
         if (gpu && !device) return { complete: false, sharp: false };
         for (let page = Math.max(0, pageAt(input.stack, input.viewport.y)); page < input.stack.rects.length; page++) {
@@ -197,6 +201,7 @@ export class PdfTileLayer implements Layer {
     }
 
     drawGpu(pass: GpuPass, view: ViewState): void {
+        if (this.disposed || !this.isCurrent()) return;
         const texture = this.frameTexture;
         if (texture && texture.device === this.host.device()) for (const page of this.visiblePages(view)) {
             const destination = project(page, view);
@@ -214,6 +219,7 @@ export class PdfTileLayer implements Layer {
     }
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
+        if (this.disposed || !this.isCurrent()) return;
         for (const page of this.visiblePages(view)) {
             const box = project(page, view);
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
@@ -235,6 +241,9 @@ export class PdfTileLayer implements Layer {
         }
         this.pendingFrame = false;
     }
+
+    /** Explicit retry is the only way a failed tile is requested again. */
+    retry(): void { this.failed.clear(); this.host.invalidate('pdf-tile-retry'); }
 
     /** Called by the pane on hide after the session has published its mirror. */
     hide(): void {
@@ -275,6 +284,8 @@ export class PdfTileLayer implements Layer {
     }
 
     private drawable(view: ViewState): Entry[] {
+        const input = this.demand(view);
+        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
@@ -286,8 +297,9 @@ export class PdfTileLayer implements Layer {
             width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
     }
 
-    private evictUnneeded(): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key))
+    private evictUnneeded(viewport: Readonly<Rect>): void {
+        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
+            !intersects(rect(entry.request), viewport))
             .sort((a, b) => a[1].used - b[1].used);
         for (const [key, entry] of candidates) this.remove(key, entry);
     }

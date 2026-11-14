@@ -4,11 +4,12 @@ import type { EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedP
 import type { FrameToken, RenderToken } from '../../platform/render/types';
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import { compose, transformPoint } from '../geom/affine';
+import { coverageOutline } from '../ink/outline';
 import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode } from '../model/nodes';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
-import type { PaintClip, PaintFrame, PaintItem } from '../render/paintStream';
+import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintItem } from '../render/paintStream';
 
 // Provenance: embed presentation facts from this repository's own paint stream,
 // canonical path coverage and compositor contracts; independent composition, no third-party source.
@@ -53,17 +54,23 @@ function inheritedOpacity(doc: BoardDoc, node: EmbedNode): number {
  * solid fill is its path, a translucent fill is reported as translucent. A stroke needs its expanded
  * outline and ink/text/image need canonical coverage; those are refused rather than approximated.
  */
-function laterCoverage(item: PaintItem, embedId: string, pane: Affine): EmbedLaterPaint {
+function laterCoverage(item: PaintItem, embedId: string, pane: Affine, deviceScale: number): readonly EmbedLaterPaint[] {
+    if (item.kind === 'ink') {
+        // The same canonical outline the CPU paint fills: one nonzero path per coverage chunk, at the presented device scale.
+        if (item.material.blend !== 'normal' || item.material.color[3] < 1) return [{ opacity: 'translucent' }];
+        const toPane = compose(pane, item.localToWorld), clips = clipsOf(item.clips, pane);
+        return inkCoverageChunks(item.coverage).map(chunk => ({ opacity: 'opaque' as const,
+            coverage: { path: { d: coverageOutline(chunk, deviceScale), fillRule: 'nonzero' as const, toPane }, clips } }));
+    }
     if (item.kind !== 'path') throw new Error(`Later ${item.kind} paint over embed ${embedId} needs its canonical coverage producer`);
     if (item.material.stroke) throw new Error(`Later stroked path over embed ${embedId} needs its expanded stroke outline`);
     const fill = item.material.fill;
-    if (!fill) return { opacity: 'translucent' };
-    if (fill[3] < 1 || item.material.blend !== 'normal') return { opacity: 'translucent' };
-    return { opacity: 'opaque', coverage: { path: { d: item.d, fillRule: item.fillRule, toPane: compose(pane, item.localToWorld) },
-        clips: clipsOf(item.clips, pane) } };
+    if (!fill || fill[3] < 1 || item.material.blend !== 'normal') return [{ opacity: 'translucent' }];
+    return [{ opacity: 'opaque', coverage: { path: { d: item.d, fillRule: item.fillRule, toPane: compose(pane, item.localToWorld) },
+        clips: clipsOf(item.clips, pane) } }];
 }
 
-function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine): readonly EmbedPresentedNode[] {
+function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine, deviceScale: number): readonly EmbedPresentedNode[] {
     const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
     const first = new Map<string, number>();
     items.forEach((item, index) => {
@@ -80,7 +87,7 @@ function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<
             if (item.nodeId === nodeId) continue;
             if (!item.allocationBounds) throw new Error(`Later paint over embed ${nodeId} has no allocation bounds`);
             if (!overlaps(item.allocationBounds, world)) continue;
-            laterPaint.push(laterCoverage(item, nodeId, pane));
+            laterPaint.push(...laterCoverage(item, nodeId, pane, deviceScale));
         }
         presented.push({ nodeId, source: node.url, order: index, rect: { x: 0, y: 0, width: node.w, height: node.h },
             toPane: compose(pane, card.localToWorld), clips: clipsOf(card.clips, pane), opacity: inheritedOpacity(doc, node),
@@ -108,7 +115,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (!pane || !presentation) return void releaseRaw();
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
-                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane), release: () => releaseRaw() };
+                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, context.view.camera.z * context.view.viewport.dpr), release: () => releaseRaw() };
             handed = true;
             options.port.present(packet);
         } catch (error) {

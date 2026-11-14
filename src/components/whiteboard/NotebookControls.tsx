@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { NotebookPaper, PaperRuling, PaperSize } from '../../utils/paper';
+import { MAX_PAGES, type NotebookPaper, type PaperRuling, type PaperSize } from '../../utils/paper';
 import './notebookControls.css';
 
 export interface NotebookControlsProps {
@@ -45,7 +45,7 @@ export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOp
             <option value="lined">{t('paper.lined')}</option><option value="grid">{t('paper.grid')}</option>
             <option value="dotted">{t('paper.dotted')}</option><option value="blank">{t('paper.blank')}</option>
         </select></label>
-        <button type="button" disabled={readOnly || paper.pageCount >= 500} onClick={addPage}
+        <button type="button" disabled={readOnly || paper.pageCount >= MAX_PAGES} onClick={addPage}
             aria-label={t('paper.addPage')} data-tooltip={t('paper.addPage')}>{t('paper.addPage')}</button>
         <button type="button" disabled={readOnly || paper.pageCount <= 1} onClick={deleteLastPage}
             aria-label={t('paper.deletePage')} data-tooltip={t('paper.deletePage')}>{t('paper.deletePage')}</button>

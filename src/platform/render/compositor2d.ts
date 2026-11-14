@@ -208,7 +208,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 !['normal', 'multiply'].includes(effect.blend))) throw new TypeError('Invalid isolation');
             ids.add(binding.id); objects.add(binding.layer); chrome ||= binding.group === 'chrome';
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
-                isolation: effect ? Object.freeze({ ...effect }) : undefined, coverage: binding.coverage.bind(binding) });
+                isolation: effect ? Object.freeze({ ...effect }) : undefined, coverage: binding.coverage.bind(binding),
+                // Preview geometry is independent of PageStack; dropping it mislabels PDF as vector.
+                ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
         this.changed();
     }

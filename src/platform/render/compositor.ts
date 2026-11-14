@@ -178,7 +178,8 @@ export class GpuCompositor implements PaneCompositor {
             // Keep callback receiver semantics without reading the caller's mutable binding again.
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
                 isolation: binding.isolation ? Object.freeze({ ...binding.isolation }) : undefined,
-                coverage: binding.coverage.bind(binding) });
+                coverage: binding.coverage.bind(binding),
+                ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
     }
 

@@ -1,6 +1,7 @@
 import type { Rect, ViewState } from '../types';
 import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions } from './compositor.types';
 import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
+import { paintCanvasIsolation } from './canvas2dContext';
 
 export interface LayerHostBindings {
     readonly allocator: LayerAllocators;
@@ -37,6 +38,8 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         device: () => bindings.gpuResources()?.device ?? null,
         get generation() { return bindings.generation(); },
         allocator: bindings.allocator,
+        reserveIsolation: reservation => (bindings.gpuResources() ?? compositor().resources).reserveIsolation(reservation),
+        paintIsolation: paintCanvasIsolation,
         invalidate: reason => bindings.invalidate(reason),
         wakeAt: deadline => bindings.wakeAt(deadline),
         paintWorld: (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => compositor().paintWorld(ctx, view, paint),

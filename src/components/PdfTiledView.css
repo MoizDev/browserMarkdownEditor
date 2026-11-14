@@ -9,3 +9,20 @@
 .pdf-tiled-surface canvas { position: absolute; inset: 0; }
 .pdf-tiled-overlays { pointer-events: none; }
 .pdf-tiled-link { pointer-events: auto; }
+.pdf-tiled-notice {
+    position: absolute;
+    z-index: 13;
+    left: 12px;
+    bottom: 60px;
+    max-width: min(400px, calc(100% - 24px));
+    padding: 8px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 12px;
+}
+.pdf-tiled-notice-actions { display: flex; gap: 6px; margin-top: 6px; }
+.pdf-tiled-notice-actions button { cursor: pointer; }
+.pdf-tiled-notice-actions button:disabled { cursor: default; opacity: 0.5; }
+.pdf-tiled-notice-hint { margin-top: 5px; color: var(--text-muted); }

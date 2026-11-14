@@ -14,17 +14,6 @@ import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintItem } fr
 // Provenance: embed presentation facts from this repository's own paint stream,
 // canonical path coverage and compositor contracts; independent composition, no third-party source.
 
-export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) => void;
-
-export interface NativeEmbedPresentationOptions {
-    readonly port: EmbedPresentationPort;
-    /** The compositor's view-to-pane transform for this presented view: the snapping the pane drew with. Null until the pane has it. */
-    readonly paneTransform: (view: ViewState, frameId: number) => Affine | null;
-    /** The compositor presentation that accepted this frame. Null until accepted, so nothing is claimed. */
-    readonly presentation: (frameId: number, token: FrameToken) => PlatformPresentation | null;
-    readonly onError: (error: unknown) => void;
-}
-
 const sameRender = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
     && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 
@@ -96,31 +85,79 @@ function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<
     return Object.freeze(presented);
 }
 
+export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) => void;
+
+export interface NativeEmbedPresentationOptions {
+    readonly port: EmbedPresentationPort;
+    /** The compositor's snapped view-to-pane transform for a presented view, from the pane's own state; null until the pane has it. */
+    readonly paneTransform: (view: ViewState, frameId: number) => Affine | null;
+    readonly onError: (error: unknown) => void;
+}
+export interface NativeEmbedPresentationProducer {
+    /** Drawn callback: the band has painted this frame. Retains it; it is not presented until the pane accepts it. */
+    readonly presented: NativeEmbedPresented;
+    /** Platform acceptance observer. Only a matching acceptance presents the pending frame. */
+    onPresentation(presentation: PlatformPresentation | null): void;
+    /** Releases the pending frame without presenting it. */
+    dispose(): void;
+}
+
+interface Pending {
+    readonly revision: number;
+    readonly token: RenderToken;
+    readonly frame: PaintFrame;
+    readonly context: ViewerPaintPresentation;
+    readonly releaseRaw: () => void;
+}
+
 /**
- * Builds one owned embed presentation packet from the actual presented frame and hands it to the
- * presentation port. It is a composable callback: the owner forwards each presented frame to it,
- * and it never registers its own viewer interaction. The raw frame is retained synchronously before
- * any work, and the retain is released only when the packet is released, never on a logical abort.
+ * Two-phase producer. The drawn callback can run before the platform accepts the presentation, so
+ * the latest drawn frame is held (its raw retain included) and presented only when the matching
+ * acceptance arrives. A newer draw supersedes the held frame and releases its retain at once, since
+ * that frame was never handed to the port. A frame that is never accepted is released by dispose.
  */
-export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresented {
-    return (revision, token, frame, context) => {
-        if (!frame || !context) return;
-        const releaseRaw = context.retain();
+export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
+    let pending: Pending | null = null;
+    const release = (value: Pending) => { try { value.releaseRaw(); } catch (error) { options.onError(error); } };
+    const build = (value: Pending, presentation: PlatformPresentation): void => {
+        const { frame, context } = value;
         let handed = false;
         try {
-            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) return void releaseRaw();
             const doc = frame.sourceDoc;
             if (!doc) throw new Error('Embed presentation needs the pinned source document of the presented frame');
-            const pane = options.paneTransform(context.view, context.frameId), presentation = options.presentation(context.frameId, context.token);
-            if (!pane || !presentation) return void releaseRaw();
+            const pane = options.paneTransform(context.view, context.frameId);
+            if (!pane) throw new Error('Embed presentation needs the snapped pane transform of the accepted frame');
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
-                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, context.view.camera.z * context.view.viewport.dpr), release: () => releaseRaw() };
+                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, context.view.camera.z * context.view.viewport.dpr),
+                release: () => value.releaseRaw() };
             handed = true;
             options.port.present(packet);
         } catch (error) {
-            if (!handed) releaseRaw();
+            if (!handed) release(value);
             options.onError(error);
         }
+    };
+    return {
+        presented(revision, token, frame, context) {
+            if (!frame || !context) return;
+            const releaseRaw = context.retain();
+            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) { releaseRaw(); return; }
+            const next: Pending = { revision, token, frame, context, releaseRaw };
+            if (pending) release(pending);
+            pending = next;
+        },
+        onPresentation(presentation) {
+            const value = pending;
+            if (!presentation || !value) return;
+            if (presentation.frameId !== value.context.frameId || presentation.viewEpoch !== value.context.view.epoch
+                || !sameRender(presentation.token as RenderToken, value.token)) return;
+            pending = null;
+            build(value, presentation);
+        },
+        dispose() {
+            const value = pending; pending = null;
+            if (value) release(value);
+        },
     };
 }

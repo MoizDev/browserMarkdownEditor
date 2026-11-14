@@ -231,8 +231,8 @@ const pct = (n: number) => n.toFixed(4);
 const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
     { length: MAX_PANES }, (_, i) => ({ flexGrow: `var(--pane-w-${i}, 1)` }));
 
-/** A document id distinguishes a renamed survivor from an overwritten tab. */
-const paneKey = (tab: OpenTab) => tab.id;
+/** A kind change releases the old session even though the document id survives. */
+const paneKey = (tab: OpenTab) => `${tab.id}|${tab.representation.loadedKind}`;
 
 /** The least a pane may be left holding, as a percentage of the editor. */
 function paneFloorPct(totalPx: number): number {

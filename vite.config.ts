@@ -25,7 +25,12 @@ export default defineConfig({
     // drops it. A plugin hook, not a function config, because scratch configs spread this object.
     name: 'benchmark-build-constant',
     config(_config, { command, mode }) {
-      return { define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) } }
+      return {
+        define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) },
+        // Dev serves transformed modules without the production minifier. Erase false
+        // measurement branches there too, rather than delivering an inactive hook body.
+        ...(command === 'serve' ? { esbuild: { treeShaking: true, minifySyntax: true } } : {}),
+      }
     },
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version: buildId }) })

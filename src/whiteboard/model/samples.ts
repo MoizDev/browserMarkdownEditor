@@ -42,3 +42,8 @@ export interface SampleStoreReader {
     read(ref: SampleRef, first: number, count: number): SampleBlockView;
     retain(ref: SampleRef): SampleLease;
 }
+
+/** History accounts both lazy encoded and decoded bytes without forcing a decode. */
+export interface SampleFootprintReader extends SampleStoreReader {
+    byteSize(ref: SampleRef): number;
+}

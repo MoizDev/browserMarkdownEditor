@@ -50,7 +50,7 @@ export interface BoardInputServices {
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   clearLatches(): void
-  cancelPendingGestures(): void
+  cancelPendingGestures(): boolean
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
@@ -167,7 +167,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { router.resumeInk(view.token); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
-      if (id === 'escape') { services.cancelPendingGestures(); if (pointer.interrupt('escape')) return true }
+      if (id === 'escape') {
+        const cancelled = services.cancelPendingGestures()
+        if (pointer.interrupt('escape') || cancelled) return true
+      }
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }

@@ -35,8 +35,35 @@ const validFragments = new WeakSet<RichFragment>();
 
 function closed(value: unknown, keys: ReadonlySet<string>): boolean {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if ((prototype !== Object.prototype && prototype !== null) || Object.getOwnPropertySymbols(value).length) return false;
     for (const key in value) if (!Object.hasOwn(value, key) || !keys.has(key)) return false;
+    for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (descriptor && !('value' in descriptor)) return false;
+    }
     return true;
+}
+function field(value: object, key: string): unknown {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function* array(value: unknown): Generator<void, readonly unknown[]> {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length
+        || value.length > 1_000_000) throw new RangeError('Invalid rich fragment array');
+    let count = 0;
+    for (const key in value) {
+        const index = Number(key), descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!Object.hasOwn(value, key) || !Number.isSafeInteger(index) || index < 0 || String(index) !== key
+            || index >= value.length || !descriptor || !('value' in descriptor)) throw new RangeError('Invalid rich fragment array');
+        if ((++count & 255) === 0) yield;
+    }
+    return value;
+}
+function element(value: readonly unknown[], index: number): unknown {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !('value' in descriptor)) throw new RangeError('Invalid rich fragment array entry');
+    return descriptor.value;
 }
 
 function rawArray(value: unknown): boolean {
@@ -65,44 +92,60 @@ function* plainRun(value: string): Generator<void, boolean> {
     }
     return true;
 }
-function attributes(value: Pick<Block, 'kind' | 'level' | 'dir' | 'start'>): boolean {
-    return kinds.has(value.kind) && Number.isInteger(value.level) && value.level >= 0 && value.level <= 7
-        && (value.kind !== 'p' || value.level === 0)
-        && (value.dir === 'auto' || value.dir === 'ltr' || value.dir === 'rtl')
-        && (value.start === undefined || (value.kind === 'ol' && Number.isFinite(value.start)));
+function attributes(value: object): boolean {
+    const kind = field(value, 'kind'), level = field(value, 'level'), dir = field(value, 'dir'), start = field(value, 'start');
+    return typeof kind === 'string' && kinds.has(kind as Block['kind']) && typeof level === 'number'
+        && Number.isInteger(level) && level >= 0 && level <= 7 && (kind !== 'p' || level === 0)
+        && (dir === 'auto' || dir === 'ltr' || dir === 'rtl')
+        && (start === undefined || (kind === 'ol' && typeof start === 'number' && Number.isFinite(start)));
 }
 
 function* validationSteps(fragment: RichFragment): Generator<void, void> {
     if (fragment && typeof fragment === 'object' && validFragments.has(fragment)) return;
-    if (!closed(fragment, fragmentKeys) || !Array.isArray(fragment.blocks) || !fragment.blocks.length || fragment.blocks.length > MAX_TEXT_BLOCKS)
-        throw new RangeError('Invalid rich fragment blocks');
-    let length = fragment.blocks.length - 1, visited = 0;
-    let immutable = Object.isFrozen(fragment) && Object.isFrozen(fragment.blocks);
-    for (const block of fragment.blocks) {
+    if (!closed(fragment, fragmentKeys)) throw new RangeError('Invalid rich fragment');
+    const blocks = yield* array(field(fragment, 'blocks'));
+    if (!blocks.length || blocks.length > MAX_TEXT_BLOCKS) throw new RangeError('Invalid rich fragment blocks');
+    let length = blocks.length - 1, visited = 0;
+    let immutable = Object.isFrozen(fragment) && Object.isFrozen(blocks);
+    for (let b = 0; b < blocks.length; b++) {
         if ((++visited & 255) === 0) yield;
-        if (!closed(block, blockKeys) || !attributes(block) || !Array.isArray(block.runs) || !block.runs.length || (block.tail !== undefined && !rawArray(block.tail))
-            || (block.carriers !== undefined && !Array.isArray(block.carriers)))
-            throw new RangeError('Invalid rich fragment block');
-        immutable &&= Object.isFrozen(block) && Object.isFrozen(block.runs)
-            && (block.carriers === undefined || Object.isFrozen(block.carriers));
+        const block = element(blocks, b);
+        if (!closed(block, blockKeys)) throw new RangeError('Invalid rich fragment block');
+        const blockObject = block as object, tail = field(blockObject, 'tail'), carrierValue = field(blockObject, 'carriers');
+        if (!attributes(blockObject) || (tail !== undefined && !rawArray(tail))) throw new RangeError('Invalid rich fragment block');
+        const runs = yield* array(field(blockObject, 'runs'));
+        if (!runs.length) throw new RangeError('Invalid rich fragment runs');
+        const carriers = carrierValue === undefined ? undefined : (yield* array(carrierValue));
+        immutable &&= Object.isFrozen(block) && Object.isFrozen(runs) && (carriers === undefined || Object.isFrozen(carriers));
         let blockLength = 0;
-        for (const run of block.runs) {
-            if (!closed(run, runKeys) || typeof run.text !== 'string' || !closed(run.marks, markKeys)
-                || (run.tail !== undefined && !rawArray(run.tail)) || !(yield* plainRun(run.text))) throw new RangeError('Invalid rich fragment run');
+        for (let r = 0; r < runs.length; r++) {
             if ((++visited & 255) === 0) yield;
-            immutable &&= Object.isFrozen(run) && Object.isFrozen(run.marks);
-            for (const flag of flags) if (run.marks[flag] !== undefined && run.marks[flag] !== true) throw new RangeError('Invalid rich fragment mark');
-            if (run.marks.link !== undefined && !link(run.marks.link)) throw new RangeError('Invalid rich fragment link');
-            if (run.marks.x !== undefined && typeof run.marks.x !== 'string') throw new RangeError('Invalid rich opaque mark');
-            blockLength += run.text.length;
-            length += run.text.length;
+            const run = element(runs, r);
+            if (!closed(run, runKeys)) throw new RangeError('Invalid rich fragment run');
+            const runObject = run as object, text = field(runObject, 'text'), marks = field(runObject, 'marks'), runTail = field(runObject, 'tail');
+            if (typeof text !== 'string' || !closed(marks, markKeys) || (runTail !== undefined && !rawArray(runTail))
+                || !(yield* plainRun(text))) throw new RangeError('Invalid rich fragment run');
+            const marksObject = marks as object;
+            immutable &&= Object.isFrozen(run) && Object.isFrozen(marks);
+            for (const flag of flags) {
+                const mark = field(marksObject, flag);
+                if (mark !== undefined && mark !== true) throw new RangeError('Invalid rich fragment mark');
+            }
+            const url = field(marksObject, 'link'), extra = field(marksObject, 'x');
+            if (url !== undefined && !link(url)) throw new RangeError('Invalid rich fragment link');
+            if (extra !== undefined && typeof extra !== 'string') throw new RangeError('Invalid rich opaque mark');
+            blockLength += text.length; length += text.length;
             if (length > MAX_TEXT_LENGTH) throw new RangeError('Rich fragment exceeds text limit');
         }
-        for (const carrier of block.carriers ?? []) {
+        for (let c = 0; c < (carriers?.length ?? 0); c++) {
             if ((++visited & 255) === 0) yield;
+            const carrier = element(carriers!, c);
+            if (!closed(carrier, carrierKeys)) throw new RangeError('Invalid rich block carrier');
+            const data = carrier as object, from = field(data, 'from'), to = field(data, 'to');
             immutable &&= Object.isFrozen(carrier);
-            if (!closed(carrier, carrierKeys) || !attributes(carrier) || !rawArray(carrier.tail) || !Number.isSafeInteger(carrier.from) || !Number.isSafeInteger(carrier.to)
-                || carrier.from < 0 || carrier.to < carrier.from || carrier.to > blockLength) throw new RangeError('Invalid rich block carrier');
+            if (!attributes(data) || !rawArray(field(data, 'tail')) || typeof from !== 'number' || typeof to !== 'number'
+                || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to < from || to > blockLength)
+                throw new RangeError('Invalid rich block carrier');
         }
     }
     if (immutable) validFragments.add(fragment);

@@ -2515,7 +2515,7 @@ export default function App() {
    * would be the silent loss this whole mechanism exists to prevent.
    */
   const keepClosingEdits = useCallback(async (
-    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array,
+    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob,
   ) => {
     try {
       if (__BME_BENCH__) {
@@ -2555,7 +2555,7 @@ export default function App() {
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
-    if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
+    if (!initial || initial.file.isHelp || !initial.file.handle || initial.representation.emergencyReadOnly) return 'skipped';
     // Save captures immediately. Only leaving the document awaits unfinished
     // work; legacy serializers retain their migration fallback until attached.
     const initialSource = documentBuffers.get(initial.id)?.source;
@@ -2653,7 +2653,7 @@ export default function App() {
         const data = isPdf && !nativeSource
           ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
-        if (!await keepClosingEdits(rootAtCall, path, file.name, data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data)) return 'failed';
+        if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed';
         return held === 'conflict' ? 'changed' : 'deleted';
       } catch (error) {
         if (error instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(error.message); return 'skipped'; }
@@ -2696,7 +2696,7 @@ export default function App() {
         }
         const result = await writeFileVersionedRef.current(handle, data, expected);
         if (result.status !== 'written') {
-          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data)) return 'failed'; }
+          if (closing) { if (!await keepClosingEdits(rootAtCall, path, file.name, data)) return 'failed'; }
           else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
           return result.status;
         }
@@ -3159,7 +3159,7 @@ export default function App() {
       documentSessions.release(doc.id, 'tab-close');
       editorStates.delete(doc.id);
       if (bufferPathIdsRef.current.get(path) === doc.id) bufferPathIdsRef.current.delete(path);
-      void documentSessions.settled(doc.id).then(() => documentBuffers.remove(doc.id));
+      void documentSessions.settled(doc.id).then(() => { documentBuffers.remove(doc.id); syncExitGuard(); });
       bytesGenerationsRef.current.delete(doc.id);
       void recoveryEvent({ type: 'release', documentId: doc.id });
       syncExitGuard();
@@ -5981,8 +5981,8 @@ export default function App() {
         const version = await snapshot.fingerprint();
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
         const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
-        const bytes = typeof copy === 'string' ? new TextEncoder().encode(copy) : copy instanceof Blob ? new Uint8Array(await copy.arrayBuffer()) : copy;
-        const copyHash = await hashBytes(bytes);
+        const copyHash = copy instanceof Blob ? await fingerprintSnapshot(copy)
+          : await hashBytes(typeof copy === 'string' ? new TextEncoder().encode(copy) : copy);
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
         if (copyHash === version.hash) return 'equal';
         return version.hash === entry.fingerprint ? 'match' : 'copy';
@@ -6017,7 +6017,7 @@ export default function App() {
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
     if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
     const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
-    const data = copyData instanceof Blob ? new Uint8Array(await copyData.arrayBuffer()) : copyData;
+    const data = copyData;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);

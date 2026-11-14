@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputView } from '../input/attach';
 import type { ToolStateSnapshot } from '../input/gesture';
 import type { NodeId } from '../model/ids';
+import { createAccessibilityOrder } from './accessibilityOrder';
 import type { ViewerAccessibilitySnapshot, ViewerEngine } from './types';
 
 export interface BoardAccessibilityDomOptions {
@@ -26,7 +27,7 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     root.setAttribute('aria-label', 'Whiteboard accessibility');
     root.style.cssText = 'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0';
     const status = document.createElement('div');
-    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.setAttribute('aria-atomic', 'true');
+    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'assertive'); status.setAttribute('aria-atomic', 'true');
     const cursorButton = document.createElement('button');
     cursorButton.type = 'button'; cursorButton.textContent = 'Use keyboard drawing cursor';
     cursorButton.setAttribute('aria-label', 'Use keyboard drawing cursor');
@@ -37,6 +38,14 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const list = document.createElement('ul'); list.setAttribute('aria-label', 'Board objects');
     root.append(status, cursorButton, description, heading, summary, list);
     options.overlay.append(root);
+    const enterCanvas = document.createElement('button');
+    enterCanvas.type = 'button'; enterCanvas.textContent = 'Move focus to canvas'; enterCanvas.hidden = true;
+    enterCanvas.style.cssText = 'position:absolute;left:8px;top:8px;z-index:20;pointer-events:auto;clip-path:inset(50%);';
+    options.overlay.append(enterCanvas);
+    const canvasFocus = () => { enterCanvas.style.clipPath = 'none'; enterCanvas.style.outline = '2px solid #75b7ff'; };
+    const canvasBlur = () => { enterCanvas.style.clipPath = 'inset(50%)'; enterCanvas.style.outline = ''; };
+    const enter = () => { if (active()) options.surface.focus({ preventScroll: true }); };
+    enterCanvas.addEventListener('focus', canvasFocus); enterCanvas.addEventListener('blur', canvasBlur); enterCanvas.addEventListener('click', enter);
     const cursor = document.createElement('div');
     cursor.setAttribute('aria-hidden', 'true');
     cursor.style.cssText = 'position:absolute;left:0;top:0;width:12px;height:12px;border:2px solid #75b7ff;border-radius:50%;box-shadow:0 0 0 1px #fff;transform:translate(-50%,-50%);pointer-events:none;display:none;z-index:1';
@@ -48,10 +57,14 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     exitPenMode.hidden = true; options.overlay.append(exitPenMode);
     const rows = new Map<NodeId, { item: HTMLLIElement; button: HTMLButtonElement }>();
     let disposed = false, scheduled: (() => void) | undefined, activate: (() => void) | undefined;
-    let lastTool = '', lastSelection = '', lastCursorActive = false;
+    let lastTool = '', lastSelection = '', lastCursorActive = false, lastAnnouncement = '', announcementEpoch = 0;
     const active = () => !disposed && options.current() && options.visible();
     const report = (error: unknown) => { try { options.error(error); } catch { /* A reporting failure cannot block cleanup. */ } };
-    const announce = (message: string) => { if (active()) status.textContent = message; };
+    const announce = (message: string) => {
+        if (!active()) return;
+        announcementEpoch++; lastAnnouncement = message; status.textContent = message;
+    };
+    const order = createAccessibilityOrder({ runtime: options.runtime, current: active, schedule: options.schedule, error: report });
     const cursorClick = () => { if (active()) activate?.(); };
     const exitPen = () => {
         if (!active()) return;
@@ -61,13 +74,13 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         if (!active()) return;
         event.preventDefault(); options.contextMenu(event);
     };
-    cursorButton.addEventListener('click', cursorClick); root.addEventListener('contextmenu', menu);
+    cursorButton.addEventListener('click', cursorClick); root.addEventListener('contextmenu', menu); enterCanvas.addEventListener('contextmenu', menu);
     exitPenMode.addEventListener('click', exitPen); exitPenMode.addEventListener('contextmenu', menu);
     const dropRows = () => { for (const row of rows.values()) row.item.remove(); rows.clear(); };
     const sync = () => {
         scheduled = undefined;
-        if (!active()) { root.hidden = true; exitPenMode.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
-        root.hidden = false; exitPenMode.hidden = !options.runtime.tools.penMode;
+        if (!active()) { order.cancel(); root.hidden = true; enterCanvas.hidden = true; exitPenMode.hidden = true; cursor.style.display = 'none'; dropRows(); return; }
+        root.hidden = false; enterCanvas.hidden = false; exitPenMode.hidden = !options.runtime.tools.penMode;
         let snapshot: ViewerAccessibilitySnapshot;
         try { snapshot = options.engine.accessibility.getSnapshot(); }
         catch (error) { report(error); return; }
@@ -100,10 +113,21 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         for (const [id, row] of rows) if (!keep.has(id)) { row.item.remove(); rows.delete(id); }
         const selection = `${snapshot.focusedId ?? ''}:${snapshot.selectedCount}`;
         if (selection !== lastSelection) {
-            lastSelection = selection;
-            const focused = snapshot.items.find(item => item.id === snapshot.focusedId);
-            announce(focused ? `${focused.label || 'Object'} selected. ${snapshot.selectedCount} selected.`
-                : snapshot.selectedCount ? `${snapshot.selectedCount} objects selected.` : 'Selection cleared.');
+            lastSelection = selection; order.cancel();
+            if (snapshot.selectedCount > 1) announce(`${snapshot.selectedCount} shapes selected.`);
+            else if (snapshot.selectedCount === 1 && snapshot.focusedId) {
+                const id = snapshot.focusedId as NodeId, focused = snapshot.items.find(item => item.id === id);
+                const node = options.runtime.session.doc.nodes.get(id);
+                const names: Readonly<Record<string, string>> = { stroke: 'Stroke', figure: 'Figure', text: 'Text', sticky: 'Note',
+                    connector: 'Arrow', polyline: 'Line', frame: 'Frame', group: 'Group', picture: 'Picture', clip: 'Video',
+                    linkcard: 'Bookmark', embed: 'Embed', opaque: 'Object' };
+                const type = node ? names[node.kind] ?? 'Object' : 'Object', label = focused?.label?.trim() || type;
+                const description = label.toLocaleLowerCase() === type.toLocaleLowerCase() ? type : `${label}, ${type}`;
+                const ticket = ++announcementEpoch;
+                order.describe(id, (position, total) => {
+                    if (active() && ticket === announcementEpoch) announce(position && total ? `${description}. ${position} of ${total}.` : `${description} selected.`);
+                });
+            }
         }
     };
     const refresh = () => {
@@ -124,8 +148,16 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const a11y: BoardInputView['a11y'] = {
         toolState(snapshot: ToolStateSnapshot) {
             if (!active()) return;
-            const tool = `${snapshot.active.id}${snapshot.active.variant ? `, ${snapshot.active.variant}` : ''}${snapshot.locked ? ', locked' : ''}`;
-            if (tool !== lastTool) { lastTool = tool; announce(`Tool: ${tool}.`); }
+            const names: Readonly<Record<string, string>> = { pen: 'Draw', highlighter: 'Highlight', eraser: 'Eraser', select: 'Select',
+                hand: 'Hand', connector: 'Arrow', polyline: 'Line', sticky: 'Note', text: 'Text', frame: 'Frame', laser: 'Laser', figure: 'Figure' };
+            const name = names[snapshot.active.id] ?? snapshot.active.id;
+            const tool = `${name}${snapshot.active.variant ? `, ${snapshot.active.variant}` : ''}${snapshot.locked ? ', locked' : ''}`;
+            if (tool !== lastTool) { lastTool = tool; announce(`${tool}.`); }
+        },
+        repeatAnnouncement() {
+            if (!active()) return false;
+            if (lastAnnouncement) { status.replaceChildren(); status.append(document.createTextNode(lastAnnouncement)); }
+            return true;
         },
         bindKeyboardCursor(callback) {
             activate = callback;
@@ -146,10 +178,12 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
         refresh,
         dispose() {
             if (disposed) return;
-            disposed = true; scheduled?.(); scheduled = undefined; unsubscribe(); unsubscribePenMode(); activate = undefined;
+            disposed = true; scheduled?.(); scheduled = undefined; order.dispose(); unsubscribe(); unsubscribePenMode(); activate = undefined;
             cursorButton.removeEventListener('click', cursorClick); root.removeEventListener('contextmenu', menu);
+            enterCanvas.removeEventListener('contextmenu', menu); enterCanvas.removeEventListener('focus', canvasFocus);
+            enterCanvas.removeEventListener('blur', canvasBlur); enterCanvas.removeEventListener('click', enter);
             exitPenMode.removeEventListener('click', exitPen); exitPenMode.removeEventListener('contextmenu', menu);
-            dropRows(); exitPenMode.remove(); cursor.remove(); root.remove();
+            dropRows(); enterCanvas.remove(); exitPenMode.remove(); cursor.remove(); root.remove();
         },
     };
 }

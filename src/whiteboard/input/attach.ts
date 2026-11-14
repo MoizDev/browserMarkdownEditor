@@ -36,7 +36,7 @@ export interface BoardInputView {
   readonly wet: BoardWetLayer
   readonly token: InputToken
   readonly mappings: MappingHistory
-  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void }
+  readonly a11y: { toolState(snapshot: ToolStateSnapshot): void; bindKeyboardCursor?(activate: () => void): Detach; keyboardCursor?(point: Point | null, activeGesture: boolean): void; repeatAnnouncement?(): boolean }
   readonly bindFlush?: (flush: () => void) => Detach
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
@@ -432,6 +432,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
       if (!current()) return false
+      if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
       if (id === 'escape') {
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true

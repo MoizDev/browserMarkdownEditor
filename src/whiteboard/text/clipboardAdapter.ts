@@ -101,3 +101,28 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
         dispose() { if (!disposed) { disposed = true; cancel(); } },
     };
 }
+
+export interface TextClipboardDocumentOwner {
+    readonly clipboardCopy: ClipboardCopy;
+    bindTextAuthority(authority: {
+        isCurrent(snapshot: CopySnapshot): boolean;
+        prepareCut(snapshot: CopySnapshot): { commit(): void; release(): void };
+    }): () => void;
+}
+
+/** Borrow the document owner's one C2 instance and return its text authority with one lifetime. */
+export function bindTextClipboardAdapter(owner: TextClipboardDocumentOwner, options: Omit<TextClipboardAdapterOptions, 'copy'>) {
+    const adapter = createTextClipboardAdapter({ ...options, copy: owner.clipboardCopy });
+    let unbind: () => void;
+    try { unbind = owner.bindTextAuthority(adapter); }
+    catch (error) { adapter.dispose(); throw error; }
+    let disposed = false;
+    return {
+        ...adapter,
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            try { adapter.dispose(); } finally { unbind(); }
+        },
+    };
+}

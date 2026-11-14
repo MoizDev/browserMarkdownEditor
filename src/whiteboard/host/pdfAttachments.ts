@@ -12,6 +12,19 @@ export interface BoardPdfAttachment {
     readonly bytes: Blob;
 }
 
+function mediaName(entry: MediaEntry): string {
+    if (!/^sha256:[0-9a-f]{64}$/.test(entry.id) || !(MEDIA_MIMES as readonly string[]).includes(entry.mime))
+        throw new Error('Unsupported board media attachment');
+    return `board-media/${entry.id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}`;
+}
+
+/** Reserve the complete immutable name set before stamping or aliasing unknown attachments. */
+export function pdfInkReservedNames(media: Iterable<MediaEntry>): string[] {
+    const names = new Set(['original.pdf', 'board.json', 'tldraw-snapshot.json', '.vault-write-mark']);
+    for (const entry of media) names.add(mediaName(entry));
+    return [...names];
+}
+
 /** Snapshot media must be pinned by the caller until the assembler finishes. */
 export async function pdfBoardAttachments(
     board: Uint8Array, media: Iterable<MediaEntry>, read: (id: MediaId) => Blob | undefined, signal: AbortSignal,
@@ -30,13 +43,11 @@ export async function pdfBoardAttachments(
         signal.throwIfAborted();
         if (seen.has(entry.id)) continue;
         seen.add(entry.id);
-        if (!/^sha256:[0-9a-f]{64}$/.test(entry.id) || !(MEDIA_MIMES as readonly string[]).includes(entry.mime))
-            throw new Error('Unsupported board media attachment');
+        const name = mediaName(entry);
         const blob = read(entry.id);
         if (!blob || blob.size !== entry.bytes || await hashMedia(blob, signal) !== entry.id)
             throw new Error('Board media is missing or has changed');
-        attachments.push({ name: `board-media/${entry.id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}`,
-            role: 'media', bytes: blob, sha256: entry.id.slice(7), format: NATIVE_FORMAT_ID });
+        attachments.push({ name, role: 'media', bytes: blob, sha256: entry.id.slice(7), format: NATIVE_FORMAT_ID });
     }
     signal.throwIfAborted();
     return attachments;

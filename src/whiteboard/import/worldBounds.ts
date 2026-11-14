@@ -1,5 +1,6 @@
 import type { Affine } from '../../platform/types';
 import { multiplyAffine, transformBox, validBox, type Box } from '../geom/bounds';
+import { figureWorldSemanticBounds } from '../geom/providers';
 import type { Node } from '../model/nodes';
 import type { ParentId, SheetId } from '../model/ids';
 import type { TextLayoutEngine, TextLayoutRequest } from '../text/paint';
@@ -34,6 +35,8 @@ function union(a: Box | undefined, b: Box): Box {
 export async function legacyWorldBounds(nodes: readonly Node[], sheets: ReadonlySet<SheetId>,
     text: LegacyTextLayout, geometry: LegacyGeometry): Promise<(node: Node) => LegacyWorldBounds> {
     const children = new Map<ParentId, Node[]>();
+    const byId = new Map<Node['id'], Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
     for (const node of nodes) {
         let group = children.get(node.parent);
         if (!group) children.set(node.parent, group = []);
@@ -43,18 +46,19 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
     for (const node of nodes) {
         if (node.kind !== 'text') continue;
         const request: TextLayoutRequest = { text: node.text, revision: node.id,
-            style: { font: node.font, size: TEXT_SIZES[node.size] * node.scale,
+            style: { font: node.font, size: TEXT_SIZES[node.size],
                 ink: { swatch: node.color, role: 'text' }, align: node.align, verticalAlign: 'start',
                 padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow' },
-            width: node.autoSize ? null : node.w * node.scale, fontEpoch: text.fontEpoch() };
+            width: node.autoSize ? null : node.w, fontEpoch: text.fontEpoch() };
         await text.engine.prepare(request);
         const measured = text.engine.measure({ ...request, fontEpoch: text.fontEpoch() });
-        textBoxes.set(node, [0, 0, measured.box.w, measured.box.h]);
+        textBoxes.set(node, [0, 0, measured.box.w * node.scale, measured.box.h * node.scale]);
     }
     const result = new Map<Node, LegacyWorldBounds>();
     for (const root of nodes) {
-        if (!sheets.has(root.parent as SheetId)) continue;
-        let box: Box | undefined;
+        const parent = byId.get(root.parent as Node['id']);
+        if (!sheets.has(root.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
+        let box: Box | undefined, errorWorld = 0;
         const pending: { node: Node; parent: Affine; depth: number }[] = [{ node: root, parent: IDENTITY, depth: 0 }];
         const seen = new Set<Node>();
         while (pending.length) {
@@ -66,7 +70,16 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             if (current.node.kind === 'text') part = transformed(textBoxes.get(current.node)!, transform);
             else if (current.node.kind === 'sticky') part = transformed([0, 0, 200 * current.node.scale,
                 (200 + current.node.growY) * current.node.scale], transform);
-            else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
+            else if (current.node.kind === 'figure') {
+                const result = figureWorldSemanticBounds(current.node, transform,
+                    { kernelVersion: 1, pathError: 1 / 1024, lengthError: 1 / 1024, maxPieces: 262144 });
+                const r = result.bounds;
+                part = [r.x, r.y, r.x + r.width, r.y + r.height];
+                errorWorld = Math.max(errorWorld, result.errorWorld);
+            } else if (current.node.kind === 'frame' || current.node.kind === 'picture' || current.node.kind === 'clip'
+                || current.node.kind === 'linkcard' || current.node.kind === 'embed') {
+                part = transformed([0, 0, current.node.w, current.node.h], transform);
+            } else if (current.node.kind !== 'group') part = geometry.worldBounds(current.node, transform);
             if (part) {
                 if (!validBox(part)) throw new Error(`Invalid geometry for ${current.node.id}`);
                 box = union(box, part);
@@ -76,7 +89,7 @@ export async function legacyWorldBounds(nodes: readonly Node[], sheets: Readonly
             }
         }
         if (!box) box = [root.x, root.y, root.x, root.y];
-        result.set(root, { x: box[0], y: box[1], w: box[2] - box[0], h: box[3] - box[1] });
+        result.set(root, { x: box[0], y: box[1], w: box[2] - box[0], h: box[3] - box[1], errorWorld });
     }
     return node => {
         const bounds = result.get(node);

@@ -9,7 +9,7 @@ export interface BoardHeaderProps {
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
     readonly menuLabel: string;
-    readonly menuEntries: ContextMenuEntry[];
+    readonly menuEntries: ContextMenuEntry[] | ((anchor: HTMLButtonElement) => ContextMenuEntry[]);
     readonly sheetName: string;
     readonly openSheets: (anchor: HTMLButtonElement) => void;
     readonly actionsLabel: string;
@@ -51,7 +51,8 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
                 onClick={event => {
                     const anchor = event.currentTarget;
                     const rect = anchor.getBoundingClientRect();
-                    openContextMenu({ x: rect.left, y: rect.bottom, entries: menuEntries,
+                    openContextMenu({ x: rect.left, y: rect.bottom,
+                        entries: typeof menuEntries === 'function' ? menuEntries(anchor) : menuEntries,
                         label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor });
                 }}>{menuLabel}</button>
             <button type="button" className="board-chrome-tool" onClick={event => openSheets(event.currentTarget)}>{sheetName}</button>

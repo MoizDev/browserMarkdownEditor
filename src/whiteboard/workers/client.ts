@@ -1,4 +1,4 @@
-import { createWorkerClient, type RequestOptions, type WorkerClient } from '../../platform/workers';
+import { createWorkerClient, type Priority, type RequestOptions, type WorkerClient } from '../../platform/workers';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from './protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from './protocol';
 
@@ -6,6 +6,7 @@ export type SharedBoardWorker = 'parse' | 'geometry' | 'decode' | 'export';
 export interface BoardWorkerClient {
     request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
         isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T>;
+    reprioritise(request: Promise<unknown>, priority: Priority): void;
     on(event: string, handler: (payload: unknown, identity: BoardJobIdentity) => void): () => void;
     cancelSession(session: string, epoch: number): void;
     recycle(reason: string): Promise<void>;
@@ -33,28 +34,33 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
         events: ['pngPull', 'fontEpoch', 'memory'], eventLimit: 65_536, absoluteMs: 600_000,
         disposeResult: (_op, result) => closeWorkerResult(result),
     });
+    const requests = new WeakMap<Promise<unknown>, Promise<unknown>>();
     const client: BoardWorkerClient = {
-        async request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
+        request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
             isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T> {
-            if (!validBoardIdentity(identity)) throw new TypeError('Invalid board worker identity');
-            const pinned = Object.freeze({ session: identity.session, epoch: identity.epoch, revision: identity.revision });
-            if (!isCurrent(pinned)) throw new DOMException('Board job is stale', 'AbortError');
-            let result: unknown;
-            try {
-                result = await host.request(op, { identity: pinned, payload } satisfies BoardWorkerEnvelope<unknown>,
-                    { ...options, deadlineMs: options.deadlineMs ?? defaultDeadline(kind) });
-            } catch (error) {
-                if (error instanceof Error && error.name === 'Deadline') void host.recycle('board job deadline', { lazy: true }).catch(() => {});
-                throw error;
-            }
-            if (!boardEnvelope(result) || !matchingIdentity(pinned, result.identity)) {
-                closeWorkerResult(result);
-                throw new TypeError('Invalid board worker reply identity');
-            }
-            try {
+            let pending: Promise<unknown> | undefined;
+            const output = (async () => {
+                if (!validBoardIdentity(identity)) throw new TypeError('Invalid board worker identity');
+                const pinned = Object.freeze({ session: identity.session, epoch: identity.epoch, revision: identity.revision });
                 if (!isCurrent(pinned)) throw new DOMException('Board job is stale', 'AbortError');
-            } catch (error) { closeWorkerResult(result); throw error; }
-            return result.payload as T;
+                pending = host.request(op, { identity: pinned, payload } satisfies BoardWorkerEnvelope<unknown>,
+                    { ...options, deadlineMs: options.deadlineMs ?? defaultDeadline(kind), terminateOnDeadline: true });
+                const result: unknown = await pending;
+                if (!boardEnvelope(result) || !matchingIdentity(pinned, result.identity)) {
+                    closeWorkerResult(result);
+                    throw new TypeError('Invalid board worker reply identity');
+                }
+                try {
+                    if (!isCurrent(pinned)) throw new DOMException('Board job is stale', 'AbortError');
+                } catch (error) { closeWorkerResult(result); throw error; }
+                return result.payload as T;
+            })();
+            if (pending) requests.set(output, pending);
+            return output;
+        },
+        reprioritise(request, priority) {
+            const pending = requests.get(request);
+            if (pending) host.reprioritise(pending, priority);
         },
         on(event, handler) {
             return host.on(event, result => {

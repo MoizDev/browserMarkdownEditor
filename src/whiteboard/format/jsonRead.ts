@@ -13,15 +13,22 @@ export interface JsonSpan {
     readonly depth: number;
     readonly source: string;
     text(): string;
+    textIncremental(cooperate: () => Promise<void>): Promise<string>;
     string(limit: number): string;
+    stringIncremental(limit: number, cooperate: () => Promise<void>): Promise<string>;
     stringLength(limit: number): number;
     number(): number;
     value(): unknown;
     raw(): RawJson;
+    rawIncremental(cooperate: () => Promise<void>): Promise<RawJson>;
     fields(): Iterable<readonly [string, JsonSpan]>;
+    fieldsIncremental(cooperate: () => Promise<void>): AsyncIterable<readonly [string, JsonSpan]>;
     items(): Iterable<JsonSpan>;
+    itemsIncremental(cooperate: () => Promise<void>): AsyncIterable<JsonSpan>;
     length(limit: number): number;
+    lengthIncremental(limit: number, cooperate: () => Promise<void>): Promise<number>;
     fieldMap(): ReadonlyMap<string, JsonSpan>;
+    fieldMapIncremental(cooperate: () => Promise<void>): Promise<ReadonlyMap<string, JsonSpan>>;
 }
 
 function error(code: 'syntax' | 'limit', message: string, offset: number): never {
@@ -67,53 +74,96 @@ function kind(source: string, start: number): JsonKind {
     }
 }
 
+function complete<T>(steps: Generator<void, T>): T {
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
+async function completeIncremental<T>(steps: Generator<void, T>, cooperate: () => Promise<void>): Promise<T> {
+    let started = performance.now();
+    for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+        if (performance.now() - started >= 3) { await cooperate(); started = performance.now(); }
+    }
+}
 class Reader {
     stringUnits = 0;
+    private readonly longValues = new Map<number, number>();
+    private readonly longStrings = new Map<number, { end: number; units: number; escaped: boolean }>();
     constructor(readonly source: string, readonly maxDepth: number) { }
-    white(index: number): number {
-        while (index < this.source.length && whitespace(this.source.charCodeAt(index))) index++;
+    white(index: number): number { return complete(this.whiteSteps(index)); }
+    *whiteSteps(index: number): Generator<void, number> {
+        let count = 0;
+        while (index < this.source.length && whitespace(this.source.charCodeAt(index))) {
+            index++;
+            if ((++count & 4095) === 0) yield;
+        }
         return index;
     }
-    quoted(index: number, limit = FORMAT_LIMITS.recordBytes): number {
+    quoted(index: number, limit = FORMAT_LIMITS.recordBytes): number { return complete(this.quotedSteps(index, limit)); }
+    *quotedSteps(index: number, limit = FORMAT_LIMITS.recordBytes): Generator<void, number> {
+        const cached = this.longStrings.get(index);
+        if (cached) {
+            if (cached.units > limit) error('limit', `JSON string exceeds ${limit} UTF-16 units`, index);
+            this.stringUnits = cached.units;
+            return cached.end;
+        }
         if (this.source.charCodeAt(index) !== 34) return error('syntax', 'Expected a JSON string', index);
         const start = index++;
-        let units = 0;
+        let units = 0, escapedValue = false;
         while (index < this.source.length) {
             const code = this.source.charCodeAt(index++);
-            if (code === 34) { this.stringUnits = units; return index; }
+            if (code === 34) {
+                this.stringUnits = units;
+                if (index - start > 4096) this.longStrings.set(start, { end: index, units, escaped: escapedValue });
+                return index;
+            }
             if (code < 32) error('syntax', 'Unescaped control character in JSON string', index - 1);
             if (code === 92) {
+                escapedValue = true;
                 const escaped = this.source.charCodeAt(index++);
                 if (escaped === 117) {
                     for (let n = 0; n < 4; n++) if (!hex(this.source.charCodeAt(index++))) error('syntax', 'Invalid Unicode escape', index - 1);
-                } else if (!JSON_ESCAPES.includes(escaped)) {
-                    error('syntax', 'Invalid JSON escape', index - 1);
-                }
+                } else if (!JSON_ESCAPES.includes(escaped)) error('syntax', 'Invalid JSON escape', index - 1);
             }
             if (++units > limit) error('limit', `JSON string exceeds ${limit} UTF-16 units`, start);
+            if ((units & 4095) === 0) yield;
         }
         return error('syntax', 'Unterminated JSON string', start);
     }
-    skip(index: number, depth: number): number {
+    unescaped(index: number): boolean { return this.longStrings.get(index)?.escaped === false; }
+    skip(index: number, depth: number): number { return complete(this.skipSteps(index, depth)); }
+    *skipSteps(index: number, depth: number): Generator<void, number> {
+        const cached = this.longValues.get(index);
+        if (cached !== undefined) return cached;
+        const start = index;
+        const end = yield* this.skipValueSteps(index, depth);
+        if (end - start > 4096) this.longValues.set(start, end);
+        return end;
+    }
+    private *skipValueSteps(index: number, depth: number): Generator<void, number> {
         const start = index;
         const code = this.source.charCodeAt(index);
-        if (code === 34) return this.quoted(index);
+        if (code === 34) return yield* this.quotedSteps(index);
         if (code === 123 || code === 91) {
             if (depth >= this.maxDepth) error('limit', `JSON nesting exceeds ${this.maxDepth}`, start);
             const object = code === 123, close = object ? 125 : 93;
-            index = this.white(index + 1);
+            index = yield* this.whiteSteps(index + 1);
             if (this.source.charCodeAt(index) === close) return index + 1;
+            let members = 0;
             for (; ;) {
                 if (object) {
-                    index = this.white(this.quoted(index));
+                    index = yield* this.quotedSteps(index);
+                    index = yield* this.whiteSteps(index);
                     if (this.source.charCodeAt(index++) !== 58) error('syntax', 'Expected a colon after JSON key', index - 1);
-                    index = this.white(index);
+                    index = yield* this.whiteSteps(index);
                 }
-                index = this.white(this.skip(index, depth + 1));
+                index = yield* this.skipSteps(index, depth + 1);
+                index = yield* this.whiteSteps(index);
                 const separator = this.source.charCodeAt(index++);
                 if (separator === close) return index;
                 if (separator !== 44) error('syntax', 'Expected a JSON comma or closing delimiter', index - 1);
-                index = this.white(index);
+                index = yield* this.whiteSteps(index);
+                if ((++members & 255) === 0) yield;
             }
         }
         if (code === 116 && this.source.startsWith('true', index)) return index + 4;
@@ -124,18 +174,18 @@ class Reader {
         if (first === 48) index++;
         else {
             if (first < 49 || first > 57 || !Number.isFinite(first)) error('syntax', 'Expected a JSON value', start);
-            while (digit(this.source.charCodeAt(++index))) { /* integer digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         if (this.source.charCodeAt(index) === 46) {
             if (!digit(this.source.charCodeAt(++index))) error('syntax', 'Missing fractional digits', index);
-            while (digit(this.source.charCodeAt(++index))) { /* fractional digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         const exponent = this.source.charCodeAt(index);
         if (exponent === 69 || exponent === 101) {
             index++;
             if (this.source.charCodeAt(index) === 43 || this.source.charCodeAt(index) === 45) index++;
             if (!digit(this.source.charCodeAt(index))) error('syntax', 'Missing exponent digits', index);
-            while (digit(this.source.charCodeAt(++index))) { /* exponent digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         if (!Number.isFinite(Number(this.source.slice(start, index)))) error('limit', 'JSON number is not finite', start);
         return index;
@@ -155,6 +205,15 @@ class Span implements JsonSpan {
     }
     get source(): string { return this.reader.source; }
     text(): string { return tokenText(this.source, this.start, this.end); }
+    async textIncremental(cooperate: () => Promise<void>): Promise<string> {
+        if (this.source.length <= 16_384 || this.end - this.start >= this.source.length / 4) return this.source.slice(this.start, this.end);
+        const parts: string[] = [];
+        for (let index = this.start; index < this.end; index += 4096) {
+            parts.push(this.source.slice(index, Math.min(index + 4096, this.end)));
+            await cooperate();
+        }
+        return parts.join('');
+    }
     stringLength(limit: number): number {
         if (this.kind !== 'string') return error('syntax', 'Expected a string', this.start);
         this.reader.quoted(this.start, limit);
@@ -168,6 +227,33 @@ class Span implements JsonSpan {
         }
         return this.cached as string;
     }
+    async stringIncremental(limit: number, cooperate: () => Promise<void>): Promise<string> {
+        if (this.kind !== 'string') return error('syntax', 'Expected a string', this.start);
+        await completeIncremental(this.reader.quotedSteps(this.start, limit), cooperate);
+        if (this.parsed) return this.cached as string;
+        if (this.reader.unescaped(this.start)) {
+            this.cached = tokenText(this.source, this.start + 1, this.end - 1);
+        } else {
+            // Split only between complete escapes; JSON.parse on each bounded string preserves
+            // UTF-16 code units, including isolated escaped surrogates, exactly as one parse.
+            const parts: string[] = [];
+            let start = this.start + 1, index = start;
+            while (index < this.end - 1) {
+                if (this.source.charCodeAt(index) === 92) {
+                    index += this.source.charCodeAt(index + 1) === 117 ? 6 : 2;
+                } else index++;
+                if (index - start >= 4096) {
+                    parts.push(JSON.parse('"' + this.source.slice(start, index) + '"') as string);
+                    start = index;
+                    await cooperate();
+                }
+            }
+            if (start < index) parts.push(JSON.parse('"' + this.source.slice(start, index) + '"') as string);
+            this.cached = parts.join('');
+        }
+        this.parsed = true;
+        return this.cached as string;
+    }
     number(): number {
         if (this.kind !== 'number') return error('syntax', 'Expected a number', this.start);
         return Number(this.text()); // skip() has checked grammar and finiteness already.
@@ -176,6 +262,8 @@ class Span implements JsonSpan {
         if (!this.parsed) {
             if (this.parent?.parsed && this.key !== undefined) {
                 this.cached = (this.parent.cached as Record<string | number, unknown>)[this.key];
+            } else if (this.kind === 'string' && this.reader.unescaped(this.start)) {
+                this.cached = tokenText(this.source, this.start + 1, this.end - 1);
             } else {
                 this.cached = JSON.parse(this.text());
             }
@@ -198,6 +286,27 @@ class Span implements JsonSpan {
         }
         return this.text() as RawJson;
     }
+    async rawIncremental(cooperate: () => Promise<void>): Promise<RawJson> {
+        const buffer = new Uint16Array(4096), parts: string[] = [];
+        let used = 0, quoted = false, escaped = false;
+        for (let i = this.start; i < this.end; i++) {
+            const code = this.source.charCodeAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (code === 92) escaped = true;
+                else if (code === 34) quoted = false;
+            } else if (code === 34) quoted = true;
+            else if (whitespace(code)) {
+                if ((i & 4095) === 4095) await cooperate();
+                continue;
+            }
+            buffer[used++] = code;
+            if (used === buffer.length) { parts.push(String.fromCharCode(...buffer)); used = 0; }
+            if ((i & 4095) === 4095) await cooperate();
+        }
+        if (used) parts.push(String.fromCharCode(...buffer.subarray(0, used)));
+        return parts.join('') as RawJson;
+    }
     *fields(): Iterable<readonly [string, JsonSpan]> {
         if (this.kind !== 'object') error('syntax', 'Expected an object', this.start);
         let index = this.reader.white(this.start + 1);
@@ -211,6 +320,22 @@ class Span implements JsonSpan {
             if (this.source.charCodeAt(index) === 44) index = this.reader.white(index + 1);
         }
     }
+    async *fieldsIncremental(cooperate: () => Promise<void>): AsyncIterable<readonly [string, JsonSpan]> {
+        if (this.kind !== 'object') error('syntax', 'Expected an object', this.start);
+        let index = await completeIncremental(this.reader.whiteSteps(this.start + 1), cooperate), count = 0;
+        while (index < this.end - 1) {
+            const keyEnd = await completeIncremental(this.reader.quotedSteps(index), cooperate);
+            const key = new Span(this.reader, index, keyEnd, this.depth + 1);
+            const name = await key.stringIncremental(FORMAT_LIMITS.recordBytes, cooperate);
+            const afterKey = await completeIncremental(this.reader.whiteSteps(keyEnd), cooperate);
+            const valueStart = await completeIncremental(this.reader.whiteSteps(afterKey + 1), cooperate);
+            const end = await completeIncremental(this.reader.skipSteps(valueStart, this.depth + 1), cooperate);
+            yield [name, new Span(this.reader, valueStart, end, this.depth + 1, this, name)];
+            index = await completeIncremental(this.reader.whiteSteps(end), cooperate);
+            if (this.source.charCodeAt(index) === 44) index = await completeIncremental(this.reader.whiteSteps(index + 1), cooperate);
+            if ((++count & 255) === 0) await cooperate();
+        }
+    }
     *items(): Iterable<JsonSpan> {
         if (this.kind !== 'array') error('syntax', 'Expected an array', this.start);
         let index = this.reader.white(this.start + 1), count = 0;
@@ -221,14 +346,38 @@ class Span implements JsonSpan {
             if (this.source.charCodeAt(index) === 44) index = this.reader.white(index + 1);
         }
     }
+    async *itemsIncremental(cooperate: () => Promise<void>): AsyncIterable<JsonSpan> {
+        if (this.kind !== 'array') error('syntax', 'Expected an array', this.start);
+        let index = await completeIncremental(this.reader.whiteSteps(this.start + 1), cooperate), count = 0;
+        while (index < this.end - 1) {
+            const end = await completeIncremental(this.reader.skipSteps(index, this.depth + 1), cooperate);
+            yield new Span(this.reader, index, end, this.depth + 1, this, count++);
+            index = await completeIncremental(this.reader.whiteSteps(end), cooperate);
+            if (this.source.charCodeAt(index) === 44) index = await completeIncremental(this.reader.whiteSteps(index + 1), cooperate);
+            if ((count & 255) === 0) await cooperate();
+        }
+    }
     length(limit: number): number {
         let count = 0;
         for (const _item of this.items()) if (++count > limit) error('limit', `Array exceeds ${limit} elements`, this.start);
         return count;
     }
+    async lengthIncremental(limit: number, cooperate: () => Promise<void>): Promise<number> {
+        let count = 0;
+        for await (const _item of this.itemsIncremental(cooperate)) if (++count > limit) error('limit', `Array exceeds ${limit} elements`, this.start);
+        return count;
+    }
     fieldMap(): ReadonlyMap<string, JsonSpan> {
         const fields = new Map<string, JsonSpan>();
         for (const [key, value] of this.fields()) {
+            if (fields.has(key)) error('syntax', 'Duplicate JSON property cannot be represented losslessly', value.start);
+            fields.set(key, value);
+        }
+        return fields;
+    }
+    async fieldMapIncremental(cooperate: () => Promise<void>): Promise<ReadonlyMap<string, JsonSpan>> {
+        const fields = new Map<string, JsonSpan>();
+        for await (const [key, value] of this.fieldsIncremental(cooperate)) {
             if (fields.has(key)) error('syntax', 'Duplicate JSON property cannot be represented losslessly', value.start);
             fields.set(key, value);
         }
@@ -259,10 +408,47 @@ export function hasNativeMarker(source: string): boolean {
     } catch (error) { if (!(error instanceof JsonReadError)) throw error; return false; }
 }
 
+export async function hasNativeMarkerIncremental(source: string, cooperate: () => Promise<void>): Promise<boolean> {
+    const reader = new Reader(source, FORMAT_LIMITS.jsonDepth);
+    let index = await completeIncremental(reader.whiteSteps(source.charCodeAt(0) === 0xfeff ? 1 : 0), cooperate);
+    if (source.charCodeAt(index++) !== 123) return false;
+    try {
+        for (;;) {
+            index = await completeIncremental(reader.whiteSteps(index), cooperate);
+            if (source.charCodeAt(index) === 125) return false;
+            const keyEnd = await completeIncremental(reader.quotedSteps(index), cooperate);
+            // Six characters can occupy at most 36 escaped code units plus the quotes.
+            const name = keyEnd - index <= 38 ? JSON.parse(tokenText(source, index, keyEnd)) as string : '';
+            index = await completeIncremental(reader.whiteSteps(keyEnd), cooperate);
+            if (source.charCodeAt(index++) !== 58) return false;
+            index = await completeIncremental(reader.whiteSteps(index), cooperate);
+            const end = await completeIncremental(reader.skipSteps(index, 1), cooperate);
+            if (name === 'format') {
+                const value = new Span(reader, index, end, 1);
+                return value.kind === 'string' && value.string(5) === NATIVE_FORMAT_ID;
+            }
+            index = await completeIncremental(reader.whiteSteps(end), cooperate);
+            if (source.charCodeAt(index++) !== 44) return false;
+            await cooperate();
+        }
+    } catch (cause) { if (!(cause instanceof JsonReadError)) throw cause; return false; }
+}
+
 export function parseJson(source: string, maxDepth: number = FORMAT_LIMITS.jsonDepth): JsonSpan {
     if (source.length > FORMAT_LIMITS.recordBytes) error('limit', 'JSON value exceeds 64 MiB', 0);
     const reader = new Reader(source, maxDepth), start = reader.white(0);
     const span = reader.span(start, 0);
     if (reader.white(span.end) !== source.length) error('syntax', 'Unexpected text after JSON value', span.end);
     return span;
+}
+
+/** The same lexical admission, with resumable scans inside large strings and containers. */
+export async function parseJsonIncremental(source: string, cooperate: () => Promise<void>,
+    maxDepth: number = FORMAT_LIMITS.jsonDepth): Promise<JsonSpan> {
+    if (source.length > FORMAT_LIMITS.recordBytes) error('limit', 'JSON value exceeds 64 MiB', 0);
+    const reader = new Reader(source, maxDepth);
+    const start = await completeIncremental(reader.whiteSteps(0), cooperate);
+    const end = await completeIncremental(reader.skipSteps(start, 0), cooperate);
+    if (await completeIncremental(reader.whiteSteps(end), cooperate) !== source.length) error('syntax', 'Unexpected text after JSON value', end);
+    return new Span(reader, start, end, 0);
 }

@@ -49,7 +49,7 @@ export function notebookPages(width: number, height: number, count: number): rea
     }));
 }
 
-export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
+export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number; readonly errorWorld?: number }
 export type LegacyBoundsPreparation = (nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<(node: Node) => LegacyWorldBounds>;
 export type PageSource =
     | { readonly kind: 'notebook'; readonly width: number; readonly height: number; readonly count: number }
@@ -71,7 +71,14 @@ export function preparePageMapper<T extends { readonly id: string; readonly x: n
         if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {
             throw new Error(`Invalid world bounds for ${shape.id}`);
         }
-        return locateLegacyPage(pages, shape.x, shape.y, box.y + box.h / 2);
+        const centre = box.y + box.h / 2, error = box.errorWorld ?? 0;
+        if (!Number.isFinite(error) || error < 0) throw new Error(`Invalid bounds error for ${shape.id}`);
+        const mapped = locateLegacyPage(pages, shape.x, shape.y, centre);
+        if (error && (locateLegacyPage(pages, shape.x, shape.y, centre - error).page !== mapped.page
+            || locateLegacyPage(pages, shape.x, shape.y, centre + error).page !== mapped.page)) {
+            throw new Error(`Page assignment is ambiguous for ${shape.id}`);
+        }
+        return mapped;
     };
 }
 

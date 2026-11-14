@@ -1,5 +1,5 @@
 import type { MediaId } from '../model/media';
-import type { NodeId, SheetId } from '../model/ids';
+import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { SampleRef } from '../model/samples';
 import type { Applied, Transaction } from './ops';
 
@@ -11,7 +11,9 @@ export interface TextSelectionSnapshot {
 /** Selection is session state, never part of a document transaction. */
 export interface HistorySnapshot {
     readonly sheet: SheetId;
+    readonly focus: ParentId;
     readonly selected: readonly NodeId[];
+    readonly active: NodeId | null;
     readonly text?: TextSelectionSnapshot;
 }
 export interface HistoryStepInfo {
@@ -27,12 +29,17 @@ export interface HistoryLease { release(): void }
 export interface HistoryPorts {
     snapshot(): HistorySnapshot;
     switchSheet(sheet: SheetId): void;
+    sheetExists(sheet: SheetId): boolean;
     nodeExists(id: NodeId): boolean;
     restoreSelection(snapshot: HistorySnapshot): void;
     /** The pane's existing CameraController owns the pan; history stores no camera. */
     revealTouched(ids: ReadonlySet<NodeId>): void;
+    /** Undo/redo apply projects media through the session's MediaLocations. */
     apply(transaction: Transaction): Applied;
+    /** ApplyController.revert: latest receipts, newest first, exact and without projection. */
+    revert(receipts: readonly Applied[]): Applied;
     retainMedia(id: MediaId): HistoryLease;
+    retainSample(ref: SampleRef): HistoryLease;
     sampleBytes(ref: SampleRef): number;
     /** The host combines this with the journal-cap notice for one session notice. */
     historyLimitReached(): void;
@@ -45,16 +52,22 @@ export interface HistoryController {
     readonly canRedo: boolean;
     /** Captures sheet and selection before a gesture or command changes the document. */
     open(label: string): void;
-    /** The final selection/text caret is captured here. */
-    close(): void;
+    /** Capture final selection and return this step's token, or null for an empty step. */
+    close(): number | null;
     /** Restore and discard an open non-ink gesture; no older step is undone. */
     cancel(): void;
     /** Pen/highlighter admission clears prior redo immediately (R-19). */
     clearRedo(): void;
     /** Called by the apply consumer, while apply owns the borrowed receipt. */
     record(applied: Applied, transaction: Transaction): void;
-    /** Join a leave-empty deletion to the immediately preceding typing step (WB-D16). */
-    reopenLast(): boolean;
+    /** A barrier inside an open step; typing rules can undo just their transformation. */
+    mark(): number;
+    /** Replay and discard only work after a mark, retaining the earlier typing burst. */
+    rollbackTo(mark: number): void;
+    /** Reopen only if the latest step still matches the caller's close token (WB-D16). */
+    reopenLast(expected: number): boolean;
+    /** After deleting a newly created empty text node, remove only caller-owned node history. */
+    forgetCreatedNode(node: NodeId, creationToken: number, ownedStepTokens: readonly number[]): boolean;
     undo(): void;
     redo(): void;
     clear(): void;

@@ -1,10 +1,10 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { TxBuilder } from '../change/ops';
+import { allocateOrderKeys } from '../change/commands';
+import type { CommandBuilder } from '../change/ops';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type SheetId } from '../model/ids';
 import { createFigure, createPolyline, createSticky, createText, type Node, type Point } from '../model/nodes';
-import { keyBetween } from '../model/orderKey';
 import { boardPageStack } from '../model/pages';
 import type { FigureShape } from '../model/styles';
 import type { RichText } from '../text/richText';
@@ -16,7 +16,7 @@ export interface CreateContext {
     readonly sheet: SheetId;
     /** Zero-based physical page; ignored on an unpaged board. */
     readonly currentPage: number;
-    readonly builder: TxBuilder;
+    readonly builder: CommandBuilder;
 }
 export interface CreatedShape { readonly id: Node['id']; readonly notes: readonly string[] }
 
@@ -52,7 +52,8 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
     const target = createPage(context, op.page);
     const id = newNodeId(doc);
     const siblings = childrenOf(doc, sheet);
-    const base = { id, parent: sheet, order: keyBetween(siblings.at(-1)?.order ?? null, null), page: target.page, ext: null };
+    const order = allocateOrderKeys(doc, builder, sheet, siblings.at(-1)?.id ?? null, null, 1)[0];
+    const base = { id, parent: sheet, order, page: target.page, ext: null };
     let node: Node;
     switch (op.type) {
         case 'text': {

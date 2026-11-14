@@ -1,4 +1,5 @@
 import type { ClipboardCache } from '../../utils/clipboardCache';
+import type { ClipboardCut } from '../clipboard/copy';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { RenderToken } from '../../platform/render/types';
 import { deleteNodes } from '../change/commands';
@@ -19,6 +20,12 @@ type ResourceSnapshot = CopySnapshot & { readonly [mediaBytes]: { readonly blobs
 /** Bytes of an actual copy remain available after its source document closes. */
 export function readNativeClipboardMedia(snapshot: CopySnapshot, id: MediaId): Blob | null {
     return (snapshot as Partial<ResourceSnapshot>)[mediaBytes]?.blobs.get(id) ?? null;
+}
+
+export interface NativeTextClipboardAuthority {
+    isCurrent(snapshot: CopySnapshot): boolean;
+    /** This proof must perform the real cut preflight before any clipboard write. */
+    prepareCut(snapshot: CopySnapshot): ClipboardCut;
 }
 
 export interface NativeClipboardCommandsOptions {
@@ -42,11 +49,14 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     const { runtime, token } = options, board = runtime.session;
     const active = new Set<AbortController>();
     let disposed = false, selectedProduct: BoardCopySnapshotNowResult | undefined;
+    let textAuthority: NativeTextClipboardAuthority | undefined;
     const current = () => !disposed && options.current() && board.owner.documentId === token.documentId && board.owner.session === token.session;
     const guard = () => { if (!current()) throw new DOMException('Board session ended', 'AbortError'); };
     const writable = () => { guard(); if (board.isReadOnly) throw new Error(board.readOnlyReason ?? 'Board is read-only'); };
     const snapshotCurrent = (snapshot: CopySnapshot) => {
         if (!current() || board.doc.rev !== snapshot.revision || runtime.selection.getSnapshot().sheet !== snapshot.payload.from.sheet) return false;
+        if (snapshot.textSelection) return textAuthority?.isCurrent(snapshot) ?? false;
+        if (textAuthority) return false;
         const selected = runtime.selection.getSnapshot().selected;
         return selected.length === snapshot.selected.length && selected.every(id => snapshot.selected.includes(id));
     };
@@ -63,6 +73,10 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         isCurrent: snapshotCurrent,
         prepareCut(snapshot) {
             writable();
+            if (snapshot.textSelection) {
+                if (!textAuthority || !textAuthority.isCurrent(snapshot)) throw new Error('Text selection changed; cut again');
+                return textAuthority.prepareCut(snapshot);
+            }
             const product = selectedProduct, receipt = product?.cutReceipt;
             if (product?.snapshot !== snapshot || !receipt) throw product?.cutFailure ?? new Error('Cut geometry is unavailable');
             receipt.assertCurrent();
@@ -118,6 +132,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         selectedProduct = product;
     };
     const prepare = (cut = false) => {
+        if (textAuthority) throw new Error('The text editor owns the current clipboard selection');
         const snapshot = selectedProduct?.snapshot as ResourceSnapshot | undefined;
         if (!cut && snapshot && snapshotCurrent(snapshot) && snapshot[mediaBytes].fontEpoch === runtime.render.text.fonts.epoch) return;
         publishSelection(selectedNow());
@@ -128,7 +143,9 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         idle = undefined; background?.abort(); background = undefined;
     };
     const prepareSettledSelection = () => {
-        cancelBackground(); selectedProduct = undefined; copy.setSelection(null);
+        cancelBackground();
+        if (textAuthority) return;
+        selectedProduct = undefined; copy.setSelection(null);
         if (!current() || !runtime.selection.getSnapshot().selected.length) return;
         const state = runtime.selection.getSnapshot(), revision = board.doc.rev, epoch = runtime.render.text.fonts.epoch;
         idle = requestIdleCallback(() => {
@@ -177,6 +194,16 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     return {
         /** Borrowed by inline text clipboard adapters; this document remains its owner. */
         clipboardCopy: copy,
+        bindTextAuthority(authority: NativeTextClipboardAuthority) {
+            guard();
+            cancelBackground(); selectedProduct = undefined; copy.setSelection(null);
+            textAuthority = authority;
+            return () => {
+                if (textAuthority !== authority) return;
+                textAuthority = undefined;
+                if (!disposed) prepareSettledSelection();
+            };
+        },
         matchClipboard: (encoded: string, plain: string) => copy.match(encoded, plain),
         copy: () => run(async () => { prepare(); await copy.copyMenu(); }),
         cut: () => run(async () => { writable(); prepare(true); await copy.copyMenu(true); }),
@@ -203,6 +230,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry();
             // Captured read-only jobs own their source leases. Retiring the
             // document stops new work, not a clipboard write already in flight.
-            selectedProduct = undefined; copy.dispose(); } },
+            selectedProduct = undefined; textAuthority = undefined; copy.dispose(); } },
     };
 }

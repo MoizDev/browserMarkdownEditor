@@ -33,6 +33,7 @@ export interface NativeClipboardBinding {
 }
 export interface NativeClipboardService {
     readonly preferences: BoardPreferenceState;
+    readonly memory: MemoryAllocator;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean): NativeClipboardBinding;
 }
@@ -119,7 +120,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {
-        preferences,
+        preferences, memory,
         attach(surface, lease, theme, notice, inputHandled = false) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let pointer: { x: number; y: number } | null = null;

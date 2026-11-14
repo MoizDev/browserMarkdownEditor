@@ -1623,7 +1623,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         for (const name of names) {
             try {
                 const file = await (await dir.getFileHandle(name)).getFile();
-                if (await fingerprintSnapshot(file, request.signal) === request.hash) return { name, blob: file as Blob };
+                if (file.size <= 10 * 1024 * 1024 && await fingerprintSnapshot(file, request.signal) === request.hash) return { name, blob: file as Blob };
             } catch (error) {
                 if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
             }
@@ -1651,6 +1651,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
             await boardAssetGuard(request, activation);
             if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
+            if (request.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
             if (await fingerprintSnapshot(request.blob, request.signal) !== request.hash) throw new Error('Board media hash mismatch');
             await boardAssetGuard(request, activation);
             const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });

@@ -5,12 +5,13 @@ import { fingerprintSnapshot } from './snapshotFingerprint';
  * tab retires this bridge, rather than redirecting an in-flight write. */
 export interface BoardMediaOwner {
     documentId: string;
+    session: number;
     vaultActivation: number;
     root: FileSystemDirectoryHandle;
     parent: FileSystemDirectoryHandle;
     owner: FileSystemFileHandle;
     lifetime: AbortSignal;
-    isCurrent: (documentId: string, vaultActivation: number) => boolean;
+    isCurrent: (documentId: string, session: number, vaultActivation: number) => boolean;
 }
 
 export interface BoardMediaDescriptor {
@@ -39,7 +40,7 @@ export function createBoardMediaBridge(
     owner: BoardMediaOwner,
     pdf?: PdfMediaStaging,
 ) {
-    const isCurrent = () => !owner.lifetime.aborted && owner.isCurrent(owner.documentId, owner.vaultActivation);
+    const isCurrent = () => !owner.lifetime.aborted && owner.isCurrent(owner.documentId, owner.session, owner.vaultActivation);
     const request = (entry: BoardMediaDescriptor, signal: AbortSignal): BoardAssetAccess => {
         if (!/^sha256:[a-f0-9]{64}$/.test(entry.id) || !Object.hasOwn(EXTENSIONS, entry.mime)) {
             throw new Error('Invalid board media descriptor');
@@ -60,6 +61,7 @@ export function createBoardMediaBridge(
             ? await pdf.read(entry.id, access.signal).then(blob => blob ? { name: null, blob } : null)
             : await io.readBoardAsset(access);
         assertCurrent(access.signal);
+        if (found && found.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
         if (found && await fingerprintSnapshot(found.blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
         assertCurrent(access.signal);
         return found;
@@ -69,6 +71,7 @@ export function createBoardMediaBridge(
         resolveMedia,
         async storeMedia(entry: BoardMediaDescriptor, blob: Blob, signal: AbortSignal): Promise<string | null> {
             const access = request(entry, signal);
+            if (blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
             if (!pdf) return io.putBoardAsset({ ...access, blob, extension: EXTENSIONS[entry.mime] });
             if (await fingerprintSnapshot(blob, access.signal) !== access.hash) throw new Error('Board media hash mismatch');
             assertCurrent(access.signal);

@@ -13,6 +13,7 @@ import type { ScheduledFrame } from './scheduler';
 type Domain = { readonly rects: readonly Readonly<RectI>[]; readonly vector: boolean };
 type Kind = 'current' | 'standin' | 'none';
 export const managers = new WeakMap<object, BenchmarkCanvas2D>();
+export const retiringManagers = new WeakMap<object, Set<BenchmarkCanvas2D>>();
 export const coverageKinds = new WeakMap<object, Kind>();
 export const scaleRatios = new WeakMap<object, number>();
 interface Witness {
@@ -33,7 +34,7 @@ export class BenchmarkCanvas2D {
 
     private readonly allocators: { working: MemoryAllocator; cpu: MemoryAllocator };
 
-    constructor(options: { paneId: string; working: MemoryAllocator; cpu: MemoryAllocator }) {
+    constructor(private readonly options: { paneId: string; working: MemoryAllocator; cpu: MemoryAllocator; onDrained?: () => void }) {
         this.allocators = { working: measurementAllocator(options.paneId, 'gpu', options.working),
             cpu: measurementAllocator(options.paneId, 'cpu', options.cpu) };
         this.counter = createCoverageCounter({ memory: this.allocators.cpu,
@@ -188,15 +189,16 @@ export class BenchmarkCanvas2D {
         try { witness.canvas.width = 0; witness.canvas.height = 0; }
         finally { this.allocators.working.release(witness.lease); }
     }
+    get drained(): boolean { return this.outstanding === 0; }
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
         for (const native of this.shadows.keys()) this.close(native);
-        if (!this.outstanding) this.counter.dispose();
+        if (this.drained) { this.counter.dispose(); this.options.onDrained?.(); }
     }
     private finishOutstanding(): void {
         this.outstanding--;
-        if (this.disposed && !this.outstanding) this.counter.dispose();
+        if (this.disposed && this.drained) { this.counter.dispose(); this.options.onDrained?.(); }
     }
     private key(frame: CoverageFrameTag): string {
         const t = frame.token;

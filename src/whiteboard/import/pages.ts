@@ -1,3 +1,5 @@
+import type { Sheet } from '../model/doc';
+import type { Node } from '../model/nodes';
 import { backdropRole, type LegacyShape } from './records/common';
 
 // IMP-3, E-IMP-7/9: legacy rectangles come from the saved backdrop, not a new PDF layout.
@@ -47,7 +49,20 @@ export function notebookPages(width: number, height: number, count: number): rea
     }));
 }
 
-export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
+export interface LegacyWorldBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number; readonly errorWorld?: number }
+export type LegacyBoundsPreparation = (nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<(node: Node) => LegacyWorldBounds>;
+export type PageSource =
+    | { readonly kind: 'notebook'; readonly width: number; readonly height: number; readonly count: number }
+    | { readonly kind: 'pdf-ink'; readonly pages: readonly DisplayPage[] };
+
+export function createPagePreparation(source: PageSource, geometry: LegacyBoundsPreparation):
+    (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<ReturnType<typeof preparePageMapper<Node>>> {
+    return async (shapes, nodes, sheets) => {
+        const pages = source.kind === 'notebook' ? notebookPages(source.width, source.height, source.count)
+            : legacyPdfPages(shapes, source.pages);
+        return preparePageMapper(pages, await geometry(nodes, sheets));
+    };
+}
 export function preparePageMapper<T extends { readonly id: string; readonly x: number; readonly y: number }>(
     pages: readonly LegacyPageMapping[], bounds: (shape: T) => LegacyWorldBounds):
     (shape: T) => { readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean } {
@@ -56,7 +71,14 @@ export function preparePageMapper<T extends { readonly id: string; readonly x: n
         if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w < 0 || box.h < 0) {
             throw new Error(`Invalid world bounds for ${shape.id}`);
         }
-        return locateLegacyPage(pages, shape.x, shape.y, box.y + box.h / 2);
+        const centre = box.y + box.h / 2, error = box.errorWorld ?? 0;
+        if (!Number.isFinite(error) || error < 0) throw new Error(`Invalid bounds error for ${shape.id}`);
+        const mapped = locateLegacyPage(pages, shape.x, shape.y, centre);
+        if (error && (locateLegacyPage(pages, shape.x, shape.y, centre - error).page !== mapped.page
+            || locateLegacyPage(pages, shape.x, shape.y, centre + error).page !== mapped.page)) {
+            throw new Error(`Page assignment is ambiguous for ${shape.id}`);
+        }
+        return mapped;
     };
 }
 

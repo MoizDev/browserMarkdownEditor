@@ -16,6 +16,7 @@ export interface ToolStripProps {
     readonly moreLabel: string;
     readonly toolsLabel: string;
     readonly disabled?: boolean;
+    readonly disabledReason?: (choice: ToolChoice) => string | undefined;
     readonly select: (choice: ToolChoice) => void;
 }
 
@@ -27,7 +28,7 @@ function name(choice: ToolChoice): string {
     return choice.shortcut ? `${choice.label} — ${choice.shortcut}` : choice.label;
 }
 
-export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, select }: ToolStripProps) {
+export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select }: ToolStripProps) {
     const [open, setOpen] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const trigger = useRef<HTMLButtonElement>(null);
@@ -53,23 +54,26 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
 
     function button(choice: ToolChoice) {
         const label = name(choice);
+        const reason = disabledReason?.(choice);
         return <button
             type="button"
             key={`${choice.id}:${choice.figure ?? ''}`}
             className="board-chrome-tool"
             aria-label={label}
-            data-tooltip={label}
+            data-tooltip={reason ?? label}
             aria-pressed={sameTool(choice, selected)}
-            disabled={disabled}
+            disabled={disabled || reason !== undefined}
             onClick={() => { select(choice); setOpen(false); }}
         >{choice.label}</button>;
     }
 
+    const moreDisabled = disabled || more.every(choice => disabledReason?.(choice) !== undefined);
+    const moreReason = moreDisabled ? more.map(choice => disabledReason?.(choice)).find(reason => reason !== undefined) : undefined;
     return <div className="board-chrome-tools" ref={root}>
-        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row">
+        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row" dir="ltr">
             <div className="board-chrome-primary-tools">{primary.map(button)}</div>
             <button type="button" ref={trigger} className="board-chrome-tool" aria-label={moreLabel}
-                data-tooltip={moreLabel} aria-expanded={open} aria-haspopup="dialog" disabled={disabled}
+                data-tooltip={moreReason ?? moreLabel} aria-expanded={open} aria-haspopup="dialog" disabled={moreDisabled}
                 onClick={() => setOpen(value => !value)}>{moreLabel}</button>
         </div>
         {open && <div ref={popup} role="dialog" aria-label={moreLabel} className="board-chrome-more">

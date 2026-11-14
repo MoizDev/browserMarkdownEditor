@@ -13,6 +13,8 @@ export default function PdfRenderNotice({ issue, page = false, annotation = fals
     const message = delayed ? 'This PDF is taking longer than usual.'
         : issue.code === 'worker-startup-failed' ? 'The PDF renderer could not start.'
         : issue.code === 'worker-failed' ? 'The PDF renderer stopped.'
+        : issue.code === 'resource-limit' ? (issue.pageIndex === undefined ? 'This PDF exceeds the available rendering resources.' : `Page ${issue.pageIndex + 1} exceeds the available rendering resources.`)
+        : issue.code === 'invalid-page' ? (issue.pageIndex === undefined ? 'This PDF is damaged.' : `Page ${issue.pageIndex + 1} is damaged or has invalid geometry.`)
         : issue.pageIndex !== undefined ? `Page ${issue.pageIndex + 1} could not be rendered completely.`
         : 'This PDF could not be rendered completely.';
     return (

@@ -7,6 +7,7 @@ import { getPdfFontEpoch, pdfVariantRevision, subscribePdfFontEpoch } from '../f
 import type { PdfEmphasisController } from '../emphasis/controller';
 import { createPdfCaptureSnapshot } from '../layer/captureSnapshot';
 import { pdfDocKey } from '../worker/protocol';
+import { consumePdfTileArrival } from '../pool/arrivalWindow';
 import type { PdfTiledDocumentSession } from './documentSession';
 
 const slot = Symbol('PDF session capturer');
@@ -54,13 +55,14 @@ export function pdfSessionCapturer(session: PdfTiledDocumentSession, stack: Read
             const controller = new AbortController();
             try {
                 const emphasis = doc.emphasis;
-                const profiles = new Map<number, string>();
+                const profiles = new Map<number, string>(), variants = new Map<number, 'plain' | 'emphasis'>();
                 for (let page = Math.max(0, pageAt(stack, rect.y)); page < stack.rects.length; page++) {
                     const box = stack.rects[page];
                     if (box.y >= rect.y + rect.height) break;
                     if (box.x >= rect.x + rect.width || box.x + box.width <= rect.x || box.y + box.height <= rect.y) continue;
                     if (profiles.size >= MAX_CAPTURE_PAGES) throw new RangeError('PDF capture spans too many pages');
-                    profiles.set(page, JSON.stringify(emphasis?.variant(page) ?? { variant: 'plain', profileKey: 'plain' }));
+                    const variant = emphasis?.variant(page) ?? { variant: 'plain' as const, profileKey: 'plain' as const };
+                    profiles.set(page, JSON.stringify(variant)); variants.set(page, variant.variant);
                 }
                 const check = () => {
                     if (disposed || controller.signal.aborted || lease.signal.aborted || options.signal?.aborted || !session.isCurrent() ||
@@ -82,15 +84,16 @@ export function pdfSessionCapturer(session: PdfTiledDocumentSession, stack: Read
                         const profile = profiles.get(request.page);
                         if (!profile) throw stale();
                         const variant = emphasis?.variant(request.page) ?? { variant: 'plain' as const, profileKey: 'plain' as const };
-                        if (JSON.stringify(variant) !== profile) throw stale();
-                        const bitmap = await doc.producer.render({ ...request, key: { ...request.key,
-                            contentRevision: pdfVariantRevision(variant.variant, initialEpoch) } }, AbortSignal.any([signal, controller.signal]));
+                        if (JSON.stringify(variant) !== profile || request.key.contentRevision !== pdfVariantRevision(variant.variant, initialEpoch)) throw stale();
+                        const bitmap = await doc.producer.render(request, AbortSignal.any([signal, controller.signal]));
+                        consumePdfTileArrival(bitmap);
                         try { check(); return bitmap; } catch (error) { bitmap.close(); throw error; }
                     },
                 };
                 const invocation: Launch = { snapshot(request, memory) {
                     check();
-                    const snapshot = createPdfCaptureSnapshot({ token, source, variant: 'plain',
+                    const snapshot = createPdfCaptureSnapshot({ token, source, variant: 'plain', fontEpoch: initialEpoch,
+                        pageVariant: page => { check(); const variant = variants.get(page); if (!variant) throw stale(); return variant; },
                         revision: `${token.bytesGeneration}:${initialEpoch}`, stack,
                         retain: () => {
                             claimed = true;

@@ -2429,7 +2429,12 @@ export default function App() {
         contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
     const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
       !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
-    return { bytes: disk.bytes, valid };
+    const validate = async () => {
+      if (!valid()) return false;
+      try { const latest = await readBytesVersioned(handle as FileSystemFileHandle); return valid() && latest.version.hash === disk.version.hash; }
+      catch { return false; }
+    };
+    return { bytes: disk.bytes, valid, validate };
   }, [contentOf, flushTab, readBytesVersioned]);
 
   /**

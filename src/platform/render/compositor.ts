@@ -106,6 +106,7 @@ export class GpuCompositor implements PaneCompositor {
     #isolationReadyFrame = -1;
     #shortfalls: IsolationShortfall[] = [];
     #active: DrawScope | null = null;
+    #lastSubmissionSerial = 0;
     #quad: PipelineHandle | null = null;
     #nearest: SamplerHandle | null = null;
     #linear: SamplerHandle | null = null;
@@ -135,6 +136,12 @@ export class GpuCompositor implements PaneCompositor {
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
+    }
+
+    get captureIdle(): boolean {
+        if (this.#disposed || !this.#available || this.#active || this.#encodings.size || !this.#lastSubmissionSerial) return false;
+        try { return this.#options.owner.resources.completed(this.#lastSubmissionSerial); }
+        catch { return false; }
     }
 
     get surfaceGeneration(): number { return this.#surfaceGeneration; }
@@ -315,6 +322,7 @@ export class GpuCompositor implements PaneCompositor {
                     }
                     try {
                         const submitted = owned.submit();
+                        this.#lastSubmissionSerial = submitted.serial;
                         // Publish the canonical CSS extent with the completed framebuffer, not
                         // during metrics preparation while the previous picture is still displayed.
                         this.surface.style.width = `${snapshot.metrics!.viewport.width}px`;
@@ -432,6 +440,7 @@ export class GpuCompositor implements PaneCompositor {
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.#disposed) return;
         this.#epoch++;
+        this.#lastSubmissionSerial = 0;
         this.#available = false;
         this.#retryPending = false;
         for (const encoder of this.#encodings) this.#options.owner.discardFrame(encoder);

@@ -1,4 +1,7 @@
 import { runReaderHostCommand } from './utils/documentReading';
+import { createDocumentBuffers, type ContentSource } from './utils/documentBuffers';
+import { createDocumentSessions } from './utils/documentSessions';
+import { installSessionIdentity } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
@@ -972,6 +975,13 @@ export default function App() {
 
   // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
+  const sessionReportRef = useRef<(documentId: string, source: ContentSource) => void>(() => {});
+  const [documentBuffers] = useState(() => createDocumentBuffers(path => tabsRef.current.find(tab => tab.file.path === path)?.id));
+  const [documentSessions] = useState(() => createDocumentSessions({
+    bufferState: id => documentBuffers.get(id),
+    reportChange: (id, source) => sessionReportRef.current(id, source),
+  }));
+  useEffect(() => installSessionIdentity(documentSessions), [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);

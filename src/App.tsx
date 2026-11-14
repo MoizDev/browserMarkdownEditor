@@ -44,6 +44,7 @@ import { notifySearchChanges, subscribeSearchChanges } from './utils/searchChang
 import type { SearchController } from './utils/searchController';
 import RecoverySurface, { type RecoveryInspection } from './components/RecoverySurface';
 import type { RecoveryEntry } from './utils/recoveryJournal';
+import { materializeRecoveryCopy } from './utils/recoveryCopy';
 import { bindRecoveryAdapter, recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from './utils/recoveryFunnel';
@@ -2393,8 +2394,6 @@ export default function App() {
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
   /** Documents with a write queued or running — App.hasUnsaved. */
   const flushingRef = useRef(new Map<string, number>());
-  // A report can precede React's commit; the exit guard and save must see it now.
-  const pendingRevisionsRef = useRef(new Map<string, { revision: number; saved: number }>());
   const guardedRef = useRef(false);
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
@@ -2402,17 +2401,12 @@ export default function App() {
   }, []);
   const syncExitGuard = useCallback(() => {
     const pending = anyPending() || flushingRef.current.size > 0
-      || [...pendingRevisionsRef.current.values()].some(r => r.revision > r.saved);
+      || tabsRef.current.some(tab => documentSessions.hasPendingEdits(tab.id));
     if (pending === guardedRef.current) return;
     guardedRef.current = pending;
     if (pending) window.addEventListener('beforeunload', beforeUnload);
     else window.removeEventListener('beforeunload', beforeUnload);
-  }, [beforeUnload]);
-  const reportRevision = useCallback((id: string) => {
-    const previous = pendingRevisionsRef.current.get(id);
-    pendingRevisionsRef.current.set(id, { revision: (previous?.revision ?? 0) + 1, saved: previous?.saved ?? 0 });
-    syncExitGuard();
-  }, [syncExitGuard]);
+  }, [beforeUnload, documentSessions]);
   const pendingWritesRef = useRef(new Map<string, { revision: number; promise: Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> }>());
 
   /**
@@ -2463,9 +2457,11 @@ export default function App() {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
     if (!initial || initial.file.isHelp || !initial.file.handle) return 'skipped';
-    // A PDF serializer awaits its own immediate save; re-entering drain there
-    // would wait on that same serializer forever. Its snapshot is already parked.
-    if (!serializerCallback) try { await drain(initial.id); } catch (error) {
+    // Save captures immediately. Only leaving the document awaits unfinished
+    // work; legacy serializers retain their migration fallback until attached.
+    const initialSource = documentBuffers.get(initial.id)?.source;
+    const legacyCanvas = (isCanvasFile(initial.file.name) || initial.representation.loadedKind === 'pdf') && typeof initialSource === 'string';
+    if (!serializerCallback && (closing || legacyCanvas)) try { await drain(initial.id); } catch (error) {
       console.error('Could not serialize pending document:', error);
       return 'failed';
     }
@@ -2480,14 +2476,14 @@ export default function App() {
       const prior = documentBuffers.get(tab.id)?.source;
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
         && (typeof prior === 'string' || !prior || prior.owner.session !== source.owner.session || source.revision > prior.revision)) {
-        documentBuffers.report(tab.id, source);
-        reportRevision(tab.id);
+        sessionReportRef.current(tab.id, source);
+        clearSaveTimer(path);
       }
     } catch (error) { console.error('Could not capture document:', error); return 'failed'; }
-    const pendingRevision = pendingRevisionsRef.current.get(tab.id);
-    const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
+    const pendingRevision = documentBuffers.revisionForDocument(tab.id);
+    const pending = documentSessions.hasPendingEdits(tab.id);
     const bufferedSource = documentBuffers.get(tab.id)?.source;
-    const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string';
+    const nativeSource = bufferedSource !== undefined && typeof bufferedSource !== 'string' && documentSessions.get(tab.id)?.kind !== 'markdown';
     const policy = nativePoliciesRef.current.get(tab.id);
     const nativeAuthorized = nativeSource && policy && !policy.emergencyReadOnly && policy.session === bufferedSource.owner.session
       && policy.activation === getVaultActivation() && policy.generation === (bytesGenerationsRef.current.get(tab.id) ?? 0)
@@ -2502,7 +2498,7 @@ export default function App() {
     catch (error) { console.error('Could not capture document:', error); return 'failed'; }
     const snapshot = typeof captured?.data === 'string' ? captured.data : contentOf(path) ?? tab.content;
     if (!nativeSource && isCanvasFile(tab.file.name)) unsavedBoardContentRef.current.set(path, snapshot);
-    const revision = pendingRevision?.revision ?? 0;
+    const revision = captured?.revision ?? pendingRevision?.revision ?? 0;
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
@@ -2639,8 +2635,6 @@ export default function App() {
         });
         // Only clear `dirty` if the content hasn't changed since we snapshotted.
         // By id: a rename mid-write moved the document, not the write.
-        const currentRevision = pendingRevisionsRef.current.get(id);
-        if (currentRevision && revision > currentRevision.saved) currentRevision.saved = revision;
         if (sourceRevision !== undefined && documentSessions.get(id) === sessionAtCall) sessionAtCall?.adapter.acknowledge(sourceRevision, 'written');
         if (bufferRevision !== undefined) {
           documentBuffers.markSaved(id, bufferRevision);
@@ -2664,7 +2658,7 @@ export default function App() {
             }
           }
         }
-        const current = (!currentRevision || currentRevision.revision === revision) && !documentBuffers.isDirty(id);
+        const current = !documentSessions.hasPendingEdits(id);
         setTabs(prev => prev.map(t =>
           t.id === id && current ? { ...t, dirty: false } : t));
         // Any column on screen, not only the focused one: with the editor split
@@ -2717,7 +2711,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, recoveryEvent, reportRevision, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2773,7 +2767,7 @@ export default function App() {
       if (typeof content === 'string') setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content } : t));
       return;
     }
-    reportRevision(target.id);
+    syncExitGuard();
     const baseline = getBaseline(target.id), vaultId = currentVaultIdRef.current;
     if (baseline && vaultId) {
       const session = documentSessions.get(target.id);
@@ -2797,7 +2791,7 @@ export default function App() {
       setTabs(prev => prev.map(t => t.id === target.id && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
     }
     scheduleSave(path);
-  }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, reportRevision, scheduleSave]);
+  }, [documentBuffers, documentSessions, getVaultActivation, recoveryEvent, syncExitGuard, scheduleSave]);
   sessionReportRef.current = (id, source, options) => {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
@@ -2831,8 +2825,7 @@ export default function App() {
         try { await drainAll(); } catch (error) { console.error('Could not serialize pending documents:', error); }
         if (getVaultActivation() !== activation) return;
         const work = tabsRef.current.flatMap(tab => {
-          const revision = pendingRevisionsRef.current.get(tab.id);
-          if (!revision || revision.revision <= revision.saved) return [];
+          if (!documentSessions.hasPendingEdits(tab.id)) return [];
           return [flushTab(tab.file.path, true)];
         });
         await Promise.allSettled(work);
@@ -3060,7 +3053,7 @@ export default function App() {
       void documentSessions.settled(doc.id).then(() => documentBuffers.remove(doc.id));
       bytesGenerationsRef.current.delete(doc.id);
       void recoveryEvent({ type: 'release', documentId: doc.id });
-      pendingRevisionsRef.current.delete(doc.id); syncExitGuard();
+      syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
       clearPdfRotation(doc.id);
       flushReaderViewState(); flushPdfTextViewState();
@@ -3115,8 +3108,8 @@ export default function App() {
     if (keep) {
       const result = await flushTab(path, false, true);
       const tab = tabsRef.current.find(t => t.file.path === path);
-      const revision = tab && pendingRevisionsRef.current.get(tab.id);
-      if (result === 'failed' || (result === 'skipped' && revision && revision.revision > revision.saved)) throw new Error('Could not preserve the overwritten document.');
+      const pending = !!tab && documentSessions.hasPendingEdits(tab.id);
+      if (result === 'failed' || (result === 'skipped' && pending)) throw new Error('Could not preserve the overwritten document.');
     }
     releaseTab(path);
     // Its tab goes too. renamePath would drop it as it re-points the moved
@@ -3177,8 +3170,7 @@ export default function App() {
           return;
         }
         const result = await flushTab(path);
-        const revision = pendingRevisionsRef.current.get(tab.id);
-        const pending = !!revision && revision.revision > revision.saved;
+        const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {
           setLayout(l => openTabIn(l, path));
@@ -3474,10 +3466,7 @@ export default function App() {
       if (results.some(result => result === 'failed' || result === 'changed' || result === 'deleted')) {
         throw new Error('A document could not be saved; the vault was not switched.');
       }
-      const pending = docs.some(tab => {
-        const revision = pendingRevisionsRef.current.get(tab.id);
-        return !!revision && revision.revision > revision.saved;
-      });
+      const pending = docs.some(tab => documentSessions.hasPendingEdits(tab.id));
       if (!pending && !anyPending()) {
         for (const tab of docs) {
           documentSessions.release(tab.id, 'vault-switch');
@@ -3491,8 +3480,7 @@ export default function App() {
         return;
       }
       if (results.some((result, i) => {
-        const revision = pendingRevisionsRef.current.get(docs[i].id);
-        return result === 'skipped' && !!revision && revision.revision > revision.saved;
+        return result === 'skipped' && documentSessions.hasPendingEdits(docs[i].id);
       })) {
         throw new Error('A document cannot be saved; the vault was not switched.');
       }
@@ -3554,8 +3542,8 @@ export default function App() {
 
   useEffect(() => { notifySearchChanges(); }, [fileTree]);
   const searchBuffers = useCallback(() => tabsRef.current.flatMap(tab => {
-    const revision = pendingRevisionsRef.current.get(tab.id);
-    if (!revision || revision.revision <= revision.saved || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
+    const revision = documentBuffers.revisionForDocument(tab.id);
+    if (!revision || revision.revision <= revision.savedRevision || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
     const text = contentOf(tab.file.path);
     return text === undefined ? [] : [{ path: tab.file.path, revision: revision.revision, text }];
   }), [contentOf]);
@@ -4324,8 +4312,7 @@ export default function App() {
       const saved = await Promise.all(doomedTabs.filter(t => t.representation.loadedKind !== 'pdf').map(t => flushTab(t.file.path, false, true)));
       const savedTabs = doomedTabs.filter(t => t.representation.loadedKind !== 'pdf');
       if (saved.some((result, i) => {
-        const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
-        return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+        return result === 'failed' || (result === 'skipped' && documentSessions.hasPendingEdits(savedTabs[i].id));
       })) return false;
       // …and let the asset reconciles those saves queued run to completion, so
       // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
@@ -4526,8 +4513,7 @@ export default function App() {
             const savedTabs = displacedTabs.filter(t => t.representation.loadedKind !== 'pdf');
             const saved = await Promise.all(savedTabs.map(t => flushTab(t.file.path, false, true)));
             if (saved.some((result, i) => {
-              const revision = pendingRevisionsRef.current.get(savedTabs[i].id);
-              return result === 'failed' || (result === 'skipped' && !!revision && revision.revision > revision.saved);
+              return result === 'failed' || (result === 'skipped' && documentSessions.hasPendingEdits(savedTabs[i].id));
             })) return { status: 'error' as const };
             // …and re-drain the reconcile queue: the question above took real
             // time, and a retire can have queued a picture move into the very
@@ -4803,7 +4789,7 @@ export default function App() {
         if (sessionSource && typeof sessionSource !== 'string' && documentSessions.isLiveOwner(doc.id, sessionSource.owner)
           && (typeof buffered === 'string' || !buffered || buffered.owner.session !== sessionSource.owner.session || sessionSource.revision > buffered.revision)) {
           documentBuffers.report(doc.id, sessionSource);
-          reportRevision(doc.id);
+          syncExitGuard();
         }
         let replacement: { content: string; readError?: string } | undefined;
         if (changedKind) {
@@ -4913,7 +4899,7 @@ export default function App() {
       catch (error) { console.error('Could not move recovery records:', error); }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, reportRevision]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent, documentBuffers, documentSessions, syncExitGuard]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
@@ -4996,10 +4982,7 @@ export default function App() {
    *  a write may be in flight, and a canvas keeps strokes in its own debounce
    *  App cannot see (the reporter's hasPendingEdits). */
   const hasUnsaved = useCallback((tab: OpenTab): boolean => {
-    const revision = pendingRevisionsRef.current.get(tab.id);
-    return tab.dirty
-      || documentSessions.hasPendingEdits(tab.id)
-      || !!(revision && revision.revision > revision.saved)
+    return documentSessions.hasPendingEdits(tab.id)
       || saveTimersRef.current.has(tab.file.path)
       || flushingRef.current.has(tab.id)
       || !!getView(tab.file.path)?.hasPendingEdits?.();
@@ -5037,7 +5020,6 @@ export default function App() {
     setBaseline(id, version);
     diskStateRef.current.delete(id);
     pdfRebuildRef.current.delete(id);
-    pendingRevisionsRef.current.delete(id);
     syncExitGuard();
     if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
       // The parked original would otherwise be rebuilt over the new file by
@@ -5406,7 +5388,6 @@ export default function App() {
 
       if (action === 'save') {
         await drain(id);
-        const savedRevision = pendingRevisionsRef.current.get(id)?.revision ?? 0;
         const dataRevision = documentBuffers.revisionForDocument(id)?.revision;
         const data = await mine();
         if (data === null) {
@@ -5429,8 +5410,6 @@ export default function App() {
         try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
         setBaseline(id, result.version);
         diskStateRef.current.delete(id);
-        const pendingRevision = pendingRevisionsRef.current.get(id);
-        if (pendingRevision && savedRevision > pendingRevision.saved) pendingRevision.saved = savedRevision;
         if (dataRevision !== undefined) documentBuffers.markSaved(id, dataRevision);
         syncExitGuard();
         if (dataRevision !== undefined && documentBuffers.revisionForDocument(id)?.revision === dataRevision) clearSaveTimer(path);
@@ -5850,7 +5829,8 @@ export default function App() {
       try {
         const version = await snapshot.fingerprint();
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
-        const bytes = typeof entry.copy === 'string' ? new TextEncoder().encode(entry.copy) : entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+        const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
+        const bytes = typeof copy === 'string' ? new TextEncoder().encode(copy) : copy instanceof Blob ? new Uint8Array(await copy.arrayBuffer()) : copy;
         const copyHash = await hashBytes(bytes);
         if (rootHandleRef.current !== rootHandle || currentVaultIdRef.current !== entry.vaultId) return 'unavailable';
         if (copyHash === version.hash) return 'equal';
@@ -5866,15 +5846,18 @@ export default function App() {
     const live = tabsRef.current.find(t => t.id === tab.id && t.file.path === entry.path);
     if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
     const adapter = recoveryAdapter(tab.id);
-    if (adapter?.recover) { await adapter.recover(entry.payload); return; }
-    if (typeof entry.payload !== 'string' || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
-    if (!getView(entry.path)?.replaceFromDisk?.(entry.payload)) {
-      const key = tab.id;
-      const cached = editorStates.get(key);
-      if (cached) { const spec = reloadSpec(cached, entry.payload); if (spec) editorStates.set(key, cached.update(spec).state); }
+    if (adapter?.recover) {
+      await adapter.recover(typeof entry.payload === 'string' ? { kind: 'markdown', text: entry.payload } : entry.payload);
+      return;
     }
-    updateTabContent(entry.path, entry.payload);
-  }, [hasUnsaved, inspectRecovery, editorStates, updateTabContent]);
+    const payload = entry.payload;
+    const recoveredText = typeof payload === 'string' ? payload : payload && typeof payload === 'object' && 'kind' in payload && payload.kind === 'markdown' && 'text' in payload && typeof payload.text === 'string' ? payload.text : undefined;
+    if (recoveredText === undefined || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
+    const expected = contentOf(entry.path), revision = documentBuffers.revisionForDocument(tab.id)?.revision;
+    const { isolateHistory } = await import('@codemirror/commands');
+    if (expected === undefined || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
+    if (!await markdownSessions.dispatch(tab.id, { changes: { from: 0, to: expected.length, insert: recoveredText }, userEvent: 'input.recover', annotations: isolateHistory.of('full') })) throw new Error('The document changed while recovery was being prepared.');
+  }, [hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) => {
     const root = rootHandleRef.current;
@@ -5882,7 +5865,8 @@ export default function App() {
     const vault = recentVaults.find(item => item.id === entry.vaultId);
     const relative = vault && await handleIO.relativeTo(root, vault.handle);
     if (!relative || relative.length !== 0) throw new Error('Return to the original vault first.');
-    const data = entry.copy instanceof Blob ? new Uint8Array(await entry.copy.arrayBuffer()) : entry.copy;
+    const copyData = await materializeRecoveryCopy(entry, new AbortController().signal);
+    const data = copyData instanceof Blob ? new Uint8Array(await copyData.arrayBuffer()) : copyData;
     if (rootHandleRef.current !== root || currentVaultIdRef.current !== entry.vaultId) throw new Error('The vault changed.');
     const copy = await writeConflictCopy(entry.path, data, root);
     announce(`Recovered changes were saved as “${copy}”.`);

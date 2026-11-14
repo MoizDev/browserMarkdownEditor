@@ -10,7 +10,10 @@ import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
-import { hasOpaqueDescendant, isSheetParent } from '../model/doc';
+import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
+import { polylineHandleGesture } from '../input/polylineHandles';
+import type { Op } from '../change/ops';
+import type { BoardSession } from '../session/BoardSession';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { newNodeId, type NodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
@@ -21,6 +24,7 @@ import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
+const lastPolyline = new WeakMap<BoardSession, NodeId>();
 export interface BoardCreationContext {
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
@@ -28,7 +32,7 @@ export interface BoardCreationContext {
     readonly camera: CameraController;
     registerPending(cancel: () => void): () => void;
     readonly figure?: FigureShape;
-    readonly preview: { show(nodes: readonly Node[]): void; clear(): void };
+    readonly preview: { show(nodes: readonly Node[]): void; showOps(ops: readonly Op[]): void; clear(): void };
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
     resolveAttachment(point: { x: number; y: number }, signal: AbortSignal): Promise<Attachment | null>;
@@ -219,6 +223,7 @@ class CreationGesture implements GestureOwner {
                     const applied = builder.commit(); applied.release();
                 } catch (error) { builder.abort(); throw error; }
                 runtime.selection.replace([node.id]);
+                if (node.kind === 'polyline') lastPolyline.set(runtime.session, node.id);
             } finally { lease?.release(); }
         } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
@@ -231,5 +236,18 @@ class CreationGesture implements GestureOwner {
     }
 }
 export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> {
-    return { id, begin(sample, modifiers, context) { return new CreationGesture(sample, modifiers, context); } };
+    return { id, begin(sample, modifiers, context) {
+        if (id === 'polyline' && modifiers.shift) {
+            const { runtime } = context, session = runtime.session, doc = session.doc;
+            const prior = lastPolyline.get(session), node = prior ? doc.nodes.get(prior) : undefined;
+            if (node?.kind === 'polyline' && node.points.length < 5000 && !isLocked(doc, node)
+                && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
+                // Shift continues the last authored line in the current sheet; the geometry plan owns one undo step.
+                return polylineHandleGesture(sample, modifiers, { runtime, id: node.id, index: node.points.length, insert: true,
+                    current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,
+                    show: ops => context.preview.showOps(ops), clear: () => context.preview.clear(), error: context.onError });
+            }
+        }
+        return new CreationGesture(sample, modifiers, context);
+    } };
 }

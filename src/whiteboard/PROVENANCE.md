@@ -211,6 +211,7 @@ third-party code included (normally "none") · date.
 | `export/rasterWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Sliced OffscreenCanvas shared painter, pinned loaded/fallback text faces, padded tiles and streaming PNG; no tldraw source | none | 2026-11-13 |
 | `export/streamRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Pinned paint stream, shared ink outline, chunked geometry and owned bitmap transfers; no tldraw source | none | 2026-11-13 |
 | `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
+| `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -263,6 +264,7 @@ third-party code included (normally "none") · date.
 | `geom/translation.ts` | lane w-g | GE-4; F-XFORM-001/002/003/011 | geometry §6.1–6.2 | Design; model world-pose/page conversion, immutable gesture snapshots and ordinary transaction ops | none | 2026-11-13 |
 | `geom/resizeKinds.types.ts` | lane w-g | GE-4 | geometry §6.4 | Design; injected text, connector, frame, media and group geometry contracts and single/multi scope | none | 2026-11-13 |
 | `geom/resizePlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; immutable target geometry and page-aware placement service contracts | none | 2026-11-13 |
+| `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres and per-kind transaction planning | none | 2026-11-13 |
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
 | `geom/arrange.ts` | lane w-g | GE-4; F-ARR-006/007/008/009/010 | geometry §6.6–6.7; arrange spec | Design; world bounds, equal edge gaps, stable shelf pack with max-capacity tree | none | 2026-11-13 |
@@ -275,10 +277,11 @@ third-party code included (normally "none") · date.
 | `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; streamed w-e SpatialQuery candidates, revision stamps and resumable narrow phase, no second index | none | 2026-11-13 |
 | `sweepSelection.types.ts` | lane w-g | GE-3; F-SEL-004 | geometry §§4–5 | Design; scene, selection and clipped per-kind swept-narrow interfaces | none | 2026-11-13 |
 | `sweepSelection.ts` | lane w-g | GE-3; F-SEL-004 | geometry §§4–5 | Design; one conservative scene query per swept segment and exact clipped narrow-phase adapter | none | 2026-11-13 |
-| `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/010/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; selection, history restore, locked reconciliation and keyboard/group navigation | none | 2026-11-13 |
+| `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/010/011 | geometry §5.3; selection spec | Design; indexed membership, selection/history restore, lock reconciliation and keyboard/group navigation | none | 2026-11-13 |
 | `selectionNavigation.ts` | lane w-g | GE-3; F-SEL-010; WB-D33 | geometry §§4–5; input §8.4 | Design; w-e shared spatial strip cursor, caller-owned reveal and eligible-node geometry | none | 2026-11-13 |
-| `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | Bounded viewport and selection mirror source with names, kinds, order and lock state; structural host contract | none | 2026-11-13 |
+| `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | ViewerAccessibilitySource with revision consistency and bounded viewport/selection union | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; indexed opaque preflight, locked-node retention and w-c's shared deletion command | none | 2026-11-13 |
+| `session/createBoardSession.ts` | lane w-g | H-1; C7 | change-and-history §§2–4 | Session initialization binding made constant; no semantic changes | none | 2026-11-13 |
 | `clipboard/encode.ts` | lane w-g | CB-1 | clipboard §2 | DOM serialization for clipboard output without a restricted HTML sink | none | 2026-11-13 |
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |

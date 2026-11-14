@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type { CSSProperties } from 'react';
 import type { LocationCause, PdfFindBatch, PdfFindHit, PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
 import { pdfTextAnchor } from '../utils/pdfReadingText';
+import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import { emphasisRanges } from '../utils/readingEmphasis';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { openContextMenu } from '../utils/contextMenu';
@@ -12,6 +13,7 @@ import './PdfReadingText.css';
 export interface PdfReadingTextProps {
     filePath?: string;
     expectedPageDigest?: string;
+    findMemory?: PdfFindMemory;
     sameSchema?: boolean;
     restorationNotice?: string;
     controller: PdfTextReader; isFocused: boolean; isVisible: boolean; anchor?: PdfTextAnchor;
@@ -67,7 +69,7 @@ function Text({ page, emphasis }: { page: PdfTextPage; emphasis: boolean }) {
     return <div className="pdf-reading-copy" data-pdf-text-page={page.physicalPageIndex} dir="auto">{nodes}</div>;
 }
 
-function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, restorationNotice = '', controller, isFocused, isVisible, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
+function PdfReadingText({ filePath, expectedPageDigest, findMemory, sameSchema = true, restorationNotice = '', controller, isFocused, isVisible, anchor, onShowOriginalPage, onShowOriginal, onLocation, onTextQuality, emphasisEnabled, typography, onTypographyChange, onEmphasisChange }: PdfReadingTextProps) {
     const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [localTypography, setLocalTypography] = useState<PdfTextTypography>();
     const effectiveTypography = localTypography ?? typography;
@@ -81,7 +83,7 @@ function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, resto
     useEffect(() => { if (isFocused) scroll.current?.focus({ preventScroll: true }); }, [isFocused]);
     const [count, setCount] = useState(0), [current, setCurrent] = useState(anchor?.physicalPageIndex ?? 0);
     const [pages, setPages] = useState<Map<number, PageState>>(new Map());
-    const [retry, setRetry] = useState(0), [query, setQuery] = useState(''), [search, setSearch] = useState<PdfFindBatch>();
+    const [retry, setRetry] = useState(0), [query, setQuery] = useState(() => findMemory?.query ?? ''), [search, setSearch] = useState<PdfFindBatch>();
     const [message, setMessage] = useState(''), [finding, setFinding] = useState(false);
     const findAbort = useRef<AbortController | null>(null), resumeFind = useRef(false);
     const findingRef = useRef(finding); findingRef.current = finding;
@@ -376,7 +378,7 @@ function PdfReadingText({ filePath, expectedPageDigest, sameSchema = true, resto
         </fieldset>}
         <p className="pdf-reading-warning">Layout, columns, tables and annotations may not be preserved. Images and links remain in Original. Existing text layers can differ from page images. No OCR is performed.</p>
         <form className="pdf-reading-find" role="search" onSubmit={e => { e.preventDefault(); void find(); }}>
-            <input ref={searchInput} aria-label="Find in extracted PDF text" maxLength={256} value={query} placeholder="Find across physical pages" onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); findAbort.current?.abort(); setFinding(false); setSearch(undefined); scroll.current?.focus(); } }} />
+            <input ref={searchInput} aria-label="Find in extracted PDF text" maxLength={256} value={query} placeholder="Find across physical pages" onChange={e => { setQuery(e.target.value); if (findMemory) findMemory.query = e.target.value; }} onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); findAbort.current?.abort(); setFinding(false); setSearch(undefined); scroll.current?.focus(); } }} />
             <button type="submit" disabled={!query.trim()}>Find</button>{finding && <button type="button" onClick={() => { findAbort.current?.abort(); setFinding(false); }}>Stop</button>}
         </form>
         {search && <div className="pdf-reading-results" aria-label="Extracted PDF search results">

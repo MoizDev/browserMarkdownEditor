@@ -31,8 +31,13 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             if (adapter) return adapter as A;
             const next = create(owner);
             adapter = next;
-            try { unsubscribe = next.onChange(emit); }
-            catch (error) { adapter = undefined; throw error; }
+            try {
+                const detach = next.onChange(emit);
+                // A synchronous first report can cause App to release the
+                // entry before onChange returns its cleanup.
+                if (disposed) { detach(); throw new Error('Canvas session was released during attachment'); }
+                unsubscribe = detach;
+            } catch (error) { adapter = undefined; throw error; }
             return next;
         },
         hasPendingEdits: () => adapter?.hasPendingEdits() ?? false,
@@ -58,9 +63,10 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 // The store detaches before releasing its slots; a late engine
                 // callback must not report into the next session at this path.
                 disposed = true;
-                unsubscribe?.();
+                const detach = unsubscribe;
                 unsubscribe = undefined;
                 adapter = undefined;
+                detach?.();
             };
         },
     };

@@ -1,7 +1,9 @@
+import { isolateHistory } from '@codemirror/commands';
 import { StateEffect, type EditorState, type Extension, type Text, type TransactionSpec } from '@codemirror/state';
 import type { EditorView, ViewUpdate } from '@codemirror/view';
 import { docString } from './docCache';
-import { externalReload } from './externalReload';
+import { externalReload, minimalChange } from './externalReload';
+import { assetReferences } from '../utils/assets';
 import type { MarkdownSessionAdapter, MarkdownSessionUpdate } from './markdownSession.types';
 import type { ContentSource, DeferredSource, SourceOwner, SourceReportOptions } from '../utils/documentBuffers';
 
@@ -38,6 +40,13 @@ export function createMarkdownSession(owner: SourceOwner, initial: EditorState,
         }
         onUpdate?.(update);
     };
+    const dispatch = (...specs: TransactionSpec[]) => {
+        if (disposed) return;
+        if (view) { view.dispatch(...specs); return; }
+        const transaction = state.update(...specs);
+        observe({ state: transaction.state, startState: transaction.startState,
+            transactions: [transaction], changes: transaction.changes, docChanged: transaction.docChanged });
+    };
     return {
         owner,
         get state() { return state; },
@@ -57,12 +66,18 @@ export function createMarkdownSession(owner: SourceOwner, initial: EditorState,
             return () => { if (view === next) { state = next.state; view = undefined; } };
         },
         observe(update: ViewUpdate) { if (update.view === view) observe(update); },
-        dispatch(...specs: TransactionSpec[]) {
-            if (disposed) return;
-            if (view) { view.dispatch(...specs); return; }
-            const transaction = state.update(...specs);
-            observe({ state: transaction.state, startState: transaction.startState,
-                transactions: [transaction], changes: transaction.changes, docChanged: transaction.docChanged });
+        dispatch,
+        journalDelta() {
+            const text = docString(state.doc);
+            return { payload: Object.freeze({ kind: 'markdown', text }), copy: text, mediaRefs: [...assetReferences(text)] };
+        },
+        recover(payload) {
+            if (!payload || typeof payload !== 'object' || !('kind' in payload) || payload.kind !== 'markdown'
+                || !('text' in payload) || typeof payload.text !== 'string') {
+                throw new Error('Invalid Markdown recovery payload');
+            }
+            const change = minimalChange(docString(state.doc), payload.text);
+            if (change) dispatch({ changes: change, userEvent: 'input.recover', annotations: isolateHistory.of('full') });
         },
         hasPendingEdits() {
             if (disposed) return false;

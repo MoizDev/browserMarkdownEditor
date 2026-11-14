@@ -9,7 +9,7 @@ export default function PdfCapabilitiesNotice({ capabilities }: { capabilities: 
     if (capabilities.copy === false) messages.push(PDF_COPY_RESTRICTED);
     if (capabilities.copy === 'unknown') messages.push(PDF_COPY_UNKNOWN);
     if (capabilities.xfa === true) messages.push('XFA forms are unsupported; some pages or fields may be missing.');
-    if (capabilities.forms === true) messages.push('Form fields are shown as saved appearances and cannot be edited.');
+    if (capabilities.forms === true) messages.push('Form fields cannot be edited. Saved appearances are shown where supported; XFA and missing appearances may be unavailable.');
     messages.push('PDF scripts, form submission and launch actions do not run in this viewer.');
     const limited = capabilities.encrypted !== false || capabilities.copy !== true || capabilities.xfa === true || capabilities.forms === true;
     return <details className="pdf-capabilities-notice" open={limited || undefined}>

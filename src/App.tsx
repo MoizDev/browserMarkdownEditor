@@ -33,6 +33,7 @@ import { BoardSaveBaselines, RetirementBacklog, boardMediaDiff, decideAssetRetir
 import { boardMediaRefs } from './utils/boardMediaRefs';
 import { setTerminalStartSource } from './utils/terminalStart';
 import { collectFiles } from './utils/tree';
+import { retargetDocumentViewRecords } from './utils/documentViewRetarget';
 import { mapPool } from './utils/pool';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
@@ -4969,6 +4970,7 @@ export default function App() {
           await releaseOverwritten(dest, from, true);
         }
         if (changedKind && documentSessions.get(doc.id)?.adapter.hasPendingEdits()) throw new Error('Pending edits could not be drained. Keep this tab open.');
+        retargetDocumentViewRecords(from, dest);
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key

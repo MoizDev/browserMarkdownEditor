@@ -33,7 +33,7 @@ export function usePdfPlatformPreview(
     const getSerial = useCallback(() => {
         if (!active || !documentId) return 0;
         const entry = getSessionIdentity(documentId);
-        return entry?.bytesGeneration === byteGeneration ? entry.serial : 0;
+        return entry && entry.bytesGeneration === byteGeneration ? entry.serial : 0;
     }, [active, documentId, byteGeneration]);
     const serial = useSyncExternalStore(subscribeSessionIdentity, getSerial);
 

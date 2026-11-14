@@ -143,11 +143,13 @@ export class PaneSizeObserver {
         if (previous && previous.physical.width === physical.width && previous.physical.height === physical.height &&
             previous.physical.fallbackSizing === physical.fallbackSizing && previous.nominalDpr === nominalDpr &&
             previous.contentX === content.x && previous.contentY === content.y && previous.writingMode === writingMode) return;
+        const cssWidth = physical.width / nominalDpr;
+        const cssHeight = physical.height / nominalDpr;
+        if (!Number.isFinite(cssWidth) || !Number.isFinite(cssHeight)) throw new RangeError('Invalid canonical pane extent');
         if (!this.pending) this.generation++;
         this.pending = true;
         const value = Object.freeze({ generation: this.generation, physical: Object.freeze({ ...physical }), nominalDpr,
-            cssWidth: physical.width / nominalDpr, cssHeight: physical.height / nominalDpr,
-            contentX: content.x, contentY: content.y, writingMode });
+            cssWidth, cssHeight, contentX: content.x, contentY: content.y, writingMode });
         this.value = value;
         this.onSize(value);
     }

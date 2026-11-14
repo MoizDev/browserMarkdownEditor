@@ -39,7 +39,14 @@ export function marksAt(value: RichText, offset: number): Marks {
         const run = block.runs[i], end = at + run.text.length;
         if (local < end || (local === end && (i === block.runs.length - 1 || end > at))) {
             const { x: _x, link, ...marks } = run.marks;
-            return link && local < end ? { ...marks, link } : marks;
+            if (!link) return marks;
+            if (local < end) return { ...marks, link };
+            // Formatting may split one link into adjacent runs; only its true end stops extension.
+            for (let next = i + 1; next < block.runs.length; next++) {
+                if (!block.runs[next].text.length) continue;
+                return block.runs[next].marks.link === link ? { ...marks, link } : marks;
+            }
+            return marks;
         }
         at = end;
     }
@@ -57,8 +64,8 @@ export function linkRangeAt(value: RichText, offset: number): { readonly from: n
     if (chosen < 0 || !runs[chosen].marks.link) return null;
     const url = runs[chosen].marks.link!;
     let first = chosen, last = chosen;
-    while (first > 0 && runs[first - 1].marks.link === url) first--;
-    while (last + 1 < runs.length && runs[last + 1].marks.link === url) last++;
+    while (first > 0 && (!runs[first - 1].text.length || runs[first - 1].marks.link === url)) first--;
+    while (last + 1 < runs.length && (!runs[last + 1].text.length || runs[last + 1].marks.link === url)) last++;
     let from = found.start;
     for (let index = 0; index < first; index++) from += runs[index].text.length;
     let to = from;

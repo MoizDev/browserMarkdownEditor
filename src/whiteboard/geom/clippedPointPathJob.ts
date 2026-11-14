@@ -6,6 +6,7 @@ import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, subtract } from './numeric';
 import { isUniformDistanceMatrix, strokeRadiusBounds } from './strokeRadiusBounds';
 import { createAnisotropicPointJob } from './anisotropicPointJob';
+import { createClippedStrokeWitnessJob } from './clippedStrokeWitness';
 import { strokeSeparatedFromPoint } from './strokeSupport';
 import { lowerPointHullDistance, splitCertifiedCurve, upperPointIntervalDistance,
     type BoundsPoint, type CertifiedCurve } from './pointPathJob';
@@ -107,6 +108,7 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
     const radius = stroke ?? interval(0), threshold = add(radius, interval(margin));
     const anisotropic = margin > 0 && !isUniformDistanceMatrix(query.localToSurface);
     let anisotropicJob: ReturnType<typeof createAnisotropicPointJob> | undefined;
+    let witness: ReturnType<typeof createClippedStrokeWitnessJob> | undefined;
     if (![radius.lo, radius.hi, threshold.lo, threshold.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Clipped stroke radius overflows' };
     const frames = options.frames.map(preparePointClip), exclusions = options.exclusions.map(preparePointClip);
     const allowed = (box: CertifiedClipBox) => classifyClippedVisibility(box, frames, exclusions) === 'inside';
@@ -131,6 +133,14 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped point work limit exhausted' });
+                if (witness) {
+                    const result = witness.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    witness.cancel(); witness = undefined;
+                    if (result.status === 'hit') return finish({ status: 'hit', distanceCss: margin });
+                    if (!subdivide(deferred!)) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
+                    deferred = undefined; continue;
+                }
                 if (anisotropicJob) {
                     const result = anisotropicJob.step({ deadline: budget.deadline, maxWork: 1 });
                     if (result.status === 'pending') continue;
@@ -172,6 +182,10 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
                     if (allowed(bounds)) {
                         deferred = item; certificatePhase = 'inner'; certificate = createCurveDiskCertificate(item.exact, centre, low); continue;
                     }
+                    if (curve.depth % 4 === 0) {
+                        deferred = item; witness = createClippedStrokeWitnessJob(item.exact, query.localToSurface, options.strokeRadiusLocal,
+                            query.point, margin, frames, exclusions); continue;
+                    }
                     if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped point node limit exhausted' });
                     continue;
                 }
@@ -193,6 +207,6 @@ export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[],
             }
             return PENDING;
         },
-        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); anisotropicJob?.cancel(); witness?.cancel(); certificate = undefined; witness = undefined; deferred = undefined; stack.length = 0; },
     };
 }

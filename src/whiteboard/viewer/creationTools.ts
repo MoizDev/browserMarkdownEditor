@@ -1,12 +1,15 @@
 import { pageAt } from '../../platform/render/pageStack';
 import type { CameraController } from '../../platform/render/camera';
 import { transformBox } from '../geom/bounds';
-import { worldPose } from '../change/coordinates';
+import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
+import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import { figureClickBox, figureDragBox } from '../geom/figures';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample, Tool } from '../input/tool';
-import { isSheetParent, type BoardDoc } from '../model/doc';
+import { isSheetParent } from '../model/doc';
+import { createAddedBoardDoc } from '../model/overlayDoc';
 import { newNodeId, type ParentId } from '../model/ids';
 import { createConnector, createFigure, createFrame, createPolyline, createSticky, createText, type Attachment, type Node } from '../model/nodes';
 import { keyBetween } from '../model/orderKey';
@@ -28,20 +31,6 @@ export interface BoardCreationContext {
     editText(id: Node['id']): void | Promise<void>;
     resolveAttachment(point: { x: number; y: number }, signal: AbortSignal): Promise<Attachment | null>;
     onError(error: unknown): void;
-}
-/** Sparse read-only placement view, not a second session or mutation authority. */
-function candidateDocument(doc: BoardDoc, node: Node): BoardDoc {
-    const base = doc.nodes;
-    const nodes: BoardDoc['nodes'] = {
-        size: base.size + (base.has(node.id) ? 0 : 1),
-        get: id => id === node.id ? node : base.get(id), has: id => id === node.id || base.has(id),
-        *entries(): MapIterator<[Node['id'], Readonly<Node>]> { for (const [id, value] of base) if (id !== node.id) yield [id, value] as [typeof id, typeof value]; yield [node.id, node] as [Node['id'], Node]; },
-        *keys(): MapIterator<Node['id']> { for (const id of base.keys()) if (id !== node.id) yield id; yield node.id; },
-        *values(): MapIterator<Readonly<Node>> { for (const value of base.values()) if (value.id !== node.id) yield value; yield node; },
-        [Symbol.iterator]() { return this.entries(); },
-        forEach(callback, receiver) { for (const [id, value] of this) callback.call(receiver, value, id, this); },
-    };
-    return { ...doc, nodes };
 }
 class CreationGesture implements GestureOwner {
     readonly kind = 'node-edit' as const;
@@ -85,28 +74,41 @@ class CreationGesture implements GestureOwner {
         const p = this.local(this.sample), style = this.style;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
         const moved = Math.hypot(this.sample.x - this.down.x, this.sample.y - this.down.y) * this.context.camera.camera.z >= 4;
-        if (this.modifiers.shift) { const size = Math.max(Math.abs(dx), Math.abs(dy)); dx = Math.sign(dx || 1) * size; dy = Math.sign(dy || 1) * size; }
+        if (this.modifiers.shift) {
+            if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
+                const length = Math.hypot(dx, dy), step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
+                dx = length * Math.cos(angle); dy = length * Math.sin(angle);
+            } else { const size = Math.max(Math.abs(dx), Math.abs(dy)); dx = Math.sign(dx || 1) * size; dy = Math.sign(dy || 1) * size; }
+        }
         const centered = this.modifiers.alt, x = centered ? this.base.x - Math.abs(dx) : this.base.x + Math.min(0, dx),
             y = centered ? this.base.y - Math.abs(dy) : this.base.y + Math.min(0, dy);
         const factor = centered ? 2 : 1;
-        const w = moved ? Math.max(.01, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
-        const h = moved ? Math.max(.01, Math.abs(dy) * factor) : this.context.kind === 'frame' ? 180 : this.context.kind === 'sticky' ? 200 : 100;
+        const w = moved ? Math.max(1, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
+        const h = moved ? Math.max(1, Math.abs(dy) * factor) : this.context.kind === 'frame' ? 180 : this.context.kind === 'sticky' ? 200 : 100;
         const base = { ...this.base, x: moved ? x : this.base.x, y: moved ? y : this.base.y };
         const width = styleGeometryMetrics.actualWidth(this.context.kind === 'polyline' ? 'polyline' : this.context.kind === 'connector' ? 'connector' : 'figure', style.size, 1);
         switch (this.context.kind) {
-            case 'figure': return createFigure({ ...base, shape: this.context.figure ?? 'rectangle', w, h, growY: 0,
-                color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font,
-                align: style.align, valign: style.valign, label: null, width, flipX: false, flipY: false, url: null });
-            case 'frame': return createFrame({ ...base, w, h, name: 'Frame', color: null });
+            case 'figure': {
+                const shape = this.context.figure ?? 'rectangle', down = { x: this.base.x, y: this.base.y };
+                const box = moved ? figureDragBox(shape, down, p, this.modifiers) : figureClickBox(shape, down);
+                return createFigure({ ...base, x: box.x, y: box.y, shape, w: box.width, h: box.height, growY: 0,
+                    color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font,
+                    align: style.align, valign: style.valign, label: null, width, flipX: false, flipY: false, url: null });
+            }
+            case 'frame': {
+                const down = { x: this.base.x, y: this.base.y };
+                const box = moved ? figureDragBox('rectangle', down, p, this.modifiers) : { ...down, width: 320, height: 180 };
+                return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: 'Frame', color: null });
+            }
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });
             case 'sticky': return createSticky({ ...base, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
                 size: style.size, font: style.font, align: style.align, valign: style.valign, growY: 0, fit: null,
                 scale: moved ? Math.max(.01, Math.max(w, h) / 200) : 1, url: null });
-            case 'polyline': return createPolyline({ ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, { x: dx, y: dy }],
+            case 'polyline': return createPolyline({ ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
                 spline: style.spline, color: style.color, dash: style.dash, size: style.size, width });
             case 'connector': return createConnector({ ...this.base, route: style.route, start: { x: centered ? -dx : 0, y: centered ? -dy : 0, attach: null },
-                end: { x: dx, y: dy, attach: null }, bend: 0, headStart: style.headStart, headEnd: style.headEnd,
+                end: { x: moved ? dx : .1, y: moved ? dy : .1, attach: null }, bend: 0, headStart: style.headStart, headEnd: style.headEnd,
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
     }
@@ -135,14 +137,23 @@ class CreationGesture implements GestureOwner {
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-        const geometry = await render.prepareForPick(node, signal, candidateDocument(runtime.session.doc, node));
+        const doc = runtime.session.doc, candidate = createAddedBoardDoc(doc, [node]);
+        const geometry = await render.prepareForPick(node, signal, candidate);
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-        const pose = worldPose(candidateDocument(runtime.session.doc, node), node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-        const bounds = new Float64Array(4);
-        transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
-        const growth = notebookGrowthOp(runtime.session.doc, bounds[3]);
-        const applied = runtime.session.apply({ origin: 'tool', label: `Create ${this.context.kind}`, ops: [...growth ? [growth] : [], { t: 'create', node }] });
-        applied.release(); runtime.selection.replace([node.id]);
+        const scope = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal, current: () => this.valid() });
+        try {
+            if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
+            const pose = worldPose(candidate, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), logical = scope.logicalBounds(node.id);
+            const placementGeometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => render.changeGeometry.resolvedTip(d, connector, terminal),
+                worldBoundsCenter: () => ({ x: logical.x + logical.width / 2, y: logical.y + logical.height / 2 }) };
+            const placement = poseInParent(doc, node, node.parent, pose, placementGeometry);
+            node = { ...node, x: placement.x, y: placement.y, page: placement.page, rotation: placement.rotation };
+            const bounds = new Float64Array(4);
+            transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
+            const growth = notebookGrowthOp(doc, Math.max(bounds[3], logical.y + logical.height));
+            const applied = runtime.session.apply({ origin: 'tool', label: `Create ${this.context.kind}`, ops: [...growth ? [growth] : [], { t: 'create', node }] });
+            applied.release(); runtime.selection.replace([node.id]);
+        } finally { scope.release(); }
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
     }
     cancel(_reason: CancelReason): void { this.ended = true; this.controller.abort(); this.cleanup(); }

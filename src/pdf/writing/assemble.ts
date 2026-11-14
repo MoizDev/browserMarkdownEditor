@@ -6,13 +6,14 @@ import type { WorkerContext } from '../../platform/workers/serve';
 
 /** This accepts generated pages only; no imported PDF can enter the fresh-document route. */
 export async function assembleDisplayPdf(input: DisplayPdfInput, context: WorkerContext): Promise<Uint8Array> {
+    if (!input || input.schema !== 1) throw new Error('Unsupported display-list schema');
     if (input.notebookSource) {
         const path = input.notebookSource.path;
         if (typeof path !== 'string' || !path || path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') || path.includes('\\')) {
             throw new Error('Notebook source must be a vault-root-relative path');
         }
     }
-    const generated = await emitDocument(input.pages, context);
+    const { bytes: generated } = await emitDocument(input.pages, context);
     await context.slice();
     const doc = await PDFDocument.load(generated, { updateMetadata: false, parseSpeed: Infinity });
     if (doc.getPageCount() !== input.pages.length) throw new Error('Generated PDF page count changed');
@@ -41,7 +42,7 @@ export async function assembleDisplayPdf(input: DisplayPdfInput, context: Worker
     const stream = ef.lookup(PDFName.of('F'));
     if (!(name instanceof PDFString || name instanceof PDFHexString) || name.decodeText() !== NOTEBOOK_SOURCE_ATTACHMENT ||
         !(description instanceof PDFString || description instanceof PDFHexString) || !description.decodeText().startsWith(marker + '\n') ||
-        !(stream instanceof PDFRawStream) || new TextDecoder('utf-8', { fatal: true }).decode(decodePDFRawStream(stream).getBytes()) !== pointer) {
+        !(stream instanceof PDFRawStream) || new TextDecoder('utf-8', { fatal: true }).decode(decodePDFRawStream(stream).getBytes(new TextEncoder().encode(pointer).length + 1)) !== pointer) {
         throw new Error('Notebook source pointer verification failed');
     }
     return bytes;

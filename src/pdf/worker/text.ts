@@ -66,11 +66,6 @@ export async function buildWorkerPageText(raw: RawPageText, geometry: PageGeomet
         context.heartbeat();
         const projection = buildPdfiumPageText(raw, { physicalPageIndex: geometry.index,
             width: geometry.width, height: geometry.height, rotation: geometry.rotate });
-        const model = projection.model;
-        const modelBytes = model.text.length * 2 + model.tokenBreaks.length * 8 + model.intervals.reduce((total, interval) =>
-            total + 192 + interval.fontName.length * 2 + interval.markedContentIds.join('').length * 2, 0);
-        if (model.text.length * 2 > 1024 * 1024 || model.intervals.length > 50_000 || modelBytes > 4 * 1024 * 1024)
-            throw new RangeError('PDF text page exceeds the text model safety limit');
         entry = { geometry: geometryKey, projection }; prepared.set(raw, entry);
     }
     const { model, charU16 } = entry.projection;

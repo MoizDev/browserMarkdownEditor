@@ -11,6 +11,7 @@ let store: DocumentSessionStore | undefined;
 let unsubscribe: (() => void) | undefined;
 const listeners = new Set<() => void>();
 const snapshots = new Map<string, SessionIdentity>();
+const beforeBytesChange = new Map<string, Set<(nextGeneration: number) => void>>();
 const notify = () => {
     for (const listener of [...listeners]) {
         try { listener(); } catch (error) { console.error('Session identity subscriber failed:', error); }
@@ -42,6 +43,25 @@ export function getSessionIdentity(documentId: string): SessionIdentity | undefi
     });
     snapshots.set(documentId, identity);
     return identity;
+}
+
+/** Optional presentation handoff, called while the old token is still current. */
+export function registerBeforeBytesChange(documentId: string, listener: (nextGeneration: number) => void): () => void {
+    let set = beforeBytesChange.get(documentId);
+    if (!set) beforeBytesChange.set(documentId, set = new Set());
+    const registered = set;
+    registered.add(listener);
+    return () => {
+        registered.delete(listener);
+        if (!registered.size && beforeBytesChange.get(documentId) === registered) beforeBytesChange.delete(documentId);
+    };
+}
+
+/** Presentation errors never stop an authoritative byte generation advancing. */
+export function prepareBytesChange(documentId: string, generation: number): void {
+    for (const listener of [...(beforeBytesChange.get(documentId) ?? [])]) {
+        try { listener(generation); } catch (error) { console.error('Could not bridge document pixels:', error); }
+    }
 }
 
 export function subscribeSessionIdentity(listener: () => void): () => void {

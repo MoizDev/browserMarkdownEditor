@@ -1,6 +1,5 @@
 import { createPlatformMirrors, pagePresentation } from '../../platform/render';
 import type { BorrowedMirror, ByteLease, MirrorEntry, MirrorView, Rect, RenderToken, ViewState } from '../../platform/render';
-import type { PlatformSessionSlots } from '../../platform/render/createPlatformMirrors';
 import type { CompositorMirrorQuad } from '../../platform/render/compositor.types';
 import type { MirrorSet } from '../../platform/render/mirrorSet';
 import type { TileKey } from '../../platform/render/tiles/geometry';
@@ -35,7 +34,10 @@ const slot = Symbol('PDF session mirror storage');
 
 /** Session slots keep both pixels and the platform mirror across hide and graph unmount (§8:193–204). */
 export function getPdfSessionMirrors(options: {
-    readonly session: PlatformSessionSlots;
+    readonly session: {
+        getSlot<T>(key: symbol): T | undefined;
+        setSlot<T>(key: symbol, value: T, dispose?: () => void): void;
+    };
     readonly token: RenderToken;
     readonly currentToken: () => RenderToken | null;
 }): PdfSessionMirrors {
@@ -53,7 +55,12 @@ export function getPdfSessionMirrors(options: {
             value.bitmap.close();
         },
     };
-    const mirrors = createPlatformMirrors({ session: options.session, owner: options.token,
+    const session = {
+        getSlot: <T>(key: symbol) => options.session.getSlot<T>(key),
+        setSlot: <T>(key: symbol, value: T, dispose?: (value: T) => void) =>
+            options.session.setSlot(key, value, dispose ? () => dispose(value) : undefined),
+    };
+    const mirrors = createPlatformMirrors({ session, owner: options.token,
         currentToken: options.currentToken, storage });
     const result = {
         mirrors,

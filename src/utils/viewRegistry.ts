@@ -137,21 +137,40 @@ export interface CanvasApplyResult {
     created: string[];
     updated: string[];
     deleted: string[];
+    /** Authoritative post-commit projection of updated shapes that still exist. */
+    updatedShapes?: readonly ShapeSummary[];
     /** One message per op that was skipped, e.g. "op 3: no shape shape:abc". */
     errors: string[];
 }
 
-/** The agent's hands on a tldraw-based document (drawing, notebook, PDF annotate). */
+export interface CanvasShapeQuery {
+    page?: number;
+    offset?: number;
+    limit?: number;
+    revision?: number;
+}
+export interface CanvasShapePage {
+    shapes: ShapeSummary[];
+    total: number;
+    revision: number;
+    nextOffset?: number;
+    revisionChanged?: true;
+    sections?: readonly { readonly offset: number; readonly name: string; readonly index: number }[];
+}
+
+/** The agent's hands on a canvas document (drawing, notebook, PDF annotate). */
 export interface CanvasAgentOps {
     /** Every shape (or one page's), with full style. */
     shapes(page?: number): ShapeSummary[];
+    /** WB-D12: optional until the new board session supplies revision-fenced paging. */
+    shapePage?(query?: CanvasShapeQuery): CanvasShapePage;
     /** Apply ops as ONE undo step, saved exactly as a user edit is. A shape id
      *  may be written with or without its `shape:` prefix, and `$N` names the
      *  shape op N (1-based) of the same batch created — so one call can draw
      *  two boxes and the arrow between them. Page backdrops and locked shapes
      *  are refused per op. `errors` also carries `op N: note: …` lines for ops
      *  that applied with an adjustment (a point moved onto the page). */
-    apply(ops: CanvasOp[]): CanvasApplyResult;
+    apply(ops: CanvasOp[], guard?: { readonly signal?: AbortSignal; isCurrent(): boolean }): CanvasApplyResult | Promise<CanvasApplyResult>;
     /** 1-based page the user is on (default target for ops without `page`). */
     currentPage(): number;
 }

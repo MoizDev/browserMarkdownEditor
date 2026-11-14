@@ -20,10 +20,10 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
   the caret without re-scanning. All of it comes out of one pass and is handed to three facets from
   `provide`. `atoms` is built with `RangeSet.of(atoms, true)`: the image scan and the table scan are
   each left-to-right, but tables are appended after images, so the combined array is **not** sorted.
-- `buildDecorations` walks the Lezer syntax tree **plus** regex passes, in this order: `analyzeDoc`
-  (flatten + code ranges + math regions) → one tree walk (headings, emphasis, strikethrough, inline
-  code, fences incl. mermaid, links + autolinks + bare URLs, blockquote, list items, HR) → math
-  regions → `$`-delimiter feedback → `==highlight==` → image embeds → wikilinks → tables.
+- `docAnalysisField` maintains code, math and regex/object ranges; `livePreviewWindows` plans
+  line-aligned affected windows and `buildDecorations` renders them in the original order: tree,
+  math, `$` feedback, highlights, embeds, wikilinks, tables. A >50% window or unsafe analysis
+  falls back to the same renderer over the whole note. The Developer rollback selects full renders.
 - `cursorInRange`/`cursorOnLine` decide when to reveal raw syntax — only in edit mode, and **images
   and tables are the two constructs that never reveal** (each has its own rules). The table branch
   does not call `cursorInRange` at all. **Read mode is a pure function of the document** (every
@@ -42,18 +42,11 @@ inline, Obsidian-style. Tables have their own skill (`markdown-tables`); everyth
 
 ## The hot path
 
-- **Memoized on `(doc, tree)` object identity**, which is exact because both are immutable and
-  persistent. `analyzeDoc` (in `latexSource.ts`) computes the flattened document, the code ranges and
-  the math regions once per parse, in a **`WeakMap` keyed on the `Text` — one entry per document, not
-  one entry**; `docCache.ts` memoizes `Text.toString()` the same way. The single slot it used to hold
-  was right while one view was ever live, and a split tab falsifies that: up to five documents are
-  live at once, each with its own state, field and background parser, so they took turns through the
-  slot and every alternation between two panes re-walked a whole document. This matters because in
-  edit mode the field also rebuilds on **selection-only** transactions (to reveal syntax under the
-  cursor) — every arrow key used to re-flatten the document and re-scan it. `isInMathContext` /
-  `inCodeRange`, which run *synchronously inside* a bracket or `$` keystroke before the transaction
-  dispatches, read through the same memo. Keying on the tree as well as the doc is deliberate: it
-  keeps the memo from defeating the `treeAdvanced` rebuild above.
+- `docAnalysisField` is per editor state and survives a pane switch. It maintains incremental
+  line/object scans and math ranges without flattening the whole document on a keystroke; its
+  revision-tagged delta drives the preview windows. `analyzeDoc` uses that field when installed,
+  with a full-analysis fallback for consumers without it. Parser advances still invalidate the
+  relevant tree ranges even without a document change.
 - **Math-region overlap is binary-searched, never scanned** (`firstMathFrom`/`overlapsMath`). The
   node-level guard runs for *every node of the whole tree*, so a linear scan over regions made it
   O(nodes × regions) — measured ~186M comparisons and ~138ms per keystroke on a 400KB math note,

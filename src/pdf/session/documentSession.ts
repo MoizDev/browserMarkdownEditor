@@ -15,15 +15,18 @@ export interface OpenTiledDocument {
 }
 
 export interface TiledDocumentPool {
-    open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal): Promise<OpenTiledDocument>;
+    open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal, password?: string): Promise<OpenTiledDocument>;
 }
+
+/** App-owned prompt; null means the user cancelled, never an empty password. */
+export type PdfPasswordRequest = (token: RenderToken, incorrect: boolean, signal: AbortSignal) => Promise<string | null>;
 
 /** Geometry, not path, determines whether older pixels can bridge a version. */
 export function pdfGeometryDigest(pages: readonly PageGeometry[]): string {
     return JSON.stringify(pages.map(page => [page.index, page.width, page.height, page.rotate, page.userUnit, ...page.toUserSpace]));
 }
 
-interface Slot { value: unknown; dispose?: () => void }
+interface Slot { value: unknown; dispose?: () => void | Promise<void> }
 
 /**
  * App/session lifetime, not a component lifetime. The source snapshot and
@@ -38,12 +41,15 @@ export class PdfTiledDocumentSession {
     private document: OpenTiledDocument | null = null;
     private closing: Promise<void> | null = null;
     private closed = false;
+    private password: string | undefined;
     private captureUsers = 0;
     private readonly captureWaiters = new Set<() => void>();
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; dispose(): void }>,
-        private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
+        private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; stat: { lastModified: number; size: number }; dispose(): void }>,
+        private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean,
+        private readonly onStableBlob?: (blob: Blob, stat: { lastModified: number; size: number }, signal: AbortSignal) => void,
+        private readonly requestPassword?: PdfPasswordRequest) {}
 
     open(): Promise<OpenTiledDocument> {
         if (this.closed || !this.isTokenCurrent(this.token)) return Promise.reject(new DOMException('PDF session closed', 'AbortError'));
@@ -53,7 +59,28 @@ export class PdfTiledDocumentSession {
                 let blob: Blob;
                 try { blob = await stablePdfBlob(snapshot.blob, this.controller.signal); }
                 finally { snapshot.dispose(); }
-                const opened = await this.pool.open(blob, this.token, this.source, this.controller.signal);
+                this.onStableBlob?.(blob, snapshot.stat, this.controller.signal);
+                let opened: OpenTiledDocument;
+                for (;;) {
+                    try {
+                        opened = await this.pool.open(blob, this.token, this.source, this.controller.signal, this.password);
+                        break;
+                    } catch (error) {
+                        if (!(error instanceof Error) || error.name !== 'PasswordRequired' || !this.requestPassword) throw error;
+                        this.controller.signal.throwIfAborted();
+                        if (!this.isTokenCurrent(this.token)) throw new DOMException('PDF session replaced', 'AbortError');
+                        const answer = await this.requestPassword(this.token, this.password !== undefined, this.controller.signal);
+                        this.controller.signal.throwIfAborted();
+                        if (!this.isTokenCurrent(this.token)) throw new DOMException('PDF session replaced', 'AbortError');
+                        if (answer === null) {
+                            this.password = undefined;
+                            const cancelled = new Error('PDF unlock cancelled. Retry to enter a password.');
+                            cancelled.name = 'PasswordCancelled';
+                            throw cancelled;
+                        }
+                        this.password = answer;
+                    }
+                }
                 if (this.closed || !this.isTokenCurrent(this.token)) {
                     await opened.close();
                     throw new DOMException('PDF session replaced', 'AbortError');
@@ -88,15 +115,16 @@ export class PdfTiledDocumentSession {
     isCurrent(): boolean { return !this.closed && this.isTokenCurrent(this.token); }
 
     getSlot<T>(key: symbol): T | undefined { return this.slots.get(key)?.value as T | undefined; }
-    setSlot<T>(key: symbol, value: T, dispose?: () => void): void {
+    setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>): void {
         if (this.closed) throw new Error('PDF session is closed');
         if (this.slots.has(key)) throw new Error('PDF session slot is already occupied');
-        this.slots.set(key, { value, dispose });
+        this.slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });
     }
 
     close(): Promise<void> {
         if (this.closing) return this.closing;
         this.closed = true;
+        this.password = undefined;
         this.controller.abort();
         this.closing = (async () => {
             // A late successful open closes itself after observing `closed`.
@@ -107,7 +135,7 @@ export class PdfTiledDocumentSession {
             const slots = [...this.slots.values()];
             this.slots.clear();
             const failures: unknown[] = [];
-            for (const slot of slots) try { slot.dispose?.(); } catch (error) { failures.push(error); }
+            for (const slot of slots) try { await slot.dispose?.(); } catch (error) { failures.push(error); }
             try { await document?.close(); } catch (error) { failures.push(error); }
             if (failures.length) throw new AggregateError(failures, 'PDF session could not be closed cleanly');
         })();

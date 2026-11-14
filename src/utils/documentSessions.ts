@@ -1,4 +1,5 @@
 import type { ContentSource, DocumentBuffer, SourceOwner } from './documentBuffers';
+import type { JournalCapture } from './recoveryFunnel';
 
 // Share the source types without a runtime dependency; App's bindings are the
 // only runtime bridge, so two stores cannot drift into separate ownership rules.
@@ -18,7 +19,7 @@ export interface SessionAdapter {
      *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
     /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
-    journalDelta?(): unknown;
+    journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */
     recover?(payload: unknown): void | Promise<void>;
     /** App subscribes once when the session is created, never through the lifetime of a pane. */
@@ -59,8 +60,8 @@ export interface DocumentSessionStore {
     get(documentId: string): SessionEntry | undefined;
     entries(): IterableIterator<SessionEntry>;
     subscribe(listener: () => void): () => void;
-    /** Wait for async slot teardown started by replacement or release. */
-    drainDisposals(): Promise<void>;
+    /** Wait for every slot teardown started for this document, including replacements. */
+    settled(documentId: string): Promise<void>;
 
     /** Called only on first pane mount/visibility or first programmatic edit, never on tab restore.
      *  Existing same-kind entries are reused (including StrictMode); create receives its live owner.
@@ -114,15 +115,18 @@ interface RegisteredSession {
 export function createDocumentSessions(bindings: SessionStoreBindings): DocumentSessionStore {
     const sessions = new Map<string, RegisteredSession>();
     const listeners = new Set<() => void>();
-    const disposals = new Set<Promise<void>>();
-    const disposeSlot = (dispose?: () => void | Promise<void>) => {
+    const disposals = new Map<string, Set<Promise<void>>>();
+    const disposeSlot = (documentId: string, dispose?: () => void | Promise<void>) => {
         if (!dispose) return;
         try {
             const result = dispose();
             if (result) {
-                const pending = Promise.resolve(result);
-                disposals.add(pending);
-                void pending.then(() => disposals.delete(pending), () => disposals.delete(pending));
+                let pendingSet = disposals.get(documentId);
+                if (!pendingSet) disposals.set(documentId, pendingSet = new Set());
+                const set = pendingSet;
+                const pending = Promise.resolve(result).catch(error => { console.error('Session slot disposal failed:', error); });
+                set.add(pending);
+                void pending.then(() => { set.delete(pending); if (!set.size && disposals.get(documentId) === set) disposals.delete(documentId); });
             }
         } catch (error) { console.error('Session slot disposal failed:', error); }
     };
@@ -157,23 +161,25 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         const adapter = create(Object.freeze({ documentId, session: serial }));
         const slots = new Map<symbol, { value: unknown; dispose?: () => void | Promise<void> }>();
         let generation = bytesGeneration;
+        let closed = false;
         const entry: SessionEntry<A> = {
             documentId, serial, kind, adapter,
             get bytesGeneration() { return generation; },
             set bytesGeneration(value) { if (generation !== value) { generation = value; notify(); } },
             getSlot<T>(key: symbol) { return slots.get(key)?.value as T | undefined; },
             setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>) {
+                if (closed) throw new Error('Cannot set a slot on a released session');
                 const previous = slots.get(key);
+                slots.delete(key);
+                disposeSlot(documentId, previous?.dispose);
                 slots.set(key, { value, dispose: dispose ? () => dispose(value) : undefined });
-                disposeSlot(previous?.dispose);
             },
             hasPendingEdits: () => ledgerPending(documentId) || adapter.hasPendingEdits(),
         };
         const registered: RegisteredSession = { entry, disposeSlots() {
+            closed = true;
             const values = [...slots.values()]; slots.clear();
-            for (const slot of values) {
-                disposeSlot(slot.dispose);
-            }
+            for (const slot of values) disposeSlot(documentId, slot.dispose);
         } };
         sessions.set(documentId, registered);
         notify();
@@ -196,8 +202,8 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         get size() { return sessions.size; },
         get: documentId => sessions.get(documentId)?.entry,
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        async drainDisposals() {
-            while (disposals.size) await Promise.all([...disposals]);
+        async settled(documentId) {
+            while (disposals.has(documentId)) await Promise.all([...disposals.get(documentId)!]);
         },
         *entries() {
             for (const registered of sessions.values()) yield registered.entry;

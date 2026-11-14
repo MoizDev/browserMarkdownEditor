@@ -8,8 +8,8 @@ export function newPdfWriteId(): string {
     return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Add this attachment last, then set both Params keys before full save. PDFium
- * Flate-encodes the payload but serializes the Params literal before that data. */
+/** Add this attachment last, then set Filespec /Desc and the Params write mark.
+ * PDFium Flate-encodes the payload but writes the Params literal before it. */
 export function pdfiumWriteMark(format: string, writeId: string): {
     name: string; payload: Uint8Array; marker: string; value: string;
 } {

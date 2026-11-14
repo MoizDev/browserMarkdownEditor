@@ -17,7 +17,7 @@ export function moveCaret(index: CaretIndex, position: CaretPosition, direction:
     let n = line.stops.findIndex(stop => stop.offset === current.offset && stop.affinity === current.affinity && stop.x === current.x);
     if (n < 0) return current;
     n += step;
-    while (line.stops[n] && line.stops[n].offset === current.offset && line.stops[n].x === current.x) n += step;
+    while (line.stops[n] && Math.abs(line.stops[n].x - current.x) < 0.001) n += step;
     if (line.stops[n]) return line.stops[n];
     const adjacent = index.lines[current.line + step]?.stops;
     return adjacent?.[step < 0 ? adjacent.length - 1 : 0] ?? current;

@@ -4,22 +4,24 @@ import { PAGE_GAP } from '../../platform/render/pageStack';
 import { MAX_PAGES, paperPageSize, type NotebookPaper } from '../../utils/paper';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type NodeId, type SheetId } from '../model/ids';
-import type { ConnectorEnd, ConnectorNode, Node, Point } from '../model/nodes';
+import type { Node } from '../model/nodes';
+import { deleteNodes } from '../change/commands';
+import type { ChangeGeometry } from '../change/coordinates';
 import type { ExtBag } from '../model/json';
 import { keyBetween } from '../model/orderKey';
+
+type MutationPort = Pick<ApplyController, 'apply' | 'begin'>;
 
 /** A refusal is safe to show in the host's own dialog. */
 export class StructureRefused extends Error {
     constructor(message: string) { super(message); this.name = 'StructureRefused'; }
 }
 
-export type ResolveConnectorEnd = (connector: ConnectorNode, end: 'start' | 'end') => Point;
-
-function commit(apply: ApplyController, label: string, ops: Op[]): Applied {
+function commit(apply: MutationPort, label: string, ops: Op[]): Applied {
     return apply.apply({ origin: 'host', label, ops });
 }
 
-export function addSheet(doc: BoardDoc, apply: ApplyController, id: SheetId, name: string): Applied {
+export function addSheet(doc: BoardDoc, apply: MutationPort, id: SheetId, name: string): Applied {
     if (doc.sheetOrder.length >= 40) throw new StructureRefused('Maximum pages reached');
     const last = doc.sheetOrder.at(-1);
     return commit(apply, 'Create sheet', [{ t: 'sheet', op: 'create', sheet: {
@@ -34,7 +36,7 @@ function withoutRaw(ext: ExtBag | null, keys: readonly string[]): ExtBag | null 
     return { fields: ext.fields, raw };
 }
 
-export function duplicateSheet(doc: BoardDoc, apply: ApplyController, source: SheetId, id: SheetId): Applied {
+export function duplicateSheet(doc: BoardDoc, apply: MutationPort, source: SheetId, id: SheetId, name?: string): Applied {
     if (doc.sheetOrder.length >= 40) throw new StructureRefused('Maximum pages reached');
     const index = doc.sheetOrder.findIndex(sheet => sheet.id === source);
     if (index < 0) throw new StructureRefused('Sheet no longer exists');
@@ -51,7 +53,7 @@ export function duplicateSheet(doc: BoardDoc, apply: ApplyController, source: Sh
         for (const child of childrenOf(doc, node.id)) visit(child);
     };
     for (const node of childrenOf(doc, source)) visit(node);
-    const ops: Op[] = [{ t: 'sheet', op: 'create', sheet: { id, name: `${original.name.slice(0, 195)} Copy`,
+    const ops: Op[] = [{ t: 'sheet', op: 'create', sheet: { id, name: name ?? `${original.name.slice(0, 195)} Copy`,
         order: keyBetween(original.order, doc.sheetOrder[index + 1]?.order ?? null),
         ext: withoutRaw(original.ext, ['id', 'name', 'order']) } }];
     for (const node of nodes) {
@@ -72,12 +74,12 @@ export function duplicateSheet(doc: BoardDoc, apply: ApplyController, source: Sh
     return commit(apply, 'Duplicate sheet', ops);
 }
 
-export function renameSheet(apply: ApplyController, id: SheetId, name: string): Applied {
+export function renameSheet(apply: MutationPort, id: SheetId, name: string): Applied {
     return commit(apply, 'Rename sheet', [{ t: 'sheet', op: 'set', id, key: 'name', value: name }]);
 }
 
 /** Destination is an index in the resulting sheet order, not the original list. */
-export function reorderSheet(doc: BoardDoc, apply: ApplyController, id: SheetId, destination: number): Applied | undefined {
+export function reorderSheet(doc: BoardDoc, apply: MutationPort, id: SheetId, destination: number): Applied | undefined {
     const old = doc.sheetOrder.findIndex(sheet => sheet.id === id);
     if (old < 0 || !Number.isInteger(destination) || destination < 0 || destination >= doc.sheetOrder.length)
         throw new StructureRefused('Invalid sheet or destination');
@@ -103,33 +105,12 @@ export function deletionContents(doc: BoardDoc, roots: readonly NodeId[]): reado
     return result;
 }
 
-function deletionOps(doc: BoardDoc, contents: readonly Node[], resolve?: ResolveConnectorEnd): Op[] {
-    const removed = new Set(contents.map(node => node.id));
-    const connectors = new Set<NodeId>();
-    for (const id of removed) for (const connector of doc.attachedTo.get(id) ?? []) connectors.add(connector);
-    const ops: Op[] = [];
-    for (const id of connectors) {
-        if (removed.has(id)) continue;
-        const node = doc.nodes.get(id);
-        if (!node || node.kind !== 'connector') continue;
-        for (const key of ['start', 'end'] as const) {
-            const end = node[key];
-            if (!end.attach || !removed.has(end.attach.target)) continue;
-            if (node.locked || !resolve) throw new StructureRefused('A protected or unresolved connector prevents deletion');
-            const point = resolve(node, key);
-            const value: ConnectorEnd = { ...point, attach: null };
-            ops.push({ t: 'set', id, key, value });
-        }
-    }
-    for (const node of contents) ops.push({ t: 'delete', id: node.id });
-    return ops;
-}
-
-export function deleteSheet(doc: BoardDoc, apply: ApplyController, id: SheetId, resolve?: ResolveConnectorEnd): Applied {
+export function deleteSheet(doc: BoardDoc, apply: MutationPort, id: SheetId): Applied {
     if (!doc.sheets.has(id)) throw new StructureRefused('Sheet no longer exists');
     if (doc.sheets.size <= 1) throw new StructureRefused('A board must keep one sheet');
     const contents = deletionContents(doc, childrenOf(doc, id).map(node => node.id));
-    return commit(apply, 'Delete sheet', [...deletionOps(doc, contents, resolve), { t: 'sheet', op: 'delete', id }]);
+    return commit(apply, 'Delete sheet', [...contents.map((node): Op => ({ t: 'delete', id: node.id })),
+        { t: 'sheet', op: 'delete', id }]);
 }
 
 function notebook(doc: BoardDoc) {
@@ -137,13 +118,13 @@ function notebook(doc: BoardDoc) {
     return doc.host.paper;
 }
 
-export function addPage(doc: BoardDoc, apply: ApplyController): Applied {
+export function addPage(doc: BoardDoc, apply: MutationPort): Applied {
     const paper = notebook(doc);
     if (paper.pageCount >= MAX_PAGES) throw new StructureRefused('Maximum pages reached');
     return commit(apply, 'Add page', [{ t: 'board', key: 'host.paper', value: { ...paper, pageCount: paper.pageCount + 1 } }]);
 }
 
-export function changePaper(doc: BoardDoc, apply: ApplyController, paper: Readonly<NotebookPaper>): Applied {
+export function changePaper(doc: BoardDoc, apply: MutationPort, paper: Readonly<NotebookPaper>): Applied {
     notebook(doc);
     return commit(apply, 'Change paper', [{ t: 'board', key: 'host.paper', value: paper }]);
 }
@@ -159,21 +140,60 @@ export function notebookGrowthOp(doc: BoardDoc, deepestWorldY: number): BoardOp 
     return { t: 'board', key: 'host.paper', value: { ...paper, pageCount: Math.min(MAX_PAGES, paper.pageCount + extra) } };
 }
 
+const NODE_NAMES: Record<Node['kind'], readonly [string, string]> = {
+    stroke: ['stroke', 'strokes'], figure: ['shape', 'shapes'], text: ['text', 'texts'],
+    sticky: ['sticky note', 'sticky notes'], connector: ['arrow', 'arrows'], polyline: ['line', 'lines'],
+    frame: ['frame', 'frames'], group: ['group', 'groups'], picture: ['picture', 'pictures'],
+    clip: ['video', 'videos'], linkcard: ['bookmark', 'bookmarks'], embed: ['embed', 'embeds'],
+    opaque: ['unsupported item', 'unsupported items'],
+};
+
+/** Structured counts let the host pluralize actual kinds, not call every item a stroke (WB-D29). */
+export function pageContentCounts(contents: readonly Node[]): ReadonlyMap<Node['kind'], number> {
+    const counts = new Map<Node['kind'], number>();
+    for (const node of contents) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
+    return counts;
+}
+
+export function describePageContents(contents: readonly Node[]): string {
+    return [...pageContentCounts(contents)].map(([kind, count]) => `${count} ${NODE_NAMES[kind][count === 1 ? 0 : 1]}`).join(', ');
+}
+
 export function lastPageContents(doc: BoardDoc): readonly Node[] {
     const paper = notebook(doc);
     if (paper.pageCount <= 1) throw new StructureRefused('A notebook must keep one page');
-    return deletionContents(doc, [...(doc.byPage.get(paper.pageCount - 1) ?? [])]);
+    const contents: Node[] = [];
+    const visit = (id: NodeId) => {
+        const node = doc.nodes.get(id);
+        if (!node) throw new StructureRefused('Content no longer exists');
+        if (node.kind === 'opaque') throw new StructureRefused(`Unsupported item ${id} prevents page deletion`);
+        if (node.locked) return;
+        for (const child of childrenOf(doc, id)) visit(child.id);
+        contents.push(node);
+    };
+    for (const id of doc.byPage.get(paper.pageCount - 1) ?? []) {
+        if (doc.nodes.get(id)?.kind !== 'opaque') visit(id);
+    }
+    return contents;
 }
 
-export function deleteLastPage(doc: BoardDoc, apply: ApplyController, resolve?: ResolveConnectorEnd): Applied {
+export function deleteLastPage(doc: BoardDoc, apply: MutationPort, geometry?: ChangeGeometry): Applied {
     const paper = notebook(doc);
-    const contents = lastPageContents(doc);
-    return commit(apply, 'Delete page', [...deletionOps(doc, contents, resolve),
-        { t: 'board', key: 'host.paper', value: { ...paper, pageCount: paper.pageCount - 1 } }]);
+    if (paper.pageCount <= 1) throw new StructureRefused('A notebook must keep one page');
+    const roots = [...(doc.byPage.get(paper.pageCount - 1) ?? [])].filter(id => doc.nodes.get(id)?.kind !== 'opaque');
+    const builder = apply.begin('host', 'Delete page');
+    try {
+        deleteNodes(doc, builder, roots, geometry);
+        builder.push({ t: 'board', key: 'host.paper', value: { ...paper, pageCount: paper.pageCount - 1 } });
+        return builder.commit();
+    } catch (error) {
+        builder.abort();
+        throw error;
+    }
 }
 
 /** Reorders physical pages while preserving each root's unscaled page-local position. */
-export function reorderPage(doc: BoardDoc, apply: ApplyController, from: number, to: number): Applied | undefined {
+export function reorderPage(doc: BoardDoc, apply: MutationPort, from: number, to: number): Applied | undefined {
     const { pageCount } = notebook(doc);
     if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= pageCount || to >= pageCount)
         throw new StructureRefused('Invalid page or destination');
@@ -183,7 +203,8 @@ export function reorderPage(doc: BoardDoc, apply: ApplyController, from: number,
         const next = page === from ? to : page + (from < to ? -1 : 1);
         for (const id of doc.byPage.get(page) ?? []) {
             const node = doc.nodes.get(id);
-            if (!node || node.locked) throw new StructureRefused('Locked or unsupported content prevents reordering');
+            if (!node) throw new StructureRefused('Content no longer exists');
+            if (node.kind === 'opaque') throw new StructureRefused(`Unsupported item ${id} prevents reordering`);
             ops.push({ t: 'set', id, key: 'page', value: next });
         }
     }

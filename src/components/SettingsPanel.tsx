@@ -10,7 +10,7 @@ import {
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
 import { StorageDurabilitySetting } from './StorageDurabilitySetting';
-import { AVAILABLE_CANVAS_ENGINES, AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, PLATFORM_LAYER_AVAILABLE, developerEnabled, emergencyKey, engineKey, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
+import { AVAILABLE_CANVAS_ENGINES, AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, PLATFORM_LAYER_AVAILABLE, developerEnabled, emergencyKey, engineKey, incrementalEditorEnabled, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -118,7 +118,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
             >
                 <div className="settings-header">
                     <h3 className="settings-title" id={titleId}>Settings</h3>
-                    <button className="settings-close-btn" onClick={onClose}>×</button>
+                    <button className="settings-close-btn" aria-label="Close settings" onClick={onClose}>×</button>
                 </div>
                 <div className="settings-body">
                     <h4 className="settings-section">Appearance</h4>
@@ -144,7 +144,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="setting-row">
                         <div className="setting-info">
                             <div className="setting-name">Code font size</div>
-                            <div className="setting-desc">Source files only (.py, .rkt, .c …), in Fira Code.</div>
+                            <div className="settings-hint">Source files only (.py, .rkt, .c …), in Fira Code.</div>
                         </div>
                         <div className="setting-control">
                             <span className="settings-value">{codeFontSize}px</span>
@@ -243,7 +243,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     </div>
 
                     <h4 className="settings-section">Reading</h4>
-                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
+                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="settings-hint">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
                     <button type="button" className="settings-reset-btn" onClick={resetReadingPreferences}>Reset reading preferences</button>
                     <h4 className="settings-section">Editing</h4>
 
@@ -519,6 +519,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="setting-row"><a className="settings-notices-link" href={`${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES`} target="_blank" rel="noreferrer">Third-party notices</a></div>
                     {developer && <>
                         <h4 className="settings-section">Developer</h4>
+                        <div className="setting-row"><div className="setting-info"><div className="setting-name">Incremental live preview</div><div className="settings-hint">Turn off to render the whole note on each change.</div></div><div className="setting-control"><button type="button" role="switch" aria-label="Incremental live preview" aria-checked={incrementalEditorEnabled()} className={`settings-toggle${incrementalEditorEnabled() ? ' on' : ''}`} onClick={() => updateDeveloper('bme.editor.incremental', !incrementalEditorEnabled())}><span className="settings-toggle-knob" /></button></div></div>
                         {CANVAS_KINDS.map(kind => <React.Fragment key={kind}>
                             <div className="setting-row"><label className="setting-info" htmlFor={`engine-${kind}`}>{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} engine</label><div className="setting-control"><select id={`engine-${kind}`} value={routes.canvas[kind].engine} onChange={e => updateDeveloper(engineKey(kind), e.target.value)}>{AVAILABLE_CANVAS_ENGINES.map(engine => <option key={engine} value={engine}>{engine}</option>)}</select></div></div>
                             <div className="setting-row"><div className="setting-info">{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} emergency read-only</div><div className="setting-control"><button type="button" role="switch" aria-label={`${kind} emergency read-only`} aria-checked={routes.canvas[kind].emergencyReadOnly} className={`settings-toggle${routes.canvas[kind].emergencyReadOnly ? ' on' : ''}`} onClick={() => updateDeveloper(emergencyKey(kind), !routes.canvas[kind].emergencyReadOnly)}><span className="settings-toggle-knob" /></button></div></div>

@@ -50,6 +50,7 @@ export interface AgentHostDeps {
     root: FileSystemDirectoryHandle | null;
     searchToken: object;
     searchAgent: VaultToolHost['searchAgent'];
+    closedPdfAgent?: VaultToolHost['closedPdfAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -65,6 +66,11 @@ export interface AgentHostDeps {
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
+    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
+    canvasShapePage?: VaultToolHost['canvasShapePage'];
+    /** The App-lifetime, path-explicit readable buffer accessor. */
+    contentOf(path: string): string | undefined;
+    snapshotOf(path: string): import('./documentBuffers').BufferSnapshot | undefined;
     /** The save funnel (App.updateTabContent). */
     updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
@@ -147,16 +153,15 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
     }
     if (!canReadTabText(tab)) return null;
     const anchor = readRecord<unknown>(SCROLL_ANCHORS_KEY)[scopedKey(path)];
-    return isScrollAnchor(anchor) ? { kind: 'markdown', line: lineAt(tab.content, anchor.pos) } : null;
+    const text = deps.contentOf(path);
+    return isScrollAnchor(anchor) && text !== undefined ? { kind: 'markdown', line: lineAt(text, anchor.pos) } : null;
 }
 
-/** The live text of an open, readable, text document: the mounted editor first
- *  (it is ahead of `tab.content` by at most the commit in flight), else the tab
- *  buffer. Undefined for anything else — a PDF's buffer is a tldraw snapshot. */
+/** Live readable text, or undefined when the loaded representation has no text authority. */
 function liveText(deps: AgentHostDeps, path: string): string | undefined {
     const tab = openTabAt(deps, path);
     if (!tab || !canReadTabText(tab)) return undefined;
-    return getView(path)?.getText?.() ?? tab.content;
+    return getView(path)?.getText?.() ?? deps.contentOf(path);
 }
 
 function applyToText(text: string, changes: TextChange[]): string {
@@ -213,6 +218,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const toolHost: VaultToolHost = {
         vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
         searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        get canvasShapePage() { return getDeps().canvasShapePage; },
+        closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
 
         getFileTree: () => getDeps().fileTree,
 
@@ -288,7 +295,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                         return { ok: false, reason: 'stale' };
                     }
                 }
-                if (tab.content !== expected) return { ok: false, reason: 'stale' };
+                if (deps.contentOf(path) !== expected) return { ok: false, reason: 'stale' };
                 // Open but not on screen: the document's cached EditorState is what
                 // its next pane adopts, text AND undo history — update it so the
                 // agent's edit is one ⌘Z there too, and never leave it disagreeing
@@ -425,6 +432,11 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 : { ok: false, reason: 'error', message: 'Nothing was moved; something inside may be in use.' };
         },
 
+        canvasWritable(path) {
+            const tab = openTabAt(getDeps(), path);
+            return !!tab && !tab.readError && tab.representation.status === 'ready' && !tab.representation.emergencyReadOnly;
+        },
+
         async openCanvasForAgent(path) {
             const deps = getDeps();
             const open = openTabAt(deps,path);
@@ -434,7 +446,10 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const route = routeEngines().canvas[pdf ? 'pdfInk' : isNotebookFile(path) ? 'notebook' : 'drawing'];
             if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
             if (!pdf) {
-                let text = open?.content;
+                const captured = open ? deps.snapshotOf(path) : undefined;
+                if (open && captured && typeof captured.data !== 'string') return null;
+                let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
+                if (open && text === undefined) return null;
                 if (text === undefined) {
                     const found = deps.root && await fileAt(deps.root, path);
                     if (!found) return null;

@@ -2,7 +2,7 @@
 // arbitrary Filespec metadata or AF associations. No imported-PDF parser is ours.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFObjectCopier, PDFRawStream } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
-import { attachmentText, boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
+import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
 import type { AttachmentEntry } from '../../utils/pdfAttachmentTree';
 import { inspectPdfRole } from '../../utils/pdfAttachmentInventory';
 import { Sha256 } from '../../utils/sha256';
@@ -32,14 +32,7 @@ function bytesOf(spec: PDFDict): Uint8Array {
     return boundedAttachmentBytes(stream, LIMIT);
 }
 function declaredMarker(entry: AttachmentEntry): string | undefined {
-    const desc = entry.description.startsWith('local-vault-pdf/') ? entry.description.split('\n', 1)[0] : undefined;
-    const ef = entry.spec.lookup(key('EF'));
-    const stream = ef instanceof PDFDict ? ef.lookup(key('F')) ?? ef.lookup(key('UF')) : undefined;
-    const params = stream instanceof PDFRawStream ? stream.dict.lookup(key('Params')) : undefined;
-    const raw = params instanceof PDFDict ? params.lookup(key('LocalVaultMarker')) : undefined;
-    const param = attachmentText(raw);
-    if (raw !== undefined && param === undefined || desc && param !== undefined && desc !== param) throw new Error('Conflicting attachment marker');
-    return desc ?? param;
+    return entry.description.startsWith('local-vault-pdf/') ? entry.description.split('\n', 1)[0] : undefined;
 }
 function ownedBoardEntry(entry: AttachmentEntry, format: string): boolean {
     if (entry.keys.length !== 1) return false;
@@ -81,10 +74,16 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
     // Unmarked legacy names become ours only when the full guarded role reader
     // validates the pair and its embedded pristine bytes match this source.
     const legacy = await inspectPdfRole(outerBytes, 'legacy-conversion');
-    if (legacy.kind === 'annotated' && new Sha256().update(legacy.original).digest() === pristineHash) {
+    const validLegacy = legacy.kind === 'annotated' && new Sha256().update(legacy.original).digest() === pristineHash;
+    if (validLegacy) {
         for (const entry of outerEntries) {
             if (entry.keys.length === 1 && ['original.pdf', 'tldraw-snapshot.json'].includes(entry.keys[0].decodeText())) owned.add(entry.id);
         }
+    }
+    const boardNames = new Set(outerEntries.filter(entry => owned.has(entry.id) && ownedBoardEntry(entry, input.format)).map(entry => entry.keys[0].decodeText()));
+    if (new Sha256().update(outerBytes).digest() !== pristineHash && !validLegacy &&
+        ['original.pdf', 'board.json', 'tldraw-snapshot.json'].some(name => !boardNames.has(name))) {
+        throw new Error('Cannot establish the outer PDF source authority');
     }
     const reserved = new Set(input.reservedNames), seen = new Map<string, Set<string>>();
     const named: Array<{ name: PDFHexString; raw: PDFObject }> = [];
@@ -108,7 +107,19 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
                     target = alias(name, n);
                 }
                 reserved.add(target);
-                named.push({ name: PDFHexString.fromText(target), raw });
+                let targetRaw = raw;
+                if (target !== name) {
+                    // PDFium reports Filespec /UF rather than the name-tree key.
+                    // Clone only that spec so an existing AF reference stays
+                    // attached to the untouched original, with other metadata intact.
+                    const spec = pristine.context.lookup(raw);
+                    if (!(spec instanceof PDFDict)) throw new Error('Cannot alias an unreadable Filespec');
+                    const renamed = spec.clone();
+                    renamed.set(key('F'), PDFHexString.fromText(target));
+                    renamed.set(key('UF'), PDFHexString.fromText(target));
+                    targetRaw = pristine.context.register(renamed);
+                }
+                named.push({ name: PDFHexString.fromText(target), raw: targetRaw });
                 preserved.push({ originalName: name, name: target, sha256 });
             }
         }

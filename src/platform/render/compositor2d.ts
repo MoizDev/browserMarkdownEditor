@@ -1,11 +1,11 @@
 import type { Rect, ViewState } from '../types';
-import { deviceContext, imageExtent } from './canvas2dContext';
+import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
 import type { ColourGroup2d } from './colourGroup2d';
 import { paintPageScope, paintWorldScope, projectPage } from './compositorProjection';
-import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions } from './compositor.types';
+import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
-import type { ByteLease, GfxLimits, GpuPass, TextureHandle } from './gfx/api';
+import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
 import type { MemoryCacheHandle } from './memoryGovernor';
 import type { BorrowedMirror } from './mirrorSet';
 import type { MirrorFrame, MirrorPresentation, PreparedMirrorPresentation } from './paneLifecycle';
@@ -121,6 +121,14 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private readonly buffers = new Map<string, Buffer2D>();
     private readonly requests = new Map<string, { width: number; height: number; read: boolean }>();
     private readonly sources = new Map<CanvasImageSource, ImageSourceState>();
+    private readonly contexts = new WeakMap<CanvasRenderingContext2D, Buffer2D>();
+    private isolationBounds: Rect | null = null;
+    private isolationDepth = 0;
+    private maskDepth = 0;
+    private externalTargets = 0;
+    private multiply = false;
+    private admittedDepth = 0;
+    private borrowedDepth = 0;
     private host: PaneSurfaceHost | null = null;
     private layers: readonly CompositorLayer[] = [];
     private layout: Readonly<PageStack> | null = null;
@@ -155,6 +163,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             resizeSurface,
         });
         this.resources = Object.freeze({ owner: this, device: null,
+            reserveIsolation: (request: IsolationReservation) => this.reserveIsolation(request),
+            paintIsolation: paintCanvasIsolation,
             uniforms: () => { throw new Error('Uniforms require an active GPU draw scope'); },
             drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
     }
@@ -213,11 +223,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     snapshot(view: ViewState): void {
         this.check();
+        if (this.scene && this.scene.view.epoch !== view.epoch) this.cancelJob();
         this.scene = { view, layers: this.layers, layout: this.layout, appearance: this.appearance, metrics: this.metrics, serial: this.serial };
         this.budget = null;
     }
-    prepareFrame(view: ViewState, budget: FrameBudget): void {
+    prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.check();
+        const view = frame.view;
         if (this.scene?.view !== view || budget.cameraEpoch !== view.epoch || !sameToken(this.options.currentToken(), budget.token)) return;
         this.budget = budget;
         this.busy++;
@@ -227,6 +239,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 if (budget.shouldYield()) break;
                 if (this.allocate(key, request.width, request.height, request.read)) this.requests.delete(key);
             }
+            this.admitIsolation(frame, budget);
             this.prepareCrops(budget);
             for (const buffer of this.buffers.values()) for (const use of buffer.images.values()) {
                 if (use.resident || budget.shouldYield()) continue;
@@ -240,6 +253,109 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 job.admission = budget;
             }
         } finally { this.busy--; }
+    }
+
+    finishPrepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
+        this.check();
+        if (frame.view !== this.scene?.view || frame.frameId !== budget.frameId || !sameToken(this.options.currentToken(), frame.token)) return;
+        this.busy++;
+        try { this.admitIsolation(frame, budget); }
+        finally { this.busy--; }
+    }
+
+    reserveIsolation(request: IsolationReservation): void {
+        const counts = [request.depth, request.maskDepth, request.targets?.count ?? 0];
+        if (counts.some(value => !Number.isSafeInteger(value) || value < 0) || !validRect(request.bounds) ||
+            request.targets && !validRect(request.targets.bounds) || request.samples !== undefined && ![1, 4].includes(request.samples) ||
+            request.format !== undefined && !['rgba8', 'r8'].includes(request.format)) throw new TypeError('Invalid isolation inventory');
+        this.isolationDepth = Math.max(this.isolationDepth, request.depth);
+        this.maskDepth = Math.max(this.maskDepth, request.maskDepth);
+        this.externalTargets = Math.max(this.externalTargets, request.targets?.count ?? 0);
+        this.multiply ||= !!request.multiply;
+        const union = (bounds: Readonly<Rect>) => {
+            const old = this.isolationBounds;
+            if (!old) { this.isolationBounds = { ...bounds }; return; }
+            const x = Math.min(old.x, bounds.x), y = Math.min(old.y, bounds.y);
+            this.isolationBounds = { x, y, width: Math.max(old.x + old.width, bounds.x + bounds.width) - x,
+                height: Math.max(old.y + old.height, bounds.y + bounds.height) - y };
+        };
+        union(request.bounds);
+        if (request.targets) union(request.targets.bounds);
+    }
+
+    private admitIsolation(frame: ScheduledFrame, budget: FrameBudget): void {
+        const snapshot = this.scene;
+        if (!snapshot?.metrics) return;
+        const own = snapshot.layers.filter(binding => binding.isolation && binding.isolation.opacity > 0);
+        for (const binding of own) this.reserveIsolation({ depth: 0, maskDepth: 0,
+            bounds: binding.isolation!.bounds?.(frame) ?? { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight },
+            multiply: binding.isolation!.blend === 'multiply' });
+        const bounds = this.isolationBounds;
+        if (!bounds) return;
+        const left = Math.max(0, Math.floor(bounds.x)), top = Math.max(0, Math.floor(bounds.y));
+        const right = Math.min(snapshot.metrics.backingWidth, Math.ceil(bounds.x + bounds.width));
+        const bottom = Math.min(snapshot.metrics.backingHeight, Math.ceil(bounds.y + bounds.height));
+        if (right <= left || bottom <= top) return;
+        const count = this.isolationDepth + this.maskDepth + this.externalTargets + Number(own.length > 0) + Number(this.multiply);
+        if (!Number.isSafeInteger(count)) throw new RangeError('Isolation depth exceeds safe accounting');
+        this.admittedDepth = 0;
+        for (let i = 0; i < count; i++) {
+            const key = `isolation-pool:${i}`;
+            const old = this.buffers.get(key);
+            const width = Math.max(old?.canvas.width ?? 0, right - left);
+            const height = Math.max(old?.canvas.height ?? 0, bottom - top);
+            if (old && old.canvas.width >= width && old.canvas.height >= height) { this.admittedDepth++; continue; }
+            if (budget.shouldYield() || !this.allocate(key, width, height, false)) {
+                this.options.invalidate('2d-isolation-admission-deferred'); return;
+            }
+            this.admittedDepth++;
+        }
+    }
+
+    paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions,
+        paint: (isolatedCtx: CanvasRenderingContext2D) => void): void {
+        const target = this.contexts.get(ctx);
+        if (!target || !validRect(bounds) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1 ||
+            !['normal', 'multiply'].includes(options.blend)) throw new TypeError('Invalid 2D isolation scope');
+        if (options.opacity === 0) return;
+        const left = Math.max(target.origin.x, Math.floor(bounds.x)), top = Math.max(target.origin.y, Math.floor(bounds.y));
+        const right = Math.min(target.origin.x + target.canvas.width, Math.ceil(bounds.x + bounds.width));
+        const bottom = Math.min(target.origin.y + target.canvas.height, Math.ceil(bounds.y + bounds.height));
+        if (right <= left || bottom <= top) return;
+        const index = this.borrowedDepth;
+        const buffer = this.buffers.get(`isolation-pool:${index}`);
+        if (index >= this.admittedDepth || !buffer || buffer.canvas.width < right - left || buffer.canvas.height < bottom - top) {
+            const own = Number(!!this.scene?.layers.some(binding => binding.isolation));
+            this.reserveIsolation({ depth: Math.max(0, index + 1 - own), maskDepth: 0, bounds, multiply: options.blend === 'multiply' });
+            this.missing = true; this.options.invalidate('2d-isolation-shortfall'); return;
+        }
+        this.borrowedDepth++;
+        this.clear(buffer, left, top);
+        const lease = Proxy.revocable(buffer.context, {});
+        this.contexts.set(lease.proxy, buffer);
+        registerCanvasIsolation(lease.proxy, this.paintIsolation.bind(this));
+        buffer.native.save();
+        try {
+            buffer.native.resetTransform(); buffer.native.beginPath();
+            buffer.native.rect(0, 0, right - left, bottom - top); buffer.native.clip();
+            const properties = ['fillStyle', 'strokeStyle', 'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'lineDashOffset',
+                'font', 'fontKerning', 'fontStretch', 'fontVariantCaps', 'textRendering', 'textAlign', 'textBaseline', 'direction',
+                'shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'filter', 'imageSmoothingEnabled', 'imageSmoothingQuality',
+                'globalAlpha', 'globalCompositeOperation'] as const;
+            for (const property of properties) Reflect.set(lease.proxy, property, Reflect.get(ctx, property));
+            lease.proxy.setLineDash(ctx.getLineDash());
+            lease.proxy.setTransform(ctx.getTransform());
+            lease.proxy.beginPath(); paint(lease.proxy);
+        } finally { buffer.native.restore(); lease.revoke(); this.borrowedDepth--; }
+        target.native.save();
+        try {
+            target.native.resetTransform(); target.native.globalAlpha = options.opacity;
+            target.native.globalCompositeOperation = options.blend === 'multiply' ? 'multiply' : 'source-over';
+            const start = performance.now();
+            try { target.native.drawImage(buffer.canvas, 0, 0, right - left, bottom - top,
+                left - target.origin.x, top - target.origin.y, right - left, bottom - top); }
+            finally { this.options.recordUpload(0, performance.now() - start); }
+        } finally { target.native.restore(); }
     }
 
     encode(frame: ScheduledFrame): ScheduledEncoding | null {
@@ -267,19 +383,25 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (this.missing) { this.options.invalidate('2d-prepare-required'); return null; }
                 }
             }
+            // Another pane's admission may trim caches between encode and submit. Pin this complete
+            // detached frame until consumed; eviction must not turn it into a zero-size display copy.
+            this.busy++;
             let done = false;
+            const release = () => { done = true; this.busy--; };
             return {
                 submit: () => {
                     if (done) throw new Error('Canvas encoding already consumed');
-                    done = true;
+                    try {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token)) return null;
                     if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
                     this.presentedKey = key;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
-                        complete: true, sharp: availability.every(item => item.sharp), qualityScale: snapshot.metrics!.qualityScale });
+                        complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
+                        staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })) } satisfies ScheduledSubmission;
+                    } finally { release(); }
                 },
-                discard: () => { done = true; },
+                discard: () => { if (!done) release(); },
             };
         } finally { this.busy--; }
     }
@@ -289,7 +411,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, sharp: false,
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
-    page(view: ViewState, index: number) { return projectPage(this.scene?.layout ?? this.layout, view, index); }
+    page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }
     paintWorld(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void { paintWorldScope(ctx, view, paint); }
     paintPage(ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void): void { paintPageScope(ctx, this.page(view, index), paint); }
 
@@ -356,7 +478,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     const actual = this.options.mirrorCoverage(frame.view, frame.entries);
                     if (!actual.complete || !this.publish(back, this.metrics)) return noMirror;
                     this.presentedKey = '';
-                    return { presented: true, complete: true, sharp: actual.sharp, usedMirror: true };
+                    return { presented: true, complete: true, sharp: actual.sharp && !actual.staleVersion, staleVersion: actual.staleVersion, usedMirror: true };
                 } finally { this.busy--; }
             },
         };
@@ -394,10 +516,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const common = { paneId: this.options.paneId, owner, class: 'critical' as const, hiddenAt: null, lastUsedAt: now, lastVisibleAt: now };
         this.working ??= this.options.governor.register({ ...common, id: `${id}:working`, pool: 'gpu', kind: 'canvas-working',
             memory: () => ({ live: this.gpuBytes, retiring: 0 }),
-            evict: () => { if (!this.busy) this.dropWork(); } });
+            evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
         this.cpu ??= this.options.governor.register({ ...common, id: `${id}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: this.cpuBytes, retiring: 0 }),
-            evict: () => { if (!this.busy) this.dropWork(); } });
+            evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
         this.backing ??= new SurfaceBacking({ governor: this.options.governor, paneId: this.options.paneId,
             owner, id: `${id}:surface`, canvas: this.surface, displayed: true, now });
         return true;
@@ -433,6 +555,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 this.displayReserved = bytes;
             }
             const old = this.buffers.get('back');
+            if (old && (old.canvas.width !== width || old.canvas.height !== height)) this.dropWork();
             if (!this.allocate('back', width, height, false)) return result(false);
             if (old !== this.buffers.get('back')) { this.cancelJob(); this.generation = allocateSurfaceGeneration(); }
             return result(true);
@@ -454,6 +577,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             const context = deviceContext(native, origin, (source, src, dst) => this.image(buffer!, source, src, dst));
             buffer = { canvas, native, context, origin, lease, images: new Map() };
             this.buffers.set(key, buffer);
+            this.contexts.set(context, buffer); this.contexts.set(native, buffer);
+            registerCanvasIsolation(context, this.paintIsolation.bind(this));
+            registerCanvasIsolation(native, this.paintIsolation.bind(this));
             return buffer;
         } catch (error) { canvas.width = 0; canvas.height = 0; this.releaseGpuLease(lease); throw error; }
     }
@@ -482,26 +608,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 finally { target.context.restore(); }
                 continue;
             }
-            if (effect.opacity === 0) continue;
             const bounds = effect.bounds?.(frame) ?? { x: 0, y: 0, width: snapshot.metrics!.backingWidth, height: snapshot.metrics!.backingHeight };
-            if (!validRect(bounds)) throw new TypeError('Invalid isolated effect bounds');
-            const left = Math.max(target.origin.x, Math.floor(bounds.x));
-            const top = Math.max(target.origin.y, Math.floor(bounds.y));
-            const right = Math.min(target.origin.x + target.canvas.width, Math.ceil(bounds.x + bounds.width));
-            const bottom = Math.min(target.origin.y + target.canvas.height, Math.ceil(bounds.y + bounds.height));
-            if (right <= left || bottom <= top) continue;
-            const isolated = this.requested(`isolation:${binding.id}`, right - left, bottom - top);
-            if (!isolated) continue;
-            this.clear(isolated, left, top);
-            isolated.context.save();
-            try { binding.layer.draw2d(isolated.context, snapshot.view); }
-            finally { isolated.context.restore(); }
-            target.native.save();
-            try {
-                target.native.resetTransform(); target.native.globalAlpha = effect.opacity;
-                target.native.globalCompositeOperation = effect.blend === 'multiply' ? 'multiply' : 'source-over';
-                this.blit(target.native, isolated.canvas, left - target.origin.x, top - target.origin.y);
-            } finally { target.native.restore(); }
+            this.paintIsolation(target.context, bounds, effect, isolated => {
+                isolated.resetTransform(); isolated.beginPath(); binding.layer.draw2d(isolated, snapshot.view);
+            });
         }
     }
     private paintInverted(snapshot: Snapshot, frame: ScheduledFrame, back: Buffer2D, key: string): boolean {
@@ -533,7 +643,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             return false;
         }
         this.paintBindings(snapshot.layers.filter(layer => layer.group === 'chrome'), back, snapshot, frame);
-        if (this.missing) { this.options.invalidate('2d-chrome-prepare'); return false; }
+        if (this.missing) {
+            // Retry from clean document pixels: replaying translucent chrome onto its own incomplete
+            // attempt would accumulate alpha even though the underlying document revision is unchanged.
+            this.cancelJob(); this.options.invalidate('2d-chrome-prepare'); return false;
+        }
         return true;
     }
     private scheduleColour(job: ColourJob): void {
@@ -541,7 +655,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         job.timer = setTimeout(() => {
             job.timer = null;
             if (this.disposed || this.job !== job || !sameToken(this.options.currentToken(), job.frame.token)) return;
-            const deadline = performance.now() + 2;
+            const deadline = performance.now() + POLICY.frameTargetMaxMs;
             let scratch: ByteLease | null = null;
             let denied = false;
             this.busy++;
@@ -562,7 +676,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         job.timer = setTimeout(() => {
             job.timer = null;
             if (this.disposed || this.mirrorJob !== job || !sameToken(this.options.currentToken(), job.token)) return;
-            const deadline = performance.now() + 2;
+            const deadline = performance.now() + POLICY.frameTargetMaxMs;
             let scratch: ByteLease | null = null;
             let denied = false;
             this.busy++;
@@ -589,7 +703,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         finally { this.options.recordUpload(bytes, performance.now() - start); }
     }
     private publish(back: Buffer2D, metrics: ReadySurfaceMetrics): boolean {
-        if (back.native.isContextLost() || this.display.isContextLost() || !this.backing ||
+        if (back.canvas.width !== metrics.backingWidth || back.canvas.height !== metrics.backingHeight ||
+            back.native.isContextLost() || this.display.isContextLost() || !this.backing ||
             this.displayReserved < back.canvas.width * back.canvas.height * POLICY.surfaceReserveBytesPerPixel) return false;
         // All content/leases are ready before this first write to the displayed surface. The final
         // operation is one whole-frame copy, never a sequence of layer writes to visible pixels.
@@ -667,7 +782,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const start = performance.now();
         try {
             buffer.native.drawImage(source, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
-            use.resident = true;
+            use.resident = true; use.admission = null;
         } finally { this.options.recordUpload(bytes, performance.now() - start); }
     }
     private prepareCrops(budget: FrameBudget): void {
@@ -678,9 +793,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!lease) return;
             crop.lease = lease; crop.pending = true; this.cropsPending++;
             const epoch = this.asyncEpoch;
+            const token = budget.token;
             const r = crop.rect;
             void createImageBitmap(state.source, r.x, r.y, r.width, r.height, { colorSpaceConversion: 'none', premultiplyAlpha: 'premultiply' }).then(image => {
-                if (this.disposed || epoch !== this.asyncEpoch || this.sources.get(state.source) !== state) { image.close(); this.releaseCpuLease(lease); return; }
+                const current = this.options.currentToken();
+                if (this.disposed || epoch !== this.asyncEpoch || this.sources.get(state.source) !== state || !current ||
+                    current.vaultEpoch !== token.vaultEpoch || current.documentId !== token.documentId ||
+                    current.bytesGeneration !== token.bytesGeneration || current.session !== token.session) {
+                    image.close(); this.releaseCpuLease(lease); crop.lease = null; crop.pending = false; return;
+                }
                 crop.image = image; crop.pending = false;
                 this.options.invalidate('2d-image-crop-ready');
             }, error => {

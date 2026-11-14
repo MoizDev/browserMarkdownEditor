@@ -65,7 +65,8 @@ export interface ScheduledPane {
     /** Immediate critical preparation, not "a worker is pending"; becomes false when that work drains. */
     isCritical(layer: Layer, view: ViewState): boolean;
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
-    prepareFrame(view: ViewState, budget: FrameBudget): void;
+    prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
+    finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
     /** Stop input/speculative work and synchronously checkpoint through the session, never await a frame. */
@@ -211,7 +212,7 @@ interface PaneEntry {
     binding: FrameToken | null;
 }
 
-interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean }
+interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 interface ScheduledPoll { callback: () => void; earliestFrame: number }
 interface UploadMeter {
@@ -240,6 +241,7 @@ let schedulerStarted = false;
 export class FrameScheduler {
     private readonly panes = new Map<string, PaneEntry>();
     private readonly polls = new Set<ScheduledPoll>();
+    private readonly sessionDeadlines = new Set<{ deadline: number; callback: () => void }>();
     private acknowledgements: PendingAcknowledgement[] = [];
     private running = false;
     private suspended = false;
@@ -298,6 +300,7 @@ export class FrameScheduler {
             this.cancelMotion(entry);
             if (!this.suspended) this.call(entry, () => entry.pane.suspend('stopped'));
         }
+        this.refreshWakeTimer();
     }
 
     register(pane: ScheduledPane): ScheduledPaneLease {
@@ -326,6 +329,17 @@ export class FrameScheduler {
         if (!entry) return;
         if (reason === 'input') { this.cancelMotion(entry); entry.inputPriority = true; }
         this.mark(entry, reason);
+    }
+
+    /** Session-owned expiry shares the wakeAt timer and survives pane unregister/window hiding.
+     * Its callback releases retained resources; it never draws or requires a frame.
+     */
+    scheduleDeadline(deadline: number, callback: () => void): () => void {
+        if (!Number.isFinite(deadline) || deadline < 0) throw new RangeError('Invalid session deadline');
+        const item = { deadline, callback };
+        this.sessionDeadlines.add(item);
+        this.refreshWakeTimer();
+        return () => { this.sessionDeadlines.delete(item); this.refreshWakeTimer(); };
     }
 
     /** Persistent until cancelled; callbacks added during a frame are not run recursively in it. */
@@ -570,6 +584,14 @@ export class FrameScheduler {
                     if (!meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
                 }
             }
+            // Layers declare group/mask inventory during prepare; admit it once afterward, without
+            // extending the critical preparation or upload deadline. A compositor owns runnable retries.
+            for (const item of criticalOrder) {
+                if (item.platformPrepared && item.platformBudget && this.valid(item.entry, item.frame.token)) {
+                    this.call(item.entry, () => item.entry.pane.finishPrepareFrame?.(item.frame, item.platformBudget!));
+                    prepareOvershootMs = Math.max(prepareOvershootMs, performance.now() - prepareDeadline);
+                }
+            }
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
             const presentationStarted = performance.now();
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
@@ -674,7 +696,8 @@ export class FrameScheduler {
             if (!shouldYield()) {
                 if (meta) meta.layer.prepare(item.frame.view, budget);
                 else {
-                    item.entry.pane.prepareFrame(item.frame.view, budget);
+                    item.platformBudget = budget;
+                    item.entry.pane.prepareFrame(item.frame, budget);
                     item.platformPrepared = true;
                 }
             }
@@ -756,10 +779,14 @@ export class FrameScheduler {
 
     private refreshWakeTimer(): void {
         if (this.inFrame) return;
-        if (!this.running || this.suspended) { this.clearWakeTimer(); return; }
         const now = performance.now();
+        for (const item of [...this.sessionDeadlines]) {
+            if (item.deadline > now || !this.sessionDeadlines.delete(item)) continue;
+            try { item.callback(); } catch (error) { this.options.onError(null, error); }
+        }
         let earliest = Infinity;
-        for (const entry of this.panes.values()) {
+        for (const item of this.sessionDeadlines) earliest = Math.min(earliest, item.deadline);
+        if (this.running && !this.suspended) for (const entry of this.panes.values()) {
             for (const [layer, deadline] of entry.wakes) {
                 if (deadline <= now) { entry.wakes.delete(layer); entry.reasons.add('deadline'); }
                 else earliest = Math.min(earliest, deadline);
@@ -886,6 +913,7 @@ export class FrameScheduler {
             }
             this.options.windowVisibility(false, false);
         }
+        this.refreshWakeTimer();
         this.armHiddenTimer();
     }
 

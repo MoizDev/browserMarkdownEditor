@@ -6,13 +6,16 @@ export type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } fr
 export type { PageStack } from './pageStack';
 export type { ByteLease, GfxDevice, GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 export type { BorrowedMirror, MirrorEntry, MirrorStorage, MirrorView } from './mirrorSet';
+export type { MirrorVersionBridge, MirrorVersionBridgeOptions } from './mirrorBridge';
 export type { TileKey, TileScale, TileGrid, RasterTile, TileContentIdentity } from './tiles/geometry';
 export type { TileDemand, TileDemandClass } from './tiles/demand';
 export { createPlatformMirrors } from './createPlatformMirrors';
+export { createMirrorVersionBridge } from './mirrorBridge';
 export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKeyString, exactScale, movingScale, lowCoveragePlan } from './tiles/geometry';
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
-export { cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint, pagePresentation } from './camera';
-export type { PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
+export { pagePresentation, cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint } from './camera';
+export type { PagePresentation, PagedPosition, ViewportInsets, ZoomLimits, CameraConstraint } from './camera';
+export { projectPage } from './compositorProjection';
 export { attachPlatformPane } from './attachPlatformPane';
 export { reportWorkerMemory, releaseWorkerMemory } from './workerMemory';

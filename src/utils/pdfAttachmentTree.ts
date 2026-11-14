@@ -115,21 +115,6 @@ export function boundedAttachmentBytes(stream: PDFRawStream, limit: number): Uin
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
     return result;
 }
-/** Mirror the Filespec marker on the actual EmbeddedFile stream for readers
- * that expose stream parameters but not Filespec descriptions. */
-export function markEmbeddedFile(doc: PDFDocument, raw: PDFObject, marker: string): void {
-    const spec = doc.context.lookup(raw);
-    if (!(spec instanceof PDFDict)) throw new Error('Cannot mark PDF attachment');
-    const ef = spec.lookup(key('EF'));
-    if (!(ef instanceof PDFDict)) throw new Error('Cannot mark PDF attachment stream');
-    const stream = ef.lookup(key('UF')) ?? ef.lookup(key('F'));
-    if (!(stream instanceof PDFRawStream)) throw new Error('Cannot mark PDF attachment stream');
-    const existing = stream.dict.lookup(key('Params'));
-    if (existing !== undefined && !(existing instanceof PDFDict)) throw new Error('Cannot preserve PDF attachment parameters');
-    const params = existing ? existing.clone() : doc.context.obj({});
-    params.set(key('LocalVaultMarker'), PDFHexString.fromText(marker));
-    stream.dict.set(key('Params'), params);
-}
 function payload(entry: AttachmentEntry): Uint8Array {
     const ef = entry.spec.lookup(key('EF'));
     if (!(ef instanceof PDFDict)) throw new Error(`Cannot preserve attachment ${entry.id}: missing stream`);
@@ -193,7 +178,6 @@ export async function rebuildAttachmentTree(doc: PDFDocument, outer: PDFDocument
         } else {
             ref = await FileEmbedder.for(bytes, name, { mimeType: mime, description }).embedIntoContext(doc.context);
         }
-        markEmbeddedFile(doc, ref, description.split('\n', 1)[0]);
         named.push({ name: PDFHexString.fromText(name), raw: ref, hash });
         af.push(ref);
         associated.push(hash);

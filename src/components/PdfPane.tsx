@@ -38,6 +38,10 @@ const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
 
 export interface PdfPaneProps {
     documentId: string;
+    /** Native ink acquisition publishes its owner and receives write authority. */
+    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
+    /** Native ink attaches to the same App-owned session as its reader. */
+    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     reading?: PdfReadingBinding;
     file: ActiveFile;
     /**

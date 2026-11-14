@@ -34,13 +34,45 @@ const CONTAINERS = new Set(['Document', 'BulletList', 'OrderedList', 'ListItem',
 
 /** Align children by mapped positions and type. A changed non-container is invalidated whole. */
 export function treeDelta(oldTree: Tree, newTree: Tree, changes: ChangeDesc,
-    newDoc: Text): CharRange[] {
+    newDoc: Text, oldDoc?: Text): CharRange[] {
     const dirty: CharRange[] = [], edits: CharRange[] = [];
-    changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    const editsOld: CharRange[] = [], editsNew: CharRange[] = [];
+    changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        editsOld.push({ from: fromA, to: toA });
+        editsNew.push({ from: fromB, to: toB });
         const from = newDoc.lineAt(fromB).from, to = newDoc.lineAt(toB).to;
         edits.push({ from, to });
         dirty.push({ from, to });
     });
+    // A stable block with stable neighbours at every container level bounds the
+    // change without enumerating every item in a long list or quote.
+    if (edits.length === 1 && changes.mapPos(oldTree.length, -1) === newTree.length) {
+        let a: SyntaxNode | null = oldTree.resolveInner(Math.min(editsOld[0].from, oldTree.length), 1);
+        let b: SyntaxNode | null = newTree.resolveInner(Math.min(editsNew[0].from, newTree.length), 1);
+        while (a?.parent && !CONTAINERS.has(a.parent.name)) a = a.parent;
+        while (b?.parent && !CONTAINERS.has(b.parent.name)) b = b.parent;
+        const oldBlock = a, changedBlock = b;
+        const sameNeighbour = (left: SyntaxNode | null, right: SyntaxNode | null) =>
+            left && right ? sameMappedNode(left, right, changes) : left === right;
+        let stable = !!a && !!b && a.name !== 'Document' && sameMappedNode(a, b, changes);
+        while (stable && a && b && a.parent && b.parent) {
+            stable = sameNeighbour(a.prevSibling, b.prevSibling) && sameNeighbour(a.nextSibling, b.nextSibling)
+                && sameMappedNode(a.parent, b.parent, changes);
+            a = a.parent; b = b.parent;
+        }
+        if (stable && oldBlock && changedBlock) {
+            if (oldDoc && oldBlock.name === 'FencedCode' && changedBlock.name === 'FencedCode') {
+                const oldFirst = oldDoc.lineAt(oldBlock.from), newFirst = newDoc.lineAt(changedBlock.from);
+                const oldLast = oldDoc.lineAt(Math.max(oldBlock.from, oldBlock.to - 1));
+                const newLast = newDoc.lineAt(Math.max(changedBlock.from, changedBlock.to - 1));
+                const opener = /^\s*(`{3,}|~{3,})([^`]*)$/.exec(oldFirst.text);
+                if (opener && oldFirst.text === newFirst.text && oldLast.text === newLast.text
+                    && !/^\s*mermaid(?:\s|$)/i.test(opener[2])
+                    && editsOld[0].from > oldFirst.to && editsOld[0].to < oldLast.from) return mergeAnalysisRanges(dirty);
+            }
+            return mergeAnalysisRanges([...dirty, { from: changedBlock.from, to: changedBlock.to }]);
+        }
+    }
     const mapped = (node: SyntaxNode): CharRange => ({
         from: changes.mapPos(node.from, 1), to: changes.mapPos(node.to, -1),
     });

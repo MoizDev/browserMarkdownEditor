@@ -1,6 +1,6 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
 import { ApplyRefused } from '../change/apply';
-import type { NodeSetOp, Op } from '../change/ops';
+import type { CommandBuilder, NodeSetOp } from '../change/ops';
 import type { SampleBuilder } from '../ink/samples';
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
@@ -20,8 +20,19 @@ export interface AgentStageHost {
     /** Authoritative current staged world geometry, expressed in the destination page. */
     target(node: Node, page: number): Point;
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
-    /** Shared deletion command; translate its expected refusals to AgentOpRefused. */
-    delete(id: NodeId): { readonly ops: readonly Op[]; readonly kept: readonly NodeId[] };
+    reanchor(id: NodeId, builder: CommandBuilder): void;
+    /** Shared deletion command stages into this same builder. */
+    delete(id: NodeId, builder: CommandBuilder): { readonly deleted: readonly NodeId[]; readonly kept: readonly NodeId[]; readonly notes: readonly string[] };
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+    if (Object.is(a, b)) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, i) => sameValue(value, b[i]));
+    }
+    const left = Object.keys(a), right = Object.keys(b);
+    return left.length === right.length && left.every(key => Object.hasOwn(b, key) && sameValue(Reflect.get(a, key), Reflect.get(b, key)));
 }
 
 export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentOpContext): AgentOpResult {
@@ -35,23 +46,37 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
                     if (node.kind === 'connector' || node.kind === 'group' || node.kind === 'opaque') throw new AgentOpRefused('shape cannot be a connector target');
                     return { id, center: host.target(node, page) };
                 } });
+            host.reanchor(created.id, context.builder);
             return { created: created.id, notes: created.notes };
         }
         const created = stageSimpleCreate(op, base);
+        host.reanchor(created.id, context.builder);
         return { created: created.id, notes: created.notes };
     }
-    if (op.op === 'update') return stageAgentUpdate(op, { ...base, resolve: context.resolve,
-        placement: (node, update) => host.placement(node, update) });
+    if (op.op === 'update') {
+        const id = context.resolve(op.id);
+        const original = host.doc.nodes.get(id);
+        const before = original ? { ...original } : undefined;
+        const result = stageAgentUpdate(op, { ...base, resolve: context.resolve,
+            placement: (node, update) => host.placement(node, update) });
+        if (op.page !== undefined || op.x !== undefined || op.y !== undefined || op.w !== undefined || op.h !== undefined || op.rotation !== undefined) {
+            host.reanchor(result.updated[0], context.builder);
+        }
+        const after = host.doc.nodes.get(id);
+        if (before && after && Object.keys(before).every(key => sameValue(
+            Reflect.get(before, key), Reflect.get(after, key),
+        ))) throw new AgentOpRefused('requested update made no change');
+        return result;
+    }
     const deleted: NodeId[] = [], notes: string[] = [], problems: string[] = [];
     for (const reference of op.ids) {
         const point = context.builder.savepoint();
         try {
             const id = context.resolve(reference);
             editableNode(host.doc, host.sheet, id);
-            const plan = host.delete(id);
-            for (const change of plan.ops) context.builder.push(change);
-            deleted.push(id);
-            if (plan.kept.length) notes.push(`kept ${plan.kept.length} locked descendant${plan.kept.length === 1 ? '' : 's'}`);
+            const plan = host.delete(id, context.builder);
+            if (plan.deleted.includes(id)) deleted.push(id);
+            notes.push(...plan.notes);
         } catch (error) {
             if (!(error instanceof AgentOpRefused) && !(error instanceof ApplyRefused)) throw error;
             context.builder.rollbackTo(point);

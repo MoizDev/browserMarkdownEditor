@@ -1,7 +1,7 @@
 import { isSheetParent, sheetOf, type BoardDoc, type Sheet } from '../model/doc';
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { ExtBag, RawJson } from '../model/json';
-import type { MediaId } from '../model/media';
+import { isSafeMediaFile, type MediaId, type MediaLocations } from '../model/media';
 import { createNode, type Node } from '../model/nodes';
 import type { SampleLease, SampleRef, SampleStoreReader } from '../model/samples';
 import { BOARD_FILE_FIELDS, NODE_FILE_FIELDS } from '../model/fileFields';
@@ -9,7 +9,7 @@ import {
     extensionForApply, ModelInvariantError, nodeMediaForApply, prepareMutationForApply,
     preparePreservedCountsForApply, prepareRevisionForApply, type ModelOp, type PreparedMutation,
 } from '../model/applyOnly';
-import { validateCommit, validateOp, type ValidationContext, type ValidationRefusal } from '../model/validate';
+import { validateCommit, validateOp, type ValidationContext } from '../model/validate';
 import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
 import {
     opDirties, policyForOp, SceneImpact, type Applied, type AppliedLease, type BoardKey, type BoardOp,
@@ -17,27 +17,11 @@ import {
     type TouchedSet, type Transaction, type TransactionOrigin, type TxBuilder,
 } from './ops';
 import { RawChanges, type PreservedDelta } from './rawChanges';
-
-export class ApplyRefused extends Error {
-    readonly code: ValidationRefusal['code'];
-    readonly opIndex: number;
-    readonly nodeId: string | null;
-    readonly reason: string;
-    constructor(refusal: ValidationRefusal) {
-        super(refusal.reason);
-        this.name = 'ApplyRefused';
-        this.code = refusal.code;
-        this.opIndex = refusal.opIndex;
-        this.nodeId = refusal.nodeId;
-        this.reason = refusal.reason;
-    }
-}
-export class ApplyFailed extends Error {
-    constructor(readonly code: string, message: string, readonly unsafe = false, cause?: unknown) {
-        super(message, { cause });
-        this.name = 'ApplyFailed';
-    }
-}
+import { ApplyFailed, ApplyRefused } from './errors';
+import { captureBeforeChange, normalizeChanges, type NormalizationStep } from './normalize';
+import type { ChangeGeometry } from './coordinates';
+export { ApplyFailed, ApplyRefused } from './errors';
+const NO_CAPTURES = Object.freeze([]);
 
 // CH §3/R-W27: callbacks borrow the receipt for this call only. History or a
 // queued consumer calls retain() and releases that lease when it drops its work.
@@ -54,6 +38,8 @@ export interface ApplyController {
     readonly failure: ApplyFailed | null;
     apply(transaction: Transaction): Applied;
     begin(origin: TransactionOrigin, label: string): TxBuilder;
+    /** Exact, validated rollback of latest committed receipts, newest first. */
+    revert(receipts: readonly Applied[]): Applied;
     dispose(): void;
 }
 
@@ -96,6 +82,26 @@ function invalidate(ext: ExtBag | null, keys: readonly string[]): ExtBag | null 
     }
     return raw ? raw.size || ext.fields.size ? { fields: ext.fields, raw } : null : undefined;
 }
+// Physical filenames are not history. Only actual undo/redo admission projects
+// them; rollback calls planOp directly and restores captured file/raw data exactly.
+function replayMediaLocation(op: Op, locations: MediaLocations | undefined): Op {
+    if (!locations) return op;
+    const id = op.t === 'media' && op.op === 'add' ? op.entry.id
+        : op.t === 'ext' && op.target === 'media' ? op.id as MediaId : undefined;
+    if (id === undefined) return op;
+    const file = locations.currentFile(id);
+    if (file === undefined) return op;
+    if (!isSafeMediaFile(file)) throw new ApplyFailed('media-location', 'The media registry returned an unsafe filename');
+    if (op.t === 'media' && op.op === 'add') {
+        const ext = invalidate(op.entry.ext, ['file']);
+        return { ...op, entry: { ...op.entry, file, ext: ext === undefined ? op.entry.ext : ext } };
+    }
+    if (op.t === 'ext') {
+        const ext = invalidate(op.value, ['file']);
+        return ext === undefined ? op : { ...op, value: ext };
+    }
+    return op;
+}
 function richValue(node: Node, key: 'text' | 'label'): RichText | null {
     return Reflect.get(node, key) as RichText | null;
 }
@@ -115,7 +121,7 @@ interface OpPlan {
     readonly touched: TouchedSet;
     readonly impacts: ReadonlyMap<NodeId, number>;
 }
-interface Entry {
+interface Entry extends NormalizationStep {
     readonly plan: OpPlan;
     readonly live: LiveChange | undefined;
     started: boolean;
@@ -146,13 +152,13 @@ class ReceiptSamples {
         this.refs.clear(); // Released receipts no longer pin chunks through handle closures.
     }
 }
-function receipt(forward: readonly Op[], inverse: readonly Op[], touched: TouchedSet,
+function receipt(forward: readonly Op[], inverse: readonly Op[], inverseGroups: readonly (readonly Op[])[], touched: TouchedSet,
     dirtying: boolean, recorded: boolean, samples: ReceiptSamples): Applied {
     const sampleRefs = samples.ids();
     let owners = 1, rootActive = true;
     const drop = () => { if (--owners === 0) samples.release(); };
     return Object.freeze({
-        forward: Object.freeze(forward), inverse: Object.freeze(inverse), touched, dirtying, recorded, sampleRefs,
+        forward: Object.freeze(forward), inverse: Object.freeze(inverse), inverseGroups: Object.freeze(inverseGroups), touched, dirtying, recorded, sampleRefs,
         retain(): AppliedLease {
             if (owners === 0) throw new ApplyFailed('released', 'The applied receipt has been released');
             let active = true;
@@ -257,7 +263,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
             const before = Reflect.get(node, input.key) as PropValue;
             if (input.t === 'splice') {
                 const text = richValue(node, input.key);
-                const result = spliceRichText(text ?? EMPTY_RICH_TEXT, input.from, input.to, input.insert, input.wholeBlocks === true);
+                const result = spliceRichText(text ?? EMPTY_RICH_TEXT, input.from, input.to, input.insert, input.wholeBlocks === true || input.replaceBlocks === true);
                 model = setValue(node.id, input.key, result.text);
                 forward = { ...input };
                 inverse = text === null ? [setValue(node.id, input.key, null)]
@@ -308,6 +314,12 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
                 inverse = [{ t: 'media', op: 'drop', id: input.entry.id,
                     ...((doc.preservedMediaRefs.get(input.entry.id) ?? 0) > 0 ? { restoreMissing: true as const } : {}) }];
                 raw.extension(null, input.entry.ext);
+            } else if (input.op === 'set-file') {
+                const entry = required(doc.media.get(input.id), 'Inverse media file target vanished');
+                forward = model = { ...input };
+                extAfter = 'restoreExt' in input ? input.restoreExt : invalidate(entry.ext, ['file']);
+                inverse = [{ t: 'media', op: 'set-file', id: input.id, file: entry.file, restoreExt: entry.ext }];
+                if (extAfter !== undefined) raw.extension(entry.ext, extAfter);
             } else {
                 const entry = required(doc.media.get(input.id), 'Inverse media target vanished');
                 forward = model = { ...input };
@@ -354,7 +366,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
     return { forward, inverse, mutation, counts, delta, refs, live, ...touched };
 }
 
-export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}): ApplyController {
+export function createApplyController(doc: BoardDoc, samples: SampleStoreReader, consumers: ApplyConsumers = {}, geometry?: ChangeGeometry, mediaLocations?: MediaLocations): ApplyController {
     const live = new Map<NodeId, SampleLease>();
     try {
         for (const node of doc.nodes.values()) {
@@ -372,6 +384,9 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
     let active: TxBuilder | undefined;
     let readOnly = false, failure: ApplyFailed | null = null;
     let faultSamples: ReceiptSamples | undefined;
+    let allowRevert = false, expectedRevision = doc.rev;
+    let logicalHead: WeakRef<Applied> | undefined;
+    const links = new WeakMap<Applied, WeakRef<Applied> | null>();
     const report = (error: ApplyFailed) => {
         if (!failure?.unsafe || error.unsafe) failure = error;
         try { consumers.reportError?.(error); } catch { /* Reporting cannot reopen or undo a commit. */ }
@@ -409,12 +424,17 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
         },
         begin(origin, label) {
             guard();
+            if (origin === 'revert' && !allowRevert) throw new ApplyFailed('origin', 'Internal revert cannot be started externally');
             const context: ValidationContext = { doc, samples, origin };
             const entries: Entry[] = [], resources = new ReceiptSamples(samples);
             const savepoints = new Map<number, number>();
-            let closed = false, attempted = 0;
-            const assertOpen = () => {
+            let closed = false, committing = false, staging = false, attempted = 0;
+            const assertStaging = () => {
                 if (closed || phase !== 'building' || active !== builder) throw new ApplyFailed('closed-builder', 'The transaction builder is closed');
+            };
+            const assertOpen = () => {
+                assertStaging();
+                if (committing || staging) throw new ApplyFailed('re-entrant', 'The transaction is already applying changes');
             };
             const releaseEntry = (entry: Entry) => {
                 if (entry.live) {
@@ -465,6 +485,55 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     throw error;
                 } finally { close(); }
             };
+            const stageBody = (input: Op): void => {
+                const opIndex = attempted++;
+                const historyReplay = origin === 'undo' || origin === 'redo';
+                const replay = historyReplay || origin === 'revert';
+                // History never rewinds physical names; receipt rollback stays exact.
+                if (historyReplay && input.t === 'media' && input.op === 'set-file') return;
+                let op = input;
+                const result = validateOp(context, op, opIndex);
+                if (!result.ok) throw new ApplyRefused(result);
+                let plan: OpPlan | undefined, captured: NormalizationStep['captured'];
+                try {
+                    if (historyReplay) op = replayMediaLocation(op, mediaLocations);
+                    plan = planOp(doc, op);
+                    captured = !plan || replay ? NO_CAPTURES : captureBeforeChange(doc, plan.forward, geometry);
+                } catch (error) {
+                    if (error instanceof ApplyRefused) throw new ApplyRefused({ ok: false, code: error.code, reason: error.reason, nodeId: error.nodeId, opIndex });
+                    return fail(error, error instanceof ModelInvariantError);
+                }
+                if (!plan) return;
+                let owned = 0, after: SampleLease | undefined, entry: Entry;
+                try {
+                    for (const ref of plan.refs) { resources.add(ref); owned++; }
+                    const before = plan.live ? live.get(plan.live.id) : undefined;
+                    if (plan.live?.next !== undefined) after = samples.retain(plan.live.next);
+                    entry = { plan, op: plan.forward, touched: plan.touched, captured,
+                        live: plan.live ? { id: plan.live.id, before, after } : undefined, started: false };
+                    entries.push(entry);
+                } catch (error) {
+                    after?.release();
+                    for (let i = owned - 1; i >= 0; i--) resources.remove(plan.refs[i]);
+                    return fail(error);
+                }
+                try {
+                    entry.started = true;
+                    plan.mutation.write();
+                    plan.counts?.write();
+                    if (entry.live) {
+                        if (entry.live.after) live.set(entry.live.id, entry.live.after);
+                        else live.delete(entry.live.id);
+                    }
+                } catch (error) { return fail(error, true); }
+            };
+            const stage = (op: Op): void => {
+                assertStaging();
+                if (staging) throw new ApplyFailed('re-entrant', 'A board operation is already staging');
+                staging = true;
+                try { stageBody(op); }
+                finally { staging = false; }
+            };
             const builder: TxBuilder = {
                 savepoint() {
                     assertOpen();
@@ -480,58 +549,34 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     try { rollback(point, false); }
                     catch (error) { return fail(error, true); }
                 },
-                push(op) {
-                    assertOpen();
-                    const result = validateOp(context, op, attempted++);
-                    if (!result.ok) throw new ApplyRefused(result);
-                    let plan: OpPlan | undefined;
-                    try { plan = planOp(doc, op); }
-                    catch (error) { return fail(error, error instanceof ModelInvariantError); }
-                    if (!plan) return;
-                    let owned = 0, after: SampleLease | undefined, entry: Entry;
-                    try {
-                        for (const ref of plan.refs) { resources.add(ref); owned++; }
-                        const before = plan.live ? live.get(plan.live.id) : undefined;
-                        if (plan.live?.next !== undefined) after = samples.retain(plan.live.next);
-                        entry = { plan, live: plan.live ? { id: plan.live.id, before, after } : undefined, started: false };
-                        entries.push(entry);
-                    } catch (error) {
-                        after?.release();
-                        for (let i = owned - 1; i >= 0; i--) resources.remove(plan.refs[i]);
-                        return fail(error);
-                    }
-                    try {
-                        entry.started = true;
-                        plan.mutation.write();
-                        plan.counts?.write();
-                        if (entry.live) {
-                            if (entry.live.after) live.set(entry.live.id, entry.live.after);
-                            else live.delete(entry.live.id);
-                        }
-                    } catch (error) { return fail(error, true); }
-                },
+                push(op) { assertOpen(); stage(op); },
                 commit() {
                     assertOpen();
+                    committing = true;
                     let applied: Applied, impacts: Map<NodeId, number>, transaction: Transaction;
                     const beforeRevision = doc.rev;
                     let restoreRevision: PreparedMutation | undefined;
                     let revisionStarted = false;
                     try {
-                        const forward: Op[] = [], inverse: Op[] = [], touched = emptyTouched();
+                        // Undo/redo already contain the exact follow-on ops. In
+                        // particular imported long keys must be restored verbatim.
+                        if (origin !== 'undo' && origin !== 'redo' && origin !== 'revert') normalizeChanges(doc, { push: stage }, entries, geometry);
+                        const forward: Op[] = [], inverse: Op[] = [], inverseGroups: (readonly Op[])[] = [], touched = emptyTouched();
                         impacts = new Map();
                         let dirtying = false, recorded = false;
                         for (const entry of entries) {
                             forward.push(entry.plan.forward);
+                            inverseGroups.push(Object.freeze(entry.plan.inverse.map(op => Object.freeze({ ...op }))));
                             mergeTouched(touched, entry.plan.touched);
                             for (const [id, mask] of entry.plan.impacts) impacts.set(id, (impacts.get(id) ?? 0) | mask);
                             const policy = policyForOp(entry.plan.forward);
                             dirtying ||= opDirties(policy, doc.kind);
                             recorded ||= policy.history;
                         }
-                        for (let i = entries.length - 1; i >= 0; i--) {
-                            for (const op of entries[i].plan.inverse) inverse.push(op);
+                        for (let i = inverseGroups.length - 1; i >= 0; i--) {
+                            for (const op of inverseGroups[i]) inverse.push(op);
                         }
-                        applied = receipt(forward, inverse, touched, dirtying, recorded && origin !== 'undo' && origin !== 'redo', resources);
+                        applied = receipt(forward, inverse, inverseGroups, touched, dirtying, recorded && origin !== 'undo' && origin !== 'redo' && origin !== 'revert', resources);
                         transaction = { ops: applied.forward, origin, label };
                         // Prepare both revision writes before either is run. An
                         // empty/no-op transaction is not a new document version.
@@ -542,12 +587,19 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                         const result = validateCommit(context, touched, forward, attempted);
                         if (!result.ok) throw new ApplyRefused(result);
                     } catch (error) {
+                        // An unexpected staged-mutator failure already rolled back,
+                        // reported and closed this builder through fail().
+                        if (closed) throw error;
                         try { restoreRevision?.write(); }
                         catch (restoreError) { return fail(restoreError, true); }
                         return fail(error, error instanceof ModelInvariantError || (revisionStarted && !(error instanceof ApplyRefused)));
                     }
                     // R-W27 COMMIT POINT: successful end of commit check. No
                     // consumer exception can roll back this published version.
+                    if (entries.length) {
+                        if (origin !== 'revert') { links.set(applied, logicalHead ?? null); logicalHead = new WeakRef(applied); }
+                        expectedRevision = doc.rev;
+                    }
                     savepoints.clear();
                     closed = true;
                     active = undefined;
@@ -571,6 +623,23 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
             phase = 'building';
             active = builder;
             return builder;
+        },
+        revert(receipts) {
+            guard();
+            if (!receipts.length || doc.rev !== expectedRevision) throw new ApplyFailed('revert', 'History receipts are not the latest board commits');
+            let cursor = logicalHead;
+            const ops: Op[] = [];
+            for (const item of receipts) {
+                if (cursor?.deref() !== item || !links.has(item)) throw new ApplyFailed('revert', 'History receipts are not the latest board commits');
+                for (let i = item.inverseGroups.length - 1; i >= 0; i--) for (const op of item.inverseGroups[i]) ops.push(op);
+                cursor = links.get(item) ?? undefined;
+            }
+            allowRevert = true;
+            try {
+                const result = controller.apply({ origin: 'revert', label: 'Revert gesture', ops });
+                logicalHead = cursor;
+                return result;
+            } finally { allowRevert = false; }
         },
         dispose() {
             if (phase === 'disposed') return;

@@ -2,7 +2,7 @@ import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
 import { inheritWordBoundaries, textBoundaries } from './boundaries';
-import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarrierSteps, trackBlock, trackRun } from './carriers';
+import { blockOccurrenceOrigin, blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOccurrenceOrigin, runOrigin, sliceCarrierSteps, trackBlock, trackBlockIdentity, trackRunIdentity } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
@@ -125,35 +125,39 @@ function locate(text: RichText, offset: number): TextPoint {
     return { block: point.index, offset: point.offset, start: point.start };
 }
 
-function slicedRun(run: Run, text: string, preserveOrigin: boolean): Run {
-    const result = preserveOrigin && text === run.text ? run : { ...run, text };
-    return preserveOrigin && opaqueRun(run) ? trackRun(result, run) : result;
+function slicedRun(run: Run, text: string, origin?: object): Run {
+    if (!origin) return text === run.text && !opaqueRun(run) ? run : { ...run, text };
+    // A shared source object may represent independent occurrences, so never
+    // attach occurrence identity by mutating the source object's WeakMap entry.
+    return trackRunIdentity({ ...run, text }, origin);
 }
-function* sliceRunSteps(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Generator<void, Run[]> {
-    const runs: Run[] = [], indexed = runIndex(block);
+function* sliceRunSteps(text: RichText, blockIndex: number, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Generator<void, Run[]> {
+    const block = text.blocks[blockIndex], runs: Run[] = [], indexed = runIndex(block);
     let visited = 0;
     for (let i = firstRunAt(indexed, from); i < block.runs.length; i++) {
         if ((++visited & 255) === 0) yield;
         const run = block.runs[i], position = indexed.starts[i], end = indexed.starts[i + 1];
         if (position > to || (position === to && run.text.length > 0)) break;
+        const origin = preserveOrigin && opaqueRun(run) ? runOccurrenceOrigin(text, blockIndex, i) : undefined;
         if (run.text.length === 0) {
-            if (position >= from && (position < to || (keepEndAnchors && position === to))) runs.push(slicedRun(run, '', preserveOrigin));
+            if (position >= from && (position < to || (keepEndAnchors && position === to))) runs.push(slicedRun(run, '', origin));
         } else {
             const startInRun = Math.max(0, from - position);
             const endInRun = Math.min(run.text.length, to - position);
-            if (startInRun < endInRun) runs.push(slicedRun(run, run.text.slice(startInRun, endInRun), preserveOrigin));
+            if (startInRun < endInRun) runs.push(slicedRun(run, run.text.slice(startInRun, endInRun), origin));
         }
     }
     return runs;
 }
-function sliceRuns(block: Block, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
-    return finishTextSteps(sliceRunSteps(block, from, to, keepEndAnchors, preserveOrigin));
+function sliceRuns(text: RichText, blockIndex: number, from: number, to: number, keepEndAnchors: boolean, preserveOrigin: boolean): Run[] {
+    return finishTextSteps(sliceRunSteps(text, blockIndex, from, to, keepEndAnchors, preserveOrigin));
 }
-function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
-    const indexed = runIndex(block);
+function emptyRun(text: RichText, blockIndex: number, offset: number, preserveOrigin: boolean): Run {
+    const block = text.blocks[blockIndex], indexed = runIndex(block);
     if (!indexed.count) return { text: '', marks: {} };
-    const index = offset > 0 ? runContaining(indexed, offset - 1) : 0;
-    return slicedRun(block.runs[index], '', preserveOrigin);
+    const index = offset > 0 ? runContaining(indexed, offset - 1) : 0, run = block.runs[index];
+    const origin = preserveOrigin && opaqueRun(run) ? runOccurrenceOrigin(text, blockIndex, index) : undefined;
+    return slicedRun(run, '', origin);
 }
 
 function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: boolean): Generator<void, RichFragment> {
@@ -167,11 +171,11 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
         const block = text.blocks[i];
         const start = i === first.block ? first.offset : 0;
         const end = i === last.block ? last.offset : blockTextLength(block);
-        const runs = yield* sliceRunSteps(block, start, end, from === to, preserveOrigins);
+        const runs = yield* sliceRunSteps(text, i, start, end, from === to, preserveOrigins);
         const { carriers: _carriers, ...base } = block;
         const carriers = yield* sliceCarrierSteps(block, start, end, preserveOrigins);
-        const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(block, start, preserveOrigins)], ...(carriers ? { carriers } : {}) };
-        blocks.push(preserveOrigins ? trackBlock(sliced, block) : sliced);
+        const sliced: Block = { ...base, runs: runs.length ? runs : [emptyRun(text, i, start, preserveOrigins)], ...(carriers ? { carriers } : {}) };
+        blocks.push(preserveOrigins ? trackBlockIdentity(sliced, blockOccurrenceOrigin(text, i)) : sliced);
     }
     return { blocks };
 }
@@ -186,7 +190,7 @@ export function sliceRichTextCooperative(text: RichText, from: number, to: numbe
     return finishTextStepsCooperative(sliceSteps(text, from, to, preserveOrigins), options);
 }
 
-function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {
+function spliceCarriers(text: RichText, firstIndex: number, before: readonly Block[], firstOffset: number, lastOffset: number, insert: RichFragment): readonly (readonly BlockCarrier[] | undefined)[] {
     const sourceHasCarriers = before.some((block, index) => !!block.carriers?.length || (index > 0 && block.tail !== undefined && block.tail !== '[]'));
     const insertedHasCarriers = insert.blocks.some((block, index) => !!block.carriers?.length || (index === 0 && block.tail !== undefined && block.tail !== '[]'));
     if (!sourceHasCarriers && !insertedHasCarriers) return insert.blocks.map(() => undefined);
@@ -226,13 +230,14 @@ function spliceCarriers(before: readonly Block[], firstOffset: number, lastOffse
     for (let index = 0; index < before.length; index++) {
         const block = before[index];
         for (const carrier of block.carriers ?? []) place(carrier, index);
-        if (index > 0 && block.tail !== undefined && block.tail !== '[]' && !insertedTails.has(blockOrigin(block)))
-            place(carrierForTail(block, 0, blockTextLength(block)), index);
+        const origin = block.tail !== undefined && block.tail !== '[]' ? blockOccurrenceOrigin(text, firstIndex + index) : undefined;
+        if (index > 0 && origin && !insertedTails.has(origin))
+            place(carrierForTail(block, 0, blockTextLength(block), origin), index);
     }
     for (let index = 0; index < insert.blocks.length; index++) {
         const block = insert.blocks[index], offset = index === 0 ? firstOffset : 0;
         for (const carrier of block.carriers ?? []) output[index].push(mapCarrier(carrier, offset + carrier.from, offset + carrier.to));
-        if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOrigin(block) !== blockOrigin(before[0]))
+        if (index === 0 && block.tail !== undefined && block.tail !== '[]' && blockOrigin(block) !== blockOccurrenceOrigin(text, firstIndex))
             output[0].push(carrierForTail(block, offset, offset + blockTextLength(block)));
     }
     return output.map(coalesceCarriers);
@@ -264,18 +269,24 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
     else {
         const startBlock = text.blocks[first.block];
         const endBlock = text.blocks[last.block];
-        const mappedCarriers = spliceCarriers(before, first.offset, last.offset, insert);
-        const prefix = sliceRuns(startBlock, 0, first.offset, false, true);
-        const suffix = sliceRuns(endBlock, last.offset, blockTextLength(endBlock), from === to, true);
+        const mappedCarriers = spliceCarriers(text, first.block, before, first.offset, last.offset, insert);
+        const prefix = sliceRuns(text, first.block, 0, first.offset, false, true);
+        const suffix = sliceRuns(text, last.block, last.offset, blockTextLength(endBlock), from === to, true);
         const retained = new Set<object>();
         for (const run of prefix) if (opaqueRun(run)) retained.add(runOrigin(run));
         for (const block of insert.blocks) for (const run of block.runs) if (opaqueRun(run)) retained.add(runOrigin(run));
         for (const run of suffix) if (opaqueRun(run)) retained.add(runOrigin(run));
         const anchors: Run[] = [];
-        for (const block of before) for (const run of block.runs) {
-            if (!opaqueRun(run)) continue;
-            const origin = runOrigin(run);
-            if (!retained.has(origin)) { anchors.push(trackRun({ ...run, text: '' }, run)); retained.add(origin); }
+        for (let b = 0; b < before.length; b++) {
+            const block = before[b], indexed = runIndex(block);
+            const low = b === 0 ? first.offset : 0, high = b + 1 === before.length ? last.offset : indexed.length;
+            for (let r = firstRunAt(indexed, low); r < indexed.count; r++) {
+                const position = indexed.starts[r], run = block.runs[r];
+                if (position > high || (position === high && run.text.length > 0)) break;
+                if (!opaqueRun(run)) continue;
+                const origin = runOccurrenceOrigin(text, first.block + b, r);
+                if (!retained.has(origin)) { anchors.push(trackRunIdentity({ ...run, text: '' }, origin)); retained.add(origin); }
+            }
         }
         const blocks: Block[] = [];
         for (let i = 0; i < insert.blocks.length; i++) {
@@ -286,7 +297,8 @@ export function spliceRichText(text: RichText, from: number, to: number, insert:
             const base = i === 0 ? startBlock : fragment;
             const { carriers: _carriers, ...attributes } = base;
             const carriers = mappedCarriers[i];
-            blocks.push(trackBlock({ ...attributes, runs, ...(carriers ? { carriers } : {}) }, base));
+            const next = { ...attributes, runs, ...(carriers ? { carriers } : {}) };
+            blocks.push(trackBlockIdentity(next, i === 0 ? blockOccurrenceOrigin(text, first.block) : blockOccurrenceOrigin(insert, i)));
         }
         after = normalizeRichText({ blocks }).blocks;
     }

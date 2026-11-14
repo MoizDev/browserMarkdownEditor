@@ -411,7 +411,13 @@ exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
 artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected. These operations
+nothing is selected. With exactly one picture selected, the same menu offers
+**Replace picture…** (the new image keeps the old one's centre and longer side;
+a PDF annotation page does not offer it yet), **Crop picture** with six presets,
+and **Invert picture**. With one link card selected it offers **Fetch link
+preview**, which contacts the link's site only when you ask. A row that cannot
+run now stays on the menu and says why, such as a locked picture or a read-only
+canvas. These operations
 and navigation do not edit the source; drawing, Cut and Paste remain unavailable
 in this native viewer.
 

@@ -253,6 +253,25 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
             return readNativeCanvasView({ deps, path, guard: { signal: guard.signal, isCurrent: current } });
         },
+        async nativePdfPicture(path, maxSide, guard) {
+            const deps = getDeps();
+            if (!deps.root || !isPdfFile(path)) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            const tab = openTabAt(deps, path);
+            // An OPEN PDF is pictured from its live session only when it is native; any other open PDF keeps its mounted view.
+            if (tab) {
+                if (!tab.representation.nativeCanvasKind) return null;
+                const { readOpenNativePdfPicture } = await import('./nativeCanvasAgentRead');
+                return readOpenNativePdfPicture({ deps, path, maxSide, guard: { signal: guard.signal, isCurrent: current } });
+            }
+            // A CLOSED PDF is pictured from its admitted source, never by opening a tab.
+            const found = await fileAt(deps.root, path);
+            guard.signal?.throwIfAborted();
+            if (!found || !current()) return null;
+            const { readNativePdfPicture } = await import('./nativeCanvasAgentRead');
+            return readNativePdfPicture({ deps, path, handle: found.handle, maxSide,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
             if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;

@@ -39,6 +39,9 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
         }
         setError(message);
     }, [documentId]);
+    // This view wrapper stays inline on purpose. Its prepare feeds a render-time useMemo, and React Compiler
+    // reports "Cannot access refs during render" when that prepare calls any imported preparer. App's cold
+    // path (preparePdfInkAttempt) calls the SAME canonical preparePdfInkSession from an async job instead.
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
         const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;

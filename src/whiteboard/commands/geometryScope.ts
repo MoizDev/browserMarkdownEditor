@@ -16,6 +16,7 @@ export interface BoardGeometryScopeOptions {
     /** The caller owns this immutable candidate through release. */
     readonly doc?: BoardDoc;
     readonly signal?: AbortSignal;
+    /** For a candidate, this must fence its base document version and lifetime too. */
     readonly current?: () => boolean;
     readonly cooperate?: () => Promise<void>;
 }
@@ -44,16 +45,28 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
     const doc = options.doc ?? runtime.session.doc, signal = options.signal ?? new AbortController().signal;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const revision = doc.rev, host = doc.host, owner = runtime.session.owner, roots: NodeId[] = [];
+    const live = doc === runtime.session.doc, fenced = live || options.current !== undefined;
     const captured = new Map<NodeId, Readonly<Node>>(), children = new Map<NodeId, readonly Node[] | undefined>();
     const incidents = new Map<NodeId, ReadonlySet<NodeId> | undefined>(), sheets = new Map<SheetId, BoardDoc['sheetOrder'][number]>();
-    const check = () => {
+    const fast = () => {
         signal.throwIfAborted();
         if ((options.current && !options.current()) || runtime.session.owner !== owner || doc.rev !== revision || doc.host !== host
-            || (!options.doc && runtime.session.doc !== doc)) throw new DOMException('Board geometry scope became stale', 'AbortError');
+            || (live && runtime.session.doc !== doc)) throw new DOMException('Board geometry scope became stale', 'AbortError');
+    };
+    const all = () => {
         for (const [id, node] of captured) if (doc.nodes.get(id) !== node) throw new DOMException('Board geometry node changed', 'AbortError');
         for (const [id, value] of children) if (doc.children.get(id) !== value) throw new DOMException('Board geometry hierarchy changed', 'AbortError');
         for (const [id, value] of incidents) if (doc.attachedTo.get(id) !== value) throw new DOMException('Board geometry attachment changed', 'AbortError');
         for (const [id, value] of sheets) if (doc.sheets.get(id) !== value) throw new DOMException('Board geometry sheet changed', 'AbortError');
+    };
+    const check = () => { fast(); if (!fenced) all(); };
+    const checkNode = (id: NodeId) => {
+        let node = captured.get(id);
+        if (!node) throw new Error(`Node is outside geometry scope: ${id}`);
+        for (let depth = 0; node && depth < 64; depth++) {
+            if (doc.nodes.get(node.id) !== node) throw new DOMException('Board geometry ancestor changed', 'AbortError');
+            node = captured.get(node.parent as NodeId);
+        }
     };
     let released = false, work = 0, started = performance.now();
     const tick = async () => { check(); await cooperate(); check(); work = 0; started = performance.now(); };
@@ -84,8 +97,8 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
         if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) closure.push(end.attach.target);
         if (due()) await tick();
     }
-    const lease = await runtime.render.pinChangeGeometry(roots, signal, doc,
-        () => (!options.current || options.current()) && runtime.session.owner === owner && (!!options.doc || runtime.session.doc === doc));
+    const rendererCurrent = fenced ? () => (!options.current || options.current()) && runtime.session.owner === owner && (!live || runtime.session.doc === doc) : undefined;
+    const lease = await runtime.render.pinChangeGeometry(roots, signal, doc, rendererCurrent);
     try {
         check();
         const font = runtime.render.text.fonts.epoch;
@@ -101,7 +114,7 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
             }
             if (node.kind !== 'group') {
                 const value = await runtime.render.prepareForPick(node, signal, doc);
-                check(); if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+                check(); checkNode(id); if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
                 prepared.set(id, value);
             }
             if (due()) await tick();
@@ -205,22 +218,28 @@ export async function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iter
         }
         const ranks = new Map<NodeId, number>();
         for (let i = 0; i < ranked.length; i++) { ranks.set(ranked[i], i); if (due()) await tick(); }
-        const guard = () => { if (released) throw new Error('Geometry scope released'); check();
+        // A fenced source cannot mutate behind this cooperative final sweep.
+        for (const [id, node] of captured) { if (doc.nodes.get(id) !== node) throw new DOMException('Board geometry node changed', 'AbortError'); if (due()) await tick(); }
+        for (const [id, value] of children) { if (doc.children.get(id) !== value) throw new DOMException('Board geometry hierarchy changed', 'AbortError'); if (due()) await tick(); }
+        for (const [id, value] of incidents) { if (doc.attachedTo.get(id) !== value) throw new DOMException('Board geometry attachment changed', 'AbortError'); if (due()) await tick(); }
+        for (const [id, value] of sheets) { if (doc.sheets.get(id) !== value) throw new DOMException('Board geometry sheet changed', 'AbortError'); if (due()) await tick(); }
+        const guard = (id?: NodeId) => { if (released) throw new Error('Geometry scope released'); check();
+            if (id) checkNode(id);
             if (runtime.render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError'); };
         guard();
         const geometry: BoardGeometryScope['geometry'] = {
-            resolvedTip(candidate, connector, terminal) { guard(); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
+            resolvedTip(candidate, connector, terminal) { guard(connector.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
                 return runtime.render.changeGeometry.resolvedTip(candidate, connector, terminal); },
-            worldBoundsCenter(candidate, node) { guard(); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
+            worldBoundsCenter(candidate, node) { guard(node.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
                 return runtime.render.changeGeometry.worldBoundsCenter(candidate, node); },
         };
         return { doc, geometry,
-            localBounds(id) { guard(); const box = local.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
+            localBounds(id) { guard(id); const box = local.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
                 return [box[0], box[1], box[2], box[3]]; },
-            logicalBounds(id) { guard(); const box = world.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
+            logicalBounds(id) { guard(id); const box = world.get(id); if (!box) throw new Error(`Node is outside geometry scope: ${id}`);
                 return { x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] }; },
-            worldPose(id) { guard(); if (!local.has(id)) throw new Error(`Node is outside geometry scope: ${id}`); return { ...pose(id) }; },
-            rank(id) { guard(); const value = ranks.get(id); if (value === undefined) throw new Error(`Node is outside geometry scope: ${id}`); return value; },
+            worldPose(id) { guard(id); if (!local.has(id)) throw new Error(`Node is outside geometry scope: ${id}`); return { ...pose(id) }; },
+            rank(id) { guard(id); const value = ranks.get(id); if (value === undefined) throw new Error(`Node is outside geometry scope: ${id}`); return value; },
             release() { if (!released) { released = true; lease.release(); } },
         };
     } catch (error) { lease.release(); throw error; }

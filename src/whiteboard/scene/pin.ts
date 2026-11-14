@@ -5,11 +5,11 @@ import { createLoadedBoardDoc } from '../model/loadDocument';
 import { boardPageStack } from '../model/pages';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
-import { BoundsQuality } from './bounds';
+import { BoundsQuality, validBox } from './bounds';
 import { createPinnedPaintDoc } from './paintDoc';
 import type { SceneRecordPin } from './recordStore';
 import type { SceneMetadata } from './snapshotDoc';
-import type { SceneBounds, ScenePaintRequest, SceneSnapshot } from './types';
+import type { SceneBounds, SceneOccupiedBounds, ScenePaintRequest, SceneSnapshot } from './types';
 
 // Provenance: scene pin, rendering token and model snapshot contracts;
 // independent immutable read-side assembly, no third-party source.
@@ -38,6 +38,7 @@ export function createSceneSnapshot(options: {
     records: SceneRecordPin;
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
+    occupiedBounds?: SceneOccupiedBounds | null;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
     cooperate?: () => Promise<void>;
@@ -48,6 +49,10 @@ export function createSceneSnapshot(options: {
         || !Number.isSafeInteger(token.bytesGeneration) || token.bytesGeneration < 0 || !Number.isSafeInteger(token.session) || token.session < 0
         || typeof token.documentId !== 'string' || !token.documentId) throw new TypeError('Invalid scene snapshot identity');
     const controller = new AbortController(), { records, metadata } = options;
+    const nodeCount = records.nodeCount;
+    const supplied = options.occupiedBounds;
+    const occupiedBounds = supplied?.revision === revision && validBox(supplied.bounds)
+        ? Object.freeze({ revision, bounds: Object.freeze([...supplied.bounds] as [number, number, number, number]) }) : null;
     let released = false, building: Promise<BoardDoc> | undefined, paintDoc: BoardDoc | undefined, closing: Promise<void> | undefined;
     const inFlight = new Set<Promise<unknown>>();
     const check = () => { if (released || controller.signal.aborted) throw cancelled(); };
@@ -101,6 +106,8 @@ export function createSceneSnapshot(options: {
     };
     const snapshot: SceneSnapshot = {
         token, revision,
+        get nodeCount() { check(); return nodeCount; },
+        get occupiedBounds() { check(); return occupiedBounds; },
         get layout() { return boardPageStack(metadata.host) ?? null; },
         worldBounds(id) {
             if (released || !records.get(id)) return null;

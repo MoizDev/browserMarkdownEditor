@@ -1,4 +1,4 @@
-import type { Affine, PathCommand, Rect } from '../types';
+import type { Affine, LineCap, LineJoin, PathCommand, Rect } from '../types';
 import type { EmbedContainment } from '../embedContainment.types';
 import type { PlatformLayerDefinition, PlatformPresentation } from './attachPlatformPane.types';
 import type { FrameToken } from './types';
@@ -12,6 +12,10 @@ export interface EmbedCoveragePath {
 }
 export interface EmbedClippedCoverage {
     readonly path: EmbedCoveragePath;
+    /** Omitted means filled; false permits stroke-only native coverage. */
+    readonly fill?: boolean;
+    readonly stroke?: Readonly<{ width: number; cap: LineCap; join: LineJoin; miterLimit: number;
+        dash?: readonly number[]; dashPhase?: number }>;
     /** Intersections, in paint order, including the covering item's own ancestor clips. */
     readonly clips: readonly EmbedCoveragePath[];
 }

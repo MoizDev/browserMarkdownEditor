@@ -1,5 +1,5 @@
 import type { Affine, PathCommand } from '../types';
-import type { EmbedCoveragePath, EmbedPresentedNode } from './embedPresentation.types';
+import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedPresentedNode } from './embedPresentation.types';
 
 const SVG = 'http://www.w3.org/2000/svg';
 export interface EmbedClipDom {
@@ -57,6 +57,31 @@ export function* createEmbedClipJob(node: EmbedPresentedNode,
         element.setAttribute('clip-rule', path.fillRule);
         return element;
     };
+    const setCoverage = function* (shape: SVGPathElement, coverage: EmbedClippedCoverage): Generator<void, void> {
+        if (coverage.fill !== undefined && typeof coverage.fill !== 'boolean') throw new TypeError('Invalid embed coverage fill');
+        shape.setAttribute('fill', coverage.fill === false ? 'none' : 'black');
+        const stroke = coverage.stroke;
+        if (!stroke) { shape.setAttribute('stroke', 'none'); return; }
+        if (!Number.isFinite(stroke.width) || stroke.width <= 0 || !Number.isFinite(stroke.miterLimit) || stroke.miterLimit <= 0 ||
+            (stroke.dashPhase !== undefined && !Number.isFinite(stroke.dashPhase)) ||
+            !['butt', 'round', 'square'].includes(stroke.cap) || !['miter', 'round', 'bevel'].includes(stroke.join)) {
+            throw new RangeError('Invalid embed coverage stroke');
+        }
+        shape.setAttribute('stroke', 'black'); shape.setAttribute('stroke-width', String(stroke.width));
+        shape.setAttribute('stroke-linecap', stroke.cap); shape.setAttribute('stroke-linejoin', stroke.join);
+        shape.setAttribute('stroke-miterlimit', String(stroke.miterLimit));
+        if (stroke.dash?.length) {
+            const parts: string[] = []; let count = 0, started = performance.now();
+            for (const value of stroke.dash) {
+                if (!Number.isFinite(value) || value < 0) throw new RangeError('Invalid embed coverage dash');
+                parts.push(String(value));
+                if (++count >= 64 || performance.now() - started >= 0.25) { yield; count = 0; started = performance.now(); }
+            }
+            yield;
+            shape.setAttribute('stroke-dasharray', parts.join(' '));
+        }
+        shape.setAttribute('stroke-dashoffset', String(stroke.dashPhase ?? 0));
+    };
     const clip = function* (path: EmbedCoveragePath, previous: string | null): Generator<void, string> {
         const element = svg('clipPath'), id = `${prefix}-clip-${serial++}`;
         element.setAttribute('id', id); element.setAttribute('clipPathUnits', 'userSpaceOnUse');
@@ -86,10 +111,13 @@ export function* createEmbedClipJob(node: EmbedPresentedNode,
             pointerClip = yield* clip(path, pointerClip);
         }
         const shape = yield* makePath(later.coverage.path);
-        shape.setAttribute('fill', 'black'); if (maskClip) shape.setAttribute('clip-path', maskClip);
+        yield* setCoverage(shape, later.coverage);
+        if (maskClip) shape.setAttribute('clip-path', maskClip);
         mask.append(shape);
         const pointer = shape.cloneNode(false) as SVGPathElement;
-        pointer.setAttribute('fill', 'transparent'); pointer.setAttribute('pointer-events', 'fill');
+        if (later.coverage.fill !== false) pointer.setAttribute('fill', 'transparent');
+        if (later.coverage.stroke) pointer.setAttribute('stroke', 'transparent');
+        pointer.setAttribute('pointer-events', 'painted');
         pointer.setAttribute('clip-path', pointerClip!); shield.append(pointer);
         yield;
     }

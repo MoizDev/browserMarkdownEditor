@@ -23,7 +23,7 @@ function appendRun(doc: Document, parent: Element, text: string, marks: Marks): 
     if (marks.link) {
         try {
             const url = new URL(marks.link);
-            if (marks.link.length <= 2048 && ['http:', 'https:', 'mailto:'].includes(url.protocol) && !url.username && !url.password)
+            if (marks.link.length <= 2048 && !/\p{Cc}/u.test(marks.link) && ['http:', 'https:', 'mailto:'].includes(url.protocol) && !url.username && !url.password)
                 wrap('a').setAttribute('href', marks.link);
         } catch { /* Imported invalid links are rendered as text. */ }
     }

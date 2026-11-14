@@ -64,9 +64,11 @@ export interface PdfAttachmentInfo {
     desc?: string;
     localVaultMarker?: string;
 }
+export interface PdfPageExtent { index: number; width: number; height: number }
 export interface DocInfo {
     pageCount: number;
-    pages: PageGeometry[];
+    /** Cheap displayed extents for layout only; exact affine and rotation require page.geometry. */
+    pages: PdfPageExtent[];
     encrypted: boolean;
     /** Raw unsigned FPDF_GetDocPermissions bits; null means unavailable, not permission granted. */
     permissions: number | null;

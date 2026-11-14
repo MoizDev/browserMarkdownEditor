@@ -101,6 +101,7 @@ export interface PdfEngineOps {
     'doc.close': { args: { docKey: PdfDocKey }; result: Record<string, never> };
     'page.tile': { args: PageTileArgs; result: PageTileResult };
     'page.text': { args: PageArgs & { detail: PdfTextDetail }; result: PageTextReply };
+    'page.geometry': { args: PageArgs; result: PageGeometry };
     'page.links': { args: PageArgs; result: RawPdfLink[] };
     'page.emphasisProbe': { args: PageProbeArgs; result: PageProbeResult };
     'page.complexity': { args: PageArgs; result: PageComplexity };

@@ -7,6 +7,7 @@ import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { gridRectangle } from '../input/gridCreation';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
@@ -149,6 +150,10 @@ class CreationGesture implements GestureOwner {
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
+        if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
+            this.context.guides?.([]); return gridRectangle(node, this.parentPose);
+        }
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
             || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4) {

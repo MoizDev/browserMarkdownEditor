@@ -714,14 +714,20 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             const info = await describe(view);
             if (info.kind === 'pdf' && info.surface === 'text') throw new ToolError('PDF Text image capture is unavailable. Use vault_read for canonical text or switch to Original to view page images.');
         }
-        if (view?.renderPage) {
+        if (view?.renderPageWithInfo || view?.renderPage) {
             const info = await describe(view);
             const count = 'pageCount' in info ? info.pageCount : 0;
             const target = page ?? ('page' in info ? info.page : 1);
             if (target > count) throw new ToolError(`page ${target} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
-            const blob = await withTimeout(view.renderPage(target, max), REPORTER_TIMEOUT_MS, 'rendering the page');
+            const annotation = view.kind === 'pdf-annotate' ? ' (with its annotations)' : '';
+            if (view.renderPageWithInfo) {
+                const result = await withTimeout(view.renderPageWithInfo(target, max), REPORTER_TIMEOUT_MS, 'rendering the page');
+                ctx.ensureLive();
+                return pngResult(result.png, `${path}, page ${target} of ${count}${annotation}${pdfEmphasisCaption(result.emphasis)}:`, `page ${target}`);
+            }
+            const blob = await withTimeout(view.renderPage!(target, max), REPORTER_TIMEOUT_MS, 'rendering the page');
             ctx.ensureLive();
-            return pngResult(blob, `${path}, page ${target} of ${count}${view.kind === 'pdf-annotate' ? ' (with its annotations)' : ''}:`, `page ${target}`);
+            return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);

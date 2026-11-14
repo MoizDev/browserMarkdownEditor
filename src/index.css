@@ -3180,6 +3180,26 @@ body.is-resizing-panes * {
   min-height: 0;
 }
 
+.pdf-rotation-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+.pdf-rotation-preview img {
+  max-width: 100%;
+  max-height: calc(100% - 36px);
+  object-fit: contain;
+  box-shadow: 0 1px 8px #0003;
+}
+
 /* ── DiskBar: a document's file changed or vanished on disk ──
    Between a pane's header and its body (inside a PDF's pane, which floats over
    the slot). A strip in the app's own notice style rather than a dialog: the
@@ -3402,6 +3422,20 @@ body.is-resizing-panes * {
   overscroll-behavior: contain;
 }
 
+/* The temporary platform preview stays underneath the reader's selectable DOM. */
+.pdf-platform-preview-surface {
+  position: absolute;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+.pdf-platform-preview-surface > canvas { width: 100%; height: 100%; display: block; }
+.pdf-platform-preview-live .pdf-platform-preview-surface { visibility: visible; }
+.pdf-platform-preview-live .pdf-viewer-inner { position: relative; z-index: 2; }
+.pdf-platform-preview-live .pdf-viewer-page { background: transparent; }
+.pdf-platform-preview-live .pdf-viewer-page > canvas { visibility: hidden; }
+
 /* The CSS-variable contract pdf.js text layers size themselves by:
    --scale-factor is set inline to the live render scale; the rest are the
    companion defaults the library's own viewer defines. */
@@ -3565,6 +3599,13 @@ body.is-resizing-panes * {
 }
 
 /* ── Bottom-right controls: page number, then zoom ── */
+.pdf-pane-print {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 12px;
+}
+
 .pdf-viewer-controls {
   position: absolute;
   right: 16px;

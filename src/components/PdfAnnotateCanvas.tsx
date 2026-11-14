@@ -16,9 +16,8 @@ import PdfInvertToggle from './PdfInvertToggle';
 import PdfThumbnails, { type PdfThumbnailsHandle } from './PdfThumbnails';
 import PageControls, { type PageControlsHandle } from './PageControls';
 import { cameraFor, fitWidthZoom, lockCameraToPages, pageAt, watchPageView } from './pagedCanvas';
-import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
-import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from '../utils/pdfClassicOpen';
+import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
 import { createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import { pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
@@ -39,6 +38,8 @@ interface PdfAnnotateCanvasProps {
     filePath: string;
     /** Pristine original PDF bytes (never the stamped ones — see pdfAnnotation.ts). */
     original: Uint8Array;
+    /** The pristine document session, shared with the reader when bytes match. */
+    session: PdfDocumentSession;
     /** Serialized tldraw snapshot of existing annotations, '' if none yet. */
     snapshot: string;
     /** Path-explicit: a debounced save can land after a tab switch. */
@@ -152,12 +153,13 @@ function refreshPageAsset(editor: Editor | null, index: number): void {
     });
 }
 
-async function pageText(doc: PDFDocumentProxy, pageNumber: number): Promise<string> {
-    const page = await doc.getPage(pageNumber);
+async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
+    const lease = await session.acquirePage(pageNumber - 1, 'agent');
     try {
-        const content = await page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
-        return projectPdfPageV1(content.items, pdfPageGeometry(page)).text;
-    } finally { page.cleanup(); }
+        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        session.health.assertComplete(pageNumber - 1);
+        return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
+    } finally { lease.release(); }
 }
 
 /** Decode an image and draw it over the whole `w`×`h` of `ctx`. */
@@ -197,7 +199,7 @@ function parseSnapshot(content: string): { snapshot?: TLEditorSnapshot; ui?: Can
  * page out from under its annotations, and excluded from the exported overlay
  * so a save stamps only the strokes.
  */
-export default function PdfAnnotateCanvas({ documentId, filePath, original, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
+export default function PdfAnnotateCanvas({ documentId, filePath, original, session, snapshot, onContentChange, onFlushNow, onFlushStart, emphasisEnabled = false, onNativeEmphasisResult, onRenderHealth }: PdfAnnotateCanvasProps) {
     // Geometry only. The canvas mounts as soon as this lands; the page images
     // stream in afterwards through pageImagesRef.
     const [pages, setPages] = useState<PdfPageSize[] | null>(null);
@@ -255,18 +257,6 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
     /** The page under the top edge (0-based) and how far into it, as the view
      *  watch last saw them — the position the agent is told. */
     const viewPosRef = useRef({ top: 0, offset: 0 });
-    /** A text-only pdf.js document of the original, opened the first time the
-     *  agent asks for page text and closed with the canvas. `PdfPageSource`
-     *  keeps its own document private, and page text is the one thing this
-     *  canvas has no other way to give: its pages are pictures. */
-    const textDocRef = useRef<Promise<PDFDocumentLoadingTask> | null>(null);
-    useEffect(() => () => {
-        // Startup can finish after this pane is gone; the saved promise still
-        // owns that late task and closes it without waiting for a dead port.
-        const pending = textDocRef.current;
-        textDocRef.current = null;
-        void pending?.then(task => closeClassicPdf(task)).catch(() => {});
-    }, [original]);
 
     /** Every page's box on the canvas — the same layout the save path maps
      *  strokes back through. */
@@ -324,10 +314,8 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
 
         (async () => {
             try {
-                source = await openPdfPages(original, health => {
+                source = await openPdfPages(session, health => {
                     if (cancelled) return;
-                    // Two StrictMode acquisitions can overlap: follow this
-                    // source's health, never a byte-keyed instance it can close.
                     setRenderHealth(health);
                     onRenderHealthRef.current?.(health);
                 });
@@ -366,7 +354,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
             for (const image of images) if (image) URL.revokeObjectURL(image.url);
             void source?.close();
         };
-    }, [original, filePath]);
+    }, [session, filePath]);
 
     const handleMount = useCallback((editor: Editor) => {
         if (!pages) return;
@@ -521,8 +509,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                     const { index, scale } = candidate;
                     const controller = new AbortController(); activePaint = controller;
                     try {
-                        let native: PdfNativeEmphasisResult | undefined;
-                        const url = await source.renderPage(index, scale, emphasis, result => { native = result; }, controller.signal);
+                        const url = await source.renderPage(index, scale, emphasis, undefined, controller.signal);
                         if (closed || pageImagesRef.current !== images || controller.signal.aborted || emphasis !== emphasisRef.current) {
                             URL.revokeObjectURL(url); refineAgain = true; continue;
                         }
@@ -530,12 +517,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                         images[index] = { url, scale, emphasis };
                         refreshPageAsset(editor, index);
                         if (previous) URL.revokeObjectURL(previous.url);
-                        if (native) {
-                            nativePages.current.set(index, native);
-                            if (shownPageRef.current === index) {
-                                setNativeNotice(pdfNativeEmphasisNotice(native)); nativeResult.current?.(index, native);
-                            }
-                        }
+                        if (shownPageRef.current === index) watchShown(index);
                     } catch (err) {
                         if (!controller.signal.aborted) {
                             unrenderable.add(index);
@@ -546,6 +528,29 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                 } while (refineAgain);
             } finally { refining = false; }
         };
+
+        let watchedPage = -1;
+        let releaseEmphasis: (() => void) | undefined;
+        function watchShown(index: number) {
+            if (closed || watchedPage === index) return;
+            releaseEmphasis?.();
+            watchedPage = index;
+            const source = sourceRef.current;
+            if (!source) return;
+            releaseEmphasis = source.watchEmphasis(index, result => {
+                if (closed || sourceRef.current !== source || shownPageRef.current !== index) return;
+                if (result) nativePages.current.set(index, result); else nativePages.current.delete(index);
+                setNativeNotice(pdfNativeEmphasisNotice(result));
+                nativeResult.current?.(index, result);
+                // An On-first backdrop was deliberately painted unmodified while
+                // the proof ran. Replace it without touching ink or history.
+                if (result?.supported && result.eligible && emphasisRef.current) {
+                    const image = pageImagesRef.current[index];
+                    if (image) image.emphasis = false;
+                    void refinePages(false);
+                }
+            });
+        }
 
         // Only remote backdrop assets change; ink, history and camera are retained.
         const refresh = () => { activePaint?.abort(); void refinePages(true); };
@@ -575,6 +580,10 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                 nativeResult.current?.(shown, nativePages.current.get(shown));
                 controlsRef.current?.setPage(shown);
                 thumbsRef.current?.setCurrentPage(shown);
+                releaseEmphasis?.();
+                releaseEmphasis = undefined;
+                watchedPage = -1;
+                if (pageImagesRef.current[shown]) watchShown(shown);
             }
             writePdfViewPos(filePath, { page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes) }, false);
             if (persistTimer) clearTimeout(persistTimer);
@@ -648,7 +657,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                 const exportOptions = { background: false, bounds, padding: 0, darkMode: false } as const;
 
                 try {
-                    const overlay: PageOverlay = {};
+                    const overlay: PageOverlay = { geometry: pages[i] };
                     const rasterShapes = onThisPage.filter(s => RASTER_ONLY_SHAPES.has(s.type));
                     const vectorShapes = onThisPage.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
 
@@ -834,16 +843,15 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
                 return png;
             },
             pdfText: async (pageNumbers) => {
-                if (!textDocRef.current) {
-                    textDocRef.current = openClassicPdf({ bytes: original, purpose: 'annotation-text' });
-                }
-                const doc = await loadClassicPdf(await textDocRef.current);
-                const out: Array<{ page: number; text: string }> = [];
-                for (const n of pageNumbers) {
-                    if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
-                    out.push({ page: n, text: await classicPdfHealth(doc).guard(pageText(doc, n)) });
-                }
-                return out;
+                const doc = await session.acquire();
+                try {
+                    const out: Array<{ page: number; text: string }> = [];
+                    for (const n of pageNumbers) {
+                        if (!Number.isInteger(n) || n < 1 || n > doc.document.numPages) continue;
+                        out.push({ page: n, text: await pageText(session, n) });
+                    }
+                    return out;
+                } finally { doc.release(); }
             },
             // Strokes in the debounce or mid-export are edits App cannot see yet
             // (App.checkOpenDocs): reloading the PDF from disk over them would
@@ -880,6 +888,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
             disposePen();
             disposeInvert();
             closed = true;
+            releaseEmphasis?.();
             activePaint?.abort();
             if (refreshEmphasis.current === refresh) refreshEmphasis.current = undefined;
             stopViewWatch();
@@ -898,7 +907,7 @@ export default function PdfAnnotateCanvas({ documentId, filePath, original, snap
             // the registration only after the funnel owns the complete revision.
             reportPending();
         };
-    }, [documentId, filePath, original, pages, boxes]);
+    }, [documentId, filePath, original, session, pages, boxes]);
 
     const renderThumbnail = useCallback((index: number, scale: number) => {
         const source = sourceRef.current;

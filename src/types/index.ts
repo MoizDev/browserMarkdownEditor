@@ -131,6 +131,9 @@ export interface OpenTab {
    * Session-only, like `readError`.
    */
   disk?: 'conflict' | 'deleted';
+  /** PDF rebuild choice is separate from a disk conflict: a kept legacy copy
+   *  informs the reader but does not suspend autosave. Session-only. */
+  pdfRebuild?: PdfRebuildNotice;
   /**
    * Bumped each time a canvas document (drawing, notebook, annotated PDF) is
    * reloaded from disk in place. Part of those panes' React keys, so they
@@ -543,7 +546,16 @@ export interface ContentChangeOptions {
 
 /** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
  *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
-export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry';
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry' | 'keep-pdf' | 'rebuild-pdf';
+
+export interface PdfRebuildNotice {
+  state: 'foreign' | 'kept';
+  generation: string;
+  reason?: 'mismatch' | 'unsupported' | 'malformed';
+  approved?: boolean;
+  copyName?: string;
+  error?: string;
+}
 
 export type VersionedWriteResult =
   | { status: 'written'; version: DiskVersion }

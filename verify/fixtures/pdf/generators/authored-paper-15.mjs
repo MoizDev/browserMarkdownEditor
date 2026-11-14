@@ -86,7 +86,7 @@ export async function emit(outDir, name, id, result, expected, seed) {
                 else rows.push(line.text);
             }
             return rows.join('\n');
-        }).join('\n\n'), pageModels: result.expectedPages } };
+        }).join('\n'), pageModels: result.expectedPages } };
     const output = fixtureWriter(outDir);
     await output(file, bytes);
     await output(`${name}.expected.json`, jsonBytes(record));

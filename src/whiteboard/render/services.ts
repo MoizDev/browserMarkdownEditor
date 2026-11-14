@@ -12,9 +12,10 @@ import type { NodeId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
 import type { SampleStoreReader } from '../model/samples';
 import type { MediaStore } from '../media/store';
-import type { BoundsProvider, Box, LocalGeometryBounds } from '../scene/bounds';
+import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGeometryBounds } from '../scene/bounds';
 import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
+import { conservativeConnectorBounds } from './conservativeConnector';
 import { buildStrokeCoverage } from './inkGeometry';
 import { paintStrokeNode, paintVectorNode } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
@@ -23,7 +24,7 @@ import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
 import { prepareScenePaintSource } from './sceneSource';
 import { createBoardTextGeometry } from './textGeometry';
-import { prepareBoardVectorGeometry, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
+import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 
 interface Prepared {
     readonly key: string;
@@ -176,6 +177,27 @@ export function createBoardRenderServices(options: {
     };
     return {
         text, bounds,
+        /** Conservative native b hint only. Current-font TX3 layout is real
+         * geometry, but a conservative connector/ink envelope is NOT a Scene
+         * exact-bound or page-placement capability. */
+        encoderLocal(node: Readonly<Node>): LocalGeometryBounds | undefined {
+            check();
+            const hit = bounds.local(node);
+            if (hit) return hit;
+            if (node.kind === 'group' || node.kind === 'opaque') return undefined;
+            if (node.kind === 'connector') return conservativeConnectorBounds(node, options.doc, text);
+            if (node.kind === 'stroke') {
+                const box = new Float64Array(4), quality = localBounds(node, bounds, box);
+                return quality === BoundsQuality.Pending || quality === BoundsQuality.ColdLayout ? undefined : { ink: [box[0], box[1], box[2], box[3]] };
+            }
+            const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
+            const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
+            const box = geometrySceneBounds(vector), value = { ink: box.ink, hit: box.hit };
+            if (vector.text.length) textIds.add(node.id);
+            cached.set(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
+            while (cached.size > 256) cached.delete(cached.keys().next().value!);
+            return value;
+        },
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
         async preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) {

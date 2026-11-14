@@ -324,6 +324,7 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
+                viewer.presentationAccepted(presentation);
                 const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
                 if (presentation && actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
                     presentation.token.viewLease === actualFrame.viewLease && actualFrame.documentId === token.documentId && actualFrame.session === token.session &&

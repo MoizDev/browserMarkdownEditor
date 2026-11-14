@@ -2,6 +2,7 @@ import type { Affine, ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
@@ -122,6 +123,8 @@ function estimateStep(state: Estimate): void {
 export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
     invalidate(reason?: string): void;
     readyFrame(): PaintFrame | null;
+    /** The canonical CPU allocator of the bound layer host, or null before the first host has drawn. */
+    memory(): MemoryAllocator | null;
 }
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
@@ -420,6 +423,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.readyFrame = () => {
         if (disposed) return null;
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;

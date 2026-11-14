@@ -76,7 +76,7 @@ export function createNativeLoadClient(config: { authority: JobAuthority; identi
                         try {
                             context.assertCurrent();
                             if (disposed) throw new DOMException('Native load client disposed', 'AbortError');
-                            acquired = admission.take(token, context.job);
+                            acquired = admission.take(token, context);
                             workSignal = context.signal;
                             workSignal.addEventListener('abort', release, { once: true });
                             context.assertCurrent();

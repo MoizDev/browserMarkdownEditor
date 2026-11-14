@@ -1,4 +1,4 @@
-import type { Affine, Rect } from '../../platform/types';
+import type { Affine, PathCommand, Rect } from '../../platform/types';
 import type { ClipNode, EmbedNode, FigureNode, FrameNode, LinkcardNode, PictureNode, StickyNode, TextNode } from '../model/nodes';
 import type { InkCoverage } from '../ink/outline';
 import { InkPickJob } from '../ink/pick';
@@ -16,6 +16,16 @@ import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
 import type { KindGeometry, NarrowResult } from './types';
 import { DashWalker, DotWalker, dashPath, dotPath, drawPath } from './variants';
+
+/** Translate the engine's retained path into the platform paint/export command vocabulary. */
+export function* pathCommands(ops: Iterable<PathOp>): Generator<PathCommand> {
+    for (const op of ops) {
+        if (op.op === 'Z') yield ['Z'];
+        else if (op.op === 'C') yield ['C', op.c1.x, op.c1.y, op.c2.x, op.c2.y, op.p.x, op.p.y];
+        else if (op.op === 'M') yield ['M', op.p.x, op.p.y];
+        else yield ['L', op.p.x, op.p.y];
+    }
+}
 
 export interface FigurePaintPath {
     readonly ops: readonly PathOp[];
@@ -41,6 +51,30 @@ export function figureLabelRequest(node: Readonly<FigureNode>, revision: string,
             padding: { top: 16, right: 16, bottom: 16, left: 16 }, minHeight: height, overflow: 'grapheme' } } };
 }
 
+export function stickyLabelRequest(node: Readonly<StickyNode>, revision: string, fontEpoch: number):
+    Readonly<{ request: TextLayoutRequest; scale: number }> {
+    if (![node.scale, node.growY, fontEpoch].every(Number.isFinite) || node.scale < 0 || node.growY < 0) throw new RangeError('Invalid sticky label layout');
+    const align = node.align.startsWith('start') ? 'start' : node.align.startsWith('end') ? 'end' : 'middle';
+    const fit = node.fit ?? 1;
+    if (!Number.isFinite(fit) || fit <= 0) throw new RangeError('Invalid sticky text fit');
+    return { scale: node.scale, request: { text: node.text, revision, fontEpoch, width: 200,
+        style: { font: node.font, size: FIGURE_LABEL_SIZE[node.size] * fit, ink: { swatch: node.labelColor, role: 'label' },
+            align, verticalAlign: node.valign, padding: { top: 16, right: 16, bottom: 16, left: 16 },
+            minHeight: 200 + node.growY, overflow: 'shrink' } } };
+}
+
+/** Frame titles are laid out as text, not a second editable content format. */
+export function frameTitleRequest(node: Readonly<FrameNode>, fallback: string, revision: string,
+    fontEpoch: number, zoom: number): TextLayoutRequest {
+    if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(node.w) || node.w < 0 || !Number.isFinite(fontEpoch)) throw new RangeError('Invalid frame title layout');
+    const text = node.name || fallback;
+    return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] }] },
+        revision, fontEpoch, width: node.w, style: { font: 'sans', size: 12 / zoom,
+            ink: { swatch: node.color ?? 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow',
+            maxLines: 1, ellipsis: true } };
+}
+
 export interface FigureGeometryOptions {
     readonly key: string;
     readonly kernelVersion: number;
@@ -63,7 +97,11 @@ export function* figureHatch(geometry: FigureGeometry, node: Readonly<FigureNode
 }
 
 export function geometrySceneBounds(geometry: Readonly<{ inkBoundsLocal: Rect; selectBoundsLocal: Rect }>): Readonly<{ ink: Box; hit: Box }> {
-    const box = (r: Rect): Box => [r.x, r.y, r.x + r.width, r.y + r.height];
+    const box = (r: Rect): Box => {
+        const right = r.x + r.width, bottom = r.y + r.height;
+        if (![r.x, r.y, r.width, r.height, right, bottom].every(Number.isFinite) || r.width < 0 || r.height < 0) throw new RangeError('Invalid scene geometry bounds');
+        return [r.x, r.y, right, bottom];
+    };
     return { ink: box(geometry.inkBoundsLocal), hit: box(geometry.selectBoundsLocal) };
 }
 export const figureSceneBounds = geometrySceneBounds;

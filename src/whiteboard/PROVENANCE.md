@@ -61,6 +61,7 @@ third-party code included (normally "none") · date.
 
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
+| `format/identity.ts` | w-d | FMT-1, P8 | native-format §3; PDF attachment marker contract | Stable app-owned native format identifier shared with PDF attachment marker role metadata; no tldraw source/package | none | 2026-11-13 |
 | `format/schema.ts` | w-d | FMT-1, F-1, F-5, F-6, F-8; R-W4/5/6/8/11/13/17/20/30/32/35 | native-format §§3,5,6,10; document-model §§1–4,7–9; text §4; security §§1,3–4 | The named greenfield specifications; w-c's public model types and shared defaults (no implementation copied); lead's recorded rulings; R-W17/20 replace source-sidecar types with model-owned raw lexemes; no tldraw source/packages | none | 2026-11-13 |
 | `format/points.ts` | w-d | FMT-2, F-3, F-9, E-FMT-7/18/21; R-W2/3/28/29/31/36/39 | native-format §4; ink §2.2 | The named greenfield specifications; arithmetic LEB128, zig-zag and second differences described there; lead's recorded arithmetic/inspection/run rulings; full validation without coordinate arrays, scale-aware precision, local quantized bounds/pressure summaries; no tldraw source/packages | none | 2026-11-13 |
 | `format/fence.ts` | w-d | F-10, FC-7; R-W15 | native-format §3.6; independence-protocol §3 conditions 1–5 | Native specification's exact inert bytes; its fact source is `formats/corpus/received/failure-results.json` (newer-schema/newer-sequences, empty-object/malformed); lead's W-D1 house-style review and R-W15's exact plain-word purpose label; no corpus source, old canvas code or tldraw package opened | none | 2026-11-13 |
@@ -154,6 +155,7 @@ third-party code included (normally "none") · date.
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs and image lease contract; pinned capture resources; no tldraw source | none | 2026-11-13 |
 | `export/capturePng.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; pinned capture preparation, worker encoding and lease cleanup; no tldraw source | none | 2026-11-13 |
 | `export/exportImage.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §5 | Export design; admitted origin-clean image leases, embedded source or normalized PNG, baked inversion; no tldraw source | none | 2026-11-13 |
+| `export/captureSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Pinned shared frame, display-list conversion and self-contained SVG serialization; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 
@@ -187,7 +189,7 @@ third-party code included (normally "none") · date.
 | `geom/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Generic box helpers moved with w-e's agreement; independent interval-filtered cubic and arc extrema | none | 2026-11-13 |
 | `scene/bounds.ts` | lane w-g | GE-1, W-E3 | geometry §2.3; rendering §6 | Re-export generic helpers from geom/bounds.ts to retain the scene API | none | 2026-11-13 |
 | `geom/numeric.ts` | lane w-g | GE-1 | geometry §2.1–2.2 | Design; IEEE 754 binary64; independent dyadic arithmetic | none | 2026-11-13 |
-| `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates | none | 2026-11-13 |
+| `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates and intersection-coordinate enclosures | none | 2026-11-13 |
 | `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
 | `geom/flatten.ts` | lane w-g | GE-1 | geometry §2.4 | Design; w-e's bounded ink cubic flattening job and circular sagitta bound | none | 2026-11-13 |
 | `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded inversion | none | 2026-11-13 |

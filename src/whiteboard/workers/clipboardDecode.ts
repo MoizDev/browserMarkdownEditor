@@ -171,7 +171,7 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
     if (box.w < 0 || box.h < 0 || !Number.isFinite(box.x + box.w) || !Number.isFinite(box.y + box.h)) throw new RangeError('Invalid clipboard bounds');
     const recordsSpan = root.get('records'), mediaSpan = root.get('media');
     if (!recordsSpan || recordsSpan.kind !== 'array' || !mediaSpan || mediaSpan.kind !== 'object') throw new TypeError('Invalid clipboard records or media');
-    const records: string[] = [], nodeIds = new Set<NodeId>(), pending: ClipboardExternalBinding[] = []; let recordBytes = 0;
+    const records: string[] = [], nodeIds = new Set<NodeId>(), nodeKinds = new Map<NodeId, string | null>(), pending: ClipboardExternalBinding[] = []; let recordBytes = 0;
     for await (const item of recordsSpan.itemsIncremental(context.slice)) {
         if (records.length >= SECURITY_LIMITS.clipboardRecords) throw new RangeError('Too many clipboard records');
         const line = await text(item, FORMAT_LIMITS.recordBytes, context);
@@ -187,6 +187,7 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
             if (!id || nodeIds.has(id)) throw new TypeError('Duplicate clipboard node id');
             nodeIds.add(id);
             const kind = row.get('kind'), nodeKind = kind?.kind === 'string' ? await text(kind, 64, context) : null;
+            nodeKinds.set(id, nodeKind);
             if (nodeKind === 'connector' || nodeKind === 'polyline') {
                 const start = nodeKind === 'connector' ? await externalAttachment(row.get('start'), context) : await attachmentValue(row.get('startAttach'), context);
                 const end = nodeKind === 'connector' ? await externalAttachment(row.get('end'), context) : await attachmentValue(row.get('endAttach'), context);
@@ -218,6 +219,12 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
     const externalBindings: ClipboardExternalBinding[] = [];
     let visited = 0;
     for (const item of pending) {
+        for (const attachment of [item.start, item.end]) if (attachment && nodeIds.has(attachment.target)) {
+            const kind = nodeKinds.get(attachment.target);
+            if (attachment.target === item.id || !kind || kind === 'connector' || kind === 'group' || kind === 'opaque') {
+                throw new TypeError('Invalid internal clipboard binding');
+            }
+        }
         const start = item.start && !nodeIds.has(item.start.target) ? item.start : undefined;
         const end = item.end && !nodeIds.has(item.end.target) ? item.end : undefined;
         if (start || end) externalBindings.push({ id: item.id, ...(start ? { start } : {}), ...(end ? { end } : {}) });

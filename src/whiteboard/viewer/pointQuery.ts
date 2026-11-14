@@ -6,6 +6,8 @@ import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { pointPath } from '../geom/pick';
 import { createFillPointJob } from '../geom/fillPoint';
+import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
+import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactLineBetween, exactPoint, exactSide, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
@@ -71,33 +73,52 @@ function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): bo
     }
     return false;
 }
-function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
-    point: Vec2, input: InputKind): { result: NarrowResult; uncertain: boolean } {
+async function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
+    point: Vec2, input: InputKind, tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
+    const run = async (paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): Promise<PointPathJobResult> => {
+        const job = createPointPathJob(paths, query, options);
+        try {
+            for (;;) {
+                const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                if (value.status !== 'pending') return value;
+                await tick();
+            }
+        } finally { job.cancel(); }
+    };
+    const base = { strokeRadiusLocal: 0, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
     if (geometry.label) {
         const query = { point, input, localToSurface: compose(worldToSurface, geometry.label.localToWorld) };
-        if (interior(rectPath(geometry.label.paint.ink), query)) return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: false };
+        const hit = await run([], query, { ...base, interiorPaths: [rectPath(geometry.label.paint.ink)] });
+        if (hit.status === 'hit') return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: false };
+        if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'label' }, uncertain: true };
     }
     const query: PointQuery = { point, input, localToSurface: worldToSurface };
-    const options = { strokeRadiusLocal: node.width / 2, marginCss: 4, errorCss: 0.01, maxSegments: 8192 };
+    const options = { ...base, strokeRadiusLocal: node.width / 2, marginCss: 4 };
+    let uncertainHead = false;
     for (const head of geometry.heads) {
         const closed = head.at(-1)?.op === 'Z';
-        const hit = pointPath([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
-        if (hit.hit) return { result: { ...hit, part: 'head' }, uncertain: false };
+        const hit = await run([head], query, { ...options, ...(closed ? { interiorPaths: [head] } : {}) });
+        if (hit.status === 'hit') return { result: { hit: true, distanceCss: hit.distanceCss, part: 'head' }, uncertain: false };
+        if (hit.status === 'uncertain') uncertainHead = true;
     }
-    if (node.dash === 'none' || !geometry.body.length) return { result: miss, uncertain: false };
-    const hit = pointPath([geometry.body], query, options);
-    if (!hit.hit) return { result: miss, uncertain: false };
+    if (node.dash === 'none' || !geometry.body.length) return uncertainHead
+        ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+    const hit = await run([geometry.body], query, options);
+    if (hit.status === 'miss') return uncertainHead
+        ? { result: { hit: true, distanceCss: 0, part: 'head' }, uncertain: true } : { result: miss, uncertain: false };
+    if (hit.status === 'uncertain') return { result: { hit: true, distanceCss: 0, part: 'body' }, uncertain: true };
     let excluded = false, nearBoundary = false;
     for (const clip of geometry.bodyExclusions) {
         const local = { point, input, localToSurface: compose(worldToSurface, clip.localToWorld) };
-        if (interior(clip.outline, local)) excluded = !excluded;
+        const inside = await run([], local, { ...base, interiorPaths: [clip.outline] });
+        if (inside.status === 'uncertain') nearBoundary = true;
+        else if (inside.status === 'hit') excluded = !excluded;
         const radius = (input === 'touch' ? 8 : 4) + node.width * Math.hypot(worldToSurface[0], worldToSurface[1]) / 2;
-        if (pointPath([clip.outline], local, { strokeRadiusLocal: 0, marginCss: radius, errorCss: 0.01, maxSegments: 8192 }).hit) nearBoundary = true;
+        const boundary = await run([clip.outline], local, { ...base, marginCss: radius });
+        if (boundary.status !== 'miss') nearBoundary = true;
     }
-    // Near an exclusion the uncut witness might be hidden. Only a point farther
-    // than its full CSS hit radius from every boundary certifies the same hit.
-    return excluded || nearBoundary ? { result: { ...hit, part: 'body' }, uncertain: true }
-        : { result: { ...hit, part: 'body' }, uncertain: false };
+    // An uncut witness near an exclusion might be hidden; retain uncertainty.
+    return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: excluded || nearBoundary };
 }
 
 /** Queries one published Scene revision, not a second index or live paint cache. */
@@ -200,7 +221,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         if (targetMode && result.hit) ambiguous = true;
                     } else if (node.kind === 'connector') {
                         if (!prepared.connector) throw new Error('Connector picking geometry is unavailable');
-                        ({ result, uncertain: ambiguous } = connectorPoint(node, prepared.connector, matrix, surface, input));
+                        ({ result, uncertain: ambiguous } = await connectorPoint(node, prepared.connector, matrix, surface, input, tick));
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
                         let vector = prepared.vector;

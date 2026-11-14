@@ -5,6 +5,7 @@ import { normalizeRichTextSteps, type Block, type Marks, type RichText, type Run
 import type { RichImportResult } from './rich';
 import { repairLegacyCharacterSteps } from './repair';
 import type { PlainTextOptions } from './plainText';
+import { materializeLegacySpan, RichImportSchedulerError } from './legacySpanMaterialize';
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue | null {
@@ -367,6 +368,14 @@ function* spanSteps(root: JsonSpan): Generator<void, RichImportResult> {
 
 /** Lexical spans preserve unknown tokens; no partial conversion is returned after cancellation. */
 export function convertLegacyRichSpan(root: JsonSpan): RichImportResult { return finish(spanSteps(root)); }
-export function convertLegacyRichSpanCooperative(root: JsonSpan, options: PlainTextOptions): Promise<RichImportResult> {
-    return finishCooperative(spanSteps(root), options);
+export async function convertLegacyRichSpanCooperative(root: JsonSpan, options: PlainTextOptions): Promise<RichImportResult> {
+    let materialized: Awaited<ReturnType<typeof materializeLegacySpan>>;
+    try { materialized = await materializeLegacySpan(root, options); }
+    catch (error) {
+        options.signal?.throwIfAborted();
+        if (error instanceof RichImportSchedulerError) throw error.original;
+        return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }] },
+            repairs: [], unrepresentable: [error instanceof Error ? error.message : 'Rich text could not be represented'] };
+    }
+    return finishCooperative(convertSteps(materialized.value, materialized.originals), options);
 }

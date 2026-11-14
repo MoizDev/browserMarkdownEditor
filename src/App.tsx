@@ -387,6 +387,7 @@ export default function App() {
     retireAsset,
     restoreAsset,
     restoreVault,
+    requestIndexPermission,
     moveToTrash,
     listTrash,
     restoreFromTrash,
@@ -470,8 +471,23 @@ export default function App() {
     const value = next ?? EMPTY_GRAPH;
     setGraph(previous => sameGraph(previous, value) ? previous : value);
   }, []);
+  const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
+  const reportIndexProblem = useCallback((value: unknown) => {
+    const problem = value as { kind?: string } | null;
+    setIndexProblem({ activation: getVaultActivation(), kind: problem?.kind ?? 'unavailable' });
+  }, [getVaultActivation]);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
-    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile, publish: publishIndexGraph });
+    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
+    publish: publishIndexGraph, onProblem: reportIndexProblem });
+  const retryIndex = useCallback(async () => {
+    const owner = indexGraphRef.current;
+    if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
+    if (indexProblem.kind === 'permission' && !await requestIndexPermission(owner.root, owner.activation)) return;
+    try {
+      await owner.regrant();
+      if (indexGraphRef.current === owner) setIndexProblem(null);
+    } catch { /* Keep Retry available. */ }
+  }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
@@ -5181,6 +5197,12 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
+        {indexProblem?.activation === searchActivation && (
+          <div className="disk-bar" role="alert">
+            <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
+            <div className="disk-bar-actions"><button className="disk-bar-btn is-primary" onClick={() => { void retryIndex(); }}>Retry</button></div>
+          </div>
+        )}
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView

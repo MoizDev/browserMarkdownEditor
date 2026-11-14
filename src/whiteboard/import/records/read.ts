@@ -109,6 +109,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             const imported = await readInlineAsset(record, options.admitMedia, options.signal);
             options.assertCurrent();
             assetIds.set(id, imported.entry.id); media.push(imported);
+            if (!ordinaryAssets.has(id)) preserve({ assetId: id, media: imported.entry.id }, id, 'orphan-asset');
         } catch (error) {
             options.signal?.throwIfAborted();
             options.assertCurrent();

@@ -29,6 +29,8 @@ export { applyRichTransaction, validateRichFragment, validateRichFragmentCoopera
 export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
 export { snapshotRichFragmentCooperative } from './fragmentSnapshot';
 export type { FragmentSnapshotOptions } from './fragmentSnapshot';
+export { admitRichFragmentCooperative } from './admitFragment';
+export type { RichFragmentAdmissionOptions } from './admitFragment';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {

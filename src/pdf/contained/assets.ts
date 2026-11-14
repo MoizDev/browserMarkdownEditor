@@ -17,7 +17,7 @@ export interface TrustedPdfAssets {
     buildId: string;
     artifactSha256: string;
     assetBase: string;
-    wasmUrl: string;
+    wasm: Blob;
     wasmBytes: number;
     glueSource: string;
     abi: unknown;
@@ -34,8 +34,8 @@ function pinUrl(base: URL, pin: AssetPin): string {
     return url.href;
 }
 
-/** Only small glue/ABI inputs are materialized here. WASM is fetched with SRI and
- * compiled in the opaque worker: a Module cannot cross C5 or unrelated agent clusters. */
+/** Bytes are authenticated on the trusted side before becoming immutable Blobs.
+ * No compiled Module crosses C5 or an agent-cluster boundary. */
 async function verifiedBytes(url: string, pin: AssetPin, signal?: AbortSignal): Promise<ArrayBuffer> {
     const response = await fetch(url, { signal, credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'force-cache' });
     if (!response.ok || !response.body) throw broken();
@@ -84,9 +84,11 @@ export async function loadTrustedPdfAssets(signal?: AbortSignal): Promise<Truste
         const wasmUrl = pinUrl(base, manifest.files.wasm);
         const glue = await verifiedBytes(glueUrl, manifest.files.glue, signal);
         const abi = await verifiedBytes(abiUrl, manifest.abi, signal);
+        const wasm = await verifiedBytes(wasmUrl, manifest.files.wasm, signal);
         const decoder = new TextDecoder('utf-8', { fatal: true });
         return { buildId: manifest.buildId, artifactSha256: manifest.artifactSha256, assetBase: base.href,
-            wasmUrl, wasmBytes: manifest.files.wasm.bytes, glueSource: decoder.decode(glue), abi: JSON.parse(decoder.decode(abi)) as unknown };
+            wasm: new Blob([wasm], { type: 'application/wasm' }), wasmBytes: manifest.files.wasm.bytes,
+            glueSource: decoder.decode(glue), abi: JSON.parse(decoder.decode(abi)) as unknown };
     } catch (error) {
         if (signal?.aborted) throw signal.reason ?? new DOMException('PDF engine load cancelled', 'AbortError');
         if (error instanceof PdfEngineError) throw error;

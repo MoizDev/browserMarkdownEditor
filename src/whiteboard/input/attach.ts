@@ -159,6 +159,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         const context = services.zoomBrush()
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
       }
+      if (editable() && services.editing() && services.textInput) {
+        const textRoute = services.textInput.pointer(sample, modifiers, event)
+        if (textRoute) return textRoute
+      }
       if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {
         const open = services.linkAt?.(sample)
         if (open) {
@@ -250,11 +254,17 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
+  const doubleClick = (event: MouseEvent) => {
+    if (current() && editable() && event.button === 0 && services.textInput?.doubleClick(event.clientX, event.clientY)) {
+      event.preventDefault(); event.stopPropagation()
+    }
+  }
   const dragover = (event: DragEvent) => { event.preventDefault(); event.stopPropagation() }
   const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (current() && editable()) services.drop?.(event) }
   view.surface.addEventListener('dragover', dragover)
   view.surface.addEventListener('drop', drop)
   view.surface.addEventListener('auxclick', auxclick)
+  view.surface.addEventListener('dblclick', doubleClick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
   view.surface.addEventListener('pointerup', up, true)
@@ -309,6 +319,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.cancelPendingGestures()
     if (cursor.active) cursor.escape()
     pointer.interrupt('flush')
+    services.textInput?.flush()
   }
   const stopFlush = view.bindFlush?.(flush)
   const pagehide = () => { if (current()) flush() }
@@ -323,6 +334,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
     cursor, navigation: services.keyboardNavigation, gestureActive: () => router.activeOwner !== null,
+    typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
     clearLatches: () => { spaceHeld = false; zoomHeld = false; if (cursor.active) cursor.escape(); pointer.interrupt('flush'); services.clearLatches() },
     run(id, event) {
@@ -337,6 +349,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (editable()) { services.history.undo(); return true }
       }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
+      if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
       if (id.startsWith('style.')) flush()
       if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
       if (id === 'pan.hold') {
@@ -412,6 +425,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('dragover', dragover)
     view.surface.removeEventListener('drop', drop)
     view.surface.removeEventListener('auxclick', auxclick)
+    view.surface.removeEventListener('dblclick', doubleClick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)
     view.surface.removeEventListener('pointerup', up, true)

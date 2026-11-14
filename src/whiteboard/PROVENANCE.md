@@ -53,7 +53,8 @@ third-party code included (normally "none") · date.
 | `change/rawChanges.ts` | lane w-c | H-2/3, M-3/9, R-W23/25/37/40 | document-model §9.3; change-and-history §2 | Design/rulings; diff RawJson carrier multiplicities, scan entering/leaving values, omit only owning media self-reference | none | 2026-11-13 |
 | `session/BoardSession.ts` | lane w-c | H-1/3/4, C7.0/2/5/6, D-10 | change-and-history §§2–4; integration §§2/9 | Design; source ownership, read-only safety and session-owned gesture queue public contract; no tldraw source | none | 2026-11-13 |
 | `session/gestureQueue.ts` | lanes w-c/w-e | C7.2, WB-D17 | integration §§2/9 | Design/ruling; one session FIFO, idempotent gesture leases, cancellation and final owner/readiness/read-only checks; factory and viewer class delegate to the same queue | none | 2026-11-13 |
-| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only public rich text operations, import contract and replace-blocks semantics; no tldraw source | none | 2026-11-13 |
+| `text/rich.ts` | lane w-l | TX-2, R-W32 | text §4; change-and-history §2.1 | Design-only rich text interface, import contract and replace-blocks semantics; no tldraw source | none | 2026-11-13 |
+| `model/textOffsets.ts` | lane w-l | TX-2, V-11 | text §4.3 | Grapheme boundary admission over immutable block projection; no tldraw source | none | 2026-11-13 |
 | `text/richText.ts` | lane w-c | M-3, V-11, H-2/3, R-W19/21/25 | text §4.1; change-and-history §2 | Design/rulings only; minimal immutable normalize/slice/splice, opaque carrier preservation and exact boundary-block inverse splices, not whole-value undo snapshots | none | 2026-11-13 |
 
 ## Agent adapter (lane w-p)

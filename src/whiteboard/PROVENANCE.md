@@ -108,7 +108,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `import/segments.ts` | w-o | IMP-2, E-IMP-15 | import §3; current-format §2.3 | Documented legacy point layout and corpus facts; no old canvas or tldraw source | none | 2026-11-13 |
-| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, generic root bounds port and saved PDF backdrop layout contract | none | 2026-11-13 |
+| `import/pages.ts` | w-o | IMP-3, E-IMP-7/9 | import §3.1 | Page-local mapping, geometry-preparation port, notebook layout and saved PDF backdrop layout contract | none | 2026-11-13 |
 | `import/report.ts` | w-o | IMP-5 | import §§1,6 | Import report and notice contract | none | 2026-11-13 |
 | `import/records/envelope.ts` | w-o | IMP-1, E-IMP-1/2/4 | import §§2,6; current-format §§1–3 | Observed envelopes, schema counters and mismatched-record recovery | none | 2026-11-13 |
 | `import/records/storeFields.ts` | w-o | IMP-1, E-IMP-4 | import §6; document-model §9.2 | JSON format and duplicate-record preservation requirement | none | 2026-11-13 |

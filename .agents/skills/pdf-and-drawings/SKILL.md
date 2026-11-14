@@ -364,10 +364,13 @@ there.** `PdfViewer` takes `isVisible` (not `isActive`, which is keyboard focus)
 - **stops committing resizes.** The slot is a percentage of its column, so every sidebar toggle and
   window resize re-fit and re-rastered the hidden panes too. The last width is applied on the way in.
 
-What is KEPT: the last visible page bitmaps, the held pdf.js page leases, the text layers (⌘F still
-works) and the scroll position. Coming back runs the normal window pass: compatible resume pixels
-stay, missing/incompatible bands render and the surrounding prefetch margin refills. A far-page
-release is a session lease release, never a direct cleanup by the viewer.
+What is KEPT: the last visible page bitmaps, the text layers (⌘F still works) and the scroll
+position. Coming back runs the normal window pass: compatible resume pixels stay, missing/incompatible
+bands render and the surrounding prefetch margin refills. A page release is a session lease release,
+never a direct cleanup by the viewer.
+P06 retains only the on-screen DOM resume pixels under D1's policy: hide cancels visual work and
+releases hidden viewer leases, frees other canvases/URLs/refined JPEGs, evicts heavy parsed pages
+immediately and small idle parsed state within five seconds, but never cancels save/export work.
 
 ## Tldraw's assets are OURS
 

@@ -7,7 +7,11 @@ type HarfBuzzFont = import('harfbuzzjs').Font;
 type GlyphPath = ReturnType<HarfBuzzFont['glyphToJson']>;
 interface FontEntry { readonly font: HarfBuzzFont; readonly paths: Map<number, { path: GlyphPath; bytes: number }>; bytes: number }
 const loaded = new Map<string, Promise<FontEntry>>();
-const GLYPH_CACHE_BYTES = 4 * 1024 * 1024;
+const GLYPH_CACHE_BYTES = 512 * 1024;
+
+export function clearOutlineGlyphCaches(): void {
+    for (const pending of loaded.values()) void pending.then(entry => { entry.paths.clear(); entry.bytes = 0; }).catch(() => undefined);
+}
 
 async function outlineFont(face: Face): Promise<FontEntry> {
     const url = outlineFontUrl(face.key);

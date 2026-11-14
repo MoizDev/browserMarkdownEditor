@@ -59,7 +59,7 @@ function languageRegion(language: string | undefined): Region | undefined {
 }
 
 /** null means PDFium's built-in Base-14 face or an unsupported charset, not a network URL. */
-export function resolvePdfFont(spec: FontSpec, language?: string): PdfFontId | null {
+export function resolvePdfFont(spec: FontSpec, language: string | undefined = spec.language): PdfFontId | null {
     if (typeof spec.family !== 'string' || !spec.family.length || spec.family.length > 128 ||
         !Number.isFinite(spec.weight) || spec.weight < 1 || spec.weight > 1000 || typeof spec.italic !== 'boolean' ||
         (spec.charset !== undefined && (!Number.isInteger(spec.charset) || spec.charset < 0 || spec.charset > 255)) ||

@@ -8,7 +8,8 @@ import { PdfTileCache } from './tileCache';
 import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
-import { pdfVariantRevision } from '../fonts/profiles';
+import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
+import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
@@ -417,9 +418,11 @@ export class PdfTileLayer implements Layer {
         const current = this.mirror.view(this.latestView);
         if (!current || mirrorViewKey(current) !== job.key) return false;
         const input = this.demand(this.latestView), token = renderTokenKey(input.token);
+        const docKey = pdfDocKey({ ...input.token, source: input.source });
         if (renderTokenKey(current.token) !== token || current.sourceRole !== input.source ||
             current.geometryDigest !== input.geometryDigest || current.colourVersion !== 0 ||
-            !current.contentRevision.startsWith(`${pdfVariantRevision(input.variant, input.fontEpoch ?? 0)}:proof:`)) return false;
+            getPdfFontEpoch(docKey) !== (input.fontEpoch ?? 0) ||
+            !current.contentRevision.startsWith(pdfMirrorProfilePrefix(input.variant, docKey))) return false;
         return job.entries.every(({ request }) => request.key.documentToken === token && request.key.sourceRole === input.source &&
             request.key.colourVersion === current.colourVersion && request.key.contentRevision === pdfVariantRevision(
                 input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));

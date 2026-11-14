@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
 import { perfRoot } from '../utils/perfHooks';
 import { GraphLayoutClient } from './graphLayoutClient';
-import { getGraphLayout, putGraphLayout } from '../utils/graphLayoutStore';
+import { getGraphLayout, putGraphLayout, queueGraphLayoutSave } from '../utils/graphLayoutStore';
+import type { StoredGraphLayout } from '../utils/graphLayoutStore';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -102,6 +103,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
     // A StrictMode remount gets a fresh owner; disposal terminates its worker.
     const layoutRef = useRef<GraphLayoutClient | null>(null);
+    const [layoutGeneration, setLayoutGeneration] = useState(0);
     const wakeRef = useRef<() => void>(() => {});
     const pointerRef = useRef<number | null>(null);
     const positionVersion = useRef(0);
@@ -189,12 +191,23 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     );
 
     useEffect(() => {
-        const layout = new GraphLayoutClient(getGraphLayout(vaultKey));
-        layoutRef.current = layout;
+        let live = true;
+        let owner: GraphLayoutClient | undefined;
+        const start = (saved?: StoredGraphLayout) => {
+            if (!live) return;
+            owner = new GraphLayoutClient(getGraphLayout(vaultKey) ?? saved);
+            layoutRef.current = owner;
+            setLayoutGeneration(generation => generation + 1);
+        };
+        const memory = getGraphLayout(vaultKey);
+        if (memory || !vaultKey.startsWith('vault:')) start(memory);
+        else void import('../context/vaultIndex/persistence').then(db => db.loadLayout(vaultKey)).then(start, () => start());
         return () => {
-            layoutRef.current = null;
-            if (layout.ids.length) putGraphLayout(vaultKey, layout.snapshot());
-            layout.dispose();
+            live = false;
+            if (!owner) return;
+            if (layoutRef.current === owner) layoutRef.current = null;
+            if (owner.ids.length) putGraphLayout(vaultKey, owner.snapshot());
+            owner.dispose();
         };
     }, [vaultKey]);
 
@@ -219,7 +232,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 }
             } catch { /* Measurement failures must not enter the app's path. */ }
         }
-    }, [nodes, links, indexing, updating, vaultKey]);
+    }, [nodes, links, indexing, updating, vaultKey, layoutGeneration]);
 
     useEffect(() => {
         // App applies data-theme in its own effect, after this child's effect.
@@ -451,7 +464,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     if (index !== undefined) { layout.x[index] = current.x; layout.y[index] = current.y; }
                 }
                 working = frame.working || !!current;
-                if (!working) putGraphLayout(vaultKey, layout.snapshot());
+                if (!working && frame.moved && layout.ids.length) {
+                    const snapshot = layout.snapshot();
+                    putGraphLayout(vaultKey, snapshot);
+                    if (vaultKey.startsWith('vault:')) queueGraphLayoutSave(vaultKey, async () => {
+                        const { saveLayout } = await import('../context/vaultIndex/persistence');
+                        await saveLayout(vaultKey, snapshot);
+                    });
+                }
                 if (frame.moved) {
                     positionVersion.current++;
                     if (autoFitRef.current) fit();
@@ -481,7 +501,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             rafRef.current = 0;
             ro.disconnect();
         };
-    }, [nodes, links, adjacency, maxDegree, vaultKey]);
+    }, [nodes, links, adjacency, maxDegree, vaultKey, layoutGeneration]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX: number, clientY: number) => {

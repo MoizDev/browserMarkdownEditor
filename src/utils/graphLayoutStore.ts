@@ -4,6 +4,12 @@ export interface GraphTopology { nodes: string[]; edges: [string, string][] }
 
 // Session memory is keyed by vault identity, never by the common note paths.
 const layouts = new Map<string, StoredGraphLayout>();
+const saves = new Map<string, Promise<void>>();
+export function queueGraphLayoutSave(vaultId: string, write: () => Promise<void>): void {
+    const next = (saves.get(vaultId) ?? Promise.resolve()).catch(() => {}).then(write).catch(() => {});
+    saves.set(vaultId, next);
+    void next.finally(() => { if (saves.get(vaultId) === next) saves.delete(vaultId); });
+}
 export function getGraphLayout(vaultId: string): StoredGraphLayout | undefined { return layouts.get(vaultId); }
 export function putGraphLayout(vaultId: string, layout: StoredGraphLayout): void { layouts.set(vaultId, layout); }
 export function graphTopology(ids: readonly string[], links: readonly { source: string; target: string }[]): GraphTopology {

@@ -21,7 +21,7 @@ import {
 import { getActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import { collectFiles } from '../utils/tree';
 import { createSortCache, isTimeSort, sortTree, TREE_SORT_ORDERS, type TreeSortOrder } from '../utils/treeSort';
-import { getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
+import { areIndexTimesReady, getFileTimes, getFileTimesVersion, statFileTimes, subscribeFileTimes } from '../utils/fileTimes';
 import { readJSON, writeJSON } from '../utils/storage';
 import type { VaultIndexSession } from '../utils/vaultIndexSession';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
@@ -172,6 +172,7 @@ function FileExplorer({
         subscribeFileTimes,
         useCallback(() => (isTimeSort(sortOrder) ? getFileTimesVersion() : 0), [sortOrder]),
     );
+    const indexTimesReady = useSyncExternalStore(subscribeFileTimes, areIndexTimesReady);
     const customOrder = useSyncExternalStore(
         subscribeEntryStyles,
         useCallback(() => (reordering ? getEntryOrder() : NO_ORDER), [reordering]),
@@ -193,11 +194,11 @@ function FileExplorer({
        file on disk). Never per keystroke: saves stamp their own path instead.
        The cleanup discards a walk the tree or the order has since outdated. */
     useEffect(() => {
-        if (!isTimeSort(sortOrder)) return;
+        if (!isTimeSort(sortOrder) || indexTimesReady) return;
         let current = true;
         void statFileTimes(collectFiles(fileTree), () => current, readSnapshot);
         return () => { current = false; };
-    }, [fileTree, sortOrder, readSnapshot]);
+    }, [fileTree, sortOrder, readSnapshot, indexTimesReady]);
 
     // ── Expand all / Collapse all ───────────────────────────────────────────
     /** Every folder in the tree — the REAL ones, so a stale expandedPaths

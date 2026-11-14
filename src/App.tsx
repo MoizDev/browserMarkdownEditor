@@ -254,8 +254,9 @@ interface AppDialog extends DialogRequest {
  * that identity is load-bearing: a fresh object propagates into GraphView's
  * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
  * the RAF loop and the ResizeObserver. Without this, an unrelated tab
- * autosaving visibly re-heated the graph the user was looking at — and the
- * graph is rebuilt after EVERY save, not just on tree changes.
+ * autosaving visibly re-heated the graph the user was looking at. Only changed
+ * link facts/tree revisions request new work; equivalent worker publications
+ * must still leave the running layout alone.
  */
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
@@ -1267,7 +1268,7 @@ export default function App() {
     pdfSeedsRef.current.set(id, seed);
     return seed;
   }, [readBytesVersioned]);
-  /** Read through a ref for the same reason writeFile and rebuildGraph are: the
+  /** Read through a ref to keep the captured IO callback current: the
    *  save helpers keep a stable identity, and a dependency here would re-arm
    *  every timer and listener they own. */
   const pdfSeedForRef = useRef(pdfSeedFor);
@@ -1524,7 +1525,7 @@ export default function App() {
     }
   }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation]);
 
-  // Read through a ref for the same reason writeFile and rebuildGraph are: it
+  // Read through a ref to keep the captured IO callback current: it
   // keeps flushTab — and every timer and listener downstream of it — stable.
   const reconcileAssetsRef = useRef(reconcileAssets);
   useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);

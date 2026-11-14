@@ -71,6 +71,12 @@ export interface PointerSink {
   error?(error: unknown, pointerId: number): void
 }
 
+class PartialPointerBatchError extends Error {
+  constructor(readonly samples: readonly RealSample[], readonly failure: unknown) {
+    super('Pointer batch stopped after a preserved prefix')
+  }
+}
+
 interface Contact {
   readonly id: number
   watermark: number
@@ -146,7 +152,7 @@ export class PointerAcquisition {
     if (event.type === 'pointerup' && coalesced.length && tuple(coalesced[coalesced.length - 1]) !== tuple(event)) events.push(event)
     const result: RealSample[] = []
     let previous = -Infinity
-    for (const item of events) {
+    try { for (const item of events) {
       if (item.pointerId !== contact.id || !Number.isFinite(item.timeStamp) || item.timeStamp < previous) throw new Error('Unordered pointer batch')
       previous = item.timeStamp
       const key = tuple(item)
@@ -159,12 +165,12 @@ export class PointerAcquisition {
       }
       if (item.timeStamp < contact.watermark || contact.suffix.includes(key)) continue
       const sample = this.sample(item)
+      result.push(sample)
       contact.watermark = item.timeStamp
       contact.suffix.push(key)
       if (contact.suffix.length > 64) contact.suffix.shift()
       if (raw) contact.rawSinceMove.set(key, (contact.rawSinceMove.get(key) ?? 0) + 1)
-      result.push(sample)
-    }
+    } } catch (error) { throw new PartialPointerBatchError(result, error) }
     if (!raw) contact.rawSinceMove.clear()
     return result
   }
@@ -194,7 +200,15 @@ export class PointerAcquisition {
       const samples = this.batch(contact, event, raw)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
       if (!raw) this.predict(event.pointerId, event)
-    } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
+    } catch (error) {
+      try {
+        if (error instanceof PartialPointerBatchError && error.samples.length)
+          this.sink.move(event.pointerId, error.samples, modifiers(event, this.mac), event)
+      } finally {
+        try { this.sink.error?.(error instanceof PartialPointerBatchError ? error.failure : error, event.pointerId) }
+        finally { this.end(event.pointerId, 'cancel') }
+      }
+    }
   }
   private move = (event: PointerEvent): void => { this.process(event, false) }
   private raw = (event: PointerEvent): void => { this.process(event, true) }
@@ -206,7 +220,15 @@ export class PointerAcquisition {
       const samples = this.batch(contact, event, false)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
       this.contacts.delete(event.pointerId)
-    } catch (error) { this.sink.error?.(error, event.pointerId); this.end(event.pointerId, 'cancel') }
+    } catch (error) {
+      try {
+        if (error instanceof PartialPointerBatchError && error.samples.length)
+          this.sink.move(event.pointerId, error.samples, modifiers(event, this.mac), event)
+      } finally {
+        try { this.sink.error?.(error instanceof PartialPointerBatchError ? error.failure : error, event.pointerId) }
+        finally { this.end(event.pointerId, 'cancel') }
+      }
+    }
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return

@@ -25,16 +25,15 @@ import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
 import type { BoardPrintSource } from '../../whiteboard/export/print';
-import { pinNativeNotebookPrint } from '../../whiteboard/export/notebookPrint';
 import { pinPagedPrintSource } from '../../whiteboard/export/pagedPrintSnapshot';
-import { pinNativeWhiteboardPrint } from '../../whiteboard/export/whiteboardPrint';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import { printBoard } from './printBoard';
 
 export interface FocusedBoardPrintOptions {
     readonly runtime: BoardRuntime;
-    readonly memory: MemoryAllocator;
     readonly kind: NativeCanvasIdentity['kind'];
+    readonly boardName: string;
+    readonly transparent: boolean;
     readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     /** True only while this board is still the same live document it was when printing started. */
     valid(): boolean;
@@ -42,16 +41,17 @@ export interface FocusedBoardPrintOptions {
     onError(error: unknown): void;
 }
 
-/** Pins the focused board's own source (its paper, sheets and ink) for a single print. */
-function pinFocusedBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
-    const { runtime, memory, readMedia, onError, kind } = options;
+/**
+ * A PDF annotation page prints through its own paged pin: its PDF backdrop has no canonical print route yet, so this
+ * path stays until the PDF print route exists. Every other board prints through the canonical export job.
+ */
+function pinPdfInkBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
+    const { runtime, readMedia, onError } = options;
     const media = async (entry: Readonly<MediaEntry>, signal: AbortSignal): Promise<Blob> => {
         const blob = await readMedia(entry as MediaEntry, signal);
         if (!blob) throw new Error('A picture on this board is unavailable for printing.');
         return blob;
     };
-    if (kind === 'drawing') return pinNativeWhiteboardPrint({ runtime, memory, readMedia: media, onError });
-    if (kind === 'notebook') return pinNativeNotebookPrint({ runtime, memory, readMedia: media, onError });
     const stack = boardPageStack(runtime.session.doc.host);
     if (!stack) throw new Error('Print pages are unavailable for this board.');
     const pin = createBoardExportSnapshot({ runtime, request: { sheetId: runtime.selection.getSnapshot().sheet, theme: 'light' },
@@ -59,10 +59,13 @@ function pinFocusedBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
     return pinPagedPrintSource(pin, stack.rects);
 }
 
-/** Mod-P on the focused native board: one pinned source, printed through the app's print helper. */
+/** Mod-P on the focused native board: one canonical export job's print source, printed through the app's print helper. */
 async function printFocusedBoard(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    const source = pinFocusedBoard(options);
+    const source = options.kind === 'pdfInk' ? pinPdfInkBoard(options)
+        : (await prepareNativeExport({ runtime: options.runtime, route: 'print', signal, boardName: options.boardName, theme: 'light',
+            transparent: options.transparent, current: options.valid, notice: options.notice, onError: options.onError,
+            readMedia: options.readMedia })).print;
     try {
         const pdf = await source.pdf(signal);
         await printBoard({ pdf, valid: options.valid, signal,
@@ -249,6 +252,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             let detached = false;
             const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
             let pointer: { x: number; y: number } | null = null;
+            // A print belongs to this view: detaching the view (pane hide, close, vault switch) cancels it.
+            const printing = new AbortController();
             const surfacePoint = (x: number, y: number) => {
                 const bounds = surface.getBoundingClientRect(), viewport = lease.camera.viewport;
                 if (bounds.width <= 0 || bounds.height <= 0) throw new Error('Board surface is unavailable');
@@ -283,8 +288,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 // Mod-P belongs to the focused board only: the browser's page print of the app is never reached from here.
                 if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
                     event.preventDefault(); event.stopPropagation();
-                    void printFocusedBoard({ runtime, memory, kind: identity.kind, readMedia, valid: () => current() && bindings.has(binding),
-                        notice: report, onError: fail }, new AbortController().signal).catch(fail);
+                    void printFocusedBoard({ runtime, kind: identity.kind, boardName: host.identity(identity.documentId)?.name ?? identity.name,
+                        transparent: runtime.session.doc.view.transparent, readMedia, valid: () => current() && bindings.has(binding),
+                        notice: report, onError: fail }, printing.signal).catch(fail);
                     return;
                 }
                 if (canWriteView()) {
@@ -328,6 +334,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             }
             return { controller, commands, openMenu: menu, focus, detach() {
                 if (detached) return; detached = true;
+                printing.abort(new DOMException('Board view detached', 'AbortError'));
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 controller.retire(() => controllers.delete(controller));
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);

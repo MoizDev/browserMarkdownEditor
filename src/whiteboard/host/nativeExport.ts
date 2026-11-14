@@ -7,6 +7,9 @@ import { createExportImageResolver } from '../export/exportImage';
 import { createBoardCaptureSnapshot } from '../export/runtimeSnapshot';
 import { encodeTiledPngInWorker } from '../export/pngWorkerClient';
 import { checkPngSize, splicePngDensity } from '../export/png';
+import type { BoardPrintSource } from '../export/print';
+import { streamIncrementalPdf } from '../export/incrementalPdf';
+import { createLazyIncrementalPdfWriter } from '../export/lazyPdfWriter';
 import { exportFileName, resolveExportScope, type ExportRoute } from '../export/scope';
 import { streamRasterPng } from '../export/streamRaster';
 import { streamSvg } from '../export/streamSvg';
@@ -26,7 +29,7 @@ import type { BoardRuntime } from './runtime';
 
 export interface NativeExportOptions {
     readonly runtime: BoardRuntime;
-    readonly route: Extract<ExportRoute, 'copy' | 'context' | 'menu'>;
+    readonly route: Extract<ExportRoute, 'copy' | 'context' | 'menu' | 'print'>;
     readonly boardName: string;
     readonly theme: 'light' | 'dark';
     readonly transparent: boolean;
@@ -56,6 +59,8 @@ export interface NativeExportJob {
 export interface NativePreparedExportJob extends NativeExportJob {
     readonly bounds: Readonly<Rect>;
     readonly topmostRoot: NodeId | null;
+    /** Print is the same frozen source as PNG and SVG: its pages are the pinned layout, or the one scope for a whiteboard. */
+    readonly print: BoardPrintSource;
 }
 
 let serial = 0;
@@ -396,8 +401,30 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
                 { background: background && colourCss(background), clipboard: route === 'copy' });
         });
+        // Paged documents print their pinned pages (the selection, when there is one, is a single page); a whiteboard prints its scope.
+        const printPages: Rect[] = !selectionOnly && meta.kind !== 'whiteboard' && pages?.length
+            ? pages.map(page => ({ ...page })) : [{ ...scope.bounds }];
+        const printScale = meta.kind === 'whiteboard' ? 0.75 : 1, printRaster = meta.kind === 'whiteboard' ? 200 / 96 : 200 / 72;
+        const print: BoardPrintSource = {
+            pageCount: printPages.length,
+            pdf: requestSignal => run(requestSignal, async combined => {
+                const bytes = await streamIncrementalPdf({ revision, pageCount: printPages.length,
+                    async page(index, pageSignal) {
+                        pageSignal.throwIfAborted();
+                        return { source, world: printPages[index]!, outputScale: printScale };
+                    } }, printScale, createExportImageResolver(token, capturedImages, readImage, combined), createLazyIncrementalPdfWriter(), combined);
+                combined.throwIfAborted();
+                return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
+            }),
+            pngPage: (page, requestSignal) => run(requestSignal, combined => {
+                const world = printPages[page];
+                if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                return streamRasterPng(source, capturedImages, world, printRaster, combined, { background: '#ffffff' });
+            }),
+            release,
+        };
         return {
-            bounds: Object.freeze({ ...scope.bounds }), topmostRoot,
+            bounds: Object.freeze({ ...scope.bounds }), topmostRoot, print,
             png: exportPng,
             clipboardPng: async requestSignal => {
                 const image = await exportPng(requestSignal);

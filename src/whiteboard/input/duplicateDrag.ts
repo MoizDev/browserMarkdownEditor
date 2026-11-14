@@ -115,7 +115,9 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 for (const patch of placements.get(original.id) ?? []) node = { ...node, [patch.key]: patch.value } as Node;
                 if (node.kind === 'connector') node = { ...node,
                     start: { ...node.start, attach: attachment(node.start.attach) }, end: { ...node.end, attach: attachment(node.end.attach) } };
-                else if (node.kind === 'polyline') node = { ...node, startAttach: attachment(node.startAttach), endAttach: attachment(node.endAttach) };
+                else if (node.kind === 'polyline') node = { ...node,
+                    startAttach: node.startAttach === undefined ? undefined : attachment(node.startAttach),
+                    endAttach: node.endAttach === undefined ? undefined : attachment(node.endAttach) };
                 additions.push(node); await tick(request);
             }
             if (drop) {

@@ -109,10 +109,15 @@ export async function exportNotebookPdf(
     return writer({ schema: 1, pages, notebookSource: { path: sourcePath } }, { signal });
 }
 
+function isIncrementalWriter(writer: NotebookPdfStreamWriter | IncrementalPdfWriter): writer is IncrementalPdfWriter {
+    return 'kind' in writer && writer.kind === 'incremental-pdf';
+}
+
 /** A physical page is handed off before the next one is built, including every sheet. */
 export async function streamNotebookPdf(snapshot: NotebookExportSnapshot, sourcePath: string,
-    writer: NotebookPdfStreamWriter, signal: AbortSignal): Promise<Uint8Array> {
+    writer: NotebookPdfStreamWriter | IncrementalPdfWriter, signal: AbortSignal): Promise<Uint8Array> {
     signal.throwIfAborted();
+    if (isIncrementalWriter(writer)) return exportIncrementalNotebookPdf(snapshot, sourcePath, writer, signal);
     const paper = { ...snapshot.paper }, sheets = [...snapshot.sheets];
     if (!Number.isSafeInteger(paper.pageCount) || paper.pageCount < 1) throw new RangeError('Invalid notebook page count');
     const size = paperPageSize(paper), paperItems = notebookPaperList(paper, 0).items;

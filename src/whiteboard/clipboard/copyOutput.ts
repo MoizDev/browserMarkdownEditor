@@ -31,7 +31,7 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     if (!ended) throw new Error('PNG capture has no end');
     return new Blob(parts, { type: 'image/x-board+png' });
 }
-/** Capture is the real export port; promises are installed while user activation is live. */
+/** Capture is the real in-job export port; promises are installed while user activation is live. */
 export async function copyBoardPng(runtime: BoardRuntime, capture: (signal: AbortSignal) => Promise<Blob>, signal: AbortSignal,
     current: () => boolean, pixelsPerWorldUnit = 2): Promise<void> {
     const session = runtime.session;
@@ -51,7 +51,7 @@ export async function copyBoardPng(runtime: BoardRuntime, capture: (signal: Abor
     catch { check(); await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]); }
     check();
 }
-/** Capture supplies the real escaped/exported SVG and its C2 resource lease. */
+/** The in-job capture supplies the real escaped/exported SVG and its C2 resource lease. */
 export async function copyBoardSvg(options: {
     readonly runtime: BoardRuntime; readonly signal?: AbortSignal; current(): boolean;
     capture(signal: AbortSignal): Promise<{ readonly svg: Blob; release(): void }>;

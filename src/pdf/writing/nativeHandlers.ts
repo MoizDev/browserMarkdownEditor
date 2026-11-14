@@ -8,6 +8,7 @@ import { WriterNativeDocument } from './nativeStage';
 import { inventoryNativeAttachments } from './nativeInventory';
 import { buildNativeNotebook } from './nativeNotebook';
 import { verifyNativeNotebook } from './notebookVerify';
+import { prepareUnsignedCopy, verifyUnsignedCopy } from './unsignedCopy';
 import { rotateNativePdf } from './nativeRotate';
 import { validateWriterSource } from './source';
 import type { CreatePdfWriterRuntime, PdfWriterHandler } from './nativeHandlers.types';
@@ -77,6 +78,16 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
             if (!Array.isArray(args.pages) || !revision(args.revision) || args.displayListSchema !== 1 || typeof args.writeId !== 'string') throw new PdfEngineError('InvalidPdf', 'Invalid notebook request');
             const result = await buildNativeNotebook(runtime, args as unknown as WriterOperations['writer.buildNotebook']['args'], ctx);
             ctx.transfer(result.bytes); return result;
+        }),
+        'writer.prepareUnsignedCopy': serial(async (value, ctx) => {
+            const args = object(value);
+            if (!(args.source instanceof Blob)) throw new PdfEngineError('InvalidPdf', 'Invalid signed PDF source');
+            return prepareUnsignedCopy(args as unknown as WriterOperations['writer.prepareUnsignedCopy']['args'], ctx);
+        }),
+        'writer.verifyUnsignedCopy': serial(async (value, ctx) => {
+            const args = object(value);
+            if (!(args.source instanceof Blob) || !(args.bytes instanceof ArrayBuffer)) throw new PdfEngineError('InvalidPdf', 'Invalid unsigned copy verification');
+            return verifyUnsignedCopy(runtime, args as unknown as WriterOperations['writer.verifyUnsignedCopy']['args'], ctx);
         }),
         'writer.verifyNotebookOutput': serial(async (value, ctx) => {
             const args = object(value);

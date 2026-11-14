@@ -178,7 +178,8 @@ export class GpuCompositor implements PaneCompositor {
             // Keep callback receiver semantics without reading the caller's mutable binding again.
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
                 isolation: binding.isolation ? Object.freeze({ ...binding.isolation }) : undefined,
-                coverage: binding.coverage.bind(binding) });
+                coverage: binding.coverage.bind(binding),
+                ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
     }
 
@@ -243,9 +244,9 @@ export class GpuCompositor implements PaneCompositor {
                 this.#options.invalidate('gpu-frame-resources-deferred'); return;
             }
             this.#options.owner.prepareFrameResources(); this.#prepareQuad();
-            if (benchmarkDomain) this.#options.owner.prepareCoverageFrame({ frameId: frame.frameId, token: frame.token,
+            if (benchmarkDomain) this.#options.owner.prepareCoverageFrame?.({ frameId: frame.frameId, token: frame.token,
                 cameraEpoch: frame.view.epoch, sceneRevision: frame.damage.contentRevision },
-                benchmarkDomain.benchmarkPaintDomain(snapshot, frame), () => this.#options.invalidate('coverage-ready'));
+                benchmarkDomain.benchmarkPaintDomain(snapshot, frame, 'webgl2'), () => this.#options.invalidate('coverage-ready'));
         } catch (error) { this.#failure(error); }
     }
 
@@ -338,8 +339,8 @@ export class GpuCompositor implements PaneCompositor {
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
-                        ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage(submitted.serial),
-                            cancelObservation: () => this.#options.owner.cancelCoverage(submitted.serial) } : {}) };
+                        ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage?.(submitted.serial),
+                            cancelObservation: () => this.#options.owner.cancelCoverage?.(submitted.serial) } : {}) };
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);
@@ -428,11 +429,16 @@ export class GpuCompositor implements PaneCompositor {
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
-        this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.width, destRect.height,
+        this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.x + destRect.width, destRect.y + destRect.height,
             sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const slice = this.uniforms(this.#quadData);
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
+            ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
+                coverageClass: options.coverage === 'standin' ? 2 as const : 3 as const,
+                ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? Math.min(1,
+                    sourceRect.width / destRect.width, sourceRect.height / destRect.height) } : {}),
+            } : {}),
             bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: gpuTexture,
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }

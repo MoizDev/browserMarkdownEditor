@@ -1,11 +1,14 @@
 import { fitWidthZ, pageAt, pageStack } from '../../platform/render';
 import type { Rect, RenderToken, ViewState } from '../../platform/render';
+import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
-import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
+import { getPdfFontEpoch, pdfVariantRevision, subscribePdfFontEpoch } from '../fonts/profiles';
 import { pdfMirrorRevision, pdfVersionTransitionOwner } from './versionOwner';
 import type { PdfVersionBridge } from '../layer/versionBridge';
 import { pdfPageLayerDefinition } from '../layer/definition';
+import { createPdfCaptureSnapshot } from '../layer/captureSnapshot';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { createPdfTileProducer } from '../layer/tileProducer';
 import type { PdfPool } from '../pool/types';
@@ -105,7 +108,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     const transition = pdfVersionTransitionOwner(token.documentId, 'original');
     if (!retained.adoption) {
         const adoption = transition.adopt({ session: retained.session, document, mirror },
-            () => pdfMirrorRevision(options.emphasisEnabled(), getPdfFontEpoch(pdf.docKey), emphasis.revision()), retained.session.lifetimeSignal);
+            () => pdfMirrorRevision(options.emphasisEnabled(), pdf.docKey, emphasis.revision()), retained.session.lifetimeSignal);
         retained.adoption = adoption;
         void adoption.catch(() => { if (retained.adoption === adoption) retained.adoption = undefined; });
     }
@@ -128,7 +131,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     sync();
     const isCurrent = () => !disposed && retained.session.isCurrent() && options.isCurrent();
     const mirrorView = (view: ViewState) => ({ token, sourceRole: 'original' as const,
-        contentRevision: pdfMirrorRevision(lease.enabled, getPdfFontEpoch(pdf.docKey), emphasis.revision()),
+        contentRevision: pdfMirrorRevision(lease.enabled, pdf.docKey, emphasis.revision()),
         colourVersion: 0, geometryDigest, nominalDpr: Math.min(view.viewport.dpr, 2), view });
     const layer = pdfPageLayerDefinition({ producer: { render(request, signal) {
         assertPdfRenderAllowed(tiledPdfCapabilities(pdf.info));
@@ -185,7 +188,47 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         const bitmap = await capturer.captureRegion(rect, Math.min(maxSide, 1568), { layers: ['pdf-page'], theme: 'light', inverted: false, signal });
         try { check(signal); return bitmap; } catch (error) { bitmap.close(); throw error; }
     };
-    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible,
+    const captureSnapshot = (request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot => {
+        const epoch = getPdfFontEpoch(pdf.docKey), controller = new AbortController();
+        const checkSource = () => {
+            if (controller.signal.aborted || !retained.session.isCurrent() || !currentToken(token) ||
+                pdf.closed || pdf.source !== 'original' || pdf.docKey !== source.docKey ||
+                !sameToken(pdf.token, token) || getPdfFontEpoch(pdf.docKey) !== epoch) throw stale();
+            assertPdfCaptureAllowed(tiledPdfCapabilities(pdf.info));
+        };
+        checkSource();
+        const unsubscribe = subscribePdfFontEpoch(pdf.docKey, () => {
+            if (getPdfFontEpoch(pdf.docKey) !== epoch) controller.abort(stale());
+        });
+        let released = false;
+        const releaseFont = () => { if (!released) { released = true; unsubscribe(); } };
+        try {
+            const snapshot = createPdfCaptureSnapshot({ token, source: 'original', variant: 'plain', fontEpoch: epoch,
+                revision: `${token.bytesGeneration}:${epoch}`, stack,
+                retain: async () => {
+                    const actual = await retained.session.acquireCapture();
+                    try {
+                        checkSource();
+                        if (actual.signal.aborted || actual.document !== document) throw stale();
+                        const producer = { async render(tile: Parameters<typeof document.producer.render>[0], signal: AbortSignal) {
+                            checkSource();
+                            if (tile.key.contentRevision !== pdfVariantRevision('plain', epoch)) throw stale();
+                            const bitmap = await actual.document.producer.render(tile, AbortSignal.any([signal, controller.signal]));
+                            try { signal.throwIfAborted(); checkSource(); return bitmap; } catch (error) { bitmap.close(); throw error; }
+                        } };
+                        return { document: { producer }, signal: AbortSignal.any([actual.signal, controller.signal]), release: actual.release };
+                    } catch (error) { actual.release(); throw error; }
+                } }, request, memory);
+            return { ...snapshot, signal: AbortSignal.any([snapshot.signal, controller.signal]),
+                async prepare(capture, route, signal) {
+                    checkSource();
+                    const result = await snapshot.prepare(capture, route, signal);
+                    checkSource(); return result;
+                },
+                release() { try { snapshot.release(); } finally { releaseFont(); } } };
+        } catch (error) { releaseFont(); throw error; }
+    };
+    return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible, captureSnapshot,
         notePresentation() {
             if (!updating || !latestView || !isCurrent() || !lease.visible || !options.isVisible()) return;
             const coverage = layer.current()?.coverage(latestView, false);

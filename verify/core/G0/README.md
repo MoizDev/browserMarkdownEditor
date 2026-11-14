@@ -1,9 +1,7 @@
 # G0 — graph fixtures and TB-GR
 
-Implementation-phase tools, not a code-based test suite. No app source is changed.
-Charter section0 applies: the force-constant mutant and timed gates are deferred
-to the separate review phase; they are not merge conditions. The generator,
-real-app twin runner and A/A sanity run remain because G1/G2 use them.
+Historical tooling snapshot, not a code-based test suite. No app source is changed.
+Work stopped under charter section00; this document records only what existed.
 
 ## Corpus
 
@@ -96,11 +94,8 @@ extracted simulation function is imported or invoked in the page.
 - Latest report metadata also retains per-arm served-binding details and an
   explicit fixture hash map (reporting-only follow-up; no application change).
 
-## Deferred / losses
+## Limits of the historical run
 
 Only the selected32/600 topologies were exercised in the app; other generated
-sizes and G1 sidecars were not. Determinism on a second machine, force-mutation
-proof, large-graph timing, instrumentation cost and native disk are not claimed.
-Timed adapter ideas/API notes already held by v-c stay with the review-phase
-queue; no new timed gate or mutant was built for merge. Theta/crossover selection
-belongs to G1. Static gates and one real-app sanity are the current merge bar.
+sizes and G1 sidecars were not. Determinism on a second machine, large-graph
+performance, instrumentation cost and native disk were not established.

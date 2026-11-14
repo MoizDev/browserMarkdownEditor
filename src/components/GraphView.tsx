@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { GraphNode, GraphLink, OpenNodeHandler, Theme } from '../types';
 import { perfRoot } from '../utils/perfHooks';
+import { GraphLayout } from '../utils/graphLayout';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -62,14 +63,6 @@ interface GraphViewProps {
     theme: Theme;
 }
 
-/** Per-node physics state held in the simulation map. */
-interface SimNode {
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-}
-
 interface GraphMeasurement {
     ids: string[];
     ring: Array<{ step: number; x: number[]; y: number[] }>;
@@ -104,7 +97,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const wrapRef = useRef<HTMLDivElement | null>(null);
 
     // Simulation state lives in refs so the animation loop never restarts.
-    const simNodes = useRef<Map<string, SimNode>>(new Map());   // id -> { x, y, vx, vy }
+    const [layout] = useState(() => new GraphLayout());
     const viewRef = useRef<GraphViewport>({ scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 });
     const draggingRef = useRef<{ id: string } | null>(null);     // { id } while dragging a node
     const panningRef = useRef<{ x: number; y: number } | null>(null);      // { x, y } while panning
@@ -112,7 +105,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const hoverRef = useRef<string | null>(null);        // hovered node id
     const colorsRef = useRef<GraphColors>({} as GraphColors);
     const rafRef = useRef<number>(0);
-    const alphaRef = useRef<number>(1);          // simulation "temperature"; cools to rest
     const activeRef = useRef<string | null>(activeFilePath);
     const dirtyRef = useRef<boolean>(true);       // request a one-off redraw while at rest
     // Framed automatically until the reader pans, zooms or drags a node (and
@@ -188,30 +180,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         [nodes]
     );
 
-    // Seed positions for any new nodes; drop positions for removed nodes.
+    // Survivors retain position AND momentum; new nodes start at the survivor
+    // count on the same golden spiral. A topology publication reheats the layout.
     useEffect(() => {
-        const sim = simNodes.current;
-        const ids = new Set(nodes.map(n => n.id));
-        for (const id of [...sim.keys()]) {
-            if (!ids.has(id)) sim.delete(id);
-        }
-        // Place new nodes on a spiral around the origin (deterministic, no RNG needed).
-        let i = sim.size;
-        for (const n of nodes) {
-            if (!sim.has(n.id)) {
-                const angle = i * 2.399963; // golden angle for even spread
-                const radius = 30 + 12 * Math.sqrt(i);
-                sim.set(n.id, {
-                    x: Math.cos(angle) * radius,
-                    y: Math.sin(angle) * radius,
-                    vx: 0,
-                    vy: 0,
-                });
-                i++;
-            }
-        }
-        // Re-energise the layout so it re-settles into the new topology, then rests.
-        alphaRef.current = 1;
+        layout.update(nodes.map(node => node.id), links);
         dirtyRef.current = true;
         if (__BME_BENCH__) {
             try {
@@ -226,7 +198,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 }
             } catch { /* Measurement failures must not enter the app's path. */ }
         }
-    }, [nodes]);
+    }, [nodes, links, layout]);
 
     // Read theme colors from CSS variables whenever the theme flips.
     useEffect(() => {
@@ -265,14 +237,13 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         /** Frame every node (and the label under it) in the canvas. Capped at
          *  the default zoom, so a small vault is not blown up to fill it. */
         const fit = () => {
-            const sim = simNodes.current;
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
+                const i = layout.index.get(n.id);
+                if (i === undefined) continue;
                 const r = nodeRadius(n);
-                minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r);
-                minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r);
+                minX = Math.min(minX, layout.x[i] - r); maxX = Math.max(maxX, layout.x[i] + r);
+                minY = Math.min(minY, layout.y[i] - r); maxY = Math.max(maxY, layout.y[i] + r);
             }
             if (!Number.isFinite(minX) || width <= 0 || height <= 0) return;
             const room = (size: number) => Math.max(1, size - 2 * FIT_PADDING);
@@ -315,98 +286,17 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const ro = new ResizeObserver(resize);
         ro.observe(wrap);
 
-        const ALPHA_DECAY = 0.0228;   // cools to rest in a few seconds (D3-style)
-        const ALPHA_MIN = 0.001;      // below this the layout is considered settled
-        const DRAG_ALPHA = 0.1;       // keep a little warmth so neighbours react while dragging
-        const MIN_D2 = 100;           // clamp repulsion denominator (>=10px) — no explosions
-        const MAX_V = 8;              // clamp per-frame speed; low enough that a node can't
-                                      // overshoot its ~60px springs and fling off-screen
-
         const step = () => {
-            const sim = simNodes.current;
-            const dragging = draggingRef.current;
-            let alpha = alphaRef.current;
-
-            // Once cooled (and not interacting) the layout is at rest — skip physics.
-            if (alpha < ALPHA_MIN && !dragging) return false;
-            if (dragging) alpha = Math.max(alpha, DRAG_ALPHA);
-
-            const REPULSION = 16000;   // strong node-to-node push so the graph breathes wide open,
-                                       // spacing nodes far enough apart to see the link mesh between them
-            const SPRING = 0.03;       // soft springs let links stretch to ~LINK_LEN without bunching
-            const LINK_LEN = 150;      // resting link distance — keeps linked notes clearly separated
-            // Gravity only needs to gently contain the layout. Kept weak (with a mild
-            // √n term) so the cloud spreads out instead of collapsing into a ball; the
-            // equilibrium radius grows ~∝ ∛n, so bigger vaults stay sparse but bounded.
-            const CENTER = 0.004 + 0.0006 * Math.sqrt(nodes.length);
-            const DAMP = 0.6;          // stronger friction — kills the velocity build-up that
-                                       // let dense graphs ride the speed clamp (was 0.82 ≈ 4.6× gain)
-
-            // Repulsion (O(n^2) — fine for typical vaults). Scaled by alpha and
-            // distance-clamped so crowded nodes can't fling each other off-screen.
-            for (let a = 0; a < nodes.length; a++) {
-                const pa = sim.get(nodes[a].id);
-                if (!pa) continue;
-                for (let b = a + 1; b < nodes.length; b++) {
-                    const pb = sim.get(nodes[b].id);
-                    if (!pb) continue;
-                    let dx = pa.x - pb.x;
-                    let dy = pa.y - pb.y;
-                    let d2 = dx * dx + dy * dy;
-                    if (d2 < 0.01) { dx = (a - b) || 1; dy = 1; d2 = dx * dx + dy * dy; }
-                    const dist = Math.sqrt(d2);
-                    const force = (REPULSION / Math.max(d2, MIN_D2)) * alpha;
-                    const fx = (dx / dist) * force;
-                    const fy = (dy / dist) * force;
-                    pa.vx += fx; pa.vy += fy;
-                    pb.vx -= fx; pb.vy -= fy;
-                }
-            }
-
-            // Link springs (also scaled by alpha).
-            for (const l of links) {
-                const ps = sim.get(l.source);
-                const pt = sim.get(l.target);
-                if (!ps || !pt) continue;
-                const dx = pt.x - ps.x;
-                const dy = pt.y - ps.y;
-                const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-                const force = (dist - LINK_LEN) * SPRING * alpha;
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                ps.vx += fx; ps.vy += fy;
-                pt.vx -= fx; pt.vy -= fy;
-            }
-
-            // Gravity toward center + integrate (friction + speed clamp).
-            for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
-                if (dragging && dragging.id === n.id) {
-                    p.vx = 0; p.vy = 0;
-                    continue;
-                }
-                p.vx += -p.x * CENTER * alpha;
-                p.vy += -p.y * CENTER * alpha;
-                p.vx *= DAMP;
-                p.vy *= DAMP;
-                p.vx = Math.max(-MAX_V, Math.min(MAX_V, p.vx));
-                p.vy = Math.max(-MAX_V, Math.min(MAX_V, p.vy));
-                p.x += p.vx;
-                p.y += p.vy;
-            }
-
-            // Cool toward rest (unless actively dragging, which holds it warm).
-            if (!dragging) alphaRef.current = alpha + (0 - alpha) * ALPHA_DECAY;
+            if (!layout.step(draggingRef.current?.id ?? null)) return false;
             if (__BME_BENCH__) {
                 try {
                     const data = measurementRef.current;
                     if (data) {
                         const x: number[] = [], y: number[] = [];
                         for (const id of data.ids) {
-                            const position = sim.get(id)!;
-                            x.push(position.x);
-                            y.push(position.y);
+                            const i = layout.index.get(id)!;
+                            x.push(layout.x[i]);
+                            y.push(layout.y[i]);
                         }
                         // Independent RAF clocks rarely expose the same latest
                         // step; retain all 300 settling steps for exact TB-GR pairs.
@@ -419,7 +309,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
 
         const draw = () => {
-            const sim = simNodes.current;
             const view = viewRef.current;
             const c = colorsRef.current;
             const hovered = hoverRef.current;
@@ -441,9 +330,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             // Edges. When a node is focused its links glow blue and radiate out,
             // while every other edge fades right back (the Obsidian focus look).
             for (const l of links) {
-                const ps = sim.get(l.source);
-                const pt = sim.get(l.target);
-                if (!ps || !pt) continue;
+                const s = layout.index.get(l.source), t = layout.index.get(l.target);
+                if (s === undefined || t === undefined) continue;
                 const isHi = hovered && (l.source === hovered || l.target === hovered);
                 if (isHi) {
                     ctx.strokeStyle = c.edgeHi;
@@ -455,8 +343,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     ctx.lineWidth = 1;
                 }
                 ctx.beginPath();
-                ctx.moveTo(tx(ps.x), ty(ps.y));
-                ctx.lineTo(tx(pt.x), ty(pt.y));
+                ctx.moveTo(tx(layout.x[s]), ty(layout.y[s]));
+                ctx.lineTo(tx(layout.x[t]), ty(layout.y[t]));
                 ctx.stroke();
             }
             ctx.globalAlpha = 1;
@@ -467,9 +355,9 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             // zoom in — so the graph never turns into a wall of text.
             const showAllLabels = view.scale > 1.5;
             for (const n of nodes) {
-                const p = sim.get(n.id);
-                if (!p) continue;
-                const x = tx(p.x), y = ty(p.y);
+                const i = layout.index.get(n.id);
+                if (i === undefined) continue;
+                const x = tx(layout.x[i]), y = ty(layout.y[i]);
                 const r = nodeRadius(n) * Math.max(0.6, Math.min(1.6, view.scale));
 
                 const isHovered = hovered && n.id === hovered;
@@ -547,7 +435,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             cancelAnimationFrame(rafRef.current);
             ro.disconnect();
         };
-    }, [nodes, links, adjacency, maxDegree]);
+    }, [nodes, links, adjacency, maxDegree, layout]);
 
     // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX: number, clientY: number) => {
@@ -562,15 +450,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     };
 
     const hitTest = (clientX: number, clientY: number): GraphNode | null => {
-        const sim = simNodes.current;
         const w = screenToWorld(clientX, clientY);
         let best: GraphNode | null = null;
         let bestD = Infinity;
         for (const n of nodes) {
-            const p = sim.get(n.id);
-            if (!p) continue;
-            const dx = p.x - w.x;
-            const dy = p.y - w.y;
+            const i = layout.index.get(n.id);
+            if (i === undefined) continue;
+            const dx = layout.x[i] - w.x;
+            const dy = layout.y[i] - w.y;
             const d = dx * dx + dy * dy;
             const r = nodeBaseRadius(n, maxDegree) + 6;
             if (d < r * r && d < bestD) { best = n; bestD = d; }
@@ -585,7 +472,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         if (hit) {
             autoFitRef.current = false;
             draggingRef.current = { id: hit.id };
-            alphaRef.current = Math.max(alphaRef.current, 0.3); // wake neighbours
+            layout.alpha = Math.max(layout.alpha, 0.3); // wake neighbours
         } else {
             panningRef.current = { x: e.clientX, y: e.clientY };
         }
@@ -596,8 +483,8 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         if (draggingRef.current) {
             movedRef.current = true;
             const w = screenToWorld(e.clientX, e.clientY);
-            const p = simNodes.current.get(draggingRef.current.id);
-            if (p) { p.x = w.x; p.y = w.y; p.vx = 0; p.vy = 0; }
+            const i = layout.index.get(draggingRef.current.id);
+            if (i !== undefined) { layout.x[i] = w.x; layout.y[i] = w.y; layout.vx[i] = 0; layout.vy[i] = 0; }
             dirtyRef.current = true;
             return;
         }

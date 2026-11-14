@@ -467,11 +467,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         },
         clipboardContext() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
-            return editor && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;
+            return editor && editor.canEdit() && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;
         },
         clipboardSelection() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), transform = currentWorld;
-            if (!editor || !node || !transform) return null;
+            if (!editor || !editor.canEdit() || !node || !transform) return null;
             const selection = editor.getSelection(), from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
             if (from === to) return null;
             const world = new Float64Array(4);
@@ -487,7 +487,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         },
         linkContext() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
-            if (!editor || !node || !text) return null;
+            if (!editor || !editor.canEdit() || !node || !text) return null;
             const selection = { ...editor.getSelection() }, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
             let href: string | null = null, target: EditSelection | undefined;
             if (from === to) {

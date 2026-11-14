@@ -214,9 +214,14 @@ export class TextEditSession {
         return stop.offset;
     }
 
+    /** External actions cannot race a composition, including the interval before its first update. */
+    canEdit(): boolean {
+        return !this.closed && this.services.alive() && !this.host.isComposing && !this.compositionSelection && !this.compositionRange;
+    }
+
     /** The keyboard and Core's text menu use the same controller and transaction path. */
     command(name: string): boolean {
-        if (this.closed || !this.services.alive() || this.host.isComposing || this.compositionSelection || this.compositionRange) return false;
+        if (!this.canEdit()) return false;
         if (name === 'select-all') return this.selectAll();
         const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
             strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };
@@ -372,7 +377,7 @@ export class TextEditSession {
         return layout.caret.hitTest(local.x, local.y).offset;
     }
     selectAll(): boolean {
-        if (this.closed || !this.services.alive() || this.host.isComposing || this.compositionSelection || this.compositionRange) return false;
+        if (!this.canEdit()) return false;
         this.select({ anchor: 0, focus: projectionLength(this.services.readText()) });
         return true;
     }
@@ -383,13 +388,11 @@ export class TextEditSession {
     }
 
     prepareCut(): { commit(): void; release(): void } {
-        if (this.closed || !this.services.alive() || this.compositionSelection || this.compositionRange)
-            throw new Error('Text editing is not ready for cut');
+        if (!this.canEdit()) throw new Error('Text editing is not ready for cut');
         const before = { ...this.selection }, from = Math.min(before.anchor, before.focus);
         const proof = this.services.prepareCut(this.controller.cutTransaction(before));
         let released = false, committed = false;
-        const current = () => !this.closed && this.services.alive() && !this.compositionSelection && !this.compositionRange
-            && this.selection.anchor === before.anchor && this.selection.focus === before.focus;
+        const current = () => this.canEdit() && this.selection.anchor === before.anchor && this.selection.focus === before.focus;
         try { if (!current()) throw new Error('Text selection changed; cut again'); }
         catch (error) { proof.release(); throw error; }
         return {
@@ -408,6 +411,7 @@ export class TextEditSession {
     }
 
     replaceSelection(fragment: RichFragment): boolean {
+        if (!this.canEdit()) return false;
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
         const next = { anchor: from + length, focus: from + length };
@@ -423,6 +427,7 @@ export class TextEditSession {
     }
 
     applyLink(url: string | null, selection: EditSelection): boolean {
+        if (!this.canEdit()) return false;
         let applied: boolean;
         try { applied = this.controller.applyLink(url, selection); }
         catch (error) { this.services.reportError(error); return false; }

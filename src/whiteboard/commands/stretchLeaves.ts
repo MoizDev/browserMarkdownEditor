@@ -38,10 +38,11 @@ export async function stretchBoardLeaves(options: StretchLeavesOptions): Promise
     for (const root of roots) {
         const result: NodeId[] = [], pending = [root]; leaves.set(root.id, result);
         while (pending.length) {
-            check(); const node = pending.pop()!; if (node.locked) continue;
+            check(); const node = pending.pop()!;
+            if (++visited % 256 === 0) { await cooperate(); check(); }
+            if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
             else { if (node.kind === 'opaque') throw new Error('Opaque content cannot be stretched'); result.push(node.id); all.add(node.id); }
-            if (++visited % 256 === 0) { await cooperate(); check(); }
         }
         if (!result.length) throw new Error(`Group has no stretchable content: ${root.id}`);
         all.add(root.id);
@@ -76,20 +77,20 @@ export async function stretchBoardLeaves(options: StretchLeavesOptions): Promise
             // Default, calibration cut by owner: arbitrary rotations or aspect-only descendants lock the whole root uniformly.
             const sx = axis === 'x' || aspect ? factor : 1, sy = axis === 'y' || aspect ? factor : 1;
             const delta = { x: axis === 'x' ? targetCentre - cx : 0, y: axis === 'y' ? targetCentre - cy : 0 };
+            if (factor === 1 && delta.x === 0 && delta.y === 0) continue;
             const frame: ResizePreview = { box: { origin: { x: box.x, y: box.y }, width: box.width * sx, height: box.height * sy, rotation: 0 },
                 scaleX: sx, scaleY: sy, signedWidth: box.width * sx, signedHeight: box.height * sy, anchor: { x: cx, y: cy } };
             for (const id of leaves.get(root.id)!) {
                 check(); const node = candidate.nodes.get(id); if (!node || node.kind === 'opaque' || node.kind === 'group') throw new Error('Stretch node changed');
                 if (node.kind === 'connector') { connectors.push({ id, frame, delta }); continue; }
-                const old = scope.worldPose(id), b = scope.localBounds(id), c = Math.cos(old.rotation), s = Math.sin(old.rotation);
-                const x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2, px = old.x + c * x - s * y, py = old.y + s * x + c * y;
+                const b = scope.logicalBounds(id), px = b.x + b.width / 2, py = b.y + b.height / 2;
                 const centreWorld = { x: cx + (px - cx) * sx + delta.x, y: cy + (py - cy) * sy + delta.y };
                 const localAxis = axes.get(id), factors: KindResizeFactors = {
                     x: aspect || localAxis === 'x' ? factor : 1, y: aspect || localAxis === 'y' ? factor : 1,
                     zeroSignX: 1, zeroSignY: 1, handle: aspect && node.kind === 'text' ? 'corner' : 'side',
                     handleX: localAxis === 'x' ? 1 : 0, handleY: localAxis === 'y' ? 1 : 0, scope: 'multi' };
                 const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors, centreWorld,
-                    signal, current, cooperate });
+                    alignmentRotation: 0, signal, current, cooperate });
                 leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
             }
         }

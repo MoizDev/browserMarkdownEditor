@@ -1,11 +1,13 @@
 import type { Affine } from '../../platform/types';
 import { exactAffinePoint } from './exactAffine';
-import { exactPointIntervals } from './homogeneous';
+import { exactPoint, exactPointIntervals, type ExactPoint } from './homogeneous';
+import { createCurveCapsuleCertificate } from './curveCapsuleCertificate';
+import { splitExactCurve, type ExactCurve } from './exactCurve';
 import { add, interval, multiply, sqrtInterval } from './numeric';
 import { isUniformDistanceMatrix, splitCertifiedCurve, upperPointIntervalDistance, type BoundsPoint, type CertifiedCurve } from './pointPathJob';
 import { classifyCertifiedClipBox, clipBoxStrictlyInside, certifiedCurveBox, certifiedIntervalPointBox, expandCertifiedClipBox, preparePointClip,
     type CertifiedClipBox, type PointClipContour } from './clippedPointPathJob';
-import type { PathOp, Vec2 } from './path';
+import type { PathOp } from './path';
 import type { RegionQuery } from './types';
 
 export type ClippedPolygonResult = Readonly<{ status: 'pending' | 'hit' | 'miss' | 'empty' }> | Readonly<{ status: 'uncertain'; reason: string }>;
@@ -54,9 +56,17 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Invalid polygon point');
         return { point, allowed: allowed([point.x, point.y, point.x, point.y]) };
     });
-    const mapped = (point: Vec2): BoundsPoint => exactPointIntervals(exactAffinePoint(query.localToSurface, point));
-    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined;
-    const stack: CertifiedCurve[] = [];
+    type Work = { readonly curve: CertifiedCurve; readonly exact: ExactCurve };
+    const polygonVertices = query.points.map(exactPoint), low = Math.max(0, radius.lo), high = Math.max(0, radius.hi);
+    let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, startExact: ExactPoint | undefined, previousExact: ExactPoint | undefined;
+    let certificate: ReturnType<typeof createCurveCapsuleCertificate> | undefined, deferred: Work | undefined, edge = 0, phase: 'inner' | 'outer' = 'inner', edgeUncertain = false;
+    const stack: Work[] = [];
+    const subdivide = (item: Work): boolean => {
+        if (item.curve.depth >= maxDepth) { uncertain = true; return true; }
+        if (nodes + 2 > maxNodes) return false;
+        const [left, right] = splitCertifiedCurve(item.curve), [exactLeft, exactRight] = splitExactCurve(item.exact);
+        nodes += 2; stack.push({ curve: right, exact: exactRight }, { curve: left, exact: exactLeft }); return true;
+    };
     const finish = (value: ClippedPolygonResult): ClippedPolygonResult => { finished = Object.freeze(value); return finished; };
     return {
         step(budget) {
@@ -65,9 +75,35 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
             if (finished) return finished;
             for (let work = 0; work < budget.maxWork && performance.now() < budget.deadline; work++) {
                 if (++spent > maxWork) return finish({ status: 'uncertain', reason: 'Clipped polygon work limit exhausted' });
-                const curve = stack.pop();
-                if (curve) {
-                    const bounds = expandCertifiedClipBox(certifiedCurveBox(curve.points), Math.max(0, radius.hi));
+                if (certificate) {
+                    const result = certificate.step({ deadline: budget.deadline, maxWork: 1 });
+                    if (result.status === 'pending') continue;
+                    certificate.cancel(); certificate = undefined;
+                    if (phase === 'inner' && result.status === 'hit') return finish({ status: query.containment ? 'miss' : 'hit' });
+                    if (phase === 'inner' && result.status === 'miss' && low !== high) {
+                        phase = 'outer'; certificate = createCurveCapsuleCertificate(deferred!.exact, polygonVertices[edge], polygonVertices[(edge + 1) % polygonVertices.length], high); continue;
+                    }
+                    if (result.status === 'uncertain' || (phase === 'outer' && result.status === 'hit')) edgeUncertain = true;
+                    edge++;
+                    if (edge < polygonVertices.length) {
+                        phase = 'inner'; certificate = createCurveCapsuleCertificate(deferred!.exact, polygonVertices[edge], polygonVertices[(edge + 1) % polygonVertices.length], low); continue;
+                    }
+                    const item = deferred!; deferred = undefined;
+                    if (edgeUncertain) {
+                        if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
+                    } else {
+                        const location = classifyCertifiedClipBox(certifiedIntervalPointBox(item.curve.points[0]), polygon!);
+                        visible = true;
+                        if (location === 'overlap') {
+                            if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
+                        } else if (query.containment && location === 'outside') return finish({ status: 'miss' });
+                        else if (!query.containment && location === 'inside') return finish({ status: 'hit' });
+                    }
+                    continue;
+                }
+                const item = stack.pop();
+                if (item) {
+                    const curve = item.curve, bounds = expandCertifiedClipBox(certifiedCurveBox(curve.points), Math.max(0, radius.hi));
                     if (invisible(bounds)) continue;
                     const region = classifyCertifiedClipBox(bounds, polygon!);
                     if (!query.containment && region === 'outside') continue;
@@ -83,27 +119,33 @@ export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[
                         }
                     }
                     if (query.containment && region === 'inside' && visible && clipBoxStrictlyInside(bounds, polygon!)) continue;
-                    if (curve.depth >= maxDepth) { uncertain = true; continue; }
-                    if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
-                    const [left, right] = splitCertifiedCurve(curve); nodes += 2; stack.push(right, left); continue;
+                    if (allowed(bounds)) {
+                        deferred = item; edge = 0; phase = 'inner'; edgeUncertain = false;
+                        certificate = createCurveCapsuleCertificate(item.exact, polygonVertices[0], polygonVertices[1], low); continue;
+                    }
+                    if (!subdivide(item)) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
+                    continue;
                 }
                 if (pathIndex >= paths.length) {
                     if (uncertain) return finish({ status: 'uncertain', reason: 'Clipped polygon boundary cannot be certified' });
                     return finish({ status: query.containment ? (visible ? 'hit' : 'empty') : 'miss' });
                 }
                 const path = paths[pathIndex];
-                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; continue; }
+                if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; startExact = previousExact = undefined; continue; }
                 if (++commands > maxCommands) return finish({ status: 'uncertain', reason: 'Clipped polygon command limit exhausted' });
                 const op = path[commandIndex++];
-                if (op.op === 'M') { start = previous = mapped(op.p); continue; }
-                if (!start || !previous) throw new RangeError('Clipped polygon path must begin with M');
-                const end = op.op === 'Z' ? start : mapped(op.p);
+                if (op.op === 'M') { startExact = previousExact = exactAffinePoint(query.localToSurface, op.p); start = previous = exactPointIntervals(startExact); continue; }
+                if (!start || !previous || !startExact || !previousExact) throw new RangeError('Clipped polygon path must begin with M');
+                const endExact = op.op === 'Z' ? startExact : exactAffinePoint(query.localToSurface, op.p), end = exactPointIntervals(endExact);
                 if (++nodes > maxNodes) return finish({ status: 'uncertain', reason: 'Clipped polygon node limit exhausted' });
-                stack.push({ points: op.op === 'C' ? [previous, mapped(op.c1), mapped(op.c2), end] : [previous, end], depth: 0 });
-                previous = end;
+                if (op.op === 'C') {
+                    const c1 = exactAffinePoint(query.localToSurface, op.c1), c2 = exactAffinePoint(query.localToSurface, op.c2);
+                    stack.push({ curve: { points: [previous, exactPointIntervals(c1), exactPointIntervals(c2), end], depth: 0 }, exact: [previousExact, c1, c2, endExact] });
+                } else stack.push({ curve: { points: [previous, end], depth: 0 }, exact: [previousExact, endExact] });
+                previous = end; previousExact = endExact;
             }
             return PENDING;
         },
-        cancel() { cancelled = true; stack.length = 0; },
+        cancel() { cancelled = true; certificate?.cancel(); certificate = undefined; deferred = undefined; stack.length = 0; },
     };
 }

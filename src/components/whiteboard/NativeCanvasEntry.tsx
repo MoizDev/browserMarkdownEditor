@@ -155,7 +155,8 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
-        readOnly={editingChrome ? board.isReadOnly : true} readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+        readOnly={editingChrome ? board.isReadOnly : true} externalAccessibility={!!editingChrome}
+        readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
                 const sheet = sheets.find(item => item.id === event.currentTarget.value);

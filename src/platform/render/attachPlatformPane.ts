@@ -328,12 +328,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 let presented;
                                 let complete: boolean;
                                 let sharp: boolean;
+                                let staleVersion: boolean | undefined;
                                 let qualityScale: number;
                                 if (mirrored) {
                                     encoding?.discard();
                                     presented = { drawn: [] };
                                     complete = mirror!.complete;
                                     sharp = mirror!.sharp;
+                                    staleVersion = mirror!.staleVersion;
                                     qualityScale = cpuMetrics.current?.kind === 'ready' ? cpuMetrics.current.metrics.qualityScale : 1;
                                 } else {
                                     presented = encoding?.submit();
@@ -342,6 +344,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     if (!coverage.presented || coverage.frameId !== frame.frameId || !sameFrame(coverage.token, frame.token)) return null;
                                     complete = coverage.complete;
                                     sharp = coverage.sharp;
+                                    staleVersion = coverage.staleVersion;
                                     qualityScale = coverage.qualityScale;
                                 }
                                 const current = token();
@@ -359,7 +362,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
-                                    complete, sharp, staleVersion: drawing.coverage(frame).staleVersion,
+                                    complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision });
                                 if (lastQuality !== qualityScale) {
                                     lastQuality = qualityScale;

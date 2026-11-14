@@ -109,7 +109,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
             viewRef.current = view; setClipboard(service); setLease(view);
             const acquired = view;
             void factory({ runtime, lease: acquired, host, identity, clipboard: service, signal: controller.signal,
-                current, canWrite: () => canMutateView() && host.canWrite(identity), requestText: dialogs.requestText, notice: setNotice }).then(value => {
+                current: () => current() && acquired.isCurrent(), canWrite: () => canMutateView() && host.canWrite(identity),
+                requestText: dialogs.requestText, notice: setNotice }).then(value => {
                 if (!live || controller.signal.aborted || !current()) { value.dispose(); return; }
                 owned = value; setCapabilities(value);
             }, error => { if (live && !controller.signal.aborted) onUnavailable(error); });
@@ -128,7 +129,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
         embedControllerRef={embedControllerRef} styleRef={styleRef} renderView={renderView} />;
 }
 
-function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current, report,
+function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current: ownerCurrent, report,
     notice, setNotice, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
     contextMenuRef, embedControllerRef, styleRef, renderView }: {
     readonly props: NativeEditingViewProps; readonly lease: NativeViewLease; readonly adapter: HostedBoardAdapter<BoardSessionPort>;
@@ -146,6 +147,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly styleRef: RefObject<Styles | null>;
 }) {
     const runtime = lease.runtime, host = props.nativeCanvasHost, identity = props.identity;
+    const current = useCallback(() => ownerCurrent() && lease.isCurrent(), [ownerCurrent, lease]);
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);

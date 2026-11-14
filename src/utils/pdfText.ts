@@ -66,10 +66,10 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
     return withPdf(bytes, async doc => {
         if (pageNumber < 1 || pageNumber > doc.numPages) return { pageCount: doc.numPages, png: null };
         const page = await doc.getPage(pageNumber);
+        const canvas = document.createElement('canvas');
         try {
             const unit = page.getViewport({ scale: 1 });
             const viewport = page.getViewport({ scale: maxSide / Math.max(unit.width, unit.height, 1) });
-            const canvas = document.createElement('canvas');
             canvas.width = Math.max(1, Math.floor(viewport.width));
             canvas.height = Math.max(1, Math.floor(viewport.height));
             const context = canvas.getContext('2d');
@@ -83,6 +83,7 @@ export async function renderPdfPage(bytes: Uint8Array, pageNumber: number, maxSi
             if (!png) throw new Error(`could not rasterize page ${pageNumber}`);
             return { png, pageCount: doc.numPages };
         } finally {
+            canvas.width = canvas.height = 0;
             page.cleanup();
         }
     });

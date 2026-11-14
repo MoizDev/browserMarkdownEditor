@@ -74,7 +74,8 @@ export interface AnnotatedPdfContents {
 async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
     // pdf.js takes ownership of (and detaches) the buffer it is handed, which
     // would corrupt a caller still holding the same bytes. Always give it a copy.
-    const task = await openClassicPdf({ bytes, purpose: 'attachments' });
+    const diagnostics = classicAnnotationHealth(bytes);
+    const task = await openClassicPdf({ bytes, purpose: 'attachments', diagnostic: diagnostics.record, progress: diagnostics.progress });
     try {
         return await classicPdfHealth(task).guard(read(await loadClassicPdf(task)));
     } finally {
@@ -232,7 +233,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
     // Not withPdf(): the document must outlive this call so pages can be
     // rasterized on demand. close() is the caller's responsibility.
     const diagnostics = classicAnnotationHealth(original);
-    const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop', diagnostic: diagnostics.record });
+    const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop', diagnostic: diagnostics.record, progress: diagnostics.progress });
     let doc: PDFDocumentProxy;
     const sizes: PdfPageSize[] = [];
     try {
@@ -257,14 +258,21 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
             canvas.width = Math.ceil(viewport.width);
             canvas.height = Math.ceil(viewport.height);
             const context = canvas.getContext('2d');
-            if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
-            const emphasis = emphasisEnabled || onEmphasisResult ? await diagnostics.guard(bindPdfNativeEmphasis(page, context, emphasisEnabled), signal) : undefined;
+            if (!context) {
+                const error = new Error('Could not get a 2D canvas context to render the PDF');
+                canvas.width = canvas.height = 0;
+                page.cleanup();
+                recordClassicRenderFailure(diagnostics, error, index);
+                throw error;
+            }
+            let emphasis: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
             let rendering: import('pdfjs-dist').RenderTask | undefined;
             const cancel = () => rendering?.cancel();
             const current = () => !signal?.aborted;
             signal?.addEventListener('abort', cancel);
             try {
                 signal?.throwIfAborted();
+                if (emphasisEnabled || onEmphasisResult) emphasis = await diagnostics.guard(bindPdfNativeEmphasis(page, context, emphasisEnabled), signal);
                 rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
                 await diagnostics.guard(rendering.promise, signal);
                 if (emphasis) await diagnostics.guard(emphasis.verify({ viewport }, task => { rendering = task; }, current), signal);
@@ -286,7 +294,7 @@ export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource>
                 page.cleanup();
             }
         },
-        close: () => { diagnostics.close(); return closeClassicPdf(task); },
+        close: () => { const stalled = diagnostics.stalled; diagnostics.close(); return closeClassicPdf(task, stalled); },
     };
 }
 

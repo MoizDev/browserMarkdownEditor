@@ -129,6 +129,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const renderHealth = useMemo(() => mode === 'edit' ? source ? classicAnnotationHealth(source.original) : sourceLoadHealth : session?.health ?? idleHealth,
         [mode, source, sourceLoadHealth, session, idleHealth]);
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
+    const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
     const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
     const documentRenderIssue = renderDiagnostics.find(issue => issue.incomplete && (mode === 'edit' || issue.pageIndex === undefined));
     useEffect(() => {
@@ -307,14 +308,14 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (mode !== 'read' || isDirty || flushing || disk || retryInFlight.current) return;
         retryInFlight.current = true;
         setRetryBusy(true);
-        prepareClassicPdfRetry();
+        prepareClassicPdfRetry(!!renderDelayIssue);
         viewStaleRef.current = true;
         setViewError(null);
         setSourceError(null);
         setSource(null);
         setSession(null);
         setRetryEpoch(epoch => epoch + 1);
-    }, [mode, isDirty, flushing, disk]);
+    }, [mode, isDirty, flushing, disk, renderDelayIssue]);
 
     /* Read the file's role only once annotating is actually wanted.
        Every PDF can be annotated now, so this can no longer be gated on the
@@ -334,7 +335,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     useEffect(() => {
         if (!activated || !needsSource) return;
         let cancelled = false;
-        const health = createClassicPdfHealth();
+        let health = createClassicPdfHealth();
         setSourceLoadHealth(health);
         setSource(null);
         setSourceError(null);
@@ -348,7 +349,11 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 // whose name says "(annotated)". Still only when annotating: a
                 // PDF opened to read is a wasted N-MB allocation and disk read
                 // otherwise, and the viewer does its own read below.
-                const role = await readPdfRole(await readFileBytes(file.handle as FileSystemFileHandle));
+                const bytes = await readFileBytes(file.handle as FileSystemFileHandle);
+                if (cancelled) return;
+                health = classicAnnotationHealth(bytes);
+                setSourceLoadHealth(health);
+                const role = await readPdfRole(bytes);
 
                 if (cancelled) return;
                 setSource({
@@ -452,8 +457,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         const b = binding.current;
         b?.onReaderCapabilities(b.identity, actions.current.capabilities);
         b?.onReaderStatus(b.identity, fatalRenderIssue ? { phase: 'error', message: new ClassicPdfError(fatalRenderIssue).message }
-            : error ? { phase: 'error', message: error } : { phase: session || mode === 'edit' && source ? 'ready' : 'loading' });
-    }, [capabilityKey, error, fatalRenderIssue, session, mode, source]);
+            : error ? { phase: 'error', message: error } : { phase: !renderDelayIssue && (session || mode === 'edit' && source) ? 'ready' : 'loading' });
+    }, [capabilityKey, error, fatalRenderIssue, renderDelayIssue, session, mode, source]);
     useEffect(() => {
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
@@ -562,8 +567,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body">
                 {body}
-                {!fatalRenderIssue && !error && documentRenderIssue && <div className="pdf-render-document-notice"><PdfRenderNotice
-                    issue={documentRenderIssue} annotation={mode === 'edit'} onRetry={retryRendering}
+                {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
+                    issue={(documentRenderIssue || renderDelayIssue)!} annotation={mode === 'edit'} onRetry={retryRendering}
                     retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
             </div>
         </div>

@@ -15,7 +15,8 @@ export interface ClassicWorkerConnection {
     readonly worker: PDFWorker;
     /** Resolves when the native port can no longer answer a teardown RPC. */
     readonly stopped: Promise<void>;
-    subscribeDocument(id: string, listener: DiagnosticListener): () => void;
+    subscribeDocument(id: string, listener: DiagnosticListener, progress?: () => void): () => void;
+    discardIfAbandoned(): void;
 }
 interface Owner {
     native: Worker;
@@ -46,7 +47,7 @@ function start(policy: ClassicWorkerPolicy): Owner {
         add(type, listener, { ...config, signal });
     }) as Worker['addEventListener'];
 
-    const documents = new Map<string, DiagnosticListener>();
+    const documents = new Map<string, { diagnostic: DiagnosticListener; progress?: () => void }>();
     let resolve!: (connection: ClassicWorkerConnection) => void;
     let reject!: (error: ClassicPdfError) => void;
     let stop!: () => void;
@@ -54,7 +55,7 @@ function start(policy: ClassicWorkerPolicy): Owner {
     const ready = new Promise<ClassicWorkerConnection>((yes, no) => { resolve = yes; reject = no; });
     let runtimeReady = false, tested = false, sentTest = false, settled = false;
     const timer = setTimeout(() => fail(), 5000);
-    const notify = (diagnostic: ClassicPdfDiagnostic) => { for (const listener of [...documents.values()]) listener(diagnostic); };
+    const notify = (diagnostic: ClassicPdfDiagnostic) => { for (const entry of [...documents.values()]) entry.diagnostic(diagnostic); };
     const owner: Owner = { native, ready, tainted: false, retire() { fail(); } };
     function fail() {
         if (owner.failure) return;
@@ -75,10 +76,17 @@ function start(policy: ClassicWorkerPolicy): Owner {
             owner.wrapper = worker;
             settled = true;
             clearTimeout(timer);
-            resolve({ worker, stopped, subscribeDocument(id, listener) {
+            resolve({ worker, stopped, subscribeDocument(id, listener, progress) {
                 if (owner.failure) { listener(owner.failure.diagnostic); return () => {}; }
-                documents.set(id, listener);
+                documents.set(id, { diagnostic: listener, progress });
                 return () => { documents.delete(id); };
+            }, discardIfAbandoned() {
+                if (documents.size) return;
+                // The last user of an unresponsive port was explicitly closed.
+                // No document needs its pending work now; this is teardown,
+                // never the watchdog terminating a slow decode by itself.
+                owner.retire();
+                if (shared === owner) shared = undefined;
             } });
         } catch { fail(); }
     }
@@ -113,19 +121,21 @@ function start(policy: ClassicWorkerPolicy): Owner {
             }
             return;
         }
+        const entry = documents.get(data.targetName);
+        entry?.progress?.();
         if (!['obj', 'commonobj'].includes(data.action)) return;
-        const listener = documents.get(data.targetName);
+        const listener = entry?.diagnostic;
         if (!listener) {
-            if (typeof data.targetName !== 'string') notify({ code: 'message-contract-failed', incomplete: true });
+            if (typeof data.targetName !== 'string') { owner.tainted = true; notify({ code: 'message-contract-failed', incomplete: true }); }
             return; // A closed document can have an already-queued image reply.
         }
         const payload: unknown = data.data;
-        if (!Array.isArray(payload)) { listener({ code: 'message-contract-failed', incomplete: true }); return; }
+        if (!Array.isArray(payload)) { owner.tainted = true; listener({ code: 'message-contract-failed', incomplete: true }); return; }
         const common = data.action === 'commonobj';
         const type = payload[common ? 1 : 2];
         if (type !== 'Image') {
             const allowed = common ? ['Font', 'FontPath', 'Pattern', 'CopyLocalImage'] : ['Pattern'];
-            if (!allowed.includes(type)) listener({ code: 'message-contract-failed', incomplete: true });
+            if (!allowed.includes(type)) { owner.tainted = true; listener({ code: 'message-contract-failed', incomplete: true }); }
             return;
         }
         const pageIndex = common ? undefined : payload[1];
@@ -133,7 +143,7 @@ function start(policy: ClassicWorkerPolicy): Owner {
         const valid = payload.length === (common ? 3 : 4) && typeof payload[0] === 'string'
             && (common || Number.isInteger(pageIndex) && pageIndex >= 0)
             && (image === null || typeof image === 'object' && Number.isInteger(image.width) && Number.isInteger(image.height));
-        if (!valid) listener({ code: 'message-contract-failed', incomplete: true });
+        if (!valid) { owner.tainted = true; listener({ code: 'message-contract-failed', incomplete: true }); }
         else if (image === null) listener({ code: 'image-decode-failed', pageIndex, incomplete: true });
     }
     // A valid image is not a diagnostic. Keep this observer separate from the
@@ -157,10 +167,10 @@ export function readyClassicWorker(policy: ClassicWorkerPolicy, prefetch = false
     return shared.failure ? Promise.reject(shared.failure) : shared.ready;
 }
 
-export function prepareClassicWorkerRetry(): void {
+export function prepareClassicWorkerRetry(force = false): void {
     constructionFailure = undefined;
-    if (!shared?.failure && !shared?.tainted) return;
-    shared.retire();
+    if (!shared?.failure && !shared?.tainted && !force) return;
+    shared?.retire();
     shared = undefined;
 }
 

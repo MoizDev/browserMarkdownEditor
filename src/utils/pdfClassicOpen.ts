@@ -6,13 +6,14 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import { classicAssets } from 'virtual:pdfjs-classic-assets';
 import { readyClassicWorker, prepareClassicWorkerRetry } from './pdfWorker';
 import type { ClassicWorkerConnection } from './pdfWorker';
-import { ClassicPdfError, createClassicPdfHealth, recordClassicRenderFailure } from './pdfClassicHealth';
+import { ClassicPdfError, CLASSIC_PDF_PROGRESS_NOTICE_MS, createClassicPdfHealth, recordClassicRenderFailure } from './pdfClassicHealth';
 import type { ClassicPdfDiagnostic, ClassicPdfHealth } from './pdfClassicHealth';
 
 interface ClassicPdfOpen {
     bytes: Uint8Array;
     purpose: 'viewer' | 'attachments' | 'annotation-backdrop' | 'annotation-text' | 'agent';
     diagnostic?: (diagnostic: ClassicPdfDiagnostic) => void;
+    progress?: () => void;
     signal?: AbortSignal;
 }
 interface Ownership {
@@ -44,16 +45,17 @@ function workerPolicy() {
 /** A warmup failure is silent here and stays failed until a demanded open
  * exposes it and the reader explicitly retries. No font/codec is warmed. */
 export function prefetchClassicPdf(): void { void readyClassicWorker(workerPolicy(), true).catch(() => {}); }
-export function prepareClassicPdfRetry(): void { prepareClassicWorkerRetry(); }
+export function prepareClassicPdfRetry(force = false): void { prepareClassicWorkerRetry(force); }
 
 /** Cancellation while waiting for shared startup cannot create an ownerless
  * late document. An open owns one real task, not a proxy per consumer. */
-export async function openClassicPdf({ bytes, diagnostic, signal }: ClassicPdfOpen): Promise<PDFDocumentLoadingTask> {
+export async function openClassicPdf({ bytes, diagnostic, progress, signal }: ClassicPdfOpen): Promise<PDFDocumentLoadingTask> {
     const health = createClassicPdfHealth();
-    let forwarded = 0;
+    let forwarded = new Set<ClassicPdfDiagnostic>();
     const unrelay = health.subscribe(() => {
         const snapshot = health.getSnapshot();
-        for (; forwarded < snapshot.length; forwarded++) diagnostic?.(snapshot[forwarded]);
+        for (const issue of snapshot) if (!forwarded.has(issue)) diagnostic?.(issue);
+        forwarded = new Set(snapshot);
     });
     try {
         signal?.throwIfAborted();
@@ -74,7 +76,7 @@ export async function openClassicPdf({ bytes, diagnostic, signal }: ClassicPdfOp
         const cancel = () => { void closeClassicPdf(task).catch(() => {}); };
         const detachSignal = () => signal?.removeEventListener('abort', cancel);
         const state: Ownership = { health, connection, unrelay, detachSignal,
-            unwatch: connection.subscribeDocument(task.docId, issue => health.record(issue)),
+            unwatch: connection.subscribeDocument(task.docId, issue => health.record(issue), () => { health.progress(); progress?.(); }),
             loaded: task.promise.then(doc => { ownership.set(doc, state); return doc; }),
         };
         ownership.set(task, state);
@@ -99,15 +101,21 @@ export async function loadClassicPdf(task: PDFDocumentLoadingTask, signal?: Abor
 /** A dead port never acknowledges pdf.js's Terminate RPC. Start normal local
  * teardown, but don't hold the app's leases/close behind a reply that cannot
  * arrive. Retiring the native owner has already detached every port listener. */
-export function closeClassicPdf(task: PDFDocumentLoadingTask): Promise<void> {
+export function closeClassicPdf(task: PDFDocumentLoadingTask, stalled = false): Promise<void> {
     const state = owned(task);
     if (state.disposal) return state.disposal;
+    const unresponsive = stalled || state.health.stalled;
     state.detachSignal();
     state.unwatch();
+    if (unresponsive) state.connection.discardIfAbandoned();
     state.unrelay();
     state.health.close();
     const destruction = task.destroy();
     void destruction.catch(() => {});
-    state.disposal = Promise.race([destruction, state.connection.stopped]);
+    // This is after an explicit close, not a rendering deadline. Normally
+    // Terminate replies immediately and the warm worker is retained. If no
+    // document uses a port that never replies, release that abandoned port.
+    const cleanupTimer = setTimeout(() => state.connection.discardIfAbandoned(), CLASSIC_PDF_PROGRESS_NOTICE_MS);
+    state.disposal = Promise.race([destruction, state.connection.stopped]).finally(() => clearTimeout(cleanupTimer));
     return state.disposal;
 }

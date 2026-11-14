@@ -42,6 +42,8 @@ interface PdfThumbnailsProps {
     renderThumbnail: (index: number, scale: number) => Promise<string>;
     onSelect: (index: number) => void;
     initialPage: number;
+    /** A late decoder failure can invalidate an already-cached thumbnail. */
+    failedPages?: ReadonlySet<number>;
 }
 
 /** CSS width of a thumbnail. The strip is this plus its padding — see
@@ -52,8 +54,9 @@ const ROW_GAP = 10;
 const PAD = 12;
 const OVERSCAN = 3;
 const MAX_CACHED = 160;
+const NO_FAILED_PAGES: ReadonlySet<number> = new Set();
 
-function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThumbnailsProps, ref: React.ForwardedRef<PdfThumbnailsHandle>) {
+function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPages = NO_FAILED_PAGES }: PdfThumbnailsProps, ref: React.ForwardedRef<PdfThumbnailsHandle>) {
     const n = sizes.length;
     const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -79,6 +82,14 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
 
     const urlsRef = useRef<Map<number, string>>(new Map());
     const failedRef = useRef<Set<number>>(new Set());
+    const knownFailures = useRef(failedPages);
+    useLayoutEffect(() => {
+        knownFailures.current = failedPages;
+        for (const i of failedPages) {
+            const url = urlsRef.current.get(i);
+            if (url) { URL.revokeObjectURL(url); urlsRef.current.delete(i); }
+        }
+    }, [failedPages]);
     /** Pages whose image no longer matches their content. Kept on screen until
      *  replaced, so a refresh never blanks a thumbnail. */
     const staleRef = useRef<Set<number>>(new Set());
@@ -125,7 +136,7 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                 const mid = (from + to) / 2;
                 let next = -1;
                 for (let i = Math.max(0, from - OVERSCAN), best = Infinity; i <= Math.min(n - 1, to + OVERSCAN); i++) {
-                    if ((urlsRef.current.has(i) && !staleRef.current.has(i)) || failedRef.current.has(i)) continue;
+                    if ((urlsRef.current.has(i) && !staleRef.current.has(i)) || failedRef.current.has(i) || knownFailures.current.has(i)) continue;
                     if (Math.abs(i - mid) < best) { best = Math.abs(i - mid); next = i; }
                 }
                 if (next < 0) return;
@@ -134,6 +145,7 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                 try {
                     const url = await renderRef.current(next, (THUMB_WIDTH * dpr) / (sizes[next].width || 1));
                     if (!aliveRef.current) { URL.revokeObjectURL(url); return; }
+                    if (knownFailures.current.has(next)) { URL.revokeObjectURL(url); continue; }
                     // Swap, never blank: the old image stays up until this one exists.
                     const old = urlsRef.current.get(next);
                     if (old) URL.revokeObjectURL(old);
@@ -234,6 +246,7 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
             <div className="pdf-thumbs-inner" style={{ height: geometry.total }}>
                 {rows.map(i => {
                     const url = urlsRef.current.get(i);
+                    const failed = failedPages.has(i) || failedRef.current.has(i);
                     return (
                         <button
                             key={i}
@@ -241,11 +254,11 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage }: PdfThu
                             className={`pdf-thumb${i === current ? ' is-current' : ''}`}
                             style={{ top: geometry.tops[i], width: THUMB_WIDTH }}
                             onClick={() => onSelect(i)}
-                            aria-label={`Page ${i + 1}${failedRef.current.has(i) ? ' — thumbnail unavailable' : ''}`}
+                            aria-label={`Page ${i + 1}${failed ? ' — thumbnail unavailable' : ''}`}
                             aria-current={i === current ? 'page' : undefined}
                         >
                             <span className="pdf-thumb-page" style={{ height: geometry.imageHeights[i] }}>
-                                {failedRef.current.has(i) ? <span className="pdf-thumb-failure">Thumbnail unavailable</span> : url && <img src={url} alt="" draggable={false} />}
+                                {failed ? <span className="pdf-thumb-failure">Thumbnail unavailable</span> : url && <img src={url} alt="" draggable={false} />}
                             </span>
                             <span className="pdf-thumb-label">{i + 1}</span>
                         </button>

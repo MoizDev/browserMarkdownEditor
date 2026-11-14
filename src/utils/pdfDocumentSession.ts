@@ -20,7 +20,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
     const opening = new AbortController();
     const health = createClassicPdfHealth();
     let taskReady = false;
-    let loadingTask: Promise<PDFDocumentLoadingTask> | undefined = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal, diagnostic: health.record }).then(openedTask => { taskReady = true; return openedTask; });
+    let loadingTask: Promise<PDFDocumentLoadingTask> | undefined = openClassicPdf({ bytes, purpose: 'viewer', signal: opening.signal, diagnostic: health.record, progress: health.progress }).then(openedTask => { taskReady = true; return openedTask; });
     let loadedDocument: Promise<PDFDocumentProxy> | undefined = loadingTask.then(loadClassicPdf);
     // A pane can be closed before its first consumer awaits worker startup.
     void loadedDocument.catch(() => {});
@@ -107,7 +107,7 @@ export function createPdfDocumentSession(bytes: Uint8Array, generation: number):
             disposal = (async () => {
                 if (leases) await new Promise<void>(resolve => { finish = resolve; });
                 const loaded = await pendingTask?.catch(() => undefined);
-                if (loaded) await closeClassicPdf(loaded);
+                if (loaded) await closeClassicPdf(loaded, health.stalled);
                 pages.clear();
             })();
             return disposal;

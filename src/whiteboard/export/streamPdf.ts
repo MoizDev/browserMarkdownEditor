@@ -4,8 +4,6 @@ import type { PdfExportWriter } from './capturePdf'
 import { streamIncrementalPdf } from './incrementalPdf'
 import type { ExportImage } from './displayList'
 import { streamPageDisplayList } from './streamPage'
-import { streamIncrementalPdf } from './incrementalPdf'
-import type { IncrementalPdfWriter } from './incrementalPdf'
 
 export interface PdfStreamPage {
   readonly source: PaintNodeSource

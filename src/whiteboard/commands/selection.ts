@@ -1,11 +1,12 @@
 import { pageAt } from '../../platform/render/pageStack';
-import { allocateOrderKeys, isLocked, reparentNode, selectedRoots, setIfChanged } from '../change/commands';
+import { allocateOrderKeys, reparentNode, setIfChanged } from '../change/commands';
 import { worldPose } from '../change/coordinates';
 import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from './geometryScope';
 import type { CommandBuilder } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
-import { childrenOf, hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
+import { childrenOf, isSheetParent } from '../model/doc';
+import { inspectOpaqueSubtrees, prepareSelectionScope } from './selectionScope';
 import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/ids';
 import { createFrame, createGroup, type Node } from '../model/nodes';
 import { boardPageStack, pageOrigin } from '../model/pages';
@@ -38,21 +39,9 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
             || doc.rev !== state.revision || selection.sheet !== state.sheet || selection.focus !== state.focus
             || runtime.render.text.fonts.epoch !== state.font) throw new DOMException('Selection command became stale', 'AbortError');
     };
-    const rootsFor = (ids: readonly NodeId[], state: Capture, structural: boolean): Node[] => {
-        const roots = selectedRoots(doc, ids);
-        for (const node of roots) {
-            if (sheetOf(doc, node.id) !== state.sheet) throw new Error('Selection spans another sheet');
-            let parent: ParentId = node.parent, inFocus = node.id === state.focus || parent === state.focus;
-            for (let depth = 0; !inFocus && !isSheetParent(doc, parent) && depth < 64; depth++) {
-                const ancestor = doc.nodes.get(parent as NodeId); if (!ancestor) throw new Error('Selection parent is missing');
-                parent = ancestor.parent; inFocus = parent === state.focus;
-            }
-            if (!inFocus) throw new Error('Selection is outside the current focus');
-            if (structural && (node.kind === 'opaque' || hasOpaqueDescendant(doc, node.id))) throw new Error('Opaque content cannot be restructured');
-            if (structural && isLocked(doc, node)) throw new Error('Locked content cannot be restructured');
-        }
-        return roots;
-    };
+    const rootsFor = (ids: readonly NodeId[], state: Capture, structural: boolean, signal: AbortSignal, preserveNested = false): Promise<Node[]> =>
+        prepareSelectionScope({ doc, ids, sheet: state.sheet, focus: state.focus, structural, preserveNested, signal, cooperate,
+            current: () => { try { check(state, signal); return true; } catch { return false; } } });
     const ancestors = (parent: ParentId): ParentId[] => {
         const result: ParentId[] = [];
         for (let depth = 0; depth <= 64; depth++) {
@@ -62,11 +51,15 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         }
         throw new Error('Selection ancestry is too deep');
     };
-    const lca = (roots: readonly Node[], state: Capture): ParentId => {
-        const chains = roots.map(node => ancestors(node.parent));
-        const parent = chains[0]?.find(id => chains.every(chain => chain.includes(id)));
+    const lca = async (roots: readonly Node[], state: Capture, signal: AbortSignal): Promise<ParentId> => {
+        let candidates = roots.length ? ancestors(roots[0].parent) : [], work = 0, started = performance.now();
+        for (let i = 1; i < roots.length && candidates.length; i++) {
+            const chain = new Set(ancestors(roots[i].parent)); candidates = candidates.filter(id => chain.has(id));
+            if (++work >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, signal); work = 0; started = performance.now(); }
+        }
+        const parent = candidates[0];
         if (!parent || !ancestors(parent).includes(state.focus)) throw new Error('Selection has no common parent inside focus');
-        return parent;
+        check(state, signal); return parent;
     };
     const branch = (node: Node, parent: ParentId): Node => {
         let current = node;
@@ -135,7 +128,7 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         prepare: (roots: Node[], state: Capture, signal: AbortSignal) => Promise<(builder: CommandBuilder) => T>,
         select?: (result: T) => readonly NodeId[]): Promise<T> => {
         const activeSignal = signal ?? new AbortController().signal, state = capture(); check(state, activeSignal);
-        const roots = rootsFor(ids, state, true);
+        const roots = await rootsFor(ids, state, true, activeSignal); check(state, activeSignal);
         const action = await prepare(roots, state, activeSignal); check(state, activeSignal);
         const lease = await runtime.render.pinChangeGeometry(roots.map(node => node.id), activeSignal);
         try { check(state, activeSignal); return commit(state, activeSignal, label, action, select); }
@@ -144,15 +137,27 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
     const createContainer = async (ids: readonly NodeId[], kind: 'group' | 'frame', name: string, signal?: AbortSignal) =>
         guarded(ids, kind === 'group' ? 'Group' : 'Frame selection', signal, async (roots, state, activeSignal) => {
             if (roots.length < (kind === 'group' ? 2 : 1)) throw new Error('Not enough selected roots');
-            const parent = lca(roots, state), inheritedOpacity = roots.map(root => inherited(root, parent));
-            const removed = new Map<ParentId, number>();
-            for (const root of roots) removed.set(root.parent, (removed.get(root.parent) ?? 0) + 1);
+            const parent = await lca(roots, state, activeSignal), inheritedOpacity: number[] = [];
+            const removed = new Map<ParentId, number>(); let work = 0, started = performance.now();
+            for (const root of roots) {
+                inheritedOpacity.push(inherited(root, parent)); removed.set(root.parent, (removed.get(root.parent) ?? 0) + 1);
+                if (++work >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); work = 0; started = performance.now(); }
+            }
+            const sourceGroups: NodeId[] = [];
+            for (const source of removed.keys()) {
+                const group = doc.nodes.get(source as NodeId); if (group?.kind === 'group') sourceGroups.push(group.id);
+                if (++work >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); work = 0; started = performance.now(); }
+            }
+            const opaque = await inspectOpaqueSubtrees(doc, sourceGroups, { signal: activeSignal, cooperate,
+                current: () => { try { check(state, activeSignal); return true; } catch { return false; } } });
+            check(state, activeSignal);
             for (const [source, count] of removed) {
                 const group = doc.nodes.get(source as NodeId);
-                if (group?.kind === 'group' && !hasOpaqueDescendant(doc, group.id)
+                if (group?.kind === 'group' && !opaque.get(group.id)
                     && childrenOf(doc, source).length - count + Number(source === parent) < 2) {
                     throw new Error('Grouping would implicitly dissolve an existing group');
                 }
+                if (++work >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); work = 0; started = performance.now(); }
             }
             let world = worldPose(doc, roots[0].id), width = 0, height = 0;
             const zoom = kind === 'frame' ? options.zoom() : 1;
@@ -290,7 +295,7 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         },
         async toggleLocked(ids: readonly NodeId[], signal?: AbortSignal): Promise<void> {
             const token = signal ?? new AbortController().signal, state = capture();
-            const roots = [...new Set(ids)].flatMap(id => rootsFor([id], state, false));
+            const roots = await rootsFor(ids, state, false, token, true); check(state, token);
             for (const node of roots) if (node.kind === 'opaque') throw new Error('Opaque nodes cannot be unlocked');
             const label = roots.every(node => node.locked) ? 'Unlock' : roots.every(node => !node.locked) ? 'Lock' : 'Toggle lock';
             commit(state, token, label, builder => { for (const node of roots) setIfChanged(builder, node, 'locked', !node.locked); });

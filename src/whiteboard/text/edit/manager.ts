@@ -39,10 +39,11 @@ export function createTextEditingManager(ports: TextEditingManagerPorts): TextEd
         const initial = selection ?? { anchor: 0, focus: value.length };
         try {
             const supplied = ports.binding(id, key, initial, creationToken);
-            let binding: TextEditBinding | undefined;
+            const holder: { binding?: TextEditBinding } = {};
             const options = { ...supplied, view: { ...supplied.view, creationToken,
-                finish: () => { if (current === binding) current = null; supplied.view.finish(); } } };
-            binding = bindTextEditor(options);
+                finish: () => { if (current === holder.binding) current = null; supplied.view.finish(); } } };
+            const binding = bindTextEditor(options);
+            holder.binding = binding;
             current = binding;
             binding.editor.focus();
             return true;

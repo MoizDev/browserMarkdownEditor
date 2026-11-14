@@ -85,7 +85,9 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
     let advances = 0;
     while (stack.length) {
         if ((++advances & 255) === 0 && performance.now() - started >= 3) {
-            signal?.throwIfAborted(); await cooperate?.(); signal?.throwIfAborted(); started = performance.now();
+            signal?.throwIfAborted();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            signal?.throwIfAborted(); started = performance.now();
         }
         const frame = stack[stack.length - 1], next = frame.entries.next();
         if (next.done) { ancestors.delete(frame.source); stack.pop(); continue; }

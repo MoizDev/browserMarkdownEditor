@@ -150,6 +150,7 @@ third-party code included (normally "none") · date.
 | `export/displayList.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §3 | Shared paint frame, world-space clips, source-pixel image crop, cancellable shared ink outline and PDF display contract; no tldraw source | none | 2026-11-13 |
 | `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Resolution-free shared display-list serialization, self-contained embedded images and local clip paths; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerProtocol.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; row backpressure protocol; no tldraw source | none | 2026-11-13 |
+| `export/pngWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Platform-hosted pull-stream encoder handlers, bounded row transfer and cooperative cancellation; no tldraw source | none | 2026-11-13 |
 | `export/png.worker.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; dedicated streaming encoder and cancellation; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; bounded-band producer and transferable owned rows; no tldraw source | none | 2026-11-13 |
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs and image lease contract; cancellable pinned capture resources; no tldraw source | none | 2026-11-13 |

@@ -56,7 +56,7 @@ export interface BoardToolServicesOptions {
         ownsWheel(event: WheelEvent): boolean;
         error(error: unknown): void;
         contextMenu(event: MouseEvent): void;
-        persistToolLock(locked: boolean): void;
+        persistToolLock?(locked: boolean): void;
         penModeChanged(enabled: boolean): void;
         pointerChanged?(sample: RealSample): void;
         hover?(event: PointerEvent): void;
@@ -64,7 +64,7 @@ export interface BoardToolServicesOptions {
         keyboardNavigation?: BoardInputServices['keyboardNavigation'];
         keyboardCursorInitial?: BoardInputServices['keyboardCursorInitial'];
         keyboardCursorVisible?: BoardInputServices['keyboardCursorVisible'];
-        clearLatches(): void;
+        clearLatches?(): void;
     };
     readonly commands: BoardInputServices['commands'];
     /** The App supplies real permission-aware import and clipboard backends. */

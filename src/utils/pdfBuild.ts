@@ -7,7 +7,7 @@
 // It lives apart from pdfAnnotation.ts for that reason alone — the two halves
 // are one feature.
 
-import { PDFDict, PDFDocument, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
+import { FileEmbedder, PDFDict, PDFDocument, PDFHexString, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { NOTEBOOK_SOURCE_ATTACHMENT, type NotebookSource } from './pdfFormat';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from './paper';
@@ -314,12 +314,13 @@ export async function buildNotebookPdf(
         // the original that stays put and keeps being edited. Annotating this
         // PDF follows the pointer back rather than forking a third file.
         const marker = 'local-vault-pdf/v1;role=notebook-source;format=notebook-source';
-        const attachment = await doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
+        const ref = await FileEmbedder.for(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
             mimeType: 'application/json',
             description: `${marker}\nThe notebook this PDF was exported from. Edit that, then export again.`,
-        });
-        await attachment.embed();
-        markEmbeddedFile(doc, attachment.ref, marker);
+        }).embedIntoContext(doc.context);
+        markEmbeddedFile(doc, ref, marker);
+        doc.catalog.set(PDFName.of('Names'), doc.context.obj({ EmbeddedFiles: { Names: [PDFHexString.fromText(NOTEBOOK_SOURCE_ATTACHMENT), ref] } }));
+        doc.catalog.set(PDFName.of('AF'), doc.context.obj([ref]));
         // Said in the document properties too, where any PDF viewer will show
         // it — the attachment is for this app, this line is for a person.
         doc.setProducer(`Exported from ${source.path}`);

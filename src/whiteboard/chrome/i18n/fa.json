@@ -377,6 +377,7 @@
     "paper.deleteContents": "این صفحه حاوی {items} است.",
     "paper.deleteConfirm": "حذف صفحه",
     "paper.cancel": "لغو کنید",
-    "paper.keepProtected": "محتوای قفل شده حفظ خواهد شد."
+    "paper.keepProtected": "محتوای قفل شده حفظ خواهد شد.",
+    "chrome.readOnly": "این تابلو فقط خواندنی است."
   }
 }

@@ -377,6 +377,7 @@
     "paper.deleteContents": "Ang pahinang ito ay naglalaman ng {items}.",
     "paper.deleteConfirm": "Tanggalin ang pahina",
     "paper.cancel": "Kanselahin",
-    "paper.keepProtected": "Itatago ang naka-lock na nilalaman."
+    "paper.keepProtected": "Itatago ang naka-lock na nilalaman.",
+    "chrome.readOnly": "Ang board na ito ay read-only."
   }
 }

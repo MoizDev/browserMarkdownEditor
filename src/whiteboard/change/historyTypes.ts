@@ -1,5 +1,5 @@
 import type { MediaId } from '../model/media';
-import type { NodeId, SheetId } from '../model/ids';
+import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { SampleRef } from '../model/samples';
 import type { Applied, Transaction } from './ops';
 
@@ -11,7 +11,9 @@ export interface TextSelectionSnapshot {
 /** Selection is session state, never part of a document transaction. */
 export interface HistorySnapshot {
     readonly sheet: SheetId;
+    readonly focus: ParentId;
     readonly selected: readonly NodeId[];
+    readonly active: NodeId | null;
     readonly text?: TextSelectionSnapshot;
 }
 export interface HistoryStepInfo {

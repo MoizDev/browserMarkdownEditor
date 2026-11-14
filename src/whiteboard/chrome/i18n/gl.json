@@ -377,6 +377,7 @@
     "paper.deleteContents": "Esta páxina contén {items}.",
     "paper.deleteConfirm": "Eliminar páxina",
     "paper.cancel": "Cancelar",
-    "paper.keepProtected": "O contido bloqueado manterase."
+    "paper.keepProtected": "O contido bloqueado manterase.",
+    "chrome.readOnly": "Este taboleiro é só de lectura."
   }
 }

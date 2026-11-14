@@ -42,7 +42,7 @@ export interface LegacyImportResult<T> {
 // I-1: the original text and admitted media remain in memory; this function has no file capability.
 export async function importLegacy<T>(text: string, options: LegacyImportOptions<T>): Promise<LegacyImportResult<T>> {
     const report = new ReportBuilder();
-    let draft: Awaited<ReturnType<typeof readLegacyRecords>> = null;
+    let draft: Awaited<ReturnType<typeof readLegacyRecords>> | null = null;
     try {
         if (options.kind === 'pdf-ink' && options.pageSource?.kind !== 'pdf-ink') {
             throw new Error('PDF import requires display page geometry');

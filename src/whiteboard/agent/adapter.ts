@@ -7,6 +7,7 @@ import type { Node, Point } from '../model/nodes';
 import type { SampleLease } from '../model/samples';
 import type { BoardSession } from '../session/BoardSession';
 import { planAgentPlacement, type LocalBox } from './placement';
+import { reanchorAgentRoot } from './reanchor';
 import { listAgentShapes, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from './shapes';
 import { stageAgentOp } from './stage';
 import { applyAgentOperations, type AgentApplyResult } from './transaction';
@@ -52,6 +53,7 @@ export function createBoardAgentAdapter(host: AgentAdapterHost): BoardAgentAdapt
                     target: (node, page) => host.target(node, page),
                     placement: (node, update) => planAgentPlacement(node, update, { doc: host.session.doc,
                         sheet: host.sheet(), currentPage: host.page(), builder: context.builder, localBox: candidate => host.localBox(candidate) }),
+                    reanchor: (id, builder) => reanchorAgentRoot(host.session.doc, builder, id, host.changeGeometry),
                     delete: (id, builder) => planDelete(host.session.doc, builder, host.sheet(), [id], host.changeGeometry) }, op, context),
             }, ops, signal);
         },

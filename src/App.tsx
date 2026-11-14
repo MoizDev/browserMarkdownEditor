@@ -2745,7 +2745,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -2864,7 +2864,7 @@ export default function App() {
     checkpointRef.current = run;
     void run.finally(() => { if (checkpointRef.current === run) checkpointRef.current = null; });
     return run;
-  }, [flushTab, getVaultActivation]);
+  }, [flushTab, getVaultActivation, documentSessions]);
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
@@ -3108,7 +3108,7 @@ export default function App() {
     // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
-  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, recoveryEvent, syncExitGuard]);
+  }, [clearSaveTimer, documentBuffers, documentSessions, editorStates, indexGraphRef, recoveryEvent, syncExitGuard]);
 
   /**
    * A rename or move that lands on a name another tab is holding. renameFile /
@@ -3150,7 +3150,7 @@ export default function App() {
     // whichever tab happens to be leftmost in the column.
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
-  }, [releaseTab, flushTab]);
+  }, [releaseTab, flushTab, documentSessions]);
 
   /** Close one document. Its tab goes; the column goes with it only if that was
    *  the column's last tab (see utils/tabPanes.ts closePath). */
@@ -3227,7 +3227,7 @@ export default function App() {
         setClosingDocumentIds(new Set(closingRef.current));
       }
     })();
-  }, [flushTab, releaseTab, rememberClosed, preparePdfDeparture]);
+  }, [flushTab, releaseTab, rememberClosed, preparePdfDeparture, documentSessions]);
 
   const closeTab = useCallback((path: string) => {
     closeDocuments([path], () => setLayout(l => closePath(l, path)));
@@ -3424,7 +3424,7 @@ export default function App() {
       t.file.path === path && canChangeTabMode(t)
         ? { ...t, mode }
         : t));
-  }, [flushTab]);
+  }, [flushTab, documentBuffers]);
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
@@ -3582,7 +3582,7 @@ export default function App() {
     if (!revision || revision.revision <= revision.savedRevision || !canReadTabText(tab) || isCanvasFile(tab.file.name)) return [];
     const text = contentOf(tab.file.path);
     return text === undefined ? [] : [{ path: tab.file.path, revision: revision.revision, text }];
-  }), [contentOf]);
+  }), [contentOf, documentBuffers]);
   const searchController = useMemo<SearchController>(() => ({
     subscribe: subscribeSearchChanges,
     async search(query, onBatch, signal) {
@@ -4014,7 +4014,7 @@ export default function App() {
         indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled, seedDocumentBuffer]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled, seedDocumentBuffer, documentBuffers]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -4397,7 +4397,7 @@ export default function App() {
       }
       return true;
     });
-  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
+  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions]);
 
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     // A folder copy runs for seconds, and its row stays on screen throughout —
@@ -4622,7 +4622,7 @@ export default function App() {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
   const handleTrashCopy = useCallback(async (item: TrashItem) => {
@@ -5000,7 +5000,7 @@ export default function App() {
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
     return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected, preparePdfDeparture]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected, preparePdfDeparture, indexGraphRef]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
@@ -5021,7 +5021,7 @@ export default function App() {
       await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected, preparePdfDeparture]);
+  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected, preparePdfDeparture, indexGraphRef]);
 
   // ── Changes made OUTSIDE the app ────────────────────────────────────────
   // A `git pull` in the terminal, a formatter, a sync client, another editor.
@@ -5567,7 +5567,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes

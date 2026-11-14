@@ -56,6 +56,7 @@ export interface PlatformCapturerOptions {
  */
 export function createPlatformCapturer(options: PlatformCapturerOptions): {
     captureRegion(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<ImageBitmap>;
+    captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob>;
     dispose(): void;
 } {
     const now = performance.now();
@@ -81,6 +82,7 @@ export function createPlatformCapturer(options: PlatformCapturerOptions): {
     let disposed = false;
     return {
         captureRegion: (rect, maxSide, request) => capturer.captureRegion(rect, maxSide, request),
+        captureBlob: (rect, maxSide, request) => capturer.captureBlob(rect, maxSide, request),
         dispose: () => { if (!disposed) { disposed = true; capturer.dispose(); cache.close(); } },
     };
 }

@@ -12,7 +12,7 @@ import type { PdfTiledDocumentSession } from './documentSession';
 
 const slot = Symbol('PDF session capturer');
 const MAX_SIDE = 1568, MAX_REGION_AXIS = 10_000_000, MAX_CAPTURE_PAGES = 1024;
-export type PdfSessionCapturer = ReturnType<typeof createPlatformCapturer>;
+export type PdfSessionCapturer = Pick<ReturnType<typeof createPlatformCapturer>, 'captureRegion' | 'dispose'>;
 type CaptureLease = Awaited<ReturnType<PdfTiledDocumentSession['acquireCapture']>>;
 type DocumentWithEmphasis = CaptureLease['document'] & { readonly emphasis?: PdfEmphasisController };
 type Launch = { snapshot(request: Parameters<typeof createPdfCaptureSnapshot>[1], memory: Parameters<typeof createPdfCaptureSnapshot>[2]): CaptureSnapshot };

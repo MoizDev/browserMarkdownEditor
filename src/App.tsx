@@ -9,6 +9,8 @@ import { watchForNewVersion } from './utils/versionPoll';
 import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
 import { getSessionIdentity } from './utils/sessionIdentity';
 import { ensurePdfSessionRoute, readPdfSessionRoute } from './utils/pdfSessionRoute';
+import { routeEngines } from './utils/engineRouting';
+import type { ClosedPdfAgentAccess } from './types/vaultAgent';
 import type { NativeCanvasReady } from './types/reading';
 import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
 import { fingerprintSnapshot } from './utils/snapshotFingerprint';
@@ -186,6 +188,7 @@ function externalOpenUrl(path: string, file: File): string {
  *  history — to a different document. The monotonic counter guarantees it;
  *  keep it that way. */
 let docSeq = 0;
+let closedPdfAgentSeq = 0;
 function newTabId(): string {
   return `d${(++docSeq).toString(36)}`;
 }
@@ -5737,6 +5740,40 @@ export default function App() {
     });
   }, [ensureVaultId]);
 
+  const readerEpochRef = useRef({ root: rootHandle, epoch: 0 });
+  if (readerEpochRef.current.root !== rootHandle) readerEpochRef.current = { root: rootHandle, epoch: readerEpochRef.current.epoch + 1 };
+  const closedPdfAccess = useMemo<ClosedPdfAgentAccess>(() => {
+    const prepare = async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const root = rootHandleRef.current, vault = currentVaultIdRef.current;
+      const vaultEpoch = readerEpochRef.current.epoch, activation = getVaultActivation();
+      if (!root || !vault) throw new DOMException('Vault is unavailable', 'AbortError');
+      if (closedPdfAgentSeq === Number.MAX_SAFE_INTEGER) throw new RangeError('PDF agent identity exhausted');
+      const serial = ++closedPdfAgentSeq;
+      const token = { vaultEpoch, documentId: `agent-pdf-${serial.toString(36)}`, bytesGeneration: 0, session: serial };
+      const isCurrent = () => !signal.aborted && rootHandleRef.current === root && currentVaultIdRef.current === vault &&
+        readerEpochRef.current.epoch === vaultEpoch && getVaultActivation() === activation;
+      const [startup, agent] = await Promise.all([import('./pdf/session/startup'), import('./pdf/text/agentAccess')]);
+      if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+      const access = agent.createClosedPdfAgentAccess(startup.getSharedPdfPool(), () => ({ token, isCurrent }));
+      return { access, isCurrent };
+    };
+    return {
+      async read(...args) {
+        const { access, isCurrent } = await prepare(args[5]);
+        const result = await access.read(...args);
+        if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+        return result;
+      },
+      async render(...args) {
+        const { access, isCurrent } = await prepare(args[4]);
+        const result = await access.render(...args);
+        if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+        return result;
+      },
+    };
+  }, [getVaultActivation]);
+
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
@@ -5754,6 +5791,7 @@ export default function App() {
       markdownSessions,
       readFile,
       readFileBytes,
+      closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
       readFileVersioned,
       statFile,
       writeFileVersioned,
@@ -5816,8 +5854,6 @@ export default function App() {
     return () => window.removeEventListener('reading-persistence-unavailable', report);
   }, [announce]);
 
-  const readerEpochRef = useRef({ root: rootHandle, epoch: 0 });
-  if (readerEpochRef.current.root !== rootHandle) readerEpochRef.current = { root: rootHandle, epoch: readerEpochRef.current.epoch + 1 };
   const readerIdentityCache = useRef(new Map<string, ReaderIdentity>());
   const readerDeps = useRef({ readFileSnapshot, notify, announce, closeTab, reopenClosedTab });
   useLayoutEffect(() => { readerDeps.current = { readFileSnapshot, notify, announce, closeTab, reopenClosedTab }; });

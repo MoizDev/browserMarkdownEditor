@@ -65,10 +65,17 @@ export interface BoardTextEditorOptions {
 type ConnectorMetrics = { readonly anchorWorld: { x: number; y: number }; readonly bodyLength: number };
 const svgNS = 'http://www.w3.org/2000/svg';
 function transformObject(m: Affine) { return { a: m[0], b: m[1], c: m[2], d: m[3], e: m[4], f: m[5] }; }
+const frameNames = new WeakMap<Readonly<Node>, RichText>();
 function nodeText(node: Readonly<Node>): RichText | null {
     if (node.kind === 'text' || node.kind === 'sticky') return node.text;
     if (node.kind === 'figure' || node.kind === 'connector') return node.label ?? EMPTY_RICH_TEXT;
-    return node.kind === 'frame' ? { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: node.name, marks: {} }] }] } : null;
+    if (node.kind !== 'frame') return null;
+    let value = frameNames.get(node);
+    if (!value) {
+        value = { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: node.name, marks: {} }] }] };
+        frameNames.set(node, value);
+    }
+    return value;
 }
 function poseMatrix(runtime: BoardRuntime, id: NodeId): Affine {
     const pose = worldPose(runtime.session.doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);

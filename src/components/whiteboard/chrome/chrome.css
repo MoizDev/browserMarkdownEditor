@@ -29,6 +29,14 @@
     flex: none;
 }
 
+.board-chrome-pen {
+    position: absolute;
+    top: 52px;
+    inset-inline-end: 0;
+    max-width: 100%;
+    pointer-events: auto;
+}
+
 .board-chrome-tools,
 .board-chrome-actions {
     position: relative;
@@ -118,6 +126,64 @@
 .board-chrome-tool:disabled {
     cursor: default;
     opacity: .45;
+}
+
+.board-pen-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 176px;
+    padding: 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    pointer-events: auto;
+}
+
+.board-pen-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.board-pen-indicator {
+    display: inline-block;
+    width: 15px;
+    height: 15px;
+    flex: none;
+    border-radius: 50%;
+    outline: 1px solid;
+}
+
+.board-pen-swatches {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+}
+
+.board-pen-swatch {
+    display: grid;
+    place-items: center;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+}
+
+.board-pen-swatch > span {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 50%;
+}
+
+.board-pen-swatch[aria-pressed='true'] { border-color: var(--interactive-accent); }
+.board-pen-swatch:focus-visible, .board-pen-panel input:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
 }
 
 .board-shortcuts-backdrop {

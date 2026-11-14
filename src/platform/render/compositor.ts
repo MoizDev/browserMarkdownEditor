@@ -414,7 +414,8 @@ export class GpuCompositor implements PaneCompositor {
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
         this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.width, destRect.height,
-            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity, 0]);
+            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity,
+            __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const slice = this.uniforms(this.#quadData);
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
             bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: gpuTexture,

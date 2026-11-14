@@ -17,6 +17,7 @@ export interface FrameBuffer {
 export interface FrameTexture {
     readonly handle: TextureHandle;
     readonly texture: WebGLTexture;
+    readonly coverage: WebGLTexture | null;
     readonly width: number;
     readonly height: number;
     readonly format: TextureFormat;
@@ -27,6 +28,7 @@ export interface FrameTarget {
     readonly handle: TargetHandle | 'surface';
     readonly framebuffer: WebGLFramebuffer | null;
     readonly resolveFramebuffer: WebGLFramebuffer | null;
+    readonly coverage: WebGLTexture | null;
     readonly width: number;
     readonly height: number;
     readonly format: TextureFormat;
@@ -322,6 +324,11 @@ class DeviceFrame implements ControlledFrame {
                     bits |= gl.STENCIL_BUFFER_BIT;
                 }
                 if (bits) gl.clear(bits);
+                if (__BME_BENCH__ && target.coverage && desc.load.kind === 'clear') {
+                    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+                    gl.clearBufferfv(gl.COLOR, 1, new Float32Array([0, 0, 0, 0]));
+                    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+                }
             } finally { this.#backend.reset(); }
         });
     }
@@ -364,8 +371,20 @@ class DeviceFrame implements ControlledFrame {
                 gl.disable(gl.SCISSOR_TEST);
                 gl.bindFramebuffer(gl.READ_FRAMEBUFFER, source.framebuffer);
                 gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dest.framebuffer);
+                if (__BME_BENCH__) {
+                    gl.readBuffer(source.framebuffer ? gl.COLOR_ATTACHMENT0 : gl.BACK);
+                    gl.drawBuffers([dest.framebuffer ? gl.COLOR_ATTACHMENT0 : gl.BACK]);
+                }
                 gl.blitFramebuffer(area.x, source.height - area.y - area.height, area.x + area.width, source.height - area.y,
                     x, dest.height - y - area.height, x + area.width, dest.height - y, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+                if (__BME_BENCH__ && source.coverage && dest.coverage) {
+                    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+                    gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]);
+                    gl.blitFramebuffer(area.x, source.height - area.y - area.height, area.x + area.width, source.height - area.y,
+                        x, dest.height - y - area.height, x + area.width, dest.height - y, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+                    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+                    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+                }
             } finally { this.#backend.reset(); }
         });
     }
@@ -406,7 +425,8 @@ class DeviceFrame implements ControlledFrame {
             data.set([mask.source.width / mask.texture.width, mask.source.height / mask.texture.height,
                 mask.source.x / mask.texture.width, 1 - mask.source.y / mask.texture.height], 24);
         }
-        data.set([options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0, 0], 28);
+        data.set([options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
+            __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0], 28);
         const packed = this.uniforms(data);
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),

@@ -769,6 +769,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
+        if (__BME_BENCH__) {
+            const nearest = this.createSampler('nearest');
+            this.destroy(nearest);
+        }
         this.#ensureWhite();
     }
 
@@ -897,20 +901,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 throw new ArenaError('aborted');
             }
         };
-        const texture = (handle: TextureHandle): FrameTexture => this.#frameTexture(handle, this.#pin(work.encoding, handle, 'texture'));
+        const texture = (handle: TextureHandle): FrameTexture => this.#frameTexture(work.encoding, handle, this.#pin(work.encoding, handle, 'texture'));
         const target = (handle: TargetHandle | 'surface'): FrameTarget => {
             if (handle === 'surface') {
                 const gl = this.#usable();
-                return { handle, framebuffer: null, resolveFramebuffer: null, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
+                return { handle, framebuffer: null, resolveFramebuffer: null, coverage: null, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
             }
             const native = this.#pin(work.encoding, handle, 'target');
             return { handle, framebuffer: native.framebuffer, resolveFramebuffer: native.resolveFramebuffer,
-                width: native.width, height: native.height, format: native.format, samples: native.samples,
+                coverage: native.coverage?.texture ?? null, width: native.width, height: native.height, format: native.format, samples: native.samples,
                 stencil: native.stencil, capture: native.capture, retained: native,
                 usedRect: native.colorTexture.usedRect ?? { x: 0, y: 0, width: native.width, height: native.height },
-                color: this.#frameTexture(native.color, native.colorTexture) };
+                color: this.#frameTexture(work.encoding, native.color, native.colorTexture) };
         };
         return {
             signal: work.signal, uniformAlignment: this.limits.uniformAlignment, maxViewport: this.limits.maxViewport,
@@ -932,7 +936,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             },
             clip: handle => {
                 const clip = this.#pin(work.encoding, handle, 'clip');
-                return { mask: this.#frameTexture(clip.mask, clip.texture), bounds: clip.bounds };
+                return { mask: this.#frameTexture(work.encoding, clip.mask, clip.texture), bounds: clip.bounds };
             },
             attachment: value => target(this.#attachment(value.handle)),
             white: () => texture(this.#white!),
@@ -968,8 +972,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         };
     }
 
-    #frameTexture(handle: TextureHandle, texture: NativeTexture): FrameTexture {
-        return { handle, texture: texture.texture, width: texture.width, height: texture.height, format: texture.format, uses: texture.uses,
+    #frameTexture(encoding: ArenaEncoding, handle: TextureHandle, texture: NativeTexture): FrameTexture {
+        const coverage = __BME_BENCH__ ? this.#coverageTextures.get(texture.texture) : undefined;
+        const mask = coverage ? this.#pin(encoding, coverage, 'texture').texture : null;
+        return { handle, texture: texture.texture, coverage: mask, width: texture.width, height: texture.height, format: texture.format, uses: texture.uses,
             usedRect: texture.usedRect ?? { x: 0, y: 0, width: texture.width, height: texture.height } };
     }
 
@@ -1122,6 +1128,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const gl = this.#usable();
         try {
             this.#viewport(context, command.scissor);
+            if (__BME_BENCH__ && context.target.framebuffer) {
+                gl.drawBuffers(context.target.coverage && pipeline.descriptor.shader.id === 'platform-textured-quad'
+                    ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
+            }
             gl.useProgram(program.program);
             gl.bindVertexArray(this.#ensureVao(pipeline));
             const bindings = pipeline.vertexBindings;
@@ -1178,12 +1188,22 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const gl = this.#usable();
         try {
             this.#viewport(command.context, command.scissor);
+            if (__BME_BENCH__ && command.context.target.framebuffer) {
+                gl.drawBuffers(command.context.target.coverage ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
+            }
             gl.useProgram(program.program);
             gl.bindVertexArray(null);
             this.#bindUniform(0, command.uniforms.buffer.buffer, command.uniforms.slice.offset, 128);
             this.#bindTexture(0, command.source.texture, sampler.sampler);
             this.#bindTexture(1, command.backdrop.texture, sampler.sampler);
             this.#bindTexture(2, command.mask.texture, sampler.sampler);
+            if (__BME_BENCH__) {
+                const nearestHandle = this.#samplers.get('nearest');
+                if (!nearestHandle) throw new ArenaError('invalid-resource');
+                const nearest = this.#arena.validate(nearestHandle, 'sampler');
+                this.#bindTexture(3, command.source.coverage ?? command.mask.texture, nearest.sampler);
+                this.#bindTexture(4, command.backdrop.coverage ?? command.mask.texture, nearest.sampler);
+            }
             this.#blend(command.blend);
             gl.colorMask(true, true, true, true);
             gl.disable(gl.STENCIL_TEST);

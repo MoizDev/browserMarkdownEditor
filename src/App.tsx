@@ -1086,7 +1086,7 @@ export default function App() {
     const session = documentSessions.get(id);
     const policy = nativePoliciesRef.current.get(id);
     if (policy && session && policy.session === session.serial) policy.generation = generation;
-    if (session) session.bytesGeneration = generation;
+    if (session) documentSessions.setBytesGeneration(id, generation);
   }, [documentSessions]);
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);

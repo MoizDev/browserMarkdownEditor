@@ -232,6 +232,14 @@ export function createNativeClipboardController(options: NativeClipboardControll
             }
             return execute(null, target, 'duplicate', { snapshot, media });
         },
+        capturePaste(input: ClipboardInput, intent: ClipboardIntent): () => Promise<void> {
+            const target = targetNow();
+            let consumed = false;
+            return () => {
+                if (consumed) return Promise.reject(new Error('Clipboard capture was already consumed'));
+                consumed = true; return execute(Promise.resolve(input), target, intent);
+            };
+        },
         importFiles(files: readonly File[], point: ClipboardPoint): Promise<void> {
             if (!files.length) return Promise.resolve();
             const target = targetNow(point);

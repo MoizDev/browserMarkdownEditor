@@ -5,12 +5,14 @@ import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
 import { pointPath } from '../geom/pick';
+import { resolvePolylineAttachments } from '../geom/polylineAttachments';
+import { preparePolylineGeometry } from '../geom/providers';
 import type { InputKind, NarrowResult, PointQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { InkCoverage } from '../ink/outline';
 import { InkPickJob } from '../ink/pick';
 import type { NodeId } from '../model/ids';
-import type { Node, ConnectorNode } from '../model/nodes';
+import type { Attachment, Node, ConnectorNode } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
 import { selectableAtFocus } from '../selection';
@@ -167,15 +169,25 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         ({ result, uncertain: ambiguous } = connectorPoint(node, prepared.connector, matrix, surface, input));
                     } else {
                         if (!prepared.vector) throw new Error('Vector picking geometry is unavailable');
+                        let vector = prepared.vector;
+                        const line = node.kind === 'polyline' ? node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null } : null;
+                        if (line && (line.startAttach || line.endAttach)) {
+                            const resolvedLine = await resolvePolylineAttachments(line, { runtime, doc, signal: combined, cooperate,
+                                current: () => { try { check(); return true; } catch { return false; } } });
+                            try {
+                                check(); vector = preparePolylineGeometry({ ...line, points: [...resolvedLine.points] }, { key: vector.key,
+                                    kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
+                            } finally { resolvedLine.release(); }
+                        }
                         const query = { point: surface, localToSurface, input };
-                        const attachment = prepared.vector.attachments;
+                        const attachment = vector.attachments;
                         if (targetMode && attachment) {
                             // Attachment targeting is an edge query, unlike selection of a hollow interior.
                             result = pointPath([attachment.outline], query, { strokeRadiusLocal: 0,
                                 marginCss: 4, errorCss: 0.01, maxSegments: 8192 });
                             if (result.hit) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {
-                            result = prepared.vector.point(query);
+                            result = vector.point(query);
                             if (targetMode && result.hit) ambiguous = true;
                         }
                     }

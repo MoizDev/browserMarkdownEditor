@@ -3,13 +3,15 @@ import type { RenderToken } from '../../platform/render/types';
 import { worldPose } from '../change/coordinates';
 import { compose, inverse, transformPoint } from '../geom/affine';
 import { regionPath } from '../geom/pick';
+import { resolvePolylineAttachments } from '../geom/polylineAttachments';
+import { preparePolylineGeometry } from '../geom/providers';
 import { orient2d } from '../geom/predicates';
 import type { PathOp, Vec2 } from '../geom/path';
 import type { RegionQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import { InkRegionPickJob } from '../ink/regionPick';
 import type { NodeId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import type { Attachment, Node } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { createBoardRenderServices } from '../render/services';
 import { selectableAtFocus } from '../selection';
@@ -153,8 +155,19 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     const containment = query.kind === 'polygon' && query.containment;
                     hit = containment ? all && prepared.ink.length > 0 : any;
                     if (!hit && uncertain) throw new BoardRegionUncertain('Ink region intersection is numerically ambiguous');
-                } else if (prepared.vector) hit = prepared.vector.region(localQuery).hit;
-                else if (prepared.connector && node.kind === 'connector') {
+                } else if (prepared.vector) {
+                    let vector = prepared.vector;
+                    const line = node.kind === 'polyline' ? node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null } : null;
+                    if (line && (line.startAttach || line.endAttach)) {
+                        const resolvedLine = await resolvePolylineAttachments(line, { runtime, doc, signal, cooperate,
+                            current: () => { try { check(); return true; } catch { return false; } } });
+                        try {
+                            check(); vector = preparePolylineGeometry({ ...line, points: [...resolvedLine.points] }, { key: vector.key,
+                                kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
+                        } finally { resolvedLine.release(); }
+                    }
+                    hit = vector.region(localQuery).hit;
+                } else if (prepared.connector && node.kind === 'connector') {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
                     const parts: boolean[] = [];

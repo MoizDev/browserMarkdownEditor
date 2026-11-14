@@ -200,21 +200,25 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         }
     }, [nodes, links, layout]);
 
-    // Read theme colors from CSS variables whenever the theme flips.
     useEffect(() => {
-        const cs = getComputedStyle(document.documentElement);
-        const v = (name: string, fallback: string) => (cs.getPropertyValue(name).trim() || fallback);
-        colorsRef.current = {
-            bg: v('--background-primary', '#1e1e1e'),
-            node: v('--text-muted', '#999'),
-            nodeActive: v('--interactive-accent', '#8a5cf6'),
-            text: v('--text-normal', '#dcddde'),
-            faint: v('--text-faint', '#666'),
-            edge: theme === 'light' ? 'rgba(0,0,0,0.044)' : 'rgba(255,255,255,0.044)',
-            edgeHi: v('--interactive-accent', '#8a5cf6'),   // accent for a focused node's links
-            ring: theme === 'light' ? '#1e1e1e' : '#ffffff',
-        };
-        dirtyRef.current = true;
+        // App applies data-theme in its own effect, after this child's effect.
+        // Reading synchronously painted dark labels on a white light-mode canvas.
+        const frame = requestAnimationFrame(() => {
+            const cs = getComputedStyle(document.documentElement);
+            const v = (name: string, fallback: string) => (cs.getPropertyValue(name).trim() || fallback);
+            colorsRef.current = {
+                bg: v('--background-primary', '#1e1e1e'),
+                node: v('--text-muted', '#999'),
+                nodeActive: v('--interactive-accent', '#8a5cf6'),
+                text: v('--text-normal', '#dcddde'),
+                faint: v('--text-faint', '#666'),
+                edge: theme === 'light' ? 'rgba(0,0,0,0.044)' : 'rgba(255,255,255,0.044)',
+                edgeHi: v('--interactive-accent', '#8a5cf6'),
+                ring: theme === 'light' ? '#1e1e1e' : '#ffffff',
+            };
+            dirtyRef.current = true;
+        });
+        return () => cancelAnimationFrame(frame);
     }, [theme]);
 
     // Keep the highlighted node in a ref so changing it doesn't restart the loop.

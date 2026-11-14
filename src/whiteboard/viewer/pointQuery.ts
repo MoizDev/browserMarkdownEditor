@@ -4,16 +4,12 @@ import { worldPose, worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp, Vec2 } from '../geom/path';
-import { createFillPointJob } from '../geom/fillPoint';
-import { createCubicBoundaryJob } from '../geom/cubicBoundaryJob';
+import { createAttachmentPointJob } from '../geom/attachmentPointJob';
 import { createPointPathJob, type PointPathJobResult } from '../geom/pointPathJob';
 import { createClippedPointPathJob, type PointClipContour } from '../geom/clippedPointPathJob';
 import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
 import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
-import { exactAffinePoint } from '../geom/exactAffine';
-import { exactPoint, sameExactPoint, type ExactPoint } from '../geom/homogeneous';
-import { exactPointOnSegment } from '../geom/exactSegments';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
@@ -26,7 +22,6 @@ import type { NodeId } from '../model/ids';
 import type { Attachment, Node, ConnectorNode } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
-import { prepareBoardAttachmentSurface, type BoardAttachmentSurface } from '../render/attachmentSurfaces';
 import { selectableAtFocus } from '../selection';
 
 export interface BoardPointQueryOptions {
@@ -51,54 +46,6 @@ function rectPath(rect: { x: number; y: number; width: number; height: number })
     return [{ op: 'M', p: { x: rect.x, y: rect.y } }, { op: 'L', p: { x: rect.x + rect.width, y: rect.y } },
         { op: 'L', p: { x: rect.x + rect.width, y: rect.y + rect.height } }, { op: 'L', p: { x: rect.x, y: rect.y + rect.height } }, { op: 'Z' }];
 }
-function exactAttachmentBoundary(path: readonly PathOp[], query: PointQuery): boolean {
-    const mapped = (p: Vec2): ExactPoint => exactAffinePoint(query.localToSurface, p);
-    const point = exactPoint(query.point);
-    let start: Vec2 | undefined, previous: Vec2 | undefined;
-    for (const op of path) {
-        if (op.op === 'M') { start = previous = op.p; continue; }
-        if (!previous || !start) throw new RangeError('Attachment outline must begin with M');
-        const next = op.op === 'Z' ? start : op.p;
-        if (op.op !== 'C') {
-            if (exactPointOnSegment(point, mapped(previous), mapped(next))) return true;
-        } else if (sameExactPoint(mapped(previous), point) || sameExactPoint(mapped(next), point)) return true;
-        previous = next;
-    }
-    return false;
-}
-async function attachmentSurfacePoint(surface: BoardAttachmentSurface, query: PointQuery, tick: () => Promise<void>): Promise<'hit' | 'miss' | 'uncertain'> {
-    if (!Number.isFinite(surface.boundaryErrorWorld) || surface.boundaryErrorWorld < 0) throw new RangeError('Invalid attachment contour error');
-    if (surface.boundaryErrorWorld > 0) {
-        const boundary = createPointPathJob([surface.outline], { ...query, input: 'mouse' }, {
-            strokeRadiusLocal: surface.boundaryErrorWorld, marginCss: 0, errorCss: 0.01, maxSegments: 65_536 });
-        try {
-            for (;;) {
-                const result = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
-                if (result.status === 'pending') { await tick(); continue; }
-                if (result.status !== 'miss') return 'uncertain';
-                break;
-            }
-        } finally { boundary.cancel(); }
-    }
-    const fill = createFillPointJob([surface.outline], query.point, 'nonzero', { localToWorld: query.localToSurface, maxCommands: 65_536 });
-    for (;;) {
-        const result = fill.step({ deadline: performance.now() + 3, maxWork: 128 });
-        if (result.status === 'pending') { await tick(); continue; }
-        if (result.status === 'inside') return 'hit';
-        if (result.status === 'outside') return 'miss';
-        break;
-    }
-    if (surface.boundaryErrorWorld > 0) return 'uncertain';
-    const boundary = createCubicBoundaryJob([surface.outline], query.point, query.localToSurface, { maxCommands: 65_536 });
-    try {
-        for (;;) {
-            const result = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
-            if (result.status === 'pending') { await tick(); continue; }
-            return result.status === 'hit' ? 'hit' : 'uncertain';
-        }
-    } finally { boundary.cancel(); }
-}
-
 async function connectorPoint(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, worldToSurface: Affine,
     point: Vec2, input: InputKind, frames: readonly PointClipContour[], tick: () => Promise<void>): Promise<{ result: NarrowResult; uncertain: boolean }> {
     const run = async (paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions): Promise<PointPathJobResult> => {
@@ -221,7 +168,9 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!resolved) throw cancelled();
                     const node = doc.nodes.get(resolved.id);
                     if (!node) throw cancelled();
-                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque')) continue;
+                    // The renderer does not yet resolve stroke/polyline attachment surfaces.
+                    if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
+                        || node.kind === 'stroke' || node.kind === 'polyline')) continue;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
                     let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
@@ -248,27 +197,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
                     let result = miss, ambiguous = false, target: BoardTargetHit | undefined;
                     const localToSurface = compose(matrix, ref.localToWorld);
-                    if (targetMode && (node.kind === 'stroke' || node.kind === 'polyline')) {
-                        let vector = prepared.vector;
-                        const line = node.kind === 'polyline' ? node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null } : null;
-                        if (line && (line.startAttach || line.endAttach)) {
-                            if (!vector) throw new Error('Polyline picking geometry is unavailable');
-                            const resolvedLine = await resolvePolylineAttachments(line, { runtime, doc, signal: combined, cooperate,
-                                current: () => { try { check(); return true; } catch { return false; } } });
-                            try {
-                                check(); vector = preparePolylineGeometry({ ...line, points: [...resolvedLine.points] }, { key: vector.key,
-                                    kernelVersion: 1, lengthError: 0.01, maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 });
-                            } finally { resolvedLine.release(); }
-                        }
-                        const attachment = await prepareBoardAttachmentSurface(node, { vector, ink: prepared.ink, signal: combined, cooperate }); check();
-                        if (attachment) {
-                            const state = await attachmentSurfacePoint(attachment, { point: surface, input: 'mouse', localToSurface }, tick); check();
-                            if (state !== 'miss') {
-                                result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = state === 'uncertain';
-                                if (!ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
-                            }
-                        }
-                    } else if (node.kind === 'stroke') {
+                    if (node.kind === 'stroke') {
                         if (!prepared.ink) throw new Error('Stroke picking geometry is unavailable');
                         let maybe = false;
                         for (const coverage of prepared.ink) {
@@ -303,29 +232,17 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         const attachment = vector.attachments;
                         if (targetMode && attachment) {
                             // The boundary and interior attach; the exterior selection halo does not.
-                            const job = createFillPointJob([attachment.outline], surface, 'nonzero',
-                                { localToWorld: localToSurface, maxCommands: 8192 });
-                            for (;;) {
-                                const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
-                                if (state.status === 'pending') { await tick(); continue; }
-                                if (state.status === 'inside') result = { hit: true, distanceCss: 0, part: 'body' };
-                                else if (state.status === 'uncertain') {
-                                    result = { hit: true, distanceCss: 0, part: 'body' };
-                                    ambiguous = !exactAttachmentBoundary(attachment.outline, query);
-                                    if (ambiguous) {
-                                        const boundary = createCubicBoundaryJob([attachment.outline], surface, localToSurface, { maxCommands: 8192 });
-                                        try {
-                                            for (;;) {
-                                                const value = boundary.step({ deadline: performance.now() + 3, maxWork: 128 });
-                                                if (value.status === 'pending') { await tick(); continue; }
-                                                if (value.status === 'hit') ambiguous = false;
-                                                break;
-                                            }
-                                        } finally { boundary.cancel(); }
+                            const job = createAttachmentPointJob(attachment.outline, query, { maxCommands: 8192 });
+                            try {
+                                for (;;) {
+                                    const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                    if (state.status === 'pending') { await tick(); continue; }
+                                    if (state.status !== 'miss') {
+                                        result = { hit: true, distanceCss: 0, part: 'body' }; ambiguous = state.status === 'uncertain';
                                     }
+                                    break;
                                 }
-                                break;
-                            }
+                            } finally { job.cancel(); }
                             if (result.hit && !ambiguous) target = { id: node.id, localToWorld: ref.localToWorld, logicalBox: attachment.logicalBox };
                         } else {
                             void vector.key;

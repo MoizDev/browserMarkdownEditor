@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore } from 'tldraw';
+import { Tldraw, getSnapshot, AssetRecordType, createShapeId, Box, inlineBase64AssetStore, react } from 'tldraw';
 import type { Editor, TLAssetStore, TLShape, TLShapeId } from 'tldraw';
 import 'tldraw/tldraw.css';
 import {
@@ -15,6 +15,7 @@ import { PaperMainMenu } from './paperCanvas';
 import { PAPER_USER } from './paperUser';
 import { bindImageInvertKey } from './invertibleImageShape';
 import { protectPageBackdrops } from './protectPageBackdrops';
+import { bucketSheetsByPage, shapesBySheet, sheetThumbnail } from './pageSheetShapes';
 import { subscribePenScale } from '../utils/penStyle';
 import { getPdfInverted, readThumbnailsOpen, subscribePdfInverted, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -252,10 +253,16 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (existing) editor.updateAssets([record]);
             else editor.createAssets([record]);
 
-            const wanted = boxes.map((_, i) => pageShapeId(i));
-            const present = new Set(editor.getCurrentPageShapes()
-                .filter(s => s.meta?.notebookPage !== undefined)
-                .map(s => s.id));
+            const existingPages = editor.getCurrentPageShapes().filter(s => s.meta?.notebookPage !== undefined);
+            const present = new Set(existingPages.map(s => s.id));
+            // Shape IDs are document-wide, while each tldraw sheet needs its
+            // own physical paper. Keep legacy IDs where they already exist.
+            const wanted = boxes.map((_, i) => {
+                const existing = existingPages.find(s => s.meta.notebookPage === i);
+                if (existing) return existing.id;
+                const legacy = pageShapeId(i);
+                return editor.getShape(legacy) ? createShapeId() : legacy;
+            });
 
             // Pages beyond the new count go; the rest are updated in place, so a
             // re-ruling never re-creates a page and lands it OVER the writing on
@@ -359,6 +366,14 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         layOutPages(editor, paperRef.current);
         const backdropGuard = protectPageBackdrops(editor, shape => shape.meta?.notebookPage !== undefined);
         backdropGuardRef.current = backdropGuard;
+        let paperSheet = editor.getCurrentPageId();
+        const stopSheetWatch = react('notebook paper sheet', () => {
+            const sheet = editor.getCurrentPageId();
+            if (sheet === paperSheet) return;
+            paperSheet = sheet;
+            backdropGuard.allow(() => layOutPages(editor, paperRef.current));
+            thumbsRef.current?.invalidate(boxesRef.current.map((_, i) => i));
+        });
 
         // A new notebook opens ready to write on, not ready to select.
         if (!uiRef.current?.toolId) editor.setCurrentTool('draw');
@@ -502,7 +517,11 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
                 ...Object.values(changes.removed),
             ];
             for (const record of records) {
-                if (record.typeName !== 'shape' || pageShapeIdsRef.current.has(record.id)) continue;
+                if (record.typeName === 'page') {
+                    boxesRef.current.forEach((_, i) => touched.add(i));
+                    continue;
+                }
+                if (record.typeName !== 'shape' || record.meta?.notebookPage !== undefined) continue;
                 const bounds = editor.getShapePageBounds(record.id);
                 if (bounds) touch(bounds.minY, bounds.maxY);
                 touch(record.y, record.y);
@@ -619,6 +638,7 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             if (viewTimer) { clearTimeout(viewTimer); flushCanvasViewPositions(); }
             disposePen();
             disposeInvert();
+            stopSheetWatch();
             backdropGuard.dispose();
             backdropGuardRef.current = null;
             unlistenDoc();
@@ -655,24 +675,13 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
             const size = paperPageSize(current);
             const boxes = pageLayout(Array.from({ length: current.pageCount }, () => size));
 
-            // Bucket ink by page ONCE, rather than re-filtering per page —
-            // the same O(pages x shapes) trap PdfAnnotateCanvas hit.
-            const byPage: TLShape[][] = boxes.map(() => []);
-            for (const shape of inkShapes(editor)) {
-                const b = editor.getShapePageBounds(shape.id);
-                if (!b) continue;
-                for (let i = 0; i < boxes.length; i++) {
-                    // Pages stack downward, so once a box starts below the
-                    // shape's bottom edge no later box can overlap it either.
-                    if (boxes[i].y >= b.maxY) break;
-                    if (b.minY < boxes[i].y + boxes[i].height) byPage[i].push(shape);
-                }
-            }
+            const byPage = bucketSheetsByPage(editor, shapesBySheet(editor,
+                shape => shape.meta?.notebookPage !== undefined), boxes);
 
             const overlays: Array<PageOverlay | undefined> = [];
             for (let i = 0; i < boxes.length; i++) {
-                const shapes = byPage[i];
-                if (!shapes.length) { overlays.push(undefined); continue; }
+                const sheets = byPage[i];
+                if (!sheets.some(shapes => shapes.length)) { overlays.push(undefined); continue; }
                 const box = boxes[i];
                 const options = {
                     background: false,
@@ -681,25 +690,30 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
                     darkMode: false,
                 } as const;
 
-                const overlay: PageOverlay = {};
-                const raster = shapes.filter(s => RASTER_ONLY_SHAPES.has(s.type));
-                const vector = shapes.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
-                if (vector.length) {
-                    const svg = await editor.getSvgString(vector.map(s => s.id), { ...options, scale: 1 });
-                    const ops = svg ? svgToVectorOps(svg.svg) : null;
-                    if (ops) overlay.vector = ops;
-                    else raster.push(...vector);
+                const layers: PageOverlay[] = [];
+                for (const shapes of sheets) {
+                    if (!shapes.length) continue;
+                    const overlay: PageOverlay = {};
+                    const raster = shapes.filter(s => RASTER_ONLY_SHAPES.has(s.type));
+                    const vector = shapes.filter(s => !RASTER_ONLY_SHAPES.has(s.type));
+                    if (vector.length) {
+                        const svg = await editor.getSvgString(vector.map(s => s.id), { ...options, scale: 1 });
+                        const ops = svg ? svgToVectorOps(svg.svg) : null;
+                        if (ops) overlay.vector = ops;
+                        else raster.push(...vector);
+                    }
+                    if (raster.length) {
+                        const image = await editor.toImage(raster.map(s => s.id), { ...options, format: 'png', scale: 2 });
+                        overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
+                    }
+                    if (!isEmptyOverlay(overlay)) layers.push(overlay);
                 }
-                if (raster.length) {
-                    const image = await editor.toImage(raster.map(s => s.id), { ...options, format: 'png', scale: 2 });
-                    overlay.raster = new Uint8Array(await image.blob.arrayBuffer());
-                }
-                overlays.push(isEmptyOverlay(overlay) ? undefined : overlay);
+                overlays.push(layers.length ? { layers } : undefined);
             }
 
             return { paper: current, overlays };
         });
-    }, [filePath, inkShapes]);
+    }, [filePath]);
 
     /**
      * Drop the last page.
@@ -744,7 +758,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         // preceding stroke; otherwise Undo loses that stroke (WB-D2).
         editor.markHistoryStoppingPoint('delete notebook page');
         backdropGuardRef.current?.allow(() => editor.run(() => {
-            editor.deleteShapes([...doomed.map(s => s.id), pageShapeId(current.pageCount - 1)]);
+            const lastBackdrop = editor.getCurrentPageShapes().find(s => s.meta?.notebookPage === current.pageCount - 1);
+            editor.deleteShapes([...doomed.map(s => s.id), ...(lastBackdrop ? [lastBackdrop.id] : [])]);
         }, { ignoreShapeLock: true }));
 
         const next = { ...current, pageCount: current.pageCount - 1 };
@@ -781,22 +796,8 @@ function LegacyNotebookPane({ documentId, filePath, content, onContentChange, on
         const editor = editorRef.current;
         const box = boxesRef.current[index];
         if (!editor || !box) throw new Error('The notebook is not open');
-        const bounds = new Box(box.x, box.y, box.width, box.height);
-        const ids = [...editor.getCurrentPageShapeIds()].filter(id => {
-            const b = editor.getShapePageBounds(id);
-            return !!b && Box.Collides(b, bounds);
-        });
-        const { blob } = await editor.toImage(ids, {
-            bounds,
-            scale,
-            pixelRatio: 1,
-            padding: 0,
-            background: true,
-            darkMode: false,
-            format: 'jpeg',
-            quality: 0.8,
-        });
-        return URL.createObjectURL(blob);
+        return sheetThumbnail(editor, box, paperDataUri(paperRef.current), scale,
+            shape => shape.meta?.notebookPage !== undefined);
     }, []);
 
     const toggleThumbs = useCallback(() => {

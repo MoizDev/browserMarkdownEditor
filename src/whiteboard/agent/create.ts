@@ -1,10 +1,12 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
 import type { TxBuilder } from '../change/ops';
+import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { childrenOf, type BoardDoc } from '../model/doc';
 import { newNodeId, type SheetId } from '../model/ids';
 import { createFigure, createPolyline, createSticky, createText, type Node, type Point } from '../model/nodes';
 import { keyBetween } from '../model/orderKey';
 import { boardPageStack } from '../model/pages';
+import type { FigureShape } from '../model/styles';
 import type { RichText } from '../text/richText';
 import { AgentOpRefused } from './errors';
 
@@ -70,17 +72,19 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
         case 'geo': {
             const point = target.clamp(op);
             const rotation = ((((op.rotation ?? 0) % 360) + 360) % 360) * Math.PI / 180;
-            node = createFigure({ ...base, ...point, rotation, shape: op.geo, w: op.w, h: op.h, growY: 0,
+            node = createFigure({ ...base, ...point, rotation, shape: op.geo as FigureShape, w: op.w, h: op.h, growY: 0,
                 color: op.color ?? 'black', labelColor: 'black', fill: op.fill ?? 'none', dash: op.dash ?? 'solid',
                 size: op.size ?? 'm', font: 'draw', align: 'middle', valign: 'middle',
-                label: op.text ? plainRichText(op.text) : null, width: 1, flipX: false, flipY: false, url: null });
+                label: op.text ? plainRichText(op.text) : null,
+                width: styleGeometryMetrics.actualWidth('figure', op.size ?? 'm', 1), flipX: false, flipY: false, url: null });
             break;
         }
         case 'line': {
             const points = op.points.map(p => target.clamp({ x: p[0], y: p[1] }));
             const origin = points[0];
             node = createPolyline({ ...base, ...origin, points: points.map(p => ({ x: p.x - origin.x, y: p.y - origin.y })),
-                spline: 'line', color: op.color ?? 'black', dash: op.dash ?? 'solid', size: op.size ?? 'm', width: 1 });
+                spline: 'line', color: op.color ?? 'black', dash: op.dash ?? 'solid', size: op.size ?? 'm',
+                width: styleGeometryMetrics.actualWidth('polyline', op.size ?? 'm', 1) });
         }
     }
     builder.push({ t: 'create', node });

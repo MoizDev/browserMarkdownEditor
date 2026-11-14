@@ -5,6 +5,7 @@ import type { MediaEntry, MediaId, MediaMime } from '../model/media';
 import { createClip, createPicture, type Crop } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
+import { checkMediaBytes, checkMediaDimensions, SECURITY_LIMITS } from '../security/limits';
 
 export interface InspectedMedia {
     readonly id: MediaId;
@@ -37,8 +38,6 @@ export interface MediaIngestOptions {
     readonly placement: MediaPlacement;
 }
 
-const LIMIT = 10 * 1024 * 1024;
-const PIXELS = 2 ** 26;
 const EXTENSIONS: Record<MediaMime, string> = {
     'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
     'image/avif': 'avif', 'image/svg+xml': 'svg', 'video/mp4': 'mp4',
@@ -59,8 +58,7 @@ function replacementCrop(crop: Crop | null, old: MediaEntry, next: InspectedMedi
 
 function checkResult(info: InspectedMedia): void {
     if (!/^sha256:[0-9a-f]{64}$/.test(info.id) || !Object.hasOwn(EXTENSIONS, info.mime)
-        || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
-        || info.width <= 0 || info.height <= 0 || info.width > PIXELS / info.height
+        || !checkMediaDimensions(info.width, info.height).ok
         || typeof info.animated !== 'boolean'
         || (info.duration !== null && (!Number.isFinite(info.duration) || info.duration < 0))
         || (info.mime.startsWith('video/') !== (info.duration !== null))) {
@@ -86,8 +84,8 @@ export class MediaIngestor {
     constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost) {}
 
     ingest(sources: readonly MediaSource[], options: MediaIngestOptions): Promise<readonly NodeId[]> {
-        if (!sources.length || sources.length > 100) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
-        if (this.pending >= 8) return Promise.reject(new Error('Too many pending media requests'));
+        if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
+        if (this.pending >= SECURITY_LIMITS.pendingJobs) return Promise.reject(new Error('Too many pending media requests'));
         this.pending++;
         const job = this.tail.then(() => this.run(sources, options));
         this.tail = job.then(() => undefined, () => undefined);
@@ -95,7 +93,7 @@ export class MediaIngestor {
     }
 
     replace(id: NodeId, source: MediaSource, options: { readonly signal?: AbortSignal; readonly origin: TransactionOrigin }): Promise<void> {
-        if (this.pending >= 8) return Promise.reject(new Error('Too many pending media requests'));
+        if (this.pending >= SECURITY_LIMITS.pendingJobs) return Promise.reject(new Error('Too many pending media requests'));
         this.pending++;
         const job = this.tail.then(() => this.runReplace(id, source, options));
         this.tail = job.then(() => undefined, () => undefined);
@@ -111,12 +109,12 @@ export class MediaIngestor {
         current();
         const initial = this.session.doc.nodes.get(id);
         if (!initial || initial.kind !== 'picture' || initial.locked || !initial.media) throw new Error('Picture cannot be replaced');
-        if (source.blob.size > LIMIT) throw new RangeError('Media files must be at most 10 MiB');
+        if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
         const info = await this.host.inspectMedia(source.blob, { signal });
         current();
         checkResult(info);
         if (!info.mime.startsWith('image/')) throw new Error('Replacement must be a picture');
-        if (info.mime === 'image/svg+xml' && source.blob.size > 5 * 1024 * 1024) throw new RangeError('SVG files must be at most 5 MiB');
+        if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         const priorEntry = this.session.doc.media.get(info.id);
         const entry: MediaEntry = priorEntry ?? {
             id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
@@ -133,6 +131,10 @@ export class MediaIngestor {
         if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
         ops.push({ t: 'set', id, key: 'media', value: info.id });
         ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
+        if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
+            && !(this.session.doc.preservedMediaRefs.get(initial.media) ?? 0)) {
+            ops.push({ t: 'media', op: 'drop', id: initial.media });
+        }
         this.host.rememberMedia(info.id, source.blob);
         current();
         const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
@@ -150,11 +152,11 @@ export class MediaIngestor {
         try {
             for (const source of sources) {
                 current();
-                if (source.blob.size > LIMIT) throw new RangeError('Media files must be at most 10 MiB');
+                if (!checkMediaBytes(source.blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
                 const info = await this.host.inspectMedia(source.blob, { signal });
                 current();
                 checkResult(info);
-                if (info.mime === 'image/svg+xml' && source.blob.size > 5 * 1024 * 1024) throw new RangeError('SVG files must be at most 5 MiB');
+                if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
                 const old = this.session.doc.media.get(info.id);
                 const entry: MediaEntry = old ?? {
                     id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,

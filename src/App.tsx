@@ -6329,7 +6329,7 @@ export default function App() {
       onError, prepare: prepareSignal => {
         pinTransferred = true;
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
-          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, readOnlyReason: reason, onError,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, onError,
           onHistoryLimit: () => announce('The board history limit was reached.') });
       },
     });

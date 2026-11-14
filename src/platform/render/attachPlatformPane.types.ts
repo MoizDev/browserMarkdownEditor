@@ -57,7 +57,10 @@ export interface PlatformPaneOptions<T extends object> {
     writeOverlays(frame: ScheduledFrame): void;
     onPresentation(presentation: PlatformPresentation | null): void;
     onError(error: unknown): void;
-    onNotice(message: 'memory-pressure' | 'gpu-unavailable' | 'cpu-pinned'): void;
+    /** Generic pressure may reduce quality while CPU remains drawable. Only cpu-floor-denied means
+     * the visible CPU working set was refused; consumers must not make transient GPU pressure fatal.
+     */
+    onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned'): void;
     /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
     onQualityChange?(report: { readonly qualityScale: number }): void;
     mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;

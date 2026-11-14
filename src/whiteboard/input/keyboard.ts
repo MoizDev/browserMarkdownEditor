@@ -132,6 +132,8 @@ export interface KeyboardActions {
   readonly cursor?: KeyboardCursor
   navigation?(): KeyboardNavigationPriority
   gestureActive?(): boolean
+  /** Printable text on a selected editable node is offered before tool shortcuts. */
+  typeText?(text: string): boolean
   clearLatches(): void
 }
 

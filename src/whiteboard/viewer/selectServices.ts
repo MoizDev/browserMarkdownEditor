@@ -335,6 +335,21 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             cancel,
         };
     };
+    const navigate = (command: string): boolean => {
+        if (!current()) return false;
+        if (command === 'select.next') return navigation.navigation.next(1);
+        if (command === 'select.previous') return navigation.navigation.next(-1);
+        if (command === 'select.child') return navigation.navigation.child();
+        if (command === 'select.parent') return navigation.navigation.parent();
+        const directions = { 'select.neighbour.ArrowLeft': 'left', 'select.neighbour.ArrowRight': 'right',
+            'select.neighbour.ArrowUp': 'up', 'select.neighbour.ArrowDown': 'down' } as const;
+        const direction = directions[command as keyof typeof directions];
+        if (!direction) return false;
+        void navigation.navigation.cardinal(direction).catch(error => {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) report(error);
+        });
+        return true;
+    };
     const stickyNeighbour = (direction: StickyDirection): boolean => {
         if (!mutable()) return false;
         const selection = runtime.selection.getSnapshot();
@@ -351,7 +366,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: selectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return beginHandle(sample, modifiers) ?? selectTool.begin(sample, modifiers, select);
     } };
-    return { select, tool, eraser, beginHandle, nudge, transform, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, nudge, transform, navigate, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null; },
     };
 }

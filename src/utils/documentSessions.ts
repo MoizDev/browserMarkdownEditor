@@ -66,6 +66,8 @@ export interface DocumentSessionStore {
     get(documentId: string): SessionEntry | undefined;
     entries(): IterableIterator<SessionEntry>;
     subscribe(listener: () => void): () => void;
+    /** Update byte identity in place and notify only when it changes. */
+    setBytesGeneration(documentId: string, generation: number): boolean;
     /** Wait for every slot teardown started for this document, including replacements. */
     settled(documentId: string): Promise<void>;
 
@@ -218,6 +220,13 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         get size() { return sessions.size; },
         get: documentId => sessions.get(documentId)?.entry,
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        setBytesGeneration(documentId, generation) {
+            if (!Number.isSafeInteger(generation) || generation < 0) throw new RangeError('Invalid byte generation');
+            const entry = sessions.get(documentId)?.entry;
+            if (!entry || entry.bytesGeneration === generation) return false;
+            entry.bytesGeneration = generation;
+            return true;
+        },
         async settled(documentId) {
             while (disposals.has(documentId)) await Promise.all([...disposals.get(documentId)!]);
         },

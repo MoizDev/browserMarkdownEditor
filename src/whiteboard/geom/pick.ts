@@ -4,7 +4,7 @@ import { singularValues, transformPoint } from './affine';
 import { ContourClipper } from './clip';
 import { flattenCubic } from './flatten';
 import type { Cubic, PathOp, Vec2 } from './path';
-import { winding } from './predicates';
+import { segmentIntersection, winding } from './predicates';
 import type { NarrowResult, PointQuery, RegionQuery } from './types';
 
 export interface PathPickOptions {
@@ -67,6 +67,7 @@ export function pointPath(paths: readonly (readonly PathOp[])[], query: PointQue
         const distance = new ConvexDistance(query.localToSurface, query.point.x, query.point.y, tolerance / 8);
         let best = Infinity, uncertain = false;
         for (const line of lines) {
+            if (line.exact && radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), query.point, query.point).kind !== 'none') return result(true, 0);
             distance.run(line.a.x, line.a.y, radius, line.b.x, line.b.y, radius, 0, 0);
             best = Math.min(best, distance.upper);
             if ((line.exact && distance.inside) || distance.upper + tolerance <= margin) return result(true, distance.upper);
@@ -106,6 +107,10 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
                 allInside &&= a !== 0 && b !== 0;
             }
             for (const edge of edges) {
+                if (line.exact && radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), edge.a, edge.b).kind !== 'none') {
+                    intersectsBoundary = true;
+                    continue;
+                }
                 const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y, length = Math.hypot(dx, dy);
                 if (!Number.isFinite(length)) throw new RangeError('Path region edge overflows');
                 const ux = length ? dx / length : 1, uy = length ? dy / length : 0;

@@ -1,0 +1,16 @@
+.notebook-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
+.notebook-controls label { display: flex; align-items: center; gap: 4px; }
+.notebook-controls button, .notebook-controls select, .notebook-page-number input { color: inherit; }
+.notebook-page-number { white-space: nowrap; }
+.notebook-page-number input { width: 3.5em; text-align: center; }

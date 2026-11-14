@@ -1,9 +1,6 @@
 import { createMirrorVersionBridge } from '../../platform/render';
 import type { MirrorVersionBridge, RenderToken } from '../../platform/render';
-import type { PlatformSessionSlots } from '../../platform/render/createPlatformMirrors';
 import type { PdfMirrorPixels, PdfSessionMirrors } from './tileMirror';
-
-const bridgeSlot = Symbol('PDF previous-version bridge');
 
 export interface PdfVersionBridge {
     readonly geometryDigest: string;
@@ -16,10 +13,9 @@ export interface PdfVersionBridge {
 
 /**
  * Called before the old PDF session closes, while its last committed mirror can still be borrowed.
- * The App identity slot survives byte reloads, and owns the borrowed old-session lease (C1.3).
+ * The PDF transition owner holds the borrowed old-session lease explicitly (C1.3).
  */
 export function beginPdfVersionBridge(options: {
-    readonly appSlots: PlatformSessionSlots;
     readonly previous: PdfSessionMirrors;
     readonly target: RenderToken;
     readonly targetSource: 'outer' | 'original';
@@ -38,20 +34,18 @@ export function beginPdfVersionBridge(options: {
         geometryDigest: from.geometryDigest, source: options.targetSource, variant: from.contentRevision,
         target: { ...options.target }, pixels, release: () => pixels.release(),
     };
-    try { options.appSlots.setSlot(bridgeSlot, bridge, value => value.release()); }
-    catch (error) { bridge.release(); throw error; }
     return bridge;
 }
 
 /** Geometry is available only after the new pool opens; incompatible pages never reuse old pixels. */
 export function finishPdfVersionBridge(options: {
-    readonly appSlots: PlatformSessionSlots;
+    readonly bridge: PdfVersionBridge | null;
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: string;
     readonly geometryDigest: string;
 }): PdfVersionBridge | null {
-    const bridge = options.appSlots.getSlot<PdfVersionBridge>(bridgeSlot);
+    const bridge = options.bridge;
     if (!bridge) return null;
     const target = bridge.target, token = options.token;
     if (bridge.geometryDigest !== options.geometryDigest || bridge.source !== options.source || bridge.variant !== options.variant ||

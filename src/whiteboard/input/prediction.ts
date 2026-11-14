@@ -26,6 +26,7 @@ export function predictedTail(event: PointerEvent, mapping: PredictionMapping, f
   let directionX = 0
   let directionY = 0
   for (const item of predicted) {
+    if (points.length >= 256) break
     if (item.pointerId !== event.pointerId || !Number.isFinite(item.timeStamp) || item.timeStamp <= previousTime || item.timeStamp > event.timeStamp + horizon) break
     if (!Number.isFinite(item.clientX) || !Number.isFinite(item.clientY)) break
     const p = mapping.clientToSurface(item.clientX, item.clientY)

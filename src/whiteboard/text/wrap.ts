@@ -20,7 +20,15 @@ export function wrapBlock(block: ItemizedBlock, available: number | null, emerge
         const mandatory = nextMandatory[first] ?? breaks.length - 1;
         let chosen = mandatory;
         if (available !== null) {
-            let lo = first, hi = mandatory, lastFit = -1;
+            // Probe from this line, not the end of a potentially million-unit paragraph.
+            let probe = first, step = 1, lastFit = first - 1;
+            while (probe <= mandatory && advance(from, breaks[probe].offset) <= available) {
+                lastFit = probe;
+                if (probe === mandatory) break;
+                probe = Math.min(mandatory, probe + step);
+                step *= 2;
+            }
+            let lo = lastFit + 1, hi = Math.min(mandatory, probe - 1);
             while (lo <= hi) {
                 const mid = (lo + hi) >> 1;
                 if (advance(from, breaks[mid].offset) <= available) { lastFit = mid; lo = mid + 1; }

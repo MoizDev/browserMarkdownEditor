@@ -15,9 +15,7 @@ import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
 import { joinVaultPath, parentVaultPath } from './utils/paths';
 import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
 import { setTerminalStartSource } from './utils/terminalStart';
-import { ensureVaultId } from './utils/vaultAgentStore';
 import { collectFiles } from './utils/tree';
-import { nameTaken } from './utils/entryNames';
 import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
 import { bumpSaveEpoch } from './utils/saveEpoch';
 import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
@@ -193,34 +191,6 @@ function describeReadError(err: unknown): string {
  */
 const EMPTY_GRAPH: GraphData = { nodes: [], links: [], backlinks: {}, outlinks: {} };
 
-/**
- * The file at a vault-relative path, and the directory holding it.
- *
- * Walked down from the root rather than looked up in the file tree, so it
- * answers for a path the tree has not caught up with yet — which is exactly the
- * moment a rename or a move needs it. Throws if anything on the way is missing,
- * which the caller reports rather than guesses past.
- */
-async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
-  const segs = path.split('/');
-  const name = segs.pop()!;
-  let parent = root;
-  for (const seg of segs) parent = await parent.getDirectoryHandle(seg);
-  return { handle: await parent.getFileHandle(name), parentHandle: parent };
-}
-
-/** The folder at a vault-relative path; throws if anything on the way is
- *  missing. resolveVaultFile's sibling, for following a folder renamed on disk. */
-async function resolveVaultDir(root: FileSystemDirectoryHandle, path: string) {
-  let dir = root;
-  for (const seg of path.split('/')) dir = await dir.getDirectoryHandle(seg);
-  return dir;
-}
-
-async function vaultDirExists(root: FileSystemDirectoryHandle, path: string): Promise<boolean> {
-  try { await resolveVaultDir(root, path); return true; } catch { return false; }
-}
-
 /** A question (or a notice) waiting on screen — see App's `ask`/`tell`. */
 interface DialogRequest {
   title: string;
@@ -384,6 +354,8 @@ export default function App() {
 
   const {
     rootHandle,
+    handleIO,
+    ensureVaultId,
     fileTree,
     isLoading,
     previousVault,
@@ -391,6 +363,10 @@ export default function App() {
     recentVaults,
     currentVaultId,
     getVaultActivation,
+    resolveVaultDir,
+    resolveVaultFile,
+    vaultDirExists,
+    nameTaken,
     pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
@@ -1391,7 +1367,7 @@ export default function App() {
    * retire lands on top and the note is pointing at a file in `.Garbage`.
    * Ordering them makes B's restore the last word, which is what it is.
    *
-   * Same promise-queue shape as utils/recentVaults.ts. reconcileAssets catches
+   * Same promise-queue shape as context/recentVaults.ts. reconcileAssets catches
    * its own errors, so this chain never rejects.
    */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1423,7 +1399,7 @@ export default function App() {
       // PDFs open in a pane like any other file. Everything else non-textual
       // (images, video, …) still hands off to the browser.
       if (!opensInApp(node.name)) {
-        const file = await (node.handle as FileSystemFileHandle).getFile();
+        const file = await handleIO.file(node.handle as FileSystemFileHandle);
         window.open(externalOpenUrl(node.path, file), '_blank');
         return true;
       }
@@ -1563,7 +1539,7 @@ export default function App() {
     if (!rootHandle) return;
     let cancelled = false;
     (async () => {
-      const readText = async (handle: FileSystemFileHandle) => (await handle.getFile()).text();
+      const readText = async (handle: FileSystemFileHandle) => (await handleIO.file(handle)).text();
       const loaded = loadedShardsRef.current;
 
       // The root's own file first — and the name it had while only folders could
@@ -1575,10 +1551,10 @@ export default function App() {
         let text: string | null = null;
         let legacy = false;
         try {
-          text = await readText(await rootHandle.getFileHandle(ENTRY_STYLE_FILE));
+          text = await readText(await handleIO.fileIn(rootHandle, ENTRY_STYLE_FILE));
         } catch {
           try {
-            text = await readText(await rootHandle.getFileHandle(LEGACY_STYLE_FILE));
+            text = await readText(await handleIO.fileIn(rootHandle, LEGACY_STYLE_FILE));
             legacy = true;
           } catch {
             // No file at all is the ordinary case — a vault has none until
@@ -1687,7 +1663,7 @@ export default function App() {
         if (!dir) continue;
         try {
           if (text === null) {
-            await dir.removeEntry(ENTRY_STYLE_FILE);
+            await handleIO.remove(dir, ENTRY_STYLE_FILE);
           } else {
             // NOT createFile: that truncates to '' in a writable of its own (a
             // tab closed in between would lose every icon and the custom order)
@@ -1697,7 +1673,7 @@ export default function App() {
             // `.crswap`, and a write queued past a vault switch repainted the
             // OLD vault's tree. One writable replaces the file whole, atomically
             // on close.
-            const handle = await dir.getFileHandle(ENTRY_STYLE_FILE, { create: true });
+            const handle = await handleIO.fileIn(dir, ENTRY_STYLE_FILE, true);
             if (__BME_BENCH__) {
               try { reportVault({ op: 'write', path: joinVaultPath(folder, ENTRY_STYLE_FILE), caller: 'appearance' }); } catch { /* Measurement must not interrupt a write. */ }
             }
@@ -3920,7 +3896,7 @@ export default function App() {
    *  ever hands a file handle to an item whose `kind` is 'file', and the preview
    *  asks for nothing else. */
   const handleTrashReadFile = useCallback(
-    (item: TrashItem) => (item.handle as FileSystemFileHandle).getFile(), []);
+    (item: TrashItem) => handleIO.file(item.handle as FileSystemFileHandle), [handleIO]);
 
   /**
    * Follow every open document through a rename or a move.
@@ -4662,6 +4638,8 @@ export default function App() {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
     agentDepsRef.current = {
       vaultId: currentVaultId,
+      handleIO,
+      ensureVaultId,
       root: rootHandle,
       fileTree,
       tabs,
@@ -4675,6 +4653,7 @@ export default function App() {
       writeFile,
       createFile,
       createFolder,
+      nameTaken,
       updateTabContent: __BME_BENCH__ ? updateAgentTabContent : updateTabContent,
       afterWrite: (file, before, after) => {
         // The tail of flushTab, for a file written with no tab to flush.
@@ -4978,6 +4957,7 @@ export default function App() {
         style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
       >
         <FileExplorer
+          readSnapshot={handleIO.file}
           rootHandle={rootHandle}
           fileTree={fileTree}
           onFileClick={handleFileClick}

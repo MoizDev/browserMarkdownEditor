@@ -20,6 +20,7 @@ import type { MediaEntry } from '../../whiteboard/model/media';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
+import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
@@ -237,8 +238,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 void text.catch(() => {});
                 return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]);
             },
-            download(blob, name) { const url = URL.createObjectURL(blob), link = document.createElement('a');
-                link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); },
+            download: downloadBoardExport,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
     const service: NativeClipboardService = {

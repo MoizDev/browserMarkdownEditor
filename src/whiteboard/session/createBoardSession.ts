@@ -51,7 +51,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     };
     const checkpoints = new Map<number, SerializerCheckpoint>();
     const outstanding = new Set<Promise<unknown>>();
-    let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource> } | undefined;
+    let cachedSource: { revision: number; source: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
     const track = <T>(work: Promise<T>): Promise<T> => {
         outstanding.add(work); notifyPending();
         const settled = () => { outstanding.delete(work); notifyPending(); };
@@ -140,9 +140,10 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     function capture(): ReturnType<typeof boardContentSource> {
         encodePending();
         if (cachedSource?.revision === contentRevision) return cachedSource.source;
-        const base = serializer.checkpoint(records.integrity(), doc.preserved.end);
+        const buildCapture = options.captureBuild?.(contentRevision);
+        const base = serializer.checkpoint(records.integrity(), doc.preserved.end, buildCapture?.overrides);
         if (base.revision !== contentRevision) throw new Error('Serializer and board revision differ');
-        const pinned = options.pinBuild(base, contentRevision);
+        const pinned = options.pinBuild(base, contentRevision, buildCapture?.context);
         if (pinned.revision !== contentRevision) throw new Error('Pinned board build revision differs');
         let built: Uint8Array | Blob | undefined;
         const wrapped: PinnedBoardBuild = { revision: pinned.revision, async build(signal) {
@@ -153,7 +154,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         } };
         const source = boardContentSource(owner, wrapped);
         checkpoints.set(contentRevision, base);
-        cachedSource = { revision: contentRevision, source };
+        cachedSource = { revision: contentRevision, source, context: buildCapture?.context };
         return source;
     }
     function report(): void {
@@ -166,7 +167,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         flush: report,
         finishGesture: options.finishGesture,
         finishComposition: options.finishComposition,
-        captureJournal: () => journal.capture(capture()),
+        captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
         journalError: options.onFailure,
     });
     const mediaReferenceSnapshot = () => {
@@ -222,7 +223,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         },
         async drain() { while (outstanding.size) await Promise.allSettled([...outstanding]); await journal.drain(); },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        journalDelta() { return journal.delta(); },
+        journalDelta() { capture(); return journal.delta(cachedSource!.context); },
         async recover(payload: unknown) {
             guard();
             const release = queue.beginGesture();

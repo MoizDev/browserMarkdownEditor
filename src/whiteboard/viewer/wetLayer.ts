@@ -24,7 +24,8 @@ type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; readonly path: Path2D; readonly origin: readonly [number, number]; readonly leases: ByteLease[]; readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
 type Work = { snapshot: WetInkSnapshot; path: Path2D; origin: readonly [number, number]; leases: ByteLease[]; capacity: number; commands: number;
     temp: ByteLease | null; scan: number; dot: boolean; offset: number; prediction: boolean; geometry: CurveGeometry | null;
-    coverage: InkCoverageJob | null; outline: InkOutlineJob | null; scale: number; bounds: Bounds | null; coverageChunks: InkCoverage[] };
+    coverage: InkCoverageJob | null; outline: InkOutlineJob | null; scale: number; bounds: Bounds | null; coverageChunks: InkCoverage[];
+    buffers: Set<ArrayBufferLike>; retained: { coverage: InkCoverage; buffers: ArrayBufferLike[]; bytes: number; outlined: boolean } | null };
 export interface BoardWetOptions {
     readonly token: RenderToken;
     readonly palette: () => PaintPalette;
@@ -50,6 +51,16 @@ function available(frame: PaintFrame | null | undefined, identity: DryInkIdentit
 function visuallyCovered(frame: PaintFrame | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
     return available(frame, identity, token) || !!frame && sameToken(frame.token, token)
         && frame.sceneRevision >= identity.nodeRevision && !!frame.occludedInkNodeIds?.has(identity.nodeId);
+}
+function retainedBuffers(coverage: InkCoverage, known: ReadonlySet<ArrayBufferLike>): { buffers: ArrayBufferLike[]; bytes: number } {
+    const unique = new Set<ArrayBufferLike>();
+    const add = (view: ArrayBufferView) => { if (!known.has(view.buffer)) unique.add(view.buffer); };
+    add(coverage.geometry.cubics); add(coverage.geometry.flags); add(coverage.radii);
+    add(coverage.segments); add(coverage.discs); add(coverage.centreline);
+    for (const map of coverage.arcMaps) { add(map.cubic); add(map.pieces); }
+    const buffers = [...unique], bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+    if (!Number.isSafeInteger(bytes)) throw new RangeError('Wet coverage accounting overflow');
+    return { buffers, bytes };
 }
 function predictionSamples(g: CurveGeometry): SampleSequence {
     return { count: g.spanCount + 1,
@@ -97,7 +108,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const scale = Math.max(Number.MIN_VALUE, view.camera.z * view.viewport.dpr * Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]));
         const samples = snapshot.curve.samples;
         work = { snapshot, path: new Path2D(), origin: [samples.x(0), samples.y(0)], leases: [base], capacity: base.bytes,
-            commands: 0, temp: null, scan: 1, dot: true, offset: 0, prediction: false, geometry: null, coverage: null, outline: null, scale, bounds: null, coverageChunks: [] };
+            commands: 0, temp: null, scan: 1, dot: true, offset: 0, prediction: false, geometry: null, coverage: null, outline: null, scale, bounds: null, coverageChunks: [], buffers: new Set(), retained: null };
         return true;
     };
     const step = (): boolean => {
@@ -106,14 +117,24 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (real.x(w.scan) !== real.x(0) || real.y(w.scan) !== real.y(0)) w.dot = false;
             w.scan++; return false;
         }
+        if (w.retained?.outlined) {
+            const retained = w.retained;
+            const lease = retained.bytes ? reserve(retained.bytes) : null;
+            if (retained.bytes && !lease) { denied = true; return false; }
+            if (lease) w.leases.push(lease);
+            for (const buffer of retained.buffers) w.buffers.add(buffer);
+            w.coverageChunks.push(retained.coverage);
+            if (w.temp) { release(w.temp); w.temp = null; }
+            w.retained = null; w.coverage = null; w.geometry = null;
+            return false;
+        }
         if (w.outline) {
             if ((w.commands + w.outline.commandCount + 1) * 80 > w.capacity) {
                 const lease = reserve(PATH_BLOCK); if (!lease) { denied = true; return false; }
                 w.leases.push(lease); w.capacity += lease.bytes;
             }
             if (w.outline.step(1) === 'complete') {
-                w.commands += w.outline.commandCount; w.outline = null; w.coverage = null; w.geometry = null;
-                if (w.temp) { release(w.temp); w.temp = null; }
+                w.commands += w.outline.commandCount; w.outline = null; w.retained!.outlined = true;
             }
             return false;
         }
@@ -126,8 +147,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     w.bounds = { x, y, w: Math.max(w.bounds.x + w.bounds.w, next.x + next.w) - x,
                         h: Math.max(w.bounds.y + w.bounds.h, next.y + next.h) - y };
                 }
-                w.coverageChunks.push(coverage);
-                if (w.temp) { w.leases.push(w.temp); w.temp = null; }
+                w.retained = { coverage, ...retainedBuffers(coverage, w.buffers), outlined: false };
                 w.outline = new InkOutlineJob(coverage, w.scale, command => appendPath2d(path, command, origin));
             }
             return false;
@@ -211,7 +231,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     if (!begin(next, view)) { denied = true; break; }
                 }
                 step();
-                if (denied) break;
+                // Publish the exact next admission to demand() before attempting it.
+                if (denied || work?.retained?.outlined) break;
             }
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {
@@ -285,7 +306,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
-            const extra = pending ? (work ? (work.temp ? 0 : TEMP_BYTES) + PATH_BLOCK : TEMP_BYTES + PATH_BLOCK) : 0;
+            const extra = pending ? (work ? (work.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? (gpu?.cpuWorkingSet().mandatoryBytes ?? 2 * 516 * 516 * 4) : 0), prefetchBytes: 0 };
         },
         critical: () => (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])

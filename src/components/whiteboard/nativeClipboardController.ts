@@ -212,11 +212,15 @@ export function createNativeClipboardController(options: NativeClipboardControll
         return { html, text, svg, uriList: null, files, privatePng };
     };
     const capturePasteTarget = (intent: ClipboardIntent) => {
-        const target = targetNow();
+        const target = targetNow(), revision = doc.rev, selection = runtime.selection.getSnapshot();
         let consumed = false;
         return (input: ClipboardInput, signal?: AbortSignal): Promise<void> => {
             if (consumed) return Promise.reject(new Error('Clipboard capture was already consumed'));
-            consumed = true; return execute(Promise.resolve(input), target, intent, undefined, undefined, signal);
+            consumed = true;
+            if (!current() || doc.rev !== revision || runtime.selection.getSnapshot() !== selection) {
+                return Promise.reject(new DOMException('Clipboard target changed', 'AbortError'));
+            }
+            return execute(Promise.resolve(input), target, intent, undefined, undefined, signal);
         };
     };
     return {

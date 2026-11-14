@@ -26,6 +26,7 @@ export interface PrepareNativeRuntimeOptions {
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
+    readonly readOnlyReason?: string;
     readonly savedView?: () => SavedView | undefined;
     onError(error: unknown): void;
     onHistoryLimit(): void;
@@ -161,7 +162,8 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         geometry: render.changeGeometry,
                         isCurrent: candidate => candidate.documentId === identity.documentId && candidate.session === identity.session
                             && isLiveOwner(candidate) && host.isCurrent(identity),
-                        readOnlyReason, onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
+                        readOnlyReason: () => readOnlyReason() ?? options.readOnlyReason ?? null,
+                        onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: render.bounds, retainNode: render.retainNode, realize: render.realize,
                             preparePaint: render.preparePaint, subscribeInvalidation: render.subscribeInvalidation },
                     }, builds: { pinMedia } });

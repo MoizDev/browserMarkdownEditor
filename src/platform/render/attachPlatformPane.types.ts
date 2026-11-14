@@ -20,6 +20,8 @@ export interface PlatformPresentation extends LayerCoverage {
     readonly frameId: number;
     readonly token: FrameToken;
     readonly backend: CompositorBackend;
+    readonly viewEpoch: number;
+    readonly revision: string;
 }
 
 /** All callbacks are current snapshots, not closures over the view that first mounted the pane. */
@@ -32,10 +34,10 @@ export interface PlatformPaneOptions<T extends object> {
     readonly initialVisible: boolean;
     readonly initialFocused: boolean;
     readonly layout: Readonly<PageStack> | null;
-    readonly appearance: CompositorAppearance;
+    readAppearance(): CompositorAppearance;
     currentToken(): RenderToken | null;
     readCamera(): Camera;
-    readMirrorView(view: ViewState): MirrorView;
+    readMirrorView?(view: ViewState): MirrorView;
     revision(): string;
     consumeInput(timestamp: number): void;
     isInteracting(): boolean;

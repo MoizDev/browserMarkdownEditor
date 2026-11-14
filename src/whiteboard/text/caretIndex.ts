@@ -233,8 +233,10 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
     }
     function clusterAt(x: number, y: number): TextCluster | null {
         if (!lines.length) return null;
-        const line = lines[hitTest(x, y).line];
-        if (y < line.top || y > line.bottom) return null;
+        let lo = 0, hi = lines.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (lines[mid].bottom < y) lo = mid + 1; else hi = mid; }
+        const line = lines[lo];
+        if (!line || y < line.top || y > line.bottom) return null;
         for (const cluster of line.clusters) {
             const box = cluster.bounds;
             if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) return cluster;

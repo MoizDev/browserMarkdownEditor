@@ -12,7 +12,7 @@ type PdfMediaReader = NonNullable<ViewOptions['readPdfMedia']>;
 
 export interface NativePdfViewerSource {
     getSnapshot(): {
-        readonly source: { createBackdrop(options: {
+        readonly source: { readonly source: { readonly token: Readonly<{ documentId: string; session: number; vaultEpoch: number; bytesGeneration: number }> }; isCurrent(): boolean; createBackdrop(options: {
             readOnly: boolean; isVisible(): boolean; isFocused(): boolean; emphasisEnabled(): boolean;
             onError(error: unknown): void; onUpdating?(updating: boolean): void; signal?: AbortSignal;
         }): Promise<Omit<NativePdfBackdrop, 'assertCaptureCurrent'>> };
@@ -57,13 +57,34 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
         latest.current.onError(cause);
     }, []);
     const readPdfMedia = useCallback<PdfMediaReader>((id, signal) => sourceState.readMedia(id, signal), [sourceState]);
+    const currentSource = useCallback((source: ReturnType<NativePdfViewerSource['getSnapshot']>['source']) => {
+        const state = sourceState.getSnapshot(), outer = host.outerIdentity(documentId), token = source.source.token;
+        return state.status === 'ready' && state.source === source && source.isCurrent() && host.isCurrent(latest.current.identity)
+            && !!outer && host.isCurrent(outer) && outer.documentId === token.documentId && outer.session === token.session
+            && outer.vaultActivation === token.vaultEpoch && outer.bytesGeneration === token.bytesGeneration;
+    }, [sourceState, host, documentId]);
     useEffect(() => {
         let alive = true, view: NativeViewLease | undefined;
         const abort = new AbortController();
         setLoading(true); setError(null);
         void (async () => {
+            const waitForSource = async () => {
+                if (sourceState.getSnapshot().status !== 'rebinding') return;
+                await new Promise<void>((resolve, reject) => {
+                    let stop = () => {};
+                    const finish = () => { stop(); abort.signal.removeEventListener('abort', cancel); resolve(); };
+                    const cancel = () => { stop(); abort.signal.removeEventListener('abort', cancel); reject(abort.signal.reason); };
+                    stop = sourceState.subscribe(() => { if (sourceState.getSnapshot().status !== 'rebinding') finish(); });
+                    abort.signal.addEventListener('abort', cancel, { once: true });
+                    if (abort.signal.aborted) cancel(); else if (sourceState.getSnapshot().status !== 'rebinding') finish();
+                });
+            };
             while (alive) {
-                const source = sourceState.getSnapshot().source, generation = ++sequence.current;
+                await waitForSource();
+                if (!alive || abort.signal.aborted) return;
+                const state = sourceState.getSnapshot();
+                if (state.status !== 'ready') { report(new Error(state.reason ?? 'The PDF source is unavailable.')); return; }
+                const source = state.source, generation = ++sequence.current;
                 try {
                     const backdrop = await source.createBackdrop({ readOnly: true,
                         isVisible: () => alive && latest.current.isVisible,
@@ -71,11 +92,14 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                         emphasisEnabled: () => latest.current.emphasisEnabled,
                         onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal });
                     if (!alive || abort.signal.aborted) { backdrop.dispose(); return; }
-                    if (sourceState.getSnapshot().source !== source) { backdrop.dispose(); continue; }
+                    if (!currentSource(source)) {
+                        backdrop.dispose();
+                        if (sourceState.getSnapshot().source !== source || sourceState.getSnapshot().status === 'rebinding') continue;
+                        throw new Error('The PDF backdrop no longer matches its source.');
+                    }
                     const current = latest.current;
                     const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
-                        const state = sourceState.getSnapshot();
-                        if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+                        if (!currentSource(source)) throw new Error('PDF backdrop source is updating');
                     } };
                     try {
                         view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
@@ -89,13 +113,13 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                     report(cause); return;
                 }
             }
-        })();
+        })().catch(cause => { if (alive && !abort.signal.aborted) report(cause); });
         return () => { alive = false; abort.abort(); installed.current = null;
             if (view) { setLease(previous => previous === view ? null : previous); view.dispose(); } };
-    }, [board, host, documentId, session, vaultActivation, bytesGeneration, min, max, left, right, top, bottom, sourceState, readPdfMedia, report]);
+    }, [board, host, documentId, session, vaultActivation, bytesGeneration, min, max, left, right, top, bottom, sourceState, readPdfMedia, report, currentSource]);
     useEffect(() => {
         const source = sourceSnapshot.source;
-        if (!lease || installed.current === source) return;
+        if (!lease || sourceSnapshot.status !== 'ready' || installed.current === source) return;
         let alive = true, adopted = false;
         const abort = new AbortController(), generation = ++sequence.current;
         setLoading(true); setUpdating(false); setError(null);
@@ -105,16 +129,16 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
             emphasisEnabled: () => latest.current.emphasisEnabled,
             onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal,
         }).then(backdrop => {
-            if (!alive || abort.signal.aborted || sourceState.getSnapshot().source !== source || !host.isCurrent(latest.current.identity)) { backdrop.dispose(); return; }
+            if (!alive || abort.signal.aborted || !currentSource(source)) { backdrop.dispose(); return; }
             const paired: NativePdfBackdrop = { ...backdrop, assertCaptureCurrent() {
-                const state = sourceState.getSnapshot();
-                if (state.status !== 'ready' || state.source !== source || !host.isCurrent(latest.current.identity)) throw new Error('PDF backdrop source is updating');
+                if (!currentSource(source)) throw new Error('PDF backdrop source is updating');
             } };
             try { lease.replaceBackdrop(paired); adopted = true; installed.current = source; setLoading(false); }
             catch (cause) { backdrop.dispose(); report(cause); }
         }, cause => { if (alive && !abort.signal.aborted) report(cause); });
         return () => { alive = false; if (!adopted) abort.abort(); };
-    }, [lease, sourceSnapshot.source, sourceState, host, report]);
+    }, [lease, sourceSnapshot.source, sourceSnapshot.status, sourceState, host, report, currentSource]);
+    useLayoutEffect(() => { lease?.refreshAuthority(); }, [lease, sourceSnapshot.status, sourceSnapshot.source]);
     useEffect(() => { lease?.changed(); }, [lease, props.emphasisEnabled]);
     const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);

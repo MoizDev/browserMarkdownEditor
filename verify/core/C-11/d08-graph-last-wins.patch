@@ -1,0 +1,14 @@
+diff --git a/src/utils/graph.ts b/src/utils/graph.ts
+--- a/src/utils/graph.ts
++++ b/src/utils/graph.ts
+@@ -137,2 +137,4 @@ export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promi
+     const resolver = getNoteResolver(fileTree);
++    const index = new Map<string, string>();
++    for (const file of resolver.files) index.set(baseName(file.name).toLowerCase(), file.path);
+     const files = resolver.files;
+@@ -180,4 +182,4 @@ export async function buildGraph(fileTree: FileTreeNode[], revalidate = true): Promi
+-            let targetPath = resolver.resolve(raw);
++            let targetPath = index.get(key);
+             if (!targetPath) {
+                 // Unresolved link — create a faint placeholder node (like Obsidian).
+                 targetPath = `unresolved:${key}`;

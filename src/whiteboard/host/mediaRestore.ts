@@ -1,6 +1,7 @@
 import type { BoardRuntime } from './runtime';
 import type { Op } from '../change/ops';
 import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
+import { nodeRawValues } from '../model/rawMedia';
 import type { JobContext } from '../security/admission';
 
 // Provenance: media §4, MD-1 referenced-asset restoration and checkpoint
@@ -27,6 +28,12 @@ export async function restoreReferencedMediaInJob(options: RestoreReferencedMedi
         check(); let visits = 0;
         for (const [id, refs] of doc.mediaRefs) { if (refs.size) ids.add(id); if ((++visits & 255) === 0) await cooperate(); }
         for (const [id, count] of doc.preservedMediaRefs) { if (count > 0) ids.add(id); if ((++visits & 255) === 0) await cooperate(); }
+        let unknownRaw = doc.preserved.fields.size > 0 || doc.preserved.records.length > 0 || doc.preserved.end !== null;
+        if (!unknownRaw) for (const node of doc.nodes.values()) {
+            for (const raw of nodeRawValues(node)) if (raw !== null) { unknownRaw = true; break; }
+            if (unknownRaw) break;
+            if ((++visits & 255) === 0) await cooperate();
+        }
         for (const id of ids) {
             check();
             const entry = doc.media.get(id), blob = runtime.media.get(id);
@@ -35,7 +42,8 @@ export async function restoreReferencedMediaInJob(options: RestoreReferencedMedi
             const location = runtime.media.currentFile(id), proposed = { ...entry, file: location === undefined ? entry.file : location };
             const file = await options.storeMedia(proposed, blob, context.signal); check();
             if (!isSafeMediaFile(file)) throw new Error(`Invalid restored media location: ${id}`);
-            if (entry.file !== file && (entry.ext?.raw.size || entry.ext?.fields.size || (doc.preservedMediaRefs.get(id) ?? 0) > 0)) {
+            if (entry.file !== file && (entry.ext?.raw.size || entry.ext?.fields.size || (doc.preservedMediaRefs.get(id) ?? 0) > 0
+                || entry.file !== null && unknownRaw)) {
                 throw new Error(`Cannot remap preserved media metadata: ${id}`);
             }
             files.set(id, file);

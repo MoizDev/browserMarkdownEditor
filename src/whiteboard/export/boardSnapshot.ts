@@ -28,7 +28,7 @@ function mediaId(key: string): MediaId {
 /** Factory for snapshotExport: pin the canonical scene and media before any asynchronous work. */
 export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): PinExportSnapshot {
     const request = { ...options.request, world: options.request.world && { ...options.request.world } };
-    const selected = options.selectedNodeIds && new Set(options.selectedNodeIds);
+    const requestedSelection = options.selectedNodeIds && [...options.selectedNodeIds];
     const requestedSheets = options.sheetIds && [...options.sheetIds];
     return () => {
         const { runtime } = options;
@@ -36,9 +36,12 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
         if (!scene || !scene.ready || scene.revision !== doc.rev || !doc.sheets.has(request.sheetId))
             throw new Error('Board export scene is not ready');
         const pin = scene.pin();
+        const selected = requestedSelection && new Set(requestedSelection);
+        let selectionWork: Promise<void> | undefined;
         const leases: { release(): void }[] = [];
         let images: ReturnType<typeof createBoardHostImages> | undefined;
         let released = false;
+        const lifetime = new AbortController();
         try {
             if (pin.revision !== doc.rev || pin.token.documentId !== runtime.session.owner.documentId
                 || pin.token.session !== runtime.session.owner.session) throw new Error('Board export identity changed');
@@ -70,15 +73,24 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                 if (!pending) {
                     pending = (async () => {
                         const stored = runtime.media.get(id);
-                        const source = stored ?? await options.readMedia(entry, signal);
-                        signal.throwIfAborted();
+                        const source = stored ?? await options.readMedia(entry, lifetime.signal);
+                        lifetime.signal.throwIfAborted();
                         if (!(source instanceof Blob) || source.size !== entry.bytes) throw new Error('Export media bytes are unavailable');
                         return source.slice(0, source.size, source.type);
                     })();
                     blobs.set(id, pending);
                     void pending.catch(() => { if (blobs.get(id) === pending) blobs.delete(id); });
                 }
-                return pending.then(blob => { signal.throwIfAborted(); if (released) throw new DOMException('Export released', 'AbortError'); return blob; });
+                const shared = pending;
+                return new Promise<Blob>((resolve, reject) => {
+                    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Export cancelled', 'AbortError')); };
+                    signal.addEventListener('abort', abort, { once: true });
+                    shared.then(blob => {
+                        signal.removeEventListener('abort', abort);
+                        if (released) reject(new DOMException('Export released', 'AbortError')); else resolve(blob);
+                    }, error => { signal.removeEventListener('abort', abort); reject(error); });
+                    if (signal.aborted) abort();
+                });
             };
             const token = Object.freeze({ ...pin.token });
             images = createBoardHostImages({ token, media: runtime.media,
@@ -88,11 +100,31 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                     && candidate.bytesGeneration === token.bytesGeneration && candidate.session === token.session,
                 onError: options.onError });
             const provider = images;
+            const expandSelection = (signal: AbortSignal): Promise<void> => {
+                if (!selected) return Promise.resolve();
+                if (!selectionWork) selectionWork = (async () => {
+                    const captured = await pin.readDocument(signal), stack = [...selected];
+                    let visits = 0;
+                    while (stack.length) {
+                        signal.throwIfAborted();
+                        const id = stack.pop()!;
+                        if (!captured.nodes.has(id as import('../model/ids').NodeId)) throw new Error('Selected export node is unavailable');
+                        for (const child of captured.children.get(id as import('../model/ids').NodeId) ?? []) {
+                            if (!selected.has(child.id)) { selected.add(child.id); stack.push(child.id); }
+                            if (++visits % 256 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+                        }
+                        if (++visits % 256 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+                    }
+                })().catch(error => { selectionWork = undefined; throw error; });
+                return selectionWork;
+            };
             return {
                 token, revision: pin.revision, images: provider,
                 readImage: (key, signal) => read(mediaId(key), signal),
                 async paintSource(signal) { return this.paintSourceFor!(request.world, request.page, signal); },
                 async paintSourceFor(world, page, signal) {
+                    signal.throwIfAborted();
+                    await expandSelection(signal);
                     signal.throwIfAborted();
                     const pages = paperPages.filter(entry => {
                         if (page !== undefined && page !== entry.page) return false;
@@ -134,13 +166,14 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                 },
                 release() {
                     if (released) return;
-                    released = true;
+                    released = true; lifetime.abort();
                     try { provider.dispose(); } finally {
                         try { for (const lease of leases) lease.release(); } finally { pin.release(); }
                     }
                 },
             };
         } catch (error) {
+            lifetime.abort();
             try { images?.dispose(); } finally {
                 try { for (const lease of leases) lease.release(); } finally { pin.release(); }
             }

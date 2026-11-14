@@ -28,8 +28,8 @@ import { editableTextRequest } from '../text/edit/request';
 import type { FaceTable, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
-import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../text/richText';
-import { insertionFragment, plain } from '../text/richOperations';
+import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
+import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
@@ -397,8 +397,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#e34d4d');
             path.setAttribute('stroke-width', String(1 / frame.view.camera.z)); group.append(path);
         }
-        const selection = manager.current.editor.getSelection();
-        let caretColour = 'var(--text-normal)';
+        const selection = manager.current.editor.getSelection(), edited = active && doc.nodes.get(active);
+        const fallbackSwatch = edited?.kind === 'text' ? edited.color
+            : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
+                : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
+        let caretColour = colourCss(engine.getSnapshot().palette.stroke[fallbackSwatch]);
         outer: for (const line of paint.lines) for (const fragment of line.fragments) {
             if (selection.focus >= fragment.src[0] && selection.focus <= fragment.src[1]) {
                 caretColour = colourCss(engine.getSnapshot().palette.stroke[fragment.ink.swatch]);
@@ -438,6 +441,10 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
     return { manager, input, editText, writeOverlays, captureText,
+        clipboardContext() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            return editor && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;
+        },
         clipboardSelection() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), transform = currentWorld;
             if (!editor || !node || !transform) return null;
@@ -455,11 +462,38 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
                 bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
         },
+        linkContext() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            if (!editor || !node || !text) return null;
+            const selection = { ...editor.getSelection() }, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+            let href: string | null = null, target: EditSelection | undefined;
+            if (from === to) {
+                const link = linkRangeAt(text, from);
+                if (link) { href = link.url; target = { anchor: link.from, focus: link.to }; }
+            } else {
+                const runs = sliceRichText(text, from, to).blocks.flatMap(block => block.runs).filter(run => run.text.length);
+                const first = runs[0]?.marks.link;
+                if (first && runs.every(run => run.marks.link === first)) href = first;
+            }
+            return { node: node.id, revision: doc.rev, selection, href, target };
+        },
+        applyTextLink(context: { readonly node: NodeId; readonly revision: number; readonly selection: EditSelection; readonly target?: EditSelection }, href: string | null) {
+            const editor = manager.current?.editor, selection = editor?.getSelection();
+            if (!editor || active !== context.node || doc.rev !== context.revision || !selection
+                || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;
+            return editor.applyLink(href, context.target ?? context.selection);
+        },
         pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
         cutText(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus) return false;
             return editor.deleteSelection();
+        },
+        prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
+            const editor = manager.current?.editor, current = editor?.getSelection();
+            if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)
+                throw new Error('Text selection changed; cut again');
+            return editor.prepareCut();
         },
         spellingAt(offset: number) { return misspellings.find(range => offset >= range.from && offset < range.to) ?? null; },
         spellingAtClient(x: number, y: number) {

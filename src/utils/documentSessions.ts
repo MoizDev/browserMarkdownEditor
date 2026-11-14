@@ -149,7 +149,11 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         sessions.delete(documentId);
         const unsubscribe = registered.unsubscribe;
         registered.unsubscribe = undefined;
-        try { unsubscribe?.(); } finally { registered.disposeSlots(); notify(); }
+        try { unsubscribe?.(); } finally {
+            registered.disposeSlots();
+            disposeSlot(documentId, registered.entry.adapter.dispose?.bind(registered.entry.adapter));
+            notify();
+        }
         return true;
     };
     const register = <A extends SessionAdapter>(
@@ -186,15 +190,20 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
         sessions.set(documentId, registered);
         notify();
         try {
-            const unsubscribe = adapter.onChange(source => {
-                if (sessions.get(documentId) === registered) bindings.reportChange(documentId, source);
+            const unsubscribe = adapter.onChange((source, options) => {
+                if (sessions.get(documentId) === registered) bindings.reportChange(documentId, source, options);
             });
             // onChange may emit synchronously and a caller may release/replace
             // in that callback. Do not retain its subscription after that edge.
             if (sessions.get(documentId) === registered) registered.unsubscribe = unsubscribe;
             else unsubscribe();
         } catch (error) {
-            if (sessions.get(documentId) === registered) { sessions.delete(documentId); registered.disposeSlots(); notify(); }
+            if (sessions.get(documentId) === registered) {
+                sessions.delete(documentId);
+                registered.disposeSlots();
+                disposeSlot(documentId, adapter.dispose?.bind(adapter));
+                notify();
+            }
             throw error;
         }
         return entry;
@@ -251,7 +260,10 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
                 registered.unsubscribe = undefined;
                 try { unsubscribe?.(); }
                 catch (error) { errors.push(error); }
-                finally { registered.disposeSlots(); }
+                finally {
+                    registered.disposeSlots();
+                    disposeSlot(registered.entry.documentId, registered.entry.adapter.dispose?.bind(registered.entry.adapter));
+                }
             }
             if (outgoing.length) notify();
             if (errors.length) throw new AggregateError(errors, 'Could not detach every document session');

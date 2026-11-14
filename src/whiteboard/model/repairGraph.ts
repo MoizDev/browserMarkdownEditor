@@ -34,20 +34,25 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         const ids = messages.get(code);
         if (ids) ids.push(item.node.id); else messages.set(code, [item.node.id]);
     };
-    const result = (items: readonly Item[], reason: string | null): GraphRepairResult => ({
-        nodes: items.map(item => item.node), sourceOrdinals: items.map(item => item.ordinal), changedOrdinals: changed,
-        notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: reason,
-    });
-    const sheets = new Set<ParentId>(options.sheets.map(sheet => sheet.id));
-    if (!options.sheets.length) return result([], 'The board has no sheet');
-    const root = options.sheets[0].id, items: Item[] = [];
-    const reserved = new Set<string>(sheets);
-    const byId = new Map<NodeId, Item>();
     const tick = async () => {
         if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
         if (options.cooperate) await options.cooperate();
         if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError');
     };
+    const result = async (items: readonly Item[], reason: string | null): Promise<GraphRepairResult> => {
+        const nodes: NodeRecord[] = [], sourceOrdinals: number[] = [];
+        for (let i = 0; i < items.length; i++) {
+            if ((i & 1023) === 0) await tick();
+            nodes.push(items[i].node); sourceOrdinals.push(items[i].ordinal);
+        }
+        return { nodes, sourceOrdinals, changedOrdinals: changed,
+            notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: reason };
+    };
+    const sheets = new Set<ParentId>(options.sheets.map(sheet => sheet.id));
+    if (!options.sheets.length) return result([], 'The board has no sheet');
+    const root = options.sheets[0].id, items: Item[] = [];
+    const reserved = new Set<string>(sheets);
+    const byId = new Map<NodeId, Item>();
     for (let i = 0; i < options.nodes.length; i++) {
         if ((i & 1023) === 0) await tick();
         reserved.add(options.nodes[i].id);

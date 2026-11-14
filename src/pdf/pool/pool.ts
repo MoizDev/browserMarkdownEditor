@@ -9,6 +9,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { WriterOperations } from '../writing/protocol';
 import { validatePdfWriterReply } from '../writing/validateReply';
 import { verifyPdfWriterOutput } from '../writing/verifyOutput';
+import { hashNotebookOutput, notebookOutputSpec, verifyNotebookGeometry } from '../writing/verifyNotebookOutput';
 import type { PdfDocumentOp, PdfOpenOptions, PdfPageBitmapOptions, PdfPool, PdfPoolDocument, PdfRequestOptions, PdfWriterSession, WithoutDocKey } from './types';
 import type { PdfPoolOptions } from './broker.types';
 import { TileCredits } from './credits';
@@ -701,20 +702,36 @@ class Pool implements PdfPool {
         const id = ++this.nextSlot;
         const client = pdfClient(this.options, `pdf-writer-${this.serial}-${id}`, 'writer', id);
         this.writers.add(client);
-        let closed = false;
+        let closed = false, nativeReleased = false;
         const lifetime = new AbortController();
         const sources = new Map<string, WriterOperations['writer.prepareSource']['result'] & { source: WriterOperations['writer.prepareSource']['args']['source'] }>();
         const stages = new Map<string, { sourceFingerprint: string; pageCount: number; revision: number; formatId: string }>();
-        const close = async () => { if (closed) return; closed = true; lifetime.abort(); options.signal?.removeEventListener('abort', abort); this.writers.delete(client); client.dispose(); sources.clear(); stages.clear(); releaseTurn(); };
+        const releaseNative = () => {
+            if (nativeReleased) return;
+            nativeReleased = true;
+            this.writers.delete(client); client.dispose(); sources.clear(); stages.clear(); releaseTurn();
+        };
+        const close = async () => {
+            if (closed) return;
+            closed = true; lifetime.abort(); options.signal?.removeEventListener('abort', abort); releaseNative();
+        };
         const abort = () => { void close(); };
         options.signal?.addEventListener('abort', abort, { once: true });
         return {
             request: async <K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], requestOptions: PdfRequestOptions) => {
-                if (closed) throw abortError();
+                if (closed || nativeReleased || this.disposed) throw abortError();
                 const signal = AbortSignal.any([lifetime.signal, ...(options.signal ? [options.signal] : []), ...(requestOptions.signal ? [requestOptions.signal] : [])]);
+                const notebookInput = op === 'writer.buildNotebook' ? args as WriterOperations['writer.buildNotebook']['args'] : undefined;
+                const notebookSpec = notebookInput ? notebookOutputSpec(notebookInput) : undefined;
+                const notebookIdentity = notebookInput ? { ...notebookInput, notebookSource: { path: notebookSpec!.path }, pages: [...notebookInput.pages] } : undefined;
+                const verifyInput = op === 'writer.verifyNotebookOutput' ? args as WriterOperations['writer.verifyNotebookOutput']['args'] : undefined;
+                if (verifyInput && (!(verifyInput.bytes instanceof ArrayBuffer) || !verifyInput.bytes.byteLength)) throw new Error('Invalid notebook verification bytes');
+                const verifyLength = verifyInput?.bytes.byteLength;
                 const value = await client.request<unknown>(op, args, { ...requestOptions, signal, cpu: 'governed',
+                    ...(verifyInput ? { transfer: [verifyInput.bytes] } : {}),
                     deadlineMs: Math.min(requestOptions.deadlineMs ?? 120_000, 120_000), terminateOnDeadline: true });
-                if (closed) throw abortError();
+                if (closed || nativeReleased || this.disposed) throw abortError();
+                signal.throwIfAborted();
                 const result = validatePdfWriterReply(op, value, args);
                 if (op === 'writer.prepareSource') {
                     const output = result as WriterOperations['writer.prepareSource']['result'];
@@ -733,12 +750,35 @@ class Pool implements PdfPool {
                     const staged = stages.get(input.stageId); stages.delete(input.stageId);
                     if (!staged || staged.sourceFingerprint !== output.sourceFingerprint || staged.pageCount !== output.verification.pageCount || staged.revision !== output.revision ||
                         input.attachments.some(entry => entry.role === 'editable' && entry.format !== staged.formatId)) invalidPdfReply();
+                } else if (op === 'writer.verifyNotebookOutput') {
+                    if ((result as WriterOperations['writer.verifyNotebookOutput']['result']).bytes.byteLength !== verifyLength) invalidPdfReply();
                 } else if (op === 'writer.release') sources.delete((args as WriterOperations['writer.release']['args']).writerSession);
                 if (op === 'writer.finishAnnotated') await verifyPdfWriterOutput(op,
                     args as WriterOperations['writer.finishAnnotated']['args'], result as WriterOperations['writer.finishAnnotated']['result'], signal);
-                else if (op === 'writer.buildNotebook') await verifyPdfWriterOutput(op,
-                    args as WriterOperations['writer.buildNotebook']['args'], result as WriterOperations['writer.buildNotebook']['result'], signal);
+                else if (op === 'writer.buildNotebook') {
+                    const output = result as WriterOperations['writer.buildNotebook']['result'];
+                    await verifyPdfWriterOutput(op, notebookIdentity!, output, signal);
+                    const length = output.bytes.byteLength, hash = await hashNotebookOutput(output.bytes, signal);
+                    signal.throwIfAborted();
+                    if (closed || this.disposed) throw abortError();
+                    // The verifier takes the same global writer turn only after the producing heap is gone.
+                    releaseNative();
+                    const verifier = await this.writer({ signal });
+                    try {
+                        signal.throwIfAborted();
+                        const proof = await verifier.request('writer.verifyNotebookOutput',
+                            { bytes: output.bytes, notebookSource: { path: notebookSpec!.path } }, { priority: requestOptions.priority, signal });
+                        signal.throwIfAborted();
+                        if (proof.bytes.byteLength !== length || proof.path !== notebookSpec!.path || proof.sha256 !== hash) invalidPdfReply();
+                        verifyNotebookGeometry(notebookSpec!, proof.geometries);
+                        if (await hashNotebookOutput(proof.bytes, signal) !== hash) invalidPdfReply();
+                        signal.throwIfAborted();
+                        if (closed || this.disposed) throw abortError();
+                        output.bytes = proof.bytes;
+                    } finally { await verifier.close(); }
+                }
                 signal.throwIfAborted();
+                if (closed || this.disposed) throw abortError();
                 return result;
             },
             reprioritise: (promise, priority) => client.reprioritise(promise, priority), close,

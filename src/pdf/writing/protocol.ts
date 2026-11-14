@@ -92,6 +92,10 @@ export interface WriterOperations {
         args: { revision: number; displayListSchema: 1; pages: GeneratedPage[]; notebookSource: { path: string }; writeId: string };
         result: Omit<StagedWriterResult, 'sourceFingerprint' | 'verification'> & { verification: { pageCount: number; attachmentCount: number } };
     };
+    'writer.verifyNotebookOutput': {
+        args: { bytes: ArrayBuffer; notebookSource: { path: string } };
+        result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
+    };
     'writer.rotate': {
         args: { source: WriterSource; delta: 90 | -90; pageIndices?: number[] };
         result: { bytes: ArrayBuffer; sourceFingerprint: string; geometries: PageGeometry[] };

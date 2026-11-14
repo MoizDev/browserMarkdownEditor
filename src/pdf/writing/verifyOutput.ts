@@ -91,8 +91,7 @@ async function verifyBoard(args: WriterOperations['writer.finishAnnotated']['arg
 }
 
 /** Called by the privileged host after wire-shape checks and before any disk write.
- * The fresh-notebook route has no write mark: its native worker verifies the
- * pointer on reopen, so the host checks only identities and the byte envelope. */
+ * Notebook output additionally requires independent contained readback by the pool. */
 export async function verifyPdfWriterOutput<K extends VerifiedOperation>(op: K, args: WriterOperations[K]['args'],
     result: WriterOperations[K]['result'], signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();

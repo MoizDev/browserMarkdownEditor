@@ -22,7 +22,7 @@ const report = { scope: companion ? 'benchmark companion: initially partial pars
         'Copy preserves source bytes between marker rows, including container prefixes.',
     ] };
 const check = (condition, reason) => { if (!condition) report.failures.push(`FAIL ${reason}`); };
-let browser, context;
+let browser, context, page;
 const pending = [], identityErrors = [];
 async function finishScriptIdentity() {
     let consumed = 0;
@@ -109,7 +109,7 @@ try {
             report.scripts.push({ url: response.url(), sha256: hash });
         })().catch(error => identityErrors.push(error.stack)));
     });
-    const page = await context.newPage();
+    page = await context.newPage();
     page.on('pageerror', error => report.pageErrors.push(error.message));
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(args.url).origin ? route.continue() : route.abort());
     await page.addInitScript(({ companion }) => {
@@ -207,8 +207,14 @@ try {
 
         await page.keyboard.press('Meta+e');
         await page.waitForFunction(() => document.querySelector('.cm-content')?.contentEditable === 'true');
-        await search(page, item.caretQuery);
         const bodyLine = content.locator('.cm-line').filter({ hasText: item.caretQuery }).first();
+        if (!await bodyLine.isVisible()) {
+            // Empty panels have no body glyph to click, and diagrams hide the
+            // source altogether. Enter through their real visible surface.
+            const surface = await content.locator('.cm-mermaid-widget').count()
+                ? content.locator('.cm-mermaid-widget') : content.locator('.cm-live-codeblock-start');
+            await surface.click({ position: { x: 120, y: 8 } });
+        }
         await bodyLine.click();
         assert.equal(await content.evaluate(element => document.activeElement === element), true, 'a real editable caret holds the keyboard');
         row.editing = await snapshot(content);
@@ -258,6 +264,16 @@ try {
     try { await finishScriptIdentity(); }
     catch (identityError) { report.observedFailure = error.stack; failure = identityError; }
     report.error = failure.stack;
+    if (page) {
+        report.failureDOM = await page.evaluate(() => ({
+            text: document.body.innerText,
+            editable: document.querySelector('.cm-content')?.contentEditable,
+            focus: document.activeElement?.tagName,
+            starts: [...document.querySelectorAll('.cm-live-codeblock-start')].map(node => node.textContent),
+            ends: [...document.querySelectorAll('.cm-live-codeblock-end')].map(node => node.textContent),
+        })).catch(() => null);
+        await page.screenshot({ path: join(output, 'failure.png'), animations: 'disabled', caret: 'hide' }).catch(() => {});
+    }
     const invalid = !report.setupComplete || failure.setupFault;
     report.failures.push(`${invalid ? 'INVALID' : 'FAIL render'} ${failure.message}`);
     process.exitCode = invalid ? 2 : 1;

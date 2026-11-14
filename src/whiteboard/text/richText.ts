@@ -1,6 +1,7 @@
 import type { RawJson } from '../model/json';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import { inheritProjection, projectionLength, projectionPosition } from './projection';
+import { textBoundaries } from './boundaries';
 import { blockOrigin, carrierForTail, carrierSource, coalesceCarriers, mapCarrier, runOrigin, sliceCarriers, trackBlock, trackRun } from './carriers';
 import { firstRunAt, runContaining, runIndex } from './runIndex';
 
@@ -140,7 +141,8 @@ function emptyRun(block: Block, offset: number, preserveOrigin: boolean): Run {
 }
 
 export function sliceRichText(text: RichText, from: number, to: number, preserveOrigins = false): RichFragment {
-    if (to < from) throw new RangeError('Reversed rich-text slice');
+    if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
+        throw new RangeError('Rich-text slice must use grapheme boundaries');
     const first = locate(text, from);
     const last = locate(text, to);
     const blocks: Block[] = [];
@@ -221,7 +223,8 @@ export interface RichSpliceResult {
 // wholeBlocks distinguishes replacement of an empty block from ordinary insertion
 // into it; without that explicit mode opaque zero-length runs would duplicate.
 export function spliceRichText(text: RichText, from: number, to: number, insert: RichFragment, wholeBlocks = false): RichSpliceResult {
-    if (to < from || insert.blocks.length === 0) throw new RangeError('Invalid rich splice');
+    if (to < from || insert.blocks.length === 0 || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
+        throw new RangeError('Invalid rich splice or grapheme boundary');
     const first = locate(text, from);
     const last = locate(text, to);
     if (wholeBlocks && (first.offset !== 0 || last.offset !== blockTextLength(text.blocks[last.block])))

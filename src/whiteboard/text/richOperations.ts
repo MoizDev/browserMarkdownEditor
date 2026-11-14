@@ -5,6 +5,7 @@ import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Mark
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { carrierForTail, trackBlock, trackRun } from './carriers';
 import { runContaining, runIndex } from './runIndex';
+import { validateRichFragment } from './richTransaction';
 
 const position = projectionPosition;
 const blockTextLength = (block: Block): number => runIndex(block).length;
@@ -136,6 +137,7 @@ export function blocks(value: RichText, from: number, to: number, kind: Block['k
 }
 function checkedSplice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks = false) {
     check(value, from, to);
+    validateRichFragment(insert);
     return spliceRichText(value, from, to, insert, wholeBlocks);
 }
 export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: checkedSplice, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };

@@ -10,8 +10,8 @@ export type CircleClipResult =
     | { readonly status: 'uncertain'; readonly reason: string };
 export type CircleClipStep = { readonly done: false } | { readonly done: true; readonly result: CircleClipResult };
 
-// An outward interval-box hull can have four corners per clipped frame vertex.
-const MAX_VERTICES = 1024;
+// Each exact intersection vertex can contribute four outward box corners.
+const MAX_VERTICES = 131072;
 const validated = new WeakMap<readonly Vec2[], { readonly polygon: readonly Vec2[]; readonly winding: number }>();
 type PointInterval = { x: Interval; y: Interval };
 const point = (p: Vec2): PointInterval => ({ x: interval(p.x), y: interval(p.y) });
@@ -22,39 +22,51 @@ const square = (a: Interval): Interval => {
 };
 const cross = (a: PointInterval, b: PointInterval, c: PointInterval): Interval =>
     subtract(multiply(subtract(b.x, a.x), subtract(c.y, a.y)), multiply(subtract(b.y, a.y), subtract(c.x, a.x)));
-// Polygon topology is exact for its binary64 input, including collinear vertices.
-function orientation(a: Vec2, b: Vec2, c: Vec2): number {
-    const x1 = dyadicSubtract(dyadic(b.x), dyadic(a.x)), y1 = dyadicSubtract(dyadic(b.y), dyadic(a.y));
-    const x2 = dyadicSubtract(dyadic(c.x), dyadic(a.x)), y2 = dyadicSubtract(dyadic(c.y), dyadic(a.y));
-    const n = dyadicSubtract(dyadicMultiply(x1, y2), dyadicMultiply(y1, x2)).n;
+// Exact edge predicates operate on binary64 dyadics, never rounded differences.
+function edge(a: Vec2, b: Vec2) {
+    return { x: dyadicSubtract(dyadic(b.x), dyadic(a.x)), y: dyadicSubtract(dyadic(b.y), dyadic(a.y)) };
+}
+function half(v: ReturnType<typeof edge>): boolean { return v.y.n > 0n || (v.y.n === 0n && v.x.n >= 0n); }
+function turn(a: ReturnType<typeof edge>, b: ReturnType<typeof edge>): -1 | 0 | 1 {
+    const n = dyadicSubtract(dyadicMultiply(a.x, b.y), dyadicMultiply(a.y, b.x)).n;
     return n > 0n ? 1 : n < 0n ? -1 : 0;
+}
+function orientation(a: Vec2, b: Vec2, c: Vec2): number { return turn(edge(a, b), edge(a, c)); }
+function forward(a: ReturnType<typeof edge>, b: ReturnType<typeof edge>): boolean {
+    const x = dyadicMultiply(a.x, b.x), y = dyadicMultiply(a.y, b.y);
+    return dyadicSubtract(x, { n: -y.n, e: y.e }).n > 0n;
 }
 function uncertain(reason: string): CircleClipResult { return { status: 'uncertain', reason }; }
 
-function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: number, cachedWinding: number | undefined,
+function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: number,
+    prior: { readonly polygon: readonly Vec2[]; readonly winding: number } | undefined,
     remember: (winding: number) => void): Generator<void, CircleClipResult> {
     const { centre: c, radius: r } = circle, n = polygon.length;
     if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(r) || r < 0
         || !Number.isFinite(errorWorld) || errorWorld <= 0 || n < 3 || n > MAX_VERTICES) throw new RangeError('Invalid circle, polygon or error budget');
+    let same = prior?.polygon.length === n;
     for (let i = 0; i < n; i++) {
         const a = polygon[i], b = polygon[(i + 1) % n];
         if (!Number.isFinite(a.x) || !Number.isFinite(a.y) || (a.x === b.x && a.y === b.y)) throw new RangeError('Invalid clip polygon vertex or edge');
+        if (same && (a.x !== prior!.polygon[i].x || a.y !== prior!.polygon[i].y)) same = false;
         yield;
     }
-    // Every vertex must lie on the same side of every directed edge. Local turn
-    // tests alone accept star polygons; this also validates winding and convexity.
-    let winding = cachedWinding ?? 0;
-    if (cachedWinding === undefined) {
+    let winding = same ? prior!.winding : 0;
+    if (!same) {
+        let fromUpper = 0, toUpper = 0;
+        let previous = edge(polygon[n - 1], polygon[0]);
         for (let i = 0; i < n; i++) {
-            const a = polygon[i], b = polygon[(i + 1) % n];
-            for (let j = 0; j < n; j++) {
-                const sign = orientation(a, b, polygon[j]);
-                if (sign && winding && sign !== winding) throw new RangeError('Clip polygon must be convex and consistently wound');
-                if (sign) winding = sign;
-                yield;
-            }
+            const next = edge(polygon[i], polygon[(i + 1) % n]), direction = turn(previous, next);
+            if (direction && winding && direction !== winding) throw new RangeError('Clip polygon must be convex and consistently wound');
+            if (direction) winding = direction;
+            else if (!forward(previous, next)) throw new RangeError('Clip polygon has a reversing collinear edge');
+            const a = half(previous), b = half(next);
+            if (a && !b) fromUpper++; else if (!a && b) toUpper++;
+            previous = next; yield;
         }
-        if (!winding) throw new RangeError('Clip polygon has zero area');
+        // Uniform signed turns alone also accept stars. Their tangent direction
+        // winds more than once; exactly one revolution certifies a simple convex loop.
+        if (!winding || (winding > 0 ? fromUpper : toUpper) !== 1) throw new RangeError('Clip polygon must make one convex revolution');
         remember(winding);
     }
     if (r === 0) {
@@ -119,9 +131,7 @@ export function createCircleClipBoundsJob(circle: ClipCircle, clipPolygon: reado
     if (clipPolygon.length > MAX_VERTICES) throw new RangeError('Clip polygon exceeds ancestry limit');
     const c = { centre: { ...circle.centre }, radius: circle.radius }, polygon = clipPolygon.map(p => ({ ...p }));
     const prior = validated.get(clipPolygon);
-    const same = prior?.polygon.length === polygon.length && polygon.every((p, i) => p.x === prior.polygon[i].x && p.y === prior.polygon[i].y);
-    const work = calculate(c, polygon, errorWorld, same ? prior.winding : undefined,
-        winding => { validated.set(clipPolygon, { polygon, winding }); });
+    const work = calculate(c, polygon, errorWorld, prior, winding => { validated.set(clipPolygon, { polygon, winding }); });
     let result: CircleClipResult | undefined;
     return { step(maxWork) {
         if (!Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid geometry work budget');

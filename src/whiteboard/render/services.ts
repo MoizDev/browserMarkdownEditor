@@ -177,6 +177,23 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
+    const paint = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: Iterable<NodeId>) => {
+        const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
+        return prepareScenePaintSource(doc, options.token, request, {
+            cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
+            // Physical-page capture owns its final clip. A stored pg is an
+            // origin, not a certificate that overflowing geometry is invisible.
+            intersectsPage: () => true,
+            async resolve(node, context, itemSignal) {
+                if (node.kind === 'group') return { content: [] };
+                const geometry = await prepare(node, doc, itemSignal);
+                if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
+                if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
+                return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
+                    { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+            },
+        }, signal);
+    };
     const requireLoadedText = (value: PreparedBoardText | null) => {
         if (!value) return;
         if (!text.fonts.isLoaded({ family: value.request.style.font, bold: false, italic: false })
@@ -271,22 +288,9 @@ export function createBoardRenderServices(options: {
         },
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        async preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal) {
-            const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
-            return prepareScenePaintSource(doc, options.token, request, {
-                cooperate: options.cooperate,
-                // The output/capture owner clips to the physical page; retaining
-                // cross-page nodes here prevents stored page ownership culling.
-                intersectsPage: () => true,
-                async resolve(node, context, itemSignal) {
-                    if (node.kind === 'group') return { content: [] };
-                    const geometry = await prepare(node, doc, itemSignal);
-                    if (node.kind === 'stroke') return paintStrokeNode(node, geometry.ink!, geometry.key, context, palette);
-                    if (node.kind === 'connector') return paintConnector(node, geometry.connector!, context, palette, text.faces);
-                    return paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
-                },
-            }, signal);
+        preparePaint: paint,
+        prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
+            return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         dispose() { if (!disposed) { disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); } },

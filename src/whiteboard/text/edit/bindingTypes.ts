@@ -40,9 +40,13 @@ export interface TextEditBindingOptions {
     /** Add geometry/growY follow-ons to the same user transaction, before apply. */
     prepareTransaction(transaction: Transaction): Transaction;
 }
+/** Derives auto-size/growY in the same transaction that changes text or its geometry. */
+export type TextEditTransactionPreparer = (transaction: Transaction) => Transaction;
 export interface TextEditBinding {
     readonly editor: TextEditSession;
     /** Re-read layout after a camera, font, view, or geometry change. */
     refresh(): void;
+    /** Typing on a selected node starts an ordinary typing burst, not a paste. */
+    insertText(text: string): void;
     close(commitComposition?: boolean): void;
 }

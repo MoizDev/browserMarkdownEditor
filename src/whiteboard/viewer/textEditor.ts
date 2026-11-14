@@ -85,10 +85,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let svg: SVGSVGElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
+    let spellSource: RichText | null = null, spellNode: NodeId | null = null;
     let spellingMenu: SpellingMenuRequest | null = null;
     const checkSpelling = () => {
         const id = active, node = id && doc.nodes.get(id), value = node && nodeText(node);
-        if (!id || !value) return;
+        if (!id || !value || (spellNode === id && spellSource === value)) return;
+        spellNode = id; spellSource = value;
         const generation = ++spellGeneration, text = value.blocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
         misspellings = [];
         spellLoad ??= import('../text/spell/client').then(({ BoardSpellClient }) => {
@@ -100,11 +102,13 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             client.check(text, ranges => {
                 if (active !== id || generation !== spellGeneration) return;
                 misspellings = ranges; requestFrame();
-            }, report);
-        }).catch(error => { if (!disposed) report(error); });
+            }, error => { spellSource = null; report(error); });
+        }).catch(error => { spellSource = null; if (!disposed) report(error); });
     };
     const stopDictionary = options.spelling.subscribe(() => {
-        void spell?.setDictionary(options.spelling.words()).then(checkSpelling, report);
+        spellSource = null;
+        if (spell) void spell.setDictionary(options.spelling.words()).then(checkSpelling, report);
+        else checkSpelling();
     });
     const live = document.createElement('div');
     live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
@@ -256,7 +260,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink,
-                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; misspellings = []; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                finish() { stopScroll(); spellingMenu?.cancel(); spellingMenu = null; spellGeneration++; misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,

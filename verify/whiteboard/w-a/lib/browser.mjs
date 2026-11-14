@@ -247,13 +247,18 @@ export async function launch(row, arm, options = {}) {
     const markers = [...new Set(chunks.flatMap(chunk => [...chunk.text.matchAll(/["'](@tldraw\/[\w-]+)["']\s*,\s*["'](\d+\.\d+\.\d+)["']/g)].map(m => `${m[1]}@${m[2]}`)))];
     const identity = { build: meta, indexSha256: meta.indexSha256, chrome: browser.version(),
       viewport: { width: 1440, height: 1000 }, dpr: Number(process.env.DPR ?? 1),
-      engine: 'legacy-tldraw', versionMarkers: markers,
+      engine: options.legacyCanvas === false ? 'not-loaded' : 'legacy-tldraw', versionMarkers: markers,
       chunks: chunks.filter(c => /DrawingPane-|NotebookPane-|canvasAgentOps-|PdfAnnotateCanvas-/.test(c.url)).map(c => ({ url: c.url, status: c.status, size: c.size, sha256: c.sha256 })),
       maxTouchPoints: await page.evaluate(() => navigator.maxTouchPoints),
-      backend: 'DOM/SVG legacy board; only actual HTML canvas contexts counted',
+      backend: options.legacyCanvas === false ? 'no canvas engine mounted' : 'DOM/SVG legacy board; only actual HTML canvas contexts counted',
       contexts: await page.evaluate(() => window.__wa.contexts) };
-    assert(identity.chunks.length, 'Legacy engine chunk response missing');
-    assert(markers.length && markers.every(m => m.endsWith('@5.2.4')), 'Library own version marker assertion failed');
+    if (options.legacyCanvas === false) {
+      assert.equal(identity.chunks.length, 0, 'A Markdown-only session loaded a canvas engine chunk');
+      assert.equal(markers.length, 0, 'A Markdown-only session loaded the canvas library');
+    } else {
+      assert(identity.chunks.length, 'Legacy engine chunk response missing');
+      assert(markers.length && markers.every(m => m.endsWith('@5.2.4')), 'Library own version marker assertion failed');
+    }
     const record = { row, arm, ...result, identity, errors, network,
       events: await page.evaluate(() => window.__wa.events), writes: await h.writes() };
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify(record, null, 2) + '\n');
@@ -269,7 +274,8 @@ export async function runArm(row, arm, action, options) {
   catch (error) {
     await h.capture('failure').catch(() => {});
     await fs.writeFile(path.join(h.output, 'failure.json'), JSON.stringify({ message: error.message,
-      stack: error.stack, body: await h.page.locator('body').innerText().catch(() => ''), errors: h.errors }, null, 2));
+      stack: error.stack, build: h.meta, network: h.network,
+      body: await h.page.locator('body').innerText().catch(() => ''), errors: h.errors }, null, 2));
     throw error;
   } finally { await h.close(); }
 }

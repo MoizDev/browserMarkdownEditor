@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import {
-    getPdfInverted, readPdfViewPos, recordPdfNavigation, readThumbnailsOpen, subscribePdfInverted, writePdfViewPos, writeThumbnailsOpen,
+    getPdfInverted, readPdfNavigationRevision, readPdfViewPos, recordPdfNavigation, readThumbnailsOpen, subscribePdfInverted, writePdfViewPos, writeThumbnailsOpen,
 } from '../utils/pdfViewState';
 import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -17,7 +17,29 @@ import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { LEFT, RIGHT } from '../utils/pdfRotation';
 import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
 import { mapPool } from '../utils/pool';
+import { bindPdfTextLayerSelection } from '../utils/pdfTextLayerSelection';
+import { remeasurePdfTextLayer } from '../utils/pdfTextLayerRemeasure';
 import { RotateCcw, RotateCw } from './icons';
+import PdfFindBar from './PdfFindBar';
+import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
+import type { PdfFindHit } from '../utils/pdfFind';
+import type { PdfTextReader } from '../utils/pdfReadingText';
+import { createPdfFindHighlights, pdfFindBreaks, pdfFindRange, pdfFindSpan } from '../utils/pdfFindHighlight';
+import type { PdfFindBoundary, PdfFindMemory, PdfFindTextLayer, PdfFindTextSpan } from '../utils/pdfFindHighlight';
+import type { TextContent } from 'pdfjs-dist/types/src/display/api';
+
+export interface PdfViewerHandle { openFind(): void }
+const findKey = (hit: PdfFindHit) => `${hit.page}:${hit.from}:${hit.to}`;
+const normalizedCopy = (text: string) => pdfjs.normalizeUnicode(text).replaceAll('\0', '');
+function awaitFind<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(new DOMException('PDF find cancelled', 'AbortError'));
+    return new Promise((resolve, reject) => {
+        const abort = () => { cleanup(); reject(new DOMException('PDF find cancelled', 'AbortError')); };
+        const cleanup = () => signal.removeEventListener('abort', abort);
+        signal.addEventListener('abort', abort, { once: true });
+        promise.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    });
+}
 
 /**
  * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
@@ -29,9 +51,9 @@ import { RotateCcw, RotateCw } from './icons';
  * pages ourselves makes the scroll position ours to read, persist and restore.
  *
  * What keeps parity with the native viewer:
- * - Text is selectable/copyable via pdf.js's TextLayer (transparent spans over
- *   the canvas), and ⌘F works because text layers are built for EVERY page of
- *   ordinarily-sized documents, not just the visible ones.
+ * - Text is selectable/copyable via pdf.js's raw TextLayer (transparent spans
+ *   over the canvas). The app's find searches every canonical page independently
+ *   of these layers, then builds the hit's layer directly for reveal.
  * - Scrolling is a real DOM scroller (wheel, trackpad, PgUp/PgDn, arrows).
  * - Fit-width by default, plus simple zoom controls.
  *
@@ -45,9 +67,9 @@ import { RotateCcw, RotateCw } from './icons';
  * also get page.cleanup() so pdf.js drops the parsed operator list. Link layers
  * are cheap DOM. TEXT layers are NOT: at ~4.3KB of renderer memory per
  * positioned span they are the largest single memory item in the app (hundreds
- * of MB for a dense book), and they are never released — that is what makes ⌘F
- * find text on pages you have never scrolled to. See the verify-in-browser and
- * pdf-and-drawings skills before trading that away.
+ * of MB for a dense book). They remain retained/eager during the find transition;
+ * removing that pass is a separate package after complete find/reveal passes.
+ * See the verify-in-browser and pdf-and-drawings skills before changing it.
  *
  * The current position is tracked as {page, offset-within-page}, which survives
  * zoom, container resizes and reloads of the underlying bytes (an annotated
@@ -56,6 +78,9 @@ import { RotateCcw, RotateCw } from './icons';
  */
 
 interface PdfViewerProps {
+    reader?: PdfTextReader;
+    findMemory: PdfFindMemory;
+    onNotify?(message: string): void;
     emphasisEnabled?: boolean;
     onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
     onLocation?(): void;
@@ -113,6 +138,10 @@ interface PageState {
     cleaned?: boolean;
     textStarted?: boolean;
     textPromise?: Promise<void>;
+    textDivs?: readonly HTMLElement[];
+    textSpans?: readonly PdfFindTextSpan[];
+    textBreaks?: readonly PdfFindBoundary[];
+    textReady?: boolean;
     linksStarted?: boolean;
     linksPromise?: Promise<void>;
 }
@@ -329,7 +358,8 @@ interface PinchGesture {
     timer: number | null;
 }
 
-function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
+function PdfViewer({ filePath, session, reader, findMemory, onNotify, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps,
+    forwarded: React.ForwardedRef<PdfViewerHandle>) {
     const [nativeNotice, setNativeNotice] = useState('');
     const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
     const showNativeNotice = useCallback((index: number) => {
@@ -358,7 +388,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
     /** Read by the ResizeObserver and the render loop, which are created once
      *  and must not close over a stale `isVisible`. */
     const visibleRef = useRef(isVisible);
-    useEffect(() => { visibleRef.current = isVisible; }, [isVisible]);
+    useLayoutEffect(() => { visibleRef.current = isVisible; }, [isVisible]);
     /** A width this pane was resized to while it was hidden, applied on the way
      *  back in rather than re-rastering a document nobody is looking at. */
     const pendingWidthRef = useRef<number | null>(null);
@@ -370,7 +400,14 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const innerRef = useRef<HTMLDivElement | null>(null);
-    useEffect(() => { if (isActive) scrollRef.current?.focus({ preventScroll: true }); }, [isActive]);
+    useEffect(() => {
+        if (!isActive || !isVisible) return;
+        const active = document.activeElement;
+        // Pane activation can be the find field/menu taking focus itself.
+        // The reading-keyboard handoff must not take it straight back.
+        if (active instanceof Element && active.closest('input, textarea, select, [contenteditable="true"], [role="menu"], [role="dialog"], [role="listbox"], .pdf-find-bar')) return;
+        scrollRef.current?.focus({ preventScroll: true });
+    }, [isActive, isVisible]);
     const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
     const gestureRef = useRef<PinchGesture | null>(null);
     const canvasElsRef = useRef<Array<HTMLCanvasElement | null>>([]);
@@ -403,6 +440,15 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
     const docStateRef = useRef<DocState | null>(null);
     const docGenRef = useRef(0);
     const zoomRef = useRef(zoom);
+    const findBar = useRef<PdfFindBarHandle>(null);
+    const findHighlights = useMemo(createPdfFindHighlights, []);
+    const findHits = useRef<readonly PdfFindHit[]>([]), findCurrent = useRef<PdfFindHit | undefined>(undefined);
+    const findRanges = useRef(new Map<number, { divs: readonly HTMLElement[]; spans: readonly PdfFindTextSpan[]; ranges: Map<string, Range> }>());
+    const pendingFind = useRef<{ hit: PdfFindHit; gen: number; revision: number; approximate: boolean } | undefined>(undefined);
+    const findByPage = useRef(new Map<number, PdfFindHit[]>());
+    const rawFindProgress = useRef<(index: number) => void>(() => {});
+    const layoutWaiters = useRef(new Set<() => void>());
+    useImperativeHandle(forwarded, () => ({ openFind: () => findBar.current?.openFind() }), []);
 
     /** The live position, updated on every scroll pass. Seeded from storage so
      *  the first layout restores it; a data swap (annotated save) reuses it so
@@ -454,6 +500,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         // capturing them here for the cleanup is safe (and keeps lint honest).
         const textLayers = textLayersRef.current;
         const pageStates = pageStatesRef.current;
+        const ranges = findRanges.current, waiters = layoutWaiters.current;
         let documentLease: Awaited<ReturnType<PdfDocumentSession['acquire']>> | undefined;
 
         (async () => {
@@ -499,6 +546,8 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         return () => {
             cancelled = true;
             docGenRef.current = gen + 1;
+            findHighlights.clear(); ranges.clear(); pendingFind.current = undefined;
+            for (const wake of waiters) wake();
             for (const layer of textLayers) layer.cancel();
             textLayers.clear();
             for (const st of pageStates.values()) {
@@ -513,7 +562,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             setDocState(null);
             documentLease?.release();
         };
-    }, [session]);
+    }, [session, findHighlights]);
 
     // ── Fit-width layout ─────────────────────────────────────────────────────
     /*
@@ -595,6 +644,99 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         }
     }, []);
 
+    const findLayer = useCallback((index: number): PdfFindTextLayer | undefined => {
+        const state = pageStatesRef.current.get(index), container = textElsRef.current[index];
+        if (!container || !state?.textReady || !state.textDivs || !state.textSpans || !state.textBreaks) return;
+        return { container, divs: state.textDivs, spans: state.textSpans, breaks: state.textBreaks };
+    }, []);
+    const paintFindPage = useCallback((index: number) => {
+        const layer = findLayer(index), hits = findByPage.current.get(index);
+        if (!visibleRef.current || !layer || !hits?.length) { findHighlights.clearPage(index); findRanges.current.delete(index); return; }
+        const previous = findRanges.current.get(index);
+        const reusable = previous?.divs === layer.divs && previous?.spans === layer.spans ? previous.ranges : undefined;
+        const ranges = new Map<string, Range>();
+        for (const hit of hits) {
+            const key = findKey(hit), old = reusable?.get(key);
+            const range = old && layer.container.contains(old.startContainer) && layer.container.contains(old.endContainer) ? old : pdfFindRange(layer, hit);
+            if (range) ranges.set(key, range);
+        }
+        findRanges.current.set(index, { divs: layer.divs, spans: layer.spans, ranges });
+        findHighlights.setPage(index, [...ranges.values()]);
+    }, [findLayer, findHighlights]);
+    const paintFindCurrent = useCallback(() => {
+        const hit = findCurrent.current;
+        findHighlights.setCurrent(hit ? findRanges.current.get(hit.page)?.ranges.get(findKey(hit)) : undefined);
+    }, [findHighlights]);
+    const publishFind = useCallback((hits: readonly PdfFindHit[], current?: PdfFindHit) => {
+        const changed = findHits.current !== hits;
+        findHits.current = hits; findCurrent.current = current;
+        if (!visibleRef.current || !hits.length) { findHighlights.clear(); findRanges.current.clear(); findByPage.current.clear(); return; }
+        if (changed || !findByPage.current.size) {
+            findByPage.current.clear();
+            for (const hit of hits) {
+                let page = findByPage.current.get(hit.page);
+                if (!page) { page = []; findByPage.current.set(hit.page, page); }
+                page.push(hit);
+            }
+            for (const index of new Set([...findRanges.current.keys(), ...findByPage.current.keys()])) paintFindPage(index);
+        }
+        paintFindCurrent();
+    }, [findHighlights, paintFindPage, paintFindCurrent]);
+    const selectedPdfText = useCallback(() => {
+        const selection = document.getSelection(), root = scrollRef.current;
+        return root && selection && !selection.isCollapsed && selection.anchorNode && selection.focusNode && root.contains(selection.anchorNode) && root.contains(selection.focusNode)
+            ? normalizedCopy(selection.toString()) : '';
+    }, []);
+    const closeFind = useCallback((hit?: PdfFindHit) => {
+        if (!visibleRef.current) return;
+        const layer = hit && findLayer(hit.page), range = layer && hit && pdfFindRange(layer, hit);
+        if (range) { const selection = document.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); }
+        scrollRef.current?.focus({ preventScroll: true });
+    }, [findLayer]);
+    const findPosition = useCallback((): PdfFindStart => {
+        const el = scrollRef.current, L = layoutRef.current;
+        if (!el || !L?.pages.length) return { page: currentPosRef.current.page, y: 0 };
+        let page = Math.min(L.pages.length - 1, currentPosRef.current.page);
+        while (page > 0 && L.tops[page] > el.scrollTop) page--;
+        while (page < L.pages.length - 1 && L.tops[page] + L.pages[page].h + PAGE_GAP <= el.scrollTop) page++;
+        return { page, y: Math.max(0, (el.scrollTop - L.tops[page]) / L.scale) };
+    }, []);
+    const approximateFind = useCallback((index: number) => {
+        const pending = pendingFind.current, el = scrollRef.current, L = layoutRef.current;
+        const spans = pageStatesRef.current.get(index)?.textSpans;
+        if (!pending || pending.hit.page !== index || pending.approximate || pending.gen !== docGenRef.current || !visibleRef.current || !el || !L || !spans) return;
+        if (readPdfNavigationRevision(filePath) !== pending.revision) return;
+        const span = pdfFindSpan(spans, pending.hit.from);
+        if (!span || !Number.isFinite(span.x) || !Number.isFinite(span.y)) return;
+        pending.approximate = true;
+        // Near a page's top, centring would put the top edge in the previous
+        // page and make the page box say 449 for a p450 hit. Keep the real page.
+        el.scrollTop = Math.ceil(Math.max(L.tops[index], L.tops[index] + span.y * L.scale - el.clientHeight / 3));
+        if (L.maxPageW > el.clientWidth) {
+            const left = (Math.max(el.clientWidth, L.maxPageW) - L.pages[index].w) / 2;
+            el.scrollLeft = Math.max(0, left + span.x * L.scale - el.clientWidth / 3);
+        }
+        // Header actions can follow before the scroll RAF; publish this camera
+        // now, not the page that was visible before the search jump.
+        updateWindowRef.current?.();
+    }, [filePath]);
+    useLayoutEffect(() => { rawFindProgress.current = approximateFind; }, [approximateFind]);
+    useLayoutEffect(() => {
+        if (!isVisible) { findHighlights.clear(); findRanges.current.clear(); findByPage.current.clear(); }
+        else publishFind(findHits.current, findCurrent.current);
+    }, [isVisible, findHighlights, publishFind]);
+    useEffect(() => {
+        const root = scrollRef.current;
+        if (!root) return;
+        const copy = (event: ClipboardEvent) => {
+            const selection = document.getSelection();
+            if (event.defaultPrevented || !selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode) || !event.clipboardData) return;
+            event.preventDefault(); event.clipboardData.setData('text/plain', normalizedCopy(selection.toString()));
+        };
+        root.addEventListener('copy', copy);
+        return () => root.removeEventListener('copy', copy);
+    }, []);
+
     /** Build the selectable-text overlay for one page. Geometry is stored in
      *  page-percentages and font sizes ride the --scale-factor CSS variable, so
      *  a text layer is built ONCE per page and zoom rescales it for free. */
@@ -602,21 +744,42 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         const st = getState(i);
         if (st.textStarted) return st.textPromise ?? Promise.resolve();
         const container = textElsRef.current[i];
-        if (!container || !docStateRef.current) return Promise.resolve();
+        if (!container || !docStateRef.current || !visibleRef.current) return Promise.resolve();
         st.textStarted = true;
         const gen = docGenRef.current;
         st.textPromise = (async () => {
             try {
                 const page = await getPage(i);
                 if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
-                const layer = new pdfjs.TextLayer({
-                    textContentSource: page.streamTextContent(),
-                    container,
-                    viewport: page.getViewport({ scale: 1 }),
-                });
+                if (!visibleRef.current) { st.textStarted = false; st.textPromise = undefined; return; }
+                const viewport = page.getViewport({ scale: 1 }), matrix = viewport.transform;
+                const spans: PdfFindTextSpan[] = []; st.textSpans = spans; st.textReady = false;
+                let offset = 0, div = 0, br = 0;
+                // The layer's own unbounded stream remains independent of the
+                // bounded index. Keeping only its offsets avoids re-extracting
+                // canonical geometry merely to highlight already-built layers.
+                const source = page.streamTextContent({ includeMarkedContent: true, disableNormalization: true }).pipeThrough(new TransformStream<TextContent, TextContent>({
+                    transform(chunk, output) {
+                        for (const item of chunk.items) {
+                            if (!('str' in item)) continue;
+                            const x = matrix[0] * item.transform[4] + matrix[2] * item.transform[5] + matrix[4];
+                            const y = matrix[1] * item.transform[4] + matrix[3] * item.transform[5] + matrix[5] - Math.hypot(matrix[2], matrix[3]) * item.height;
+                            spans.push({ from: offset, to: offset + item.str.length, div: div++, x, y });
+                            offset += item.str.length;
+                            if (item.hasEOL) spans.push({ from: offset, to: ++offset, br: br++, x, y });
+                        }
+                        rawFindProgress.current(i); output.enqueue(chunk);
+                    },
+                }));
+                const layer = new pdfjs.TextLayer({ textContentSource: source, container, viewport });
+                st.textDivs = layer.textDivs;
                 textLayersRef.current.add(layer);
                 try {
                     await layer.render();
+                    if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
+                    remeasurePdfTextLayer(layer, viewport);
+                    st.textBreaks = pdfFindBreaks(container); st.textReady = true;
+                    if (visibleRef.current) { paintFindPage(i); paintFindCurrent(); }
                 } finally {
                     textLayersRef.current.delete(layer);
                 }
@@ -629,7 +792,45 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             }
         })();
         return st.textPromise;
-    }, [getState, getPage]);
+    }, [getState, getPage, paintFindPage, paintFindCurrent]);
+
+    const waitFindLayout = useCallback((signal: AbortSignal, gen: number) => new Promise<void>((resolve, reject) => {
+        const cleanup = () => { layoutWaiters.current.delete(wake); signal.removeEventListener('abort', wake); };
+        const wake = () => {
+            if (signal.aborted || docGenRef.current !== gen) { cleanup(); reject(new DOMException('PDF find cancelled', 'AbortError')); }
+            else if (layoutRef.current?.gen === gen && docStateRef.current?.gen === gen) { cleanup(); resolve(); }
+        };
+        layoutWaiters.current.add(wake); signal.addEventListener('abort', wake, { once: true }); wake();
+    }), []);
+    const hitAtOrAfter = useCallback(async (hit: PdfFindHit, start: PdfFindStart, signal: AbortSignal) => {
+        if (hit.page !== start.page) return hit.page > start.page;
+        await awaitFind(ensureText(hit.page), signal);
+        const layer = findLayer(hit.page), el = scrollRef.current, L = layoutRef.current;
+        const range = layer && pdfFindRange(layer, hit);
+        if (range && el && L) {
+            const y = (range.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - L.tops[hit.page]) / L.scale;
+            return y >= start.y - 0.5;
+        }
+        return (pdfFindSpan(pageStatesRef.current.get(hit.page)?.textSpans ?? [], hit.from)?.y ?? Infinity) >= start.y;
+    }, [ensureText, findLayer]);
+    const revealFind = useCallback(async (hit: PdfFindHit, signal: AbortSignal) => {
+        const gen = docGenRef.current;
+        await waitFindLayout(signal, gen);
+        const request = { hit, gen, revision: recordPdfNavigation(filePath, 'search'), approximate: false };
+        pendingFind.current = request;
+        const ready = ensureText(hit.page); approximateFind(hit.page);
+        try {
+            await awaitFind(ready, signal);
+            if (pendingFind.current !== request || gen !== docGenRef.current || !visibleRef.current) return;
+            if (readPdfNavigationRevision(filePath) !== request.revision) return;
+            const layer = findLayer(hit.page), range = layer && pdfFindRange(layer, hit), el = scrollRef.current, L = layoutRef.current;
+            if (!range || !el || !L) throw new Error('PDF match has no built text range');
+            const rect = range.getBoundingClientRect(), box = el.getBoundingClientRect();
+            if (rect.top < box.top || rect.bottom > box.bottom) el.scrollTop = Math.ceil(Math.max(L.tops[hit.page], el.scrollTop + rect.top - box.top - el.clientHeight / 3));
+            if (rect.left < box.left || rect.right > box.right) el.scrollLeft += rect.left - box.left - el.clientWidth / 3;
+            updateWindowRef.current?.(); paintFindPage(hit.page); paintFindCurrent();
+        } finally { if (pendingFind.current === request) pendingFind.current = undefined; }
+    }, [waitFindLayout, ensureText, approximateFind, filePath, findLayer, paintFindPage, paintFindCurrent]);
 
     /**
      * Put a page under the viewport's top edge — the one way to move to a page,
@@ -653,7 +854,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         // pixels — so asking for tops[i] can land a fraction of a pixel ABOVE
         // page i, where "which page is under the top edge" still answers i-1.
         // Jumping to page 9 would then leave the box reading 8.
-        recordPdfNavigation(filePath, 'user-navigation');
+        recordPdfNavigation(filePath, 'user-navigation'); findBar.current?.cancelReveal();
         el.scrollTop = Math.ceil(L.tops[i] + offset * L.scale);
     }, [filePath]);
 
@@ -721,7 +922,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             if (el && selection && !selection.isCollapsed
                 && selection.anchorNode && el.contains(selection.anchorNode)
                 && selection.focusNode && el.contains(selection.focusNode)) {
-                const t = selection.toString().trim();
+                const t = normalizedCopy(selection.toString()).trim();
                 if (t) selectedText = t.length > MAX_SELECTED_TEXT ? `${t.slice(0, MAX_SELECTED_TEXT)}…` : t;
             }
             return {
@@ -1251,6 +1452,7 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
             el.scrollTop = Math.ceil(layout.tops[page] + pos.offset * layout.pages[page].h);
         }
         updateWindow();
+        for (const wake of layoutWaiters.current) wake();
     }, [layout, updateWindow]);
 
     /** One zoom step, anchored at the viewport top edge — the pill buttons and
@@ -1465,6 +1667,11 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
         return () => window.removeEventListener('keydown', onKey);
     }, [isActive, nudgeZoom, rotate]);
 
+    useEffect(() => {
+        const root = rootRef.current;
+        return root ? bindPdfTextLayerSelection(root) : undefined;
+    }, []);
+
     // A drag that starts on the page is a text selection, and must be able to
     // sweep straight across a link instead of stopping dead at its edge. Links
     // sit above the text layer (they'd never be clickable otherwise), so the
@@ -1570,8 +1777,22 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
 
     return (
         <div className={`pdf-viewer${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} ref={rootRef}
-            onWheelCapture={event => { if (!event.ctrlKey) recordPdfNavigation(filePath, 'user-scroll'); }}
-            onKeyDownCapture={event => { if (['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) recordPdfNavigation(filePath, 'user-scroll'); }}>
+            onWheelCapture={event => { if (!event.ctrlKey) { recordPdfNavigation(filePath, 'user-scroll'); findBar.current?.cancelReveal(); } }}
+            onKeyDownCapture={event => {
+                if (!isVisible || event.defaultPrevented || event.nativeEvent.isComposing) return;
+                const target = event.target;
+                if ((event.metaKey || event.ctrlKey) && ['f', 'g'].includes(event.key.toLowerCase())) {
+                    if (!(target instanceof Element) || target.closest('[role="menu"], [role="dialog"], [data-agent-panel], [data-terminal]') || document.querySelector('[aria-modal="true"]')) return;
+                    event.preventDefault(); event.stopPropagation();
+                    if (event.key.toLowerCase() === 'f') findBar.current?.openFind();
+                    else findBar.current?.nextMatch(event.shiftKey ? -1 : 1);
+                } else if (event.key === 'Escape' && findBar.current?.closeFind()) { event.preventDefault(); event.stopPropagation(); }
+                else if (['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && !(target instanceof Element && target.closest('input, textarea, [contenteditable="true"]'))) {
+                    recordPdfNavigation(filePath, 'user-scroll'); findBar.current?.cancelReveal();
+                }
+            }}>
+            <PdfFindBar ref={findBar} engine={reader?.findEngine} memory={findMemory} isVisible={isVisible} isActive={isActive}
+                selectedText={selectedPdfText} readingPosition={findPosition} atOrAfter={hitAtOrAfter} reveal={revealFind} publish={publishFind} close={closeFind} onNotify={onNotify} />
             {thumbsOpen && docState && (
                 <PdfThumbnails
                     key={docState.gen}
@@ -1681,4 +1902,4 @@ function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, on
 
 // Memoized: the parent re-renders on every keystroke anywhere in the app, but
 // this only needs to re-render when its document or its own state changes.
-export default React.memo(PdfViewer);
+export default React.memo(React.forwardRef(PdfViewer));

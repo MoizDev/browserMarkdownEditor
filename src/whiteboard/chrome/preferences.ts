@@ -28,10 +28,6 @@ export function readBoardViewFlags(value: unknown): BoardViewFlags {
     };
 }
 
-export interface BoardPreferenceState {
-    reconcileView(view: BoardViewFlags): void;
-}
-
 // The host persists view flags through the file save funnel, or the PDF view record for PDF ink.
 export class BoardPreferenceState {
     private snapshot: BoardLocalPreferences;

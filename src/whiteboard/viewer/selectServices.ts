@@ -60,6 +60,7 @@ export interface BoardSelectServicesOptions {
     readonly alwaysSnap?: () => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
+    toggleWhiteboardTheme?(): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
 export function createBoardSelectServices(options: BoardSelectServicesOptions) {
@@ -481,7 +482,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         current, changed: options.cameraChanged, error: report });
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });
-    const styleShortcuts = createStyleShortcuts({ runtime, current, registerPending, error: report });
+    const styleShortcuts = createStyleShortcuts({ runtime, current, registerPending, error: report,
+        toggleWhiteboardTheme: options.toggleWhiteboardTheme });
     const command = (id: string): boolean => {
         if (cameraCommands.run(id) || selectionCommands.run(id) || styleShortcuts.run(id)) return true;
         if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true);

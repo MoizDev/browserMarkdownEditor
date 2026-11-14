@@ -10,6 +10,7 @@ export interface StyleShortcutOptions {
     current(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
+    toggleWhiteboardTheme?(): void;
     cooperate?(): Promise<void>;
 }
 
@@ -93,6 +94,12 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
             }
             case 'preferences.grid': return flag('view.grid');
             case 'preferences.focus': return flag('view.focusMode');
+            case 'preferences.theme':
+                if (!current()) return false;
+                if (doc.kind !== 'whiteboard') return true;
+                if (!options.toggleWhiteboardTheme) return false;
+                try { options.toggleWhiteboardTheme(); } catch (error) { options.error(error); }
+                return true;
             default: return false;
         }
     };

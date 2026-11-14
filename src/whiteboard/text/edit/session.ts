@@ -3,11 +3,13 @@ import type { RichText } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
+import type { ToggleMark } from './format';
 import { EditHost, type EditSelection, type TextChange } from './host';
 import { handleEditKey } from './keys';
 import { TextPointerSelection, type TextPointer } from './pointer';
 import { selectBlock, selectWord, wordBoundary } from './selection';
 import type { NodeId } from '../../model/ids';
+import type { Rect } from '../../../platform/types';
 
 export interface EditLayout {
     readonly paint: TextPaint;
@@ -44,6 +46,7 @@ export class TextEditSession {
     private selection: EditSelection;
     private affinity: CaretPosition['affinity'];
     private goalX: number | undefined;
+    private lastActivity = performance.now();
     private closed = false;
 
     constructor(container: HTMLElement, label: string, id: NodeId, key: 'text' | 'label', selection: EditSelection,
@@ -76,6 +79,7 @@ export class TextEditSession {
     }
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
+        this.lastActivity = performance.now();
         this.controller.replace(change, kind, this.selection);
         this.selection = change.selection;
         this.affinity = undefined;
@@ -84,6 +88,7 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
+        this.lastActivity = performance.now();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
         this.controller.setStoredMarks(null);
@@ -125,7 +130,12 @@ export class TextEditSession {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
             move: (offset, direction) => this.move(offset, direction),
-            command: command => this.services.command(command, this.selection),
+            command: command => {
+                const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
+                const mark = marks[command];
+                if (mark) { this.controller.toggleMark(mark, this.selection); this.services.changed(this.selection); this.host.sync(); }
+                else this.services.command(command, this.selection);
+            },
             inList: () => this.services.inList(this.selection.focus),
         }, this.mac);
     }
@@ -142,6 +152,24 @@ export class TextEditSession {
         const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
         const rect = selection[0] ?? { x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top };
         this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), clientBounds(rect, layout.localToClient));
+    }
+
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): { selection: readonly Rect[]; caret: Rect | null } {
+        const layout = this.services.layout();
+        const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+        const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        const active = now - this.lastActivity;
+        const visible = reducedMotion || active < 530 || Math.floor(active / 530) % 2 === 0;
+        const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
+        const caret = visible && this.selection.anchor === this.selection.focus
+            ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
+        return { selection, caret };
+    }
+
+    applyLink(url: string, selection: EditSelection): boolean {
+        const applied = this.controller.applyLink(url, selection);
+        if (applied) { this.selection = selection; this.services.changed(selection); this.host.focus(); }
+        return applied;
     }
 
     pointerDown(pointer: TextPointer, handle?: 'anchor' | 'focus'): void { this.pointer.down(pointer, handle); }

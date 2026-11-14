@@ -315,14 +315,14 @@ export class TextEditSession {
         const container = this.host.element.parentElement?.getBoundingClientRect();
         Object.assign(this.host.element.style, { left: '0px', top: '0px', width: `${layout.paint.box.w}px`, height: `${layout.paint.box.h}px`, transformOrigin: '0 0', transform: `matrix(${a},${b},${c},${d},${e - (container?.left ?? 0)},${f - (container?.top ?? 0)})` });
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
-        const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
-        const rects = selection.length ? selection : [{ x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top }];
-        const client = rects.map(rect => clientBounds(rect, layout.localToClient));
-        const bounds = client.reduce((union, rect) => {
-            const left = Math.min(union.left, rect.left), top = Math.min(union.top, rect.top);
-            const right = Math.max(union.right, rect.right), bottom = Math.max(union.bottom, rect.bottom);
-            return new DOMRect(left, top, right - left, bottom - top);
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        layout.caret.forEachSelection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus), rect => {
+            const client = clientBounds(rect, layout.localToClient);
+            left = Math.min(left, client.left); top = Math.min(top, client.top);
+            right = Math.max(right, client.right); bottom = Math.max(bottom, client.bottom);
         });
+        const bounds = left === Infinity ? clientBounds({ x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top }, layout.localToClient)
+            : new DOMRect(left, top, right - left, bottom - top);
         this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
     }
 

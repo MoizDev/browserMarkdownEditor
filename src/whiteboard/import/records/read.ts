@@ -27,7 +27,8 @@ export interface LegacyRecordOptions {
     readonly signal?: AbortSignal;
     readonly assertCurrent: () => void;
     // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
-    readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[]) => Promise<(node: Node) => {
+    readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[],
+        paper: LegacyObject | null) => Promise<(node: Node) => {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
     }>;
 }
@@ -184,7 +185,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     }
     if (options.kind !== 'whiteboard' && nodes.length) {
         if (!options.preparePages) throw new Error('Paged import requires page geometry');
-        const pageForRoot = await options.preparePages(shapes, nodes, sheets);
+        const pageForRoot = await options.preparePages(shapes, nodes, sheets, envelope.paper);
         options.signal?.throwIfAborted();
         options.assertCurrent();
         for (const node of nodes) {

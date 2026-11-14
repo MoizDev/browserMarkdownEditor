@@ -1,4 +1,5 @@
-import type { PdfInkInspection, PdfInkInspectionFailure, PdfInkMediaDescriptor } from '../writing/inkInspection.types';
+import { PDF_INK_INSPECTION_ERROR_CLASSES, PDF_INK_INSPECTION_PHASES } from '../writing/inkInspection.types';
+import type { PdfInkInspection, PdfInkInspectionErrorClass, PdfInkInspectionFailure, PdfInkInspectionPhase, PdfInkMediaDescriptor } from '../writing/inkInspection.types';
 import { invalidPdfReply, record, text } from './validationCommon';
 import { validNotebookSourcePath } from '../writing/notebookPointer';
 
@@ -13,7 +14,7 @@ function blob(value: unknown, max: number, empty: boolean): Blob {
     return value.slice(0, value.size, value.type);
 }
 export function validatePdfInkInspection(value: unknown): PdfInkInspection {
-    const top = record(value, ['kind', 'reason', 'id', 'outerFingerprint', 'pristine', 'pristineFingerprint', 'board', 'media', 'writeId', 'formatId', 'notebookSource', 'writeSafety']);
+    const top = record(value, ['kind', 'reason', 'id', 'outerFingerprint', 'pristine', 'pristineFingerprint', 'board', 'media', 'writeId', 'formatId', 'notebookSource', 'writeSafety', 'phase', 'errorClass']);
     if (top.kind === 'read-only') {
         if (top.reason === 'notebook-source') {
             record(value, ['kind', 'reason', 'outerFingerprint', 'notebookSource']);
@@ -22,6 +23,12 @@ export function validatePdfInkInspection(value: unknown): PdfInkInspection {
                 (typeof pointer.exportedAt !== 'number' || !Number.isFinite(pointer.exportedAt) || pointer.exportedAt < 0))) invalidPdfReply();
             return { kind: 'read-only', reason: 'notebook-source', outerFingerprint: hash(top.outerFingerprint),
                 notebookSource: { path, ...(pointer.exportedAt !== undefined ? { exportedAt: pointer.exportedAt as number } : {}) } };
+        }
+        if (top.reason === 'inspection-failed') {
+            record(value, ['kind', 'reason', 'phase', 'errorClass']);
+            if (typeof top.phase !== 'string' || !PDF_INK_INSPECTION_PHASES.includes(top.phase as PdfInkInspectionPhase) ||
+                typeof top.errorClass !== 'string' || !PDF_INK_INSPECTION_ERROR_CLASSES.includes(top.errorClass as PdfInkInspectionErrorClass)) invalidPdfReply();
+            return { kind: 'read-only', reason: 'inspection-failed', phase: top.phase as PdfInkInspectionPhase, errorClass: top.errorClass as PdfInkInspectionErrorClass };
         }
         record(value, ['kind', 'reason']);
         if (typeof top.reason !== 'string' || !REASONS.includes(top.reason as PdfInkInspectionFailure)) invalidPdfReply();

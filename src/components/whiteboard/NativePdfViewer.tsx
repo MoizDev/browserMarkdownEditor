@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import type { ActiveFile, Theme } from '../../types';
 import { createNativeViewLease, type NativePdfBackdrop, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
+import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
@@ -127,11 +128,16 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
+    const latest = useRef(props);
+    useLayoutEffect(() => { latest.current = props; }, [props]);
+    const theme = useCallback(() => latest.current.theme, []);
+    const notice = useCallback((message: string) => latest.current.onNotice(message), []);
+    const viewer = useNativeClipboard(lease, props.host, props.identity, theme, notice);
     const pages = lease.runtime.session.doc.host.kind === 'pdf-ink' ? lease.runtime.session.doc.host.pages.length : 0;
     return <div style={{ position: 'relative', width: '100%', height: '100%' }}>
         <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-            view={lease.view} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
+            view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readOnly readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
             chrome={<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {

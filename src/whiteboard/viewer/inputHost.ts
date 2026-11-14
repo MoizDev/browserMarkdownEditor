@@ -69,6 +69,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         restoreText: value => options.overlays?.restoreText?.(value),
         beforeHistoryReplay: (step, direction) => options.overlays?.beforeHistoryReplay?.(step, direction) ?? true,
         presented: (revision, actual, frame) => wet.presented(revision, actual, frame),
+        liveNodeIds: () => wet.liveNodeIds(),
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => {

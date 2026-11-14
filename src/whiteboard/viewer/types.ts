@@ -53,6 +53,7 @@ export interface ViewerInteractionPorts {
     restoreText?(snapshot: TextSelectionSnapshot): void;
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintFrame): void;
+    liveNodeIds?(): ReadonlySet<string>;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.

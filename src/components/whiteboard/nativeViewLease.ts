@@ -140,7 +140,12 @@ export function createNativeViewLease(options: {
             const boardLayers = capture.layers.filter(id => id === 'board-underlay' || id === 'board-content');
             if (pdfLayers.length + boardLayers.length !== capture.layers.length || !capture.layers.length) throw new Error('PDF capture requested an unavailable layer');
             const children: Array<{ snapshot: CaptureSnapshot; request: CaptureRequest }> = [];
-            const releaseChildren = () => { for (const child of children) { try { child.snapshot.release(); } catch (error) { try { options.onError(error); } catch { /* Continue releasing the other pins. */ } } } };
+            const releaseChildren = async () => {
+                await Promise.all(children.map(async child => {
+                    try { await child.snapshot.release(); }
+                    catch (error) { try { options.onError(error); } catch { /* Release the other pins too. */ } }
+                }));
+            };
             let identityPin: ReturnType<NonNullable<BoardRuntime['scene']>['pin']> | undefined;
             try {
                 if (pdfLayers.length) {
@@ -156,7 +161,7 @@ export function createNativeViewLease(options: {
                 }
                 const root = boardLayers.length ? children[children.length - 1].snapshot : identityPin!;
                 const controller = new AbortController();
-                let released = false;
+                let releasing: Promise<void> | undefined;
                 return {
                     token: root.token, revision: String(root.revision),
                     signal: AbortSignal.any([controller.signal, ...children.map(child => child.snapshot.signal)]),
@@ -175,12 +180,16 @@ export function createNativeViewLease(options: {
                         return result;
                     },
                     release() {
-                        if (released) return; released = true; controller.abort();
-                        try { releaseChildren(); } finally { identityPin?.release(); }
+                        if (releasing) return releasing;
+                        controller.abort();
+                        releasing = releaseChildren().finally(() => identityPin?.release());
+                        return releasing;
                     },
                 };
             } catch (error) {
-                try { releaseChildren(); } finally { identityPin?.release(); }
+                void releaseChildren().finally(() => identityPin?.release()).catch(cleanupError => {
+                    try { options.onError(cleanupError); } catch { /* Preserve the acquisition error. */ }
+                });
                 throw error;
             }
         } });

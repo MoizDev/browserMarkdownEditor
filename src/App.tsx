@@ -1389,6 +1389,7 @@ export default function App() {
           : await readFile(note.handle).catch(() => null);
       })];
       const closedVersions: Array<{ handle: FileSystemFileHandle; modified: number; size: number }> = [];
+      const hashedVersions = new Map<string, { handle: FileSystemFileHandle; modified: number; size: number }>();
       // Before I4, a direct read at retirement time is the fresh answer; an
       // unreadable board blocks the folder instead of guessing from stale data.
       const boardReads = boards.map(board => async () => {
@@ -1413,14 +1414,18 @@ export default function App() {
         hash: async name => {
           try {
             const assets = await handleIO.dirIn(dir, ASSETS_DIR);
-            const file = await handleIO.file(await handleIO.fileIn(assets, name));
-            return await hashBytes(await file.arrayBuffer());
+            const handle = await handleIO.fileIn(assets, name);
+            const file = await handleIO.file(handle);
+            const hash = await hashBytes(await file.arrayBuffer());
+            hashedVersions.set(name, { handle, modified: file.lastModified, size: file.size });
+            return hash;
           } catch { return null; }
         },
       });
       if (decision.blocked.note.size || decision.blocked.board.size) return abandon();
       for (const name of decision.retire) {
-        for (const version of closedVersions) {
+        const hashed = hashedVersions.get(name);
+        for (const version of hashed ? [...closedVersions, hashed] : closedVersions) {
           const current = await handleIO.file(version.handle).catch(() => null);
           if (!current || current.lastModified !== version.modified || current.size !== version.size) return abandon();
         }
@@ -1429,7 +1434,13 @@ export default function App() {
           retired = true;
           names.delete(name);
         } else {
-          block();
+          try {
+            const assets = await handleIO.dirIn(dir, ASSETS_DIR);
+            await handleIO.fileIn(assets, name);
+            block();
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === 'NotFoundError')) block();
+          }
         }
       }
       if (!proofCurrent()) return abandon();
@@ -1495,6 +1506,15 @@ export default function App() {
     for (const folder of assetBacklogRef.current.all()) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
 
+  const assetReadableWakeRef = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    for (const path of assetReadableWakeRef.current) {
+      if (tabs.some(tab => tab.file.path === path && !tab.readError)) {
+        assetReadableWakeRef.current.delete(path);
+        requeueAssetsAffected(path);
+      }
+    }
+  }, [tabs, requeueAssetsAffected]);
   const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
 
   // Returns whether the file was actually opened (as a tab or externally).
@@ -2635,6 +2655,7 @@ export default function App() {
           (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path))) {
         rememberAssetRefs(current.file, content);
       }
+      assetReadableWakeRef.current.add(current.file.path);
       setTabs(prev => prev.map(t =>
         t.id === tab.id && t.readError ? { ...t, content, readError: undefined, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
       return true;

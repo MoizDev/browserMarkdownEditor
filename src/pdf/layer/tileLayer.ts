@@ -8,6 +8,7 @@ import { PdfTileCache } from './tileCache';
 import { PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
+import { pdfVariantRevision } from '../fonts/profiles';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -41,7 +42,7 @@ interface Entry {
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
     const { vaultEpoch, documentId, session } = input.token;
-    return JSON.stringify([vaultEpoch, documentId, session, input.source, input.variant, input.geometryDigest]);
+    return JSON.stringify([vaultEpoch, documentId, session, input.source, pdfVariantRevision(input.variant, input.fontEpoch ?? 0), input.geometryDigest]);
 }
 
 function rect(request: PdfTileRequest): Rect {
@@ -115,6 +116,7 @@ export class PdfTileLayer implements Layer {
         this.latestView = view;
         const identity = contentFamily(input);
         if (identity !== this.contentIdentity) {
+            this.mirrorJob = null;
             for (const [key, entry] of this.entries) this.remove(key, entry);
             this.failed.clear();
             this.contentIdentity = identity;
@@ -183,7 +185,7 @@ export class PdfTileLayer implements Layer {
                 this.host.invalidate('pdf-tile-arrived');
             }, error => {
                 const current = this.entries.get(key) === entry;
-                const cancelled = entry.controller.signal.aborted;
+                const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                 if (current) this.remove(key, entry);
                 this.finishRetiring(entry);
                 if (!current) return;
@@ -452,7 +454,7 @@ export class PdfTileLayer implements Layer {
         job.pending = true;
         // One cropped allocation per preparation slice; an obsolete view cannot publish (design §6.4:649).
         void createImageBitmap(bitmap, sx, sy, width, height).then(copy => {
-            if (this.mirrorJob !== job || this.disposed || !this.isCurrent()) {
+            if (this.mirrorJob !== job || this.disposed || !this.isCurrent() || contentFamily(this.demand(view)) !== contentFamily(input)) {
                 copy.close(); this.host.allocator.cpu.release(lease); return;
             }
             const world = { x: left, y: top, width: right - left, height: bottom - top };

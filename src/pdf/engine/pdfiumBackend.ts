@@ -21,7 +21,8 @@ import { createPdfiumRenderJob } from './pdfium/render';
 import { pdfiumStructure } from './pdfium/structure';
 import { extractPdfiumText } from './pdfium/text';
 
-interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean; emphasisKey?: string }
+interface LoadedPage { handle: number; geometry: PageGeometry & { userUnit: 1 }; checked: boolean; footprint: number; pins: number; emphasisKey?: string }
+const PAGE_WINDOW = 12, HEAVY_PAGE_BYTES = 64 * 1024 * 1024;
 type OpenClone = (source: ByteSource, password: string | undefined) => PdfiumDocument;
 
 function openFailure(runtime: PdfiumRuntime, access: PdfiumFileAccess): PdfEngineError {
@@ -35,6 +36,7 @@ function openFailure(runtime: PdfiumRuntime, access: PdfiumFileAccess): PdfEngin
 
 class PdfiumDocument implements BackendDoc {
     private readonly pages = new Map<number, LoadedPage>();
+    private readonly geometries = new Map<number, PageGeometry & { userUnit: 1 }>();
     private readonly jobs = new Set<RenderJob>();
     private readonly sizes: PdfiumPageSize[];
     private readonly documentInfo: DocInfo;
@@ -79,21 +81,46 @@ class PdfiumDocument implements BackendDoc {
         if (this.access.failed) throw new PdfEngineError('FileError', 'PDF source read failed');
     }
     private stopJobs(): void { for (const job of [...this.jobs]) job.abort(); }
+    private account(page: LoadedPage, before: number): void {
+        // WASM exposes committed heap growth, not per-page allocations; zero is unknown, not proof of a light page.
+        page.footprint += Math.max(0, this.runtime.HEAPU8.byteLength - before);
+    }
+    private trim(anchor: number): void {
+        if (anchor < 0) return;
+        for (const [index, page] of this.pages) {
+            const distance = Math.abs(index - anchor);
+            if (!page.pins && (distance > PAGE_WINDOW || page.footprint > HEAVY_PAGE_BYTES && distance > 1)) this.closePage(index, page);
+        }
+    }
+    private closePage(index: number, page: LoadedPage): void {
+        this.pages.delete(index);
+        if (this.current === index) this.current = -1;
+        if (!this.runtime.aborted) {
+            try { this.runtime.call('FORM_OnBeforeClosePage', page.handle, this.forms.handle); } finally { this.runtime.call('FPDF_ClosePage', page.handle); }
+        }
+    }
+    private destinationGeometry(index: number): PageGeometry & { userUnit: 1 } {
+        return this.geometries.get(index) ?? this.load(index).geometry;
+    }
     private load(index: number): LoadedPage {
         this.ensure();
         if (!Number.isSafeInteger(index) || index < 0 || index >= this.sizes.length) throw new PdfEngineError('RangeError', 'Invalid PDF page index');
         const cached = this.pages.get(index);
-        if (cached) { this.current = index; return cached; }
+        if (cached) { this.current = index; this.trim(index); return cached; }
+        const before = this.runtime.HEAPU8.byteLength;
         const handle = this.runtime.call('FPDF_LoadPage', this.document, index) >>> 0;
         if (!handle) { this.checkAccess(); throw new PdfEngineError('PageError', 'PDF page could not be loaded'); }
         let attached = false;
         try {
             const geometry = pdfiumPageGeometry(this.runtime, handle, index, this.sizes[index]);
-            const result: LoadedPage = { handle, geometry, checked: false };
+            const result: LoadedPage = { handle, geometry, checked: false, footprint: 0, pins: 0 };
             this.pages.set(index, result); this.current = index;
             attached = true;
             this.runtime.call('FORM_OnAfterLoadPage', handle, this.forms.handle);
             this.checkAccess();
+            this.account(result, before);
+            this.geometries.set(index, geometry);
+            this.trim(index);
             return result;
         } catch (error) {
             this.pages.delete(index);
@@ -115,19 +142,41 @@ class PdfiumDocument implements BackendDoc {
     info(): DocInfo { this.ensure(); return this.documentInfo; }
     pageCount(): number { this.ensure(); return this.sizes.length; }
     page(index: number): PageGeometry & { userUnit: 1 } { this.stopJobs(); return this.load(index).geometry; }
-    complexity(index: number) { this.stopJobs(); const page = this.load(index); const value = pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; this.checkAccess(); return value; }
+    complexity(index: number) {
+        this.stopJobs(); const page = this.load(index), before = this.runtime.HEAPU8.byteLength;
+        try { const value = pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; this.checkAccess(); return value; }
+        finally { this.account(page, before); }
+    }
     render(request: RenderRequest): RenderJob {
         this.stopJobs();
         const page = this.load(request.page);
-        if (!page.checked) { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
+        if (!page.checked) {
+            const before = this.runtime.HEAPU8.byteLength;
+            try { pdfiumComplexity(this.runtime, page.handle, this.limits); page.checked = true; }
+            finally { this.account(page, before); }
+        }
         this.checkAccess();
-        const holder: { job?: RenderJob } = {};
-        const native = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
-            () => { if (holder.job) this.jobs.delete(holder.job); });
+        const holder: { job?: RenderJob; pinned: boolean } = { pinned: true };
+        page.pins++;
+        const before = this.runtime.HEAPU8.byteLength;
+        let native: RenderJob;
+        try {
+            native = createPdfiumRenderJob(this.runtime, page.handle, this.forms.handle, page.geometry, request, this.limits,
+                () => {
+                    if (holder.job) this.jobs.delete(holder.job);
+                    if (holder.pinned) { holder.pinned = false; page.pins--; }
+                    this.trim(this.current);
+                });
+        } catch (error) {
+            if (holder.pinned) { holder.pinned = false; page.pins--; }
+            throw error;
+        } finally { this.account(page, before); }
         const job: RenderJob = {
             step: budget => {
+                const before = this.runtime.HEAPU8.byteLength;
                 try { const state = native.step(budget); this.checkAccess(); return state; }
                 catch (error) { native.abort(); throw error; }
+                finally { this.account(page, before); }
             },
             result: () => { this.checkAccess(); return native.result(); },
             abort: () => native.abort(),
@@ -209,26 +258,28 @@ class PdfiumDocument implements BackendDoc {
     }
     links(index: number) {
         this.stopJobs(); const page = this.load(index);
-        const result = pdfiumLinks(this.runtime, this.document, page.handle, page.geometry, this.sizes.length,
-            target => this.load(target).geometry, this.limits);
-        this.checkAccess(); return result;
+        page.pins++;
+        try {
+            const result = pdfiumLinks(this.runtime, this.document, page.handle, page.geometry, this.sizes.length,
+                target => this.destinationGeometry(target), this.limits);
+            this.checkAccess(); return result;
+        } finally { page.pins--; this.current = index; this.trim(index); }
     }
     outline(limits: { maxDepth: number; maxNodes: number }) {
         this.stopJobs(); this.ensure();
-        const result = pdfiumOutline(this.runtime, this.document, this.sizes.length, index => this.load(index).geometry, limits);
-        this.checkAccess(); return result;
+        const anchor = this.current;
+        try {
+            const result = pdfiumOutline(this.runtime, this.document, this.sizes.length, index => this.destinationGeometry(index), limits);
+            this.checkAccess(); return result;
+        } finally { if (anchor >= 0 && this.pages.has(anchor)) this.current = anchor; this.trim(this.current); }
     }
     attachments(): PdfAttachmentInfo[] { this.stopJobs(); this.ensure(); const result = this.inventory(); this.checkAccess(); return result; }
     attachment(index: number, maxBytes: number): Uint8Array { this.stopJobs(); this.ensure(); const result = readPdfiumAttachment(this.runtime, this.document, index, maxBytes); this.checkAccess(); return result; }
+    residentPages(): number { return this.pages.size; }
     releasePage(index: number): void {
         this.stopJobs();
         const page = this.pages.get(index);
-        if (!page) return;
-        this.pages.delete(index);
-        if (this.current === index) this.current = -1;
-        if (!this.runtime.aborted) {
-            try { this.runtime.call('FORM_OnBeforeClosePage', page.handle, this.forms.handle); } finally { this.runtime.call('FPDF_ClosePage', page.handle); }
-        }
+        if (page && !page.pins) this.closePage(index, page);
     }
     close(): void {
         if (this.closed) return;

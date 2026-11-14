@@ -72,7 +72,7 @@ export default function PdfTiledSurface(props: Props) {
         return () => { disposed = true; release?.(); };
     }, [key, reading.identity.documentId, props.visible, props.focused]);
     useEffect(() => { if (source?.session.isCurrent()) onSource(source); }, [onSource, source]);
-    const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} /> : null;
+    const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} visible={props.visible && props.focused} /> : null;
     if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
         <button className="pdf-pane-action" onClick={props.openClassic}>Open in Classic</button></div></>;

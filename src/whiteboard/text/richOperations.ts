@@ -10,9 +10,8 @@ function check(text: RichText, from: number, to = from): void {
         throw new RangeError('Text range must have grapheme boundaries');
 }
 function withoutStart(block: Block): Block {
-    // A future block tail needs its original tuple slot; refusing is safer than making the document unsaveable.
-    if (block.start !== undefined && block.tail !== undefined && block.tail !== '[]')
-        throw new Error('This block contains future formatting that cannot yet be changed safely');
+    // The native tuple's dormant start slot remains attached to an opaque future tail.
+    if (block.tail !== undefined && block.tail !== '[]') return block;
     const { start: _start, ...rest } = block;
     return rest;
 }

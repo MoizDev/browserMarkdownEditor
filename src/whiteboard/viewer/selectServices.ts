@@ -23,6 +23,7 @@ import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGestur
 import { prepareFrameDrop } from '../input/frameDrop';
 import { createBoardCameraCommands } from './cameraCommands';
 import { createSelectionCommandDriver } from './selectionCommands';
+import { createStyleShortcuts } from './styleShortcuts';
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
@@ -480,8 +481,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         current, changed: options.cameraChanged, error: report });
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });
+    const styleShortcuts = createStyleShortcuts({ runtime, current, registerPending, error: report });
     const command = (id: string): boolean => {
-        if (cameraCommands.run(id) || selectionCommands.run(id)) return true;
+        if (cameraCommands.run(id) || selectionCommands.run(id) || styleShortcuts.run(id)) return true;
         if (id.startsWith('nudge.coarse.')) return nudge(id.slice('nudge.coarse.'.length), true);
         if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false);
         return navigate(id) || transform(id);
@@ -492,7 +494,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; cameraCommands.dispose(); selectionCommands.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+        dispose() { if (disposed) return; cancelPending(); disposed = true; cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

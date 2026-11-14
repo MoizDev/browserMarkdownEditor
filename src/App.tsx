@@ -1890,12 +1890,13 @@ export default function App() {
       const tab = currentPdfOwner(identity)!;
       if (!tab.file.parentHandle) throw new Error('The PDF folder is unavailable.');
       copying = true;
-      entry.copyName = await pdfIoRef.current.keepCopyInGarbage(tab.file.parentHandle, tab.file.name, disk.bytes);
+      const copyName = await pdfIoRef.current.keepCopyInGarbage(tab.file.parentHandle, tab.file.name, disk.bytes);
       copying = false;
       if (!current()) return false;
       const after = await pdfIoRef.current.readBytesVersioned(handle);
       if (!current()) return false;
       if (after.version.hash !== entry.baseline.hash) { setDiskState(id, 'conflict'); return false; }
+      entry.copyName = copyName;
       return true;
     } catch (error) {
       if (!current()) return false;
@@ -3942,7 +3943,12 @@ export default function App() {
     const open = new Set(tabsRef.current.map(t => t.file.path));
     for (const source of sources) {
       const dest = to(source);
-      if (open.has(dest)) releaseOverwritten(dest, source, fromDisk);
+      if (open.has(dest)) {
+        // The disk move has already landed; preserve a displaced PDF while its
+        // owner and canvas still exist, before any destination re-keying.
+        if (!await preparePdfDeparture([dest])) return [];
+        releaseOverwritten(dest, source, fromDisk);
+      }
     }
 
     for (const { from, to: dest, doc } of moving) {
@@ -3993,7 +3999,10 @@ export default function App() {
         if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
         // A destination opened during retargeting must not share this path or
         // lose its new edits. Closing preservation uses its own loaded kind.
-        if (tabsRef.current.some(t => t.file.path === dest)) releaseOverwritten(dest, from, true);
+        if (tabsRef.current.some(t => t.file.path === dest)) {
+          if (!await preparePdfDeparture([dest])) return [];
+          releaseOverwritten(dest, from, true);
+        }
         moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
         clearSaveTimer(from);          // cancel any save pending against the OLD handle
         // An annotated PDF's parked original + overlays are keyed by path; re-key
@@ -4038,7 +4047,7 @@ export default function App() {
       }
     }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, preparePdfDeparture]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],

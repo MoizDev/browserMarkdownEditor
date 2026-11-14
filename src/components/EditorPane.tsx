@@ -137,7 +137,7 @@ interface EditorPaneProps {
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
-    onAnnotationPreflight: NonNullable<React.ComponentProps<typeof PdfPane>['onAnnotationPreflight']>;
+    onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
     onFlushNow: (path: string, content: string) => void;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */

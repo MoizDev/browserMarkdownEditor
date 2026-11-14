@@ -8,7 +8,8 @@ import type { ReadExportImage } from './exportImage'
 export interface ExportSnapshot {
   readonly token: RenderToken
   readonly revision: number
-  readonly source: PaintNodeSource
+  /** Resolves only from the pinned SceneSnapshot, never from the live document. */
+  paintSource(signal: AbortSignal): Promise<PaintNodeSource>
   readonly images: PaintImageProvider
   readonly readImage: ReadExportImage
   release(): void
@@ -22,15 +23,22 @@ export async function withExportSnapshot<T>(
   signal.throwIfAborted()
   const snapshot = pin()
   try {
-    const a = snapshot.token, b = snapshot.source.token
-    if (snapshot.revision !== snapshot.source.sceneRevision || a.vaultEpoch !== b.vaultEpoch || a.documentId !== b.documentId
-        || a.bytesGeneration !== b.bytesGeneration || a.session !== b.session || !snapshot.source.isCurrent()) {
-      throw new Error('Invalid export snapshot identity')
-    }
+    if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new Error('Invalid export snapshot revision')
     signal.throwIfAborted()
     const result = await work(snapshot, signal)
     signal.throwIfAborted()
-    if (!snapshot.source.isCurrent()) throw new Error('Export snapshot expired')
     return result
   } finally { snapshot.release() }
+}
+
+/** A source may resolve asynchronously, but it must still name the pinned snapshot. */
+export async function snapshotPaintSource(snapshot: ExportSnapshot, signal: AbortSignal): Promise<PaintNodeSource> {
+  const source = await snapshot.paintSource(signal)
+  signal.throwIfAborted()
+  const a = snapshot.token, b = source.token
+  if (snapshot.revision !== source.sceneRevision || a.vaultEpoch !== b.vaultEpoch || a.documentId !== b.documentId
+      || a.bytesGeneration !== b.bytesGeneration || a.session !== b.session || !source.isCurrent()) {
+    throw new Error('Invalid export snapshot identity')
+  }
+  return source
 }

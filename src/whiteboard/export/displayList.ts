@@ -1,5 +1,6 @@
 import type { Affine, PageDisplayItem, PageDisplayList, PathCommand } from '../../platform/types'
-import { coverageOutline } from '../ink/outline'
+import { InkOutlineJob } from '../ink/outline'
+import type { InkCoverage } from '../ink/outline'
 import type { PaintFrame, PaintImageItem, PaintItem } from '../render/paintStream'
 
 /** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
@@ -24,6 +25,19 @@ function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCo
   })
 }
 
+async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
+  const commands: PathCommand[] = []
+  const job = new InkOutlineJob(coverage, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
+  try {
+    while (job.step(1024) === 'pending') {
+      signal?.throwIfAborted()
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
+    signal?.throwIfAborted()
+    return commands
+  } catch (error) { job.cancel(); throw error }
+}
+
 async function displayItem(item: PaintItem, scale: number, image: ExportImage, signal?: AbortSignal): Promise<PageDisplayItem> {
   let leaf: PageDisplayItem
   if (item.kind === 'image') {
@@ -44,7 +58,7 @@ async function displayItem(item: PaintItem, scale: number, image: ExportImage, s
   } else {
     const [a, b, c, d0] = item.localToWorld
     const effectiveScale = Math.max(Number.MIN_VALUE, scale * Math.hypot(a, b, c, d0))
-    const d = item.kind === 'ink' ? [...coverageOutline(item.coverage, effectiveScale)] : [...item.d]
+    const d = item.kind === 'ink' ? await inkOutline(item.coverage, effectiveScale, signal) : [...item.d]
     const path: PageDisplayItem = item.kind === 'ink'
       ? { kind: 'path', d, fill: item.material.color, fillRule: 'nonzero', blend: item.material.blend }
       : { kind: 'path', d, fill: item.material.fill, fillRule: item.fillRule, blend: item.material.blend,
@@ -69,8 +83,10 @@ export async function paintFrameDisplayList(
 ): Promise<PageDisplayList> {
   if (!Number.isSafeInteger(page) || page < 0 || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid export page or scale')
   const items: PageDisplayItem[] = []
+  let count = 0
   for (const band of [frame.underlay, frame.content]) {
     for (const item of band) {
+      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
       signal?.throwIfAborted()
       items.push(await displayItem(item, scale, image, signal))
     }

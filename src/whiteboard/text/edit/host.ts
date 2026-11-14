@@ -34,6 +34,7 @@ export interface EditHostCallbacks {
     compositionFormat?(event: Event): void;
     commitComposition(change: TextChange): void;
     keydown(event: KeyboardEvent): void;
+    contextMenu(x: number, y: number): void;
     characterBounds(start: number, end: number): DOMRect[];
 }
 
@@ -96,8 +97,15 @@ export class EditHost {
             this.element = textarea;
             this.listen(textarea, 'input', () => this.onFallbackInput(textarea));
             this.listen(textarea, 'compositionstart', () => this.startComposition());
-            this.listen(textarea, 'compositionend', () => this.endComposition());
-            this.listen(textarea, 'select', () => callbacks.selection({ anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd }));
+            this.listen(textarea, 'compositionend', () => {
+                this.pending = difference(this.compositionBase ?? this.window, textarea.value,
+                    { anchor: this.window.start + textarea.selectionStart, focus: this.window.start + textarea.selectionEnd });
+                this.endComposition();
+            });
+            this.listen(textarea, 'select', () => {
+                const backward = textarea.selectionDirection === 'backward';
+                callbacks.selection({ anchor: this.window.start + (backward ? textarea.selectionEnd : textarea.selectionStart), focus: this.window.start + (backward ? textarea.selectionStart : textarea.selectionEnd) });
+            });
         }
         this.element.className = 'wb-edit-host';
         this.element.tabIndex = -1;
@@ -106,7 +114,11 @@ export class EditHost {
         this.element.setAttribute('aria-label', label);
         Object.assign(this.element.style, { position: 'absolute', opacity: '0', pointerEvents: 'none' });
         this.listen(this.element, 'keydown', event => callbacks.keydown(event as KeyboardEvent));
-        this.listen(this.element, 'contextmenu', event => event.preventDefault());
+        this.listen(this.element, 'contextmenu', event => {
+            event.preventDefault();
+            const mouse = event as MouseEvent;
+            callbacks.contextMenu(mouse.clientX, mouse.clientY);
+        });
         container.append(this.element);
         this.sync();
     }

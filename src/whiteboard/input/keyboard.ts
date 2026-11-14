@@ -1,3 +1,5 @@
+import type { Modifiers } from './tool'
+
 export interface KeyBinding {
   readonly id: string
   readonly group: string
@@ -28,14 +30,56 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
-  { id: 'style.white', group: 'style', label: 'White', key: 't', alt: true },
-  { id: 'style.fill', group: 'style', label: 'Fill', key: 'f', alt: true },
-  { id: 'style.linedFill', group: 'style', label: 'Lined fill', key: 'f', alt: true, shift: true },
-  { id: 'style.sample', group: 'style', label: 'Sample style', key: 'q', shift: true },
+  { id: 'style.white', group: 'preferences', label: 'White', key: 't', alt: true },
+  { id: 'style.fill', group: 'preferences', label: 'Fill', key: 'f', alt: true },
+  { id: 'style.linedFill', group: 'preferences', label: 'Lined fill', key: 'f', alt: true, shift: true },
+  { id: 'style.sample', group: 'preferences', label: 'Sample style', key: 'q', shift: true },
+  { id: 'preferences.focus', group: 'preferences', label: 'Focus mode', key: '.', accel: true },
+  { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
+  { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
+  { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', shift: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
   { id: 'delete', group: 'edit', label: 'Delete', key: 'Delete' },
   { id: 'delete', group: 'edit', label: 'Delete', key: 'Backspace' },
+  { id: 'select.all', group: 'edit', label: 'Select all', key: 'a', accel: true },
+  { id: 'select.next', group: 'edit', label: 'Select next', key: 'Tab' },
+  { id: 'select.previous', group: 'edit', label: 'Select previous', key: 'Tab', shift: true },
+  { id: 'group', group: 'edit', label: 'Group', key: 'g', accel: true },
+  { id: 'ungroup', group: 'edit', label: 'Ungroup', key: 'g', accel: true, shift: true },
+  { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
+  { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
+  { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },
+  { id: 'arrange.back', group: 'edit', label: 'Send to back', key: '[' },
+  { id: 'arrange.backward', group: 'edit', label: 'Send backward', key: '[', alt: true },
+  { id: 'arrange.forward', group: 'edit', label: 'Bring forward', key: ']', alt: true },
+  { id: 'arrange.front', group: 'edit', label: 'Bring to front', key: ']' },
+  { id: 'align.left', group: 'transform', label: 'Align left', key: 'a', alt: true },
+  { id: 'align.center', group: 'transform', label: 'Align center', key: 'h', alt: true },
+  { id: 'align.right', group: 'transform', label: 'Align right', key: 'd', alt: true },
+  { id: 'align.top', group: 'transform', label: 'Align top', key: 'w', alt: true },
+  { id: 'align.middle', group: 'transform', label: 'Align middle', key: 'v', alt: true },
+  { id: 'align.bottom', group: 'transform', label: 'Align bottom', key: 's', alt: true },
+  { id: 'distribute.horizontal', group: 'transform', label: 'Distribute horizontally', key: 'h', alt: true, shift: true },
+  { id: 'distribute.vertical', group: 'transform', label: 'Distribute vertically', key: 'v', alt: true, shift: true },
+  { id: 'rotate.clockwise', group: 'transform', label: 'Rotate clockwise', key: '.', shift: true },
+  { id: 'rotate.counterclockwise', group: 'transform', label: 'Rotate counterclockwise', key: ',', shift: true },
+  { id: 'rotate.fineClockwise', group: 'transform', label: 'Rotate clockwise finely', key: '.', alt: true, shift: true },
+  { id: 'rotate.fineCounterclockwise', group: 'transform', label: 'Rotate counterclockwise finely', key: ',', alt: true, shift: true },
+  { id: 'flip.horizontal', group: 'transform', label: 'Flip horizontal', key: 'h', shift: true },
+  { id: 'flip.vertical', group: 'transform', label: 'Flip vertical', key: 'v', shift: true },
+  { id: 'scale.enlarge', group: 'transform', label: 'Enlarge', key: '=', accel: true, alt: true, shift: true },
+  { id: 'scale.shrink', group: 'transform', label: 'Shrink', key: '-', accel: true, alt: true, shift: true },
+  { id: 'flatten', group: 'transform', label: 'Flatten', key: 'f', shift: true },
+  ...(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'] as const).flatMap(key => [
+    { id: `nudge.${key}`, group: 'transform', label: `Nudge ${key.slice(5).toLowerCase()}`, key, repeat: true },
+    { id: `nudge.coarse.${key}`, group: 'transform', label: `Nudge ${key.slice(5).toLowerCase()} farther`, key, shift: true, repeat: true },
+    { id: `select.neighbour.${key}`, group: 'edit', label: `Select ${key.slice(5).toLowerCase()}`, key, accel: true },
+  ]),
+  { id: 'select.child', group: 'edit', label: 'Select child', key: 'ArrowDown', accel: true, shift: true },
+  { id: 'select.parent', group: 'edit', label: 'Select parent', key: 'ArrowUp', accel: true, shift: true },
+  { id: 'text.bold', group: 'text-formatting', label: 'Bold', key: 'b', accel: true },
+  { id: 'text.italic', group: 'text-formatting', label: 'Italic', key: 'i', accel: true },
   { id: 'camera.zoomIn', group: 'view', label: 'Zoom in', key: '=', repeat: true },
   { id: 'camera.zoomOut', group: 'view', label: 'Zoom out', key: '-', repeat: true },
   { id: 'camera.reset', group: 'view', label: 'Reset zoom', key: '0', shift: true },
@@ -56,10 +100,11 @@ export function shortcutGroups(mac: boolean): readonly ShortcutGroup[] {
   for (const binding of boardBindings) {
     const parts = [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '', binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key].filter(Boolean)
     const rows = groups.get(binding.group) ?? []
-    rows.push({ id: `${binding.id}:${binding.key}`, label: binding.label, chord: parts.join(mac ? '' : '+') })
+    rows.push({ id: `${binding.id}:${binding.accel ? 'mod-' : ''}${binding.alt ? 'alt-' : ''}${binding.shift ? 'shift-' : ''}${binding.key}`, label: binding.label, chord: parts.join(mac ? '' : '+') })
     groups.set(binding.group, rows)
   }
-  return [...groups].map(([id, bindings]) => ({ id, label: id[0].toUpperCase() + id.slice(1), bindings }))
+  const labels: Record<string, string> = { tools: 'Tools', preferences: 'Preferences', edit: 'Edit', view: 'View', transform: 'Transform', 'text-formatting': 'Text formatting', accessibility: 'Accessibility' }
+  return Object.entries(labels).map(([id, label]) => ({ id, label, bindings: groups.get(id) ?? [] }))
 }
 
 export interface KeyboardActions {
@@ -68,6 +113,7 @@ export interface KeyboardActions {
   readonly modalOpen: () => boolean
   readonly editing: () => boolean
   run(id: string, event: KeyboardEvent): boolean
+  modifierChanged?(modifiers: Modifiers): void
   clearLatches(): void
 }
 
@@ -80,6 +126,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   const keydown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return
+    actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
     const accel = mac ? event.metaKey : event.ctrlKey
     const otherAccel = mac ? event.ctrlKey : event.metaKey
     if (otherAccel) return
@@ -88,18 +135,23 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (actions.run('escape', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
-    if (!actions.enabled()) return
     if (!accel && !event.altKey && (event.key === ' ' || key === 'z')) {
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
+    const physical: Record<string, string> = { Period: '.', Comma: ',', Equal: '=', Minus: '-', Slash: '/', Quote: "'", BracketLeft: '[', BracketRight: ']' }
     const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1)
-      : event.altKey && /^Key[TF]$/.test(event.code) ? event.code.slice(-1).toLowerCase() : key
+      : event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1).toLowerCase()
+      : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code] : key
     const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
     if (!binding || (event.repeat && !binding.repeat)) return
+    if (!actions.enabled() && !(['view', 'accessibility'].includes(binding.group) || binding.id === 'tool.select' || binding.id === 'tool.hand' || binding.id.startsWith('select.') || binding.id.startsWith('preferences.'))) return
     if (actions.run(binding.id, event)) { event.preventDefault(); event.stopPropagation() }
   }
   const keyup = (event: KeyboardEvent): void => {
+    if (actions.visible() && !actions.modalOpen() && !actions.editing() && root.contains(document.activeElement)) {
+      actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
+    }
     if (event.key === ' ' || event.code === 'Space') actions.run('pan.release', event)
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)
   }

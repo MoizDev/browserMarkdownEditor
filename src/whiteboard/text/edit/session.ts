@@ -1,4 +1,5 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
+import { sliceRichText, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -29,6 +30,9 @@ export interface EditSessionServices extends EditTransactions {
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
     menu(x: number, y: number): void;
+    isStandaloneText(): boolean;
+    // Joins deletion to the last text step, or cancels an empty creation.
+    removeEmptyText(): void;
     finish(): void;
 }
 
@@ -48,9 +52,10 @@ export class TextEditSession {
     private lastActivity = performance.now();
     private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
     private compositionSelection: EditSelection | null = null;
+    private compositionRange: { from: number; to: number } | null = null;
     private closed = false;
 
-    constructor(container: HTMLElement, label: string, id: NodeId, key: 'text' | 'label', selection: EditSelection,
+    constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
         this.selection = selection;
         this.controller = new TextEditController(id, key, services);
@@ -71,9 +76,11 @@ export class TextEditSession {
             composition: change => {
                 if (change) {
                     this.compositionSelection ??= this.selection;
+                    this.compositionRange = { from: change.from, to: change.from + change.text.length };
                     this.selection = change.selection;
                 } else {
                     this.formats = [];
+                    this.compositionRange = null;
                     if (this.compositionSelection) this.selection = this.compositionSelection;
                     this.compositionSelection = null;
                 }
@@ -89,6 +96,7 @@ export class TextEditSession {
             },
             commitComposition: change => this.replace(change, 'composition'),
             keydown: event => this.keydown(event),
+            contextMenu: (x, y) => services.menu(x, y),
             characterBounds: (start, end) => {
                 const layout = services.layout();
                 return layout.caret.characterBounds(start, end).map(rect => clientBounds(rect, layout.localToClient));
@@ -105,6 +113,7 @@ export class TextEditSession {
     }
 
     private select(next: EditSelection, moving = false): void {
+        if (next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.lastActivity = performance.now();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
@@ -143,10 +152,29 @@ export class TextEditSession {
     }
 
     private keydown(event: KeyboardEvent): void {
+        if (!event.isComposing && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+            event.preventDefault(); event.stopPropagation();
+            const layout = this.services.layout();
+            const caret = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+            const at = point(layout.localToClient, caret.x, caret.bottom);
+            this.services.menu(at.x, at.y);
+            return;
+        }
         handleEditKey(event, {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
             move: (offset, direction) => this.move(offset, direction),
+            collapse: (selection, direction) => {
+                const index = this.services.layout().caret;
+                const a = index.caret({ offset: selection.anchor });
+                const b = index.caret({ offset: selection.focus, affinity: this.affinity });
+                const first = a.line < b.line || (a.line === b.line && a.x <= b.x) ? a : b;
+                const last = first === a ? b : a;
+                const stop = direction === 'left' ? first : last;
+                this.affinity = stop.affinity;
+                this.goalX = undefined;
+                return stop.offset;
+            },
             command: command => {
                 const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', italic: 'i', underline: 'u', strike: 's', code: 'code', highlight: 'hl' };
                 const mark = marks[command];
@@ -178,7 +206,11 @@ export class TextEditSession {
         this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
     }
 
-    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): { selection: readonly Rect[]; caret: Rect | null; composition: readonly { rect: Rect; style: string; thickness: string }[] } {
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): {
+        selection: readonly Rect[]; caret: Rect | null;
+        composition: readonly { rect: Rect; style: string; thickness: string }[];
+        handles: { anchor: { x: number; y: number }; focus: { x: number; y: number } };
+    } {
         const layout = this.services.layout();
         const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
@@ -187,8 +219,27 @@ export class TextEditSession {
         const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
         const caret = visible && this.selection.anchor === this.selection.focus
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
-        const composition = this.formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
-        return { selection, caret, composition };
+        const formats = this.formats.length ? this.formats : this.compositionRange ? [{ ...this.compositionRange, style: 'solid', thickness: 'thin' }] : [];
+        const composition = formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        const anchor = layout.caret.caret({ offset: this.selection.anchor });
+        const focus = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        const handles = { anchor: point(layout.localToClient, anchor.x, anchor.bottom), focus: point(layout.localToClient, focus.x, focus.bottom) };
+        return { selection, caret, composition, handles };
+    }
+
+    getSelection(): EditSelection { return this.selection; }
+
+    copySelection(): RichFragment {
+        return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    replaceSelection(fragment: RichFragment): void {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
+        const next = { anchor: from + length, focus: from + length };
+        this.services.typing('boundary', this.selection, next);
+        this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+        this.select(next);
     }
 
     applyLink(url: string, selection: EditSelection): boolean {
@@ -205,6 +256,8 @@ export class TextEditSession {
         if (this.closed) return;
         this.host.finishComposition(commitComposition);
         this.closed = true;
-        this.pointer.dispose(); this.host.dispose(); this.services.finish();
+        this.pointer.dispose(); this.host.dispose();
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) this.services.removeEmptyText();
+        this.services.finish();
     }
 }

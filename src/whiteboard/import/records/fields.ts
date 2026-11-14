@@ -14,6 +14,10 @@ const PROPS: Readonly<Record<string, readonly string[]>> = {
     video: ['w', 'h', 'assetId', 'autoplay', 'url', 'altText', 'time', 'playing'],
     bookmark: ['url', 'w', 'h', 'assetId'], embed: ['w', 'h', 'url'],
 };
+const COMMON = new Set(['id', 'typeName', 'type', 'x', 'y', 'rotation', 'parentId', 'index', 'isLocked', 'opacity', 'meta', 'props']);
+export function unknownShapeFields(shape: LegacyShape): readonly string[] {
+    return Object.keys(shape.source).filter(key => !COMMON.has(key));
+}
 export function unknownShapeProperties(shape: LegacyShape): readonly string[] {
     const known = PROPS[shape.type];
     return known ? Object.keys(shape.props).filter(key => !known.includes(key)) : Object.keys(shape.props);

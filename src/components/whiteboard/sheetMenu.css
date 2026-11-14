@@ -22,5 +22,5 @@
 .board-sheet-row { display: flex; align-items: center; }
 .board-sheet-row input, .board-sheet-select { flex: 1; min-width: 0; }
 .board-sheet-menu button { color: inherit; }
-.board-sheet-select { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.board-sheet-select { overflow: hidden; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
 .board-sheet-select[aria-current='page'] { font-weight: 700; }

@@ -28,7 +28,7 @@ const NotebookPane = lazy(() => import('./NotebookPane'));
 export interface CanvasPaneProps {
     file: ActiveFile;
     /** OpenTab.id, forwarded by EditorPane independently of the mutable file path. */
-    documentId?: string;
+    documentId: string;
     /** Is this document some column's showing tab right now? */
     isVisible: boolean;
     /** The column it stands over: the index addresses the editor's CSS

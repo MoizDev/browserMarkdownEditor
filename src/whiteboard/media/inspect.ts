@@ -2,6 +2,7 @@ import { createWorkerClient } from '../../platform/workers';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { MediaId, MediaMime } from '../model/media';
 import type { InspectedMedia } from './ingest';
+import { checkMediaBytes, checkMediaDimensions } from '../security/limits';
 import { sniffMedia } from './sniff';
 
 // SVG must be parsed and decoded in a network-denied opaque realm. This narrow
@@ -23,7 +24,7 @@ const worker = createWorkerClient({
 });
 
 function validSize(width: number, height: number): boolean {
-    return Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0 && width <= (2 ** 26) / height;
+    return checkMediaDimensions(width, height).ok;
 }
 
 async function videoProbe(blob: Blob, header: WorkerInspection, signal: AbortSignal): Promise<number> {
@@ -63,12 +64,14 @@ async function videoProbe(blob: Blob, header: WorkerInspection, signal: AbortSig
 export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator }): Promise<InspectedMedia> {
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
     signal.throwIfAborted();
-    if (blob.size > 10 * 1024 * 1024) throw new RangeError('Media files must be at most 10 MiB');
+    if (!checkMediaBytes(blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
     const prefix = new Uint8Array(await blob.slice(0, 64).arrayBuffer());
     signal.throwIfAborted();
     if (sniffMedia(prefix) === 'image/svg+xml') {
-        if (blob.size > 5 * 1024 * 1024) throw new RangeError('SVG files must be at most 5 MiB');
+        if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         if (!options.svg) throw new Error('SVG decoding is unavailable');
+        await worker.request<boolean>('svgPreflight', { blob }, { priority: 1, deadlineMs: 5000, signal });
+        signal.throwIfAborted();
         const size = await options.svg.header(blob, signal);
         signal.throwIfAborted();
         if (!validSize(size.width, size.height)) throw new RangeError('Invalid SVG dimensions');

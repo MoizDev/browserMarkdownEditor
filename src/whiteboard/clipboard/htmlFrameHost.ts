@@ -17,9 +17,16 @@ export interface ClipboardHtmlFrameOptions {
     readonly identity: BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
 }
+export interface ClipboardHtmlProjection {
+    readonly rich: RichFragment;
+    readonly dataImages: readonly Readonly<{ blob: Blob; alt: string; order: number; textOffset: number }>[];
+    /** Keeps decoded bytes accounted until the caller has retained or discarded them. */
+    release(): void;
+}
 export interface ClipboardHtmlFrameHost {
     markers(html: string, signal: AbortSignal): Promise<HtmlClipboardMarkers>;
     richHTML(html: string, signal: AbortSignal): Promise<RichFragment>;
+    projectHTML(html: string, signal: AbortSignal): Promise<ClipboardHtmlProjection>;
 }
 function markers(value: unknown, limit: number): HtmlClipboardMarkers {
     if (!value || typeof value !== 'object') throw new Error('Invalid clipboard marker response');
@@ -47,7 +54,7 @@ function rich(value: unknown): RichFragment {
 export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions): ClipboardHtmlFrameHost {
     if (!validBoardIdentity(options.identity)) throw new TypeError('Invalid clipboard job identity');
     const identity = Object.freeze({ ...options.identity });
-    const request = async (html: string, mode: 'markers' | 'rich', signal: AbortSignal): Promise<unknown> => {
+    const request = async (html: string, mode: 'markers' | 'rich', signal: AbortSignal): Promise<{ value: unknown; release(): void }> => {
         signal.throwIfAborted();
         if (typeof html !== 'string' || html.length > LIMIT) throw new RangeError('Clipboard HTML is too large');
         if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
@@ -57,7 +64,8 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
         if (!lease) throw new Error('Insufficient memory to parse clipboard HTML');
         let frame: ReturnType<typeof createContainedFrame> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
         let waiting: ((reply: Reply) => void) | undefined, rejectWait: ((error: unknown) => void) | undefined;
-        let expected = 'ready', fatal: unknown, closed = false;
+        let expected = 'ready', fatal: unknown, closed = false, handed = false, held = true;
+        const release = () => { if (held) { held = false; options.memory.release(lease); } };
         const fail = (error: unknown) => { fatal = error; rejectWait?.(error); waiting = undefined; rejectWait = undefined; };
         const abort = () => fail(signal.reason ?? new DOMException('Clipboard HTML request cancelled', 'AbortError'));
         const check = () => {
@@ -106,16 +114,45 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
             const result = wait('result');
             try { frame.port.postMessage({ v: 1, token, identity, type: 'finish', seq, mode }); }
             catch (error) { fail(error); }
-            const reply = await result; check(); return reply.result;
+            const reply = await result; check(); handed = true; return { value: reply.result, release };
         } finally {
             closed = true; signal.removeEventListener('abort', abort); if (timer !== undefined) clearTimeout(timer);
-            fail(new DOMException('Clipboard HTML frame closed', 'AbortError')); frame?.dispose(); options.memory.release(lease);
+            fail(new DOMException('Clipboard HTML frame closed', 'AbortError')); frame?.dispose(); if (!handed) release();
         }
     };
+    const projectHTML = async (html: string, signal: AbortSignal): Promise<ClipboardHtmlProjection> => {
+        const result = await request(html, 'rich', signal);
+        try {
+            signal.throwIfAborted();
+            if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
+            const value = result.value;
+            if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'dataImages,rich') throw new Error('Invalid clipboard HTML response');
+            const reply = value as { rich: unknown; dataImages: unknown }, text = rich(reply.rich);
+            if (!Array.isArray(reply.dataImages) || reply.dataImages.length > SECURITY_LIMITS.mediaBatch) throw new Error('Invalid clipboard image response');
+            const maxOffset = text.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), text.blocks.length - 1);
+            let total = 0, previous = 0;
+            const dataImages = reply.dataImages.map((item: unknown, index: number) => {
+                if (!item || typeof item !== 'object' || Object.keys(item).sort().join(',') !== 'alt,blob,order,textOffset') throw new Error('Invalid clipboard image response');
+                const image = item as { blob: unknown; alt: unknown; order: unknown; textOffset: unknown };
+                if (!(image.blob instanceof Blob) || (typeof File !== 'undefined' && image.blob instanceof File)
+                    || !/^image\/[a-z0-9.+-]+$/.test(image.blob.type) || image.blob.size > SECURITY_LIMITS.mediaBytes || image.blob.size > SECURITY_LIMITS.inlineMediaBytes - total
+                    || typeof image.alt !== 'string' || image.alt.length > 1_000_000 || image.order !== index
+                    || typeof image.textOffset !== 'number' || !Number.isSafeInteger(image.textOffset) || image.textOffset < previous || image.textOffset > maxOffset) {
+                    throw new Error('Invalid clipboard image response');
+                }
+                previous = image.textOffset; total += image.blob.size;
+                return Object.freeze({ blob: new Blob([image.blob], { type: image.blob.type }), alt: image.alt, order: index, textOffset: image.textOffset });
+            });
+            return { rich: text, dataImages: Object.freeze(dataImages), release: result.release };
+        } catch (error) { result.release(); throw error; }
+    };
     return {
-        async markers(html, signal) { const value = await request(html, 'markers', signal); signal.throwIfAborted();
-            if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError'); return markers(value, html.length); },
-        async richHTML(html, signal) { const value = await request(html, 'rich', signal); signal.throwIfAborted();
-            if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError'); return rich(value); },
+        async markers(html, signal) { const result = await request(html, 'markers', signal);
+            try { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
+                return markers(result.value, html.length); } finally { result.release(); } },
+        projectHTML,
+        async richHTML(html, signal) { const result = await projectHTML(html, signal);
+            try { if (result.dataImages.length) throw new Error('Clipboard HTML contains images; use projectHTML'); return result.rich; }
+            finally { result.release(); } },
     };
 }

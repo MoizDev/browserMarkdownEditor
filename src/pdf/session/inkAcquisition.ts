@@ -79,6 +79,7 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const pool = options.pool ?? await getSharedPdfPool();
         guard();
         const openedOuter = await pool.open({ token, source: 'outer', blob: options.outer, priority: 0, signal: lifetime });
+        openedOuter.setVisible(false);
         if (released) { await openedOuter.close(); throw stale(); }
         outer = openedOuter;
         guard();
@@ -116,6 +117,7 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const outerReason = policyReason(outer);
         if (outerReason) return await readOnly(outerReason);
         const openedOriginal = await pool.open({ token, source: 'original', blob: inspection.pristine, priority: 0, signal: lifetime });
+        openedOriginal.setVisible(false);
         if (released) { await openedOriginal.close(); throw stale(); }
         original = openedOriginal;
         guard();
@@ -147,7 +149,7 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
             formatId: NATIVE_FORMAT_ID, geometryEngine });
         const retainedOuter = outer;
         return {
-            ...(inspection.kind === 'native' ? { kind: 'native' as const, board: inspection.board } : { kind: 'plain' as const, board: null }),
+            ...(inspection.kind === 'native' ? { kind: 'native' as const, board: inspection.board, writeId: inspection.writeId } : { kind: 'plain' as const, board: null }),
             source, pages: Object.freeze(pages), isCurrent: current, release,
             async readMedia(name, signal) {
                 guard();

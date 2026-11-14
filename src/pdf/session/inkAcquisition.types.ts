@@ -19,7 +19,7 @@ export type PdfEditableInkSource = {
     openWriter(signal?: AbortSignal): Promise<TypedPdfWriter>;
     isCurrent(): boolean;
     release(): Promise<void>;
-} & ({ kind: 'plain'; board: null } | { kind: 'native'; board: Blob });
+} & ({ kind: 'plain'; board: null } | { kind: 'native'; board: Blob; writeId: string });
 
 export interface PdfReadOnlyInkSource {
     kind: 'read-only';

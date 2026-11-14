@@ -360,7 +360,7 @@ function frameSource(frame: PaintFrame, live: () => boolean): PaintNodeSource {
  * only after every worker request they served has physically retired.
  */
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
-    let pending: Pending | null = null, building: Building | null = null, disposed = false;
+    let pending: Pending | null = null, building: Building | null = null, accepted: PlatformPresentation | null = null, disposed = false;
     const releaseQuietly = (value: Pending) => { try { value.releaseRaw(); } catch (error) { options.onError(error); } };
     const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController): Promise<void> => {
         const { frame, context } = value, signal = controller.signal;
@@ -400,28 +400,43 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (building?.controller === controller) building = null;
         }
     };
+    const pair = () => {
+        const value = pending, presentation = accepted;
+        if (!presentation || !value || disposed || presentation.frameId !== value.context.frameId
+            || presentation.viewEpoch !== value.context.view.epoch || !sameRender(presentation.token, value.token)) return;
+        pending = null;
+        const controller = new AbortController();
+        building = { pending: value, controller };
+        void run(value, presentation, controller);
+    };
     return {
         presented(revision, token, frame, context) {
-            if (!frame || !context) return;
+            if (!frame || !context || disposed) return;
             const releaseRaw = context.retain();
             if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) { releaseRaw(); return; }
             const next: Pending = { revision, token, frame, context, releaseRaw };
             if (pending) releaseQuietly(pending);
             pending = next;
             building?.controller.abort();
+            pair();
         },
         onPresentation(presentation) {
-            const value = pending;
-            if (!presentation || !value || disposed) return;
-            if (presentation.frameId !== value.context.frameId || presentation.viewEpoch !== value.context.view.epoch
-                || !sameRender(presentation.token, value.token)) return;
-            pending = null;
-            const controller = new AbortController();
-            building = { pending: value, controller };
-            void run(value, presentation, controller);
+            if (disposed) return;
+            accepted = presentation;
+            if (!presentation) {
+                const value = pending; pending = null;
+                if (value) releaseQuietly(value);
+                building?.controller.abort();
+                return;
+            }
+            if (building && (building.pending.context.frameId !== presentation.frameId
+                || building.pending.context.view.epoch !== presentation.viewEpoch || !sameRender(building.pending.token, presentation.token))) {
+                building.controller.abort();
+            }
+            pair();
         },
         dispose() {
-            disposed = true;
+            disposed = true; accepted = null;
             const value = pending; pending = null;
             if (value) releaseQuietly(value);
             building?.controller.abort();

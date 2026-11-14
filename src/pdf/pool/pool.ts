@@ -2,6 +2,7 @@ import { createWorkerClient } from '../../platform/workers/client';
 import type { ContainedPort, Priority, WorkerClient } from '../../platform/workers/envelope';
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
+import type { PageGeometry } from '../../platform/types';
 import { PDF_ENGINE_PROTOCOL, PDF_ENGINE_ROLE_VERSION, pdfDocKey } from '../worker/protocol';
 import type { EngineInitArgs, PageTileArgs, PageTileResult, PdfArgs, PdfDocKey, PdfEngineOp, PdfResult, PdfWorkerStats } from '../worker/protocol';
 import type { RenderToken } from '../../platform/render/types';
@@ -13,7 +14,8 @@ import { canSteal, homeWorker, maximumWorkers, poolBudget, recycleCeiling } from
 import { renderPdfPageBitmap } from './bitmap';
 
 type Doc = { key: PdfDocKey; source: 'outer' | 'original'; blob: Blob; password?: string; refs: number; controller: AbortController;
-    info?: DocInfo; signature?: string; opening?: Promise<DocInfo>; pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean };
+    info?: DocInfo; signature?: string; opening?: Promise<DocInfo>; geometry: Map<number, Readonly<PageGeometry>>;
+    pending: Set<Promise<unknown>>; leases: Set<Lease>; closing: boolean };
 type Slot = { id: number; client: WorkerClient; generation: number; opens: Map<string, Promise<DocInfo>>;
     pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number };
 type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unknown>; priority: Priority; signal: AbortSignal;
@@ -65,10 +67,20 @@ function validInfo(value: unknown): value is DocInfo {
     const info = value as DocInfo;
     return Number.isSafeInteger(info.pageCount) && info.pageCount > 0 && info.pageCount <= 100_000 &&
         Array.isArray(info.pages) && info.pages.length === info.pageCount && info.pages.every((page, index) =>
-            page.index === index && Number.isFinite(page.width) && page.width > 0 && Number.isFinite(page.height) && page.height > 0 &&
-            [0, 90, 180, 270].includes(page.rotate) && Array.isArray(page.toUserSpace) && page.toUserSpace.length === 6 && page.toUserSpace.every(Number.isFinite)) &&
+            page.index === index && Number.isFinite(page.width) && page.width >= 1 && page.width <= 14_400 &&
+            Number.isFinite(page.height) && page.height >= 1 && page.height <= 14_400) &&
         Array.isArray(info.attachments) && typeof info.encrypted === 'boolean' && Number.isSafeInteger(info.signatureCount);
 }
+function validGeometry(value: unknown, page: number): value is PageGeometry {
+    if (!value || typeof value !== 'object') return false;
+    const geometry = value as PageGeometry, matrix = geometry.toUserSpace;
+    return geometry.index === page && Number.isFinite(geometry.width) && geometry.width >= 1 && geometry.width <= 14_400 &&
+        Number.isFinite(geometry.height) && geometry.height >= 1 && geometry.height <= 14_400 &&
+        [0, 90, 180, 270].includes(geometry.rotate) && Number.isFinite(geometry.userUnit) && geometry.userUnit > 0 &&
+        Array.isArray(matrix) && matrix.length === 6 && matrix.every(Number.isFinite) &&
+        Number.isFinite(matrix[0] * matrix[3] - matrix[1] * matrix[2]) && matrix[0] * matrix[3] - matrix[1] * matrix[2] !== 0;
+}
+
 function validTile(value: unknown, args: PageTileArgs): value is PageTileResult {
     if (!value || typeof value !== 'object') return false;
     const tile = value as PageTileResult;
@@ -120,11 +132,11 @@ class Pool implements PdfPool {
         const slot: Slot = { id, client, generation: 0, opens: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now() };
         client.on('page.geometry', value => {
             if (!value || typeof value !== 'object') return;
-            const event = value as { docKey?: string; geometry?: DocInfo['pages'][number] }, doc = event.docKey ? this.docs.get(event.docKey) : undefined;
+            const event = value as { docKey?: string; geometry?: PageGeometry }, doc = event.docKey ? this.docs.get(event.docKey) : undefined;
             const page = event.geometry;
             if (!doc?.info || !page || !Number.isSafeInteger(page.index) || page.index < 0 || page.index >= doc.info.pageCount ||
-                !(page.width > 0 && page.height > 0) || !Array.isArray(page.toUserSpace) || page.toUserSpace.length !== 6 || !page.toUserSpace.every(Number.isFinite)) return;
-            const pages = doc.info.pages.slice(); pages[page.index] = page; doc.info = { ...doc.info, pages };
+                !validGeometry(page, page.index)) return;
+            doc.geometry.set(page.index, Object.freeze({ ...page, toUserSpace: [...page.toUserSpace] as PageGeometry['toUserSpace'] }));
         });
         this.slots.push(slot);
         this.timer ??= setInterval(() => this.maintain(), 1000);
@@ -165,7 +177,7 @@ class Pool implements PdfPool {
             bytesGeneration: options.token.bytesGeneration, source: options.source });
         let doc = this.docs.get(key);
         if (doc && (doc.blob.size !== options.blob.size || doc.password !== options.password || doc.closing)) throw new PdfEngineError('EngineBroken', 'Conflicting PDF source identity');
-        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), pending: new Set(), leases: new Set(), closing: false }; this.docs.set(key, doc); }
+        if (!doc) { doc = { key, source: options.source, blob: options.blob, password: options.password, refs: 0, controller: new AbortController(), geometry: new Map(), pending: new Set(), leases: new Set(), closing: false }; this.docs.set(key, doc); }
         doc.refs++;
         const lease = new Lease(this, doc, options.token); doc.leases.add(lease);
         try {
@@ -392,8 +404,15 @@ class Lease implements PdfPoolDocument {
     get docKey(): PdfDocKey { return this.doc.key; }
     get source(): 'outer' | 'original' { return this.doc.source; }
     get info(): Readonly<DocInfo> { if (!this.doc.info) throw new PdfEngineError('NotFoundError', 'PDF is not open'); return this.doc.info; }
-    geometry(page: number): Readonly<DocInfo['pages'][number]> {
-        const result = this.info.pages[page]; if (!result || result.index !== page) throw new RangeError('Invalid PDF page'); return result;
+    async resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>> {
+        if (!Number.isSafeInteger(page) || page < 0 || page >= this.info.pageCount) throw new RangeError('Invalid PDF page');
+        const cached = this.doc.geometry.get(page);
+        if (cached) return cached;
+        const result = await this.request('page.geometry', { page }, options);
+        if (!validGeometry(result, page)) throw new PdfEngineError('EngineBroken', 'Invalid PDF page geometry');
+        const geometry = Object.freeze({ ...result, toUserSpace: [...result.toUserSpace] as PageGeometry['toUserSpace'] });
+        this.doc.geometry.set(page, geometry);
+        return geometry;
     }
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>> {
         return this.pool.enqueue<PdfResult<K>>(this.doc, this, op, args as Record<string, unknown>, options);
@@ -403,7 +422,8 @@ class Lease implements PdfPoolDocument {
     releaseTile(result: PageTileResult): void { this.pool.releaseTile(result); }
     renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap> { return renderPdfPageBitmap(this, page, scale, options); }
     thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap> {
-        const geometry = this.geometry(page);
+        const geometry = this.info.pages[page];
+        if (!geometry) return Promise.reject(new RangeError('Invalid PDF page'));
         if (!Number.isFinite(maxSidePx) || maxSidePx <= 0) return Promise.reject(new RangeError('Invalid PDF thumbnail size'));
         const scale = maxSidePx / Math.max(geometry.width, geometry.height), maxPixels = Math.ceil(maxSidePx) ** 2;
         if (options.variant === 'emphasis') {

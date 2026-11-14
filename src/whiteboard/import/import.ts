@@ -24,6 +24,8 @@ export interface LegacyImportOptions<T> extends Omit<LegacyRecordOptions, 'prepa
     readonly pageSource?: PageSource;
     readonly textLayout: LegacyTextLayout;
     readonly geometry: LegacyGeometry;
+    /** Precompute async, font-backed connector/attachment geometry before synchronous page bounds. */
+    readonly prepareGeometry?: (nodes: readonly import('../model/nodes').Node[], sheets: readonly import('../model/doc').Sheet[], signal?: AbortSignal) => Promise<void>;
     readonly admit: (input: BoardDocInput, samples: SampleStore, root: RootMapper, report: ReportBuilder) => Promise<T>;
     readonly releaseAdmitted: (value: T) => void;
 }
@@ -52,9 +54,12 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
                 const dimensions = paperPageSize(paper);
                 const source = options.kind === 'notebook'
                     ? { kind: 'notebook' as const, ...dimensions, count: paper.pageCount } : options.pageSource!;
-                return createPagePreparation(source, (all, allSheets) => legacyWorldBounds(all,
-                    new Set(allSheets.map(sheet => sheet.id)), options.textLayout,
-                    basicLegacyGeometry(options.samples, options.geometry)))(shapes, nodes, sheets);
+                return createPagePreparation(source, async (all, allSheets) => {
+                    await options.prepareGeometry?.(all, allSheets, options.signal);
+                    options.signal?.throwIfAborted(); options.assertCurrent();
+                    return legacyWorldBounds(all, new Set(allSheets.map(sheet => sheet.id)), options.textLayout,
+                        basicLegacyGeometry(options.samples, options.geometry));
+                })(shapes, nodes, sheets);
             };
         draft = await readLegacyRecords(text, { ...options, preparePages });
     }

@@ -249,6 +249,7 @@ third-party code included (normally "none") · date.
 | `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types; typed delimiters and autolink | none | 2026-11-13 |
 | `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
 | `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design and Intl.Segmenter | none | 2026-11-13 |
+| `text/spell/menu.ts` | w-i | COV-29/39, E-TXT-26/28 | text §5.8 | Design; revision capture and deadline scheduling | none | 2026-11-13 |
 
 ## Editing lanes (w-f to w-j)
 

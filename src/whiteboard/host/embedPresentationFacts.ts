@@ -79,6 +79,8 @@ interface Coverage {
     readonly owner: BoardJobIdentity;
     readonly holds: Holds;
     readonly live: () => boolean;
+    /** Device pixels per world unit: the presented scale that sizes one device pixel of cover inset. */
+    readonly deviceScale: number;
 }
 /** One later paint item's contribution: exact opaque coverage, and the world regions it may paint non-occluding alpha in,
  * already cut by its real clips. A translucent entry is emitted only for a region that reaches an embed. */
@@ -200,13 +202,48 @@ function syncCoverage(item: PaintItem, embedId: string, pane: Affine, deviceScal
     return acc;
 }
 
-/** The matrix of a decoded mask: its pixels span `rect` in the item's local frame, one equal step per pixel. */
-function maskMatrix(rect: Rect, width: number, height: number): Affine {
-    return [rect.width / width, 0, 0, rect.height / height, rect.x, rect.y];
+/** The pixel-to-local matrix of a traced mask. `origin` is the mask's first source pixel, and `crop` is the source rectangle
+ * that `rect` depicts: the mask may read whole pixels around a fractional crop, so the scale comes from the crop itself. */
+function maskMatrix(rect: Rect, crop: Rect, origin: { x: number; y: number }): Affine {
+    const kx = rect.width / crop.width, ky = rect.height / crop.height;
+    return [kx, 0, 0, ky, rect.x + (origin.x - crop.x) * kx, rect.y + (origin.y - crop.y) * ky];
+}
+/** The whole source pixels a crop touches, clamped to the source: a fractional crop reads its enclosing pixels. */
+function enclosing(crop: Rect, width: number, height: number): Rect {
+    const x0 = Math.max(0, Math.floor(crop.x)), y0 = Math.max(0, Math.floor(crop.y));
+    const x1 = Math.min(width, Math.ceil(crop.x + crop.width)), y1 = Math.min(height, Math.ceil(crop.y + crop.height));
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+/** Which edges of a picture's crop are seams that bilinear sampling can read across. A fractional edge is never texel-aligned.
+ * A dense tile's aligned edge is covered by its apron of at least one texel; a text raster tile has no apron, so every edge is a seam. */
+type Seams = Readonly<{ left: boolean; right: boolean; top: boolean; bottom: boolean }>;
+function imageSeams(crop: Rect, width: number, height: number, kind: 'picture' | 'dense' | 'raster'): Seams {
+    if (kind === 'raster') return { left: true, right: true, top: true, bottom: true };
+    const right = crop.x + crop.width, bottom = crop.y + crop.height;
+    const apron = kind === 'dense';
+    return {
+        left: !Number.isInteger(crop.x) || (apron && crop.x < 1),
+        right: !Number.isInteger(right) || (apron && width - right < 1),
+        top: !Number.isInteger(crop.y) || (apron && crop.y < 1),
+        bottom: !Number.isInteger(bottom) || (apron && height - bottom < 1),
+    };
+}
+/** The certified opaque cover of a bilinear picture, in its local frame. Each seam edge is inset by the larger of one device
+ * pixel and one source texel, mapped to the local frame; the edge band that remains is not covering, and it is not translucent.
+ * Default, bilinear support of one texel. */
+function pictureCover(rect: Rect, texel: { x: number; y: number }, device: { x: number; y: number }, seams: Seams): Rect | null {
+    const dx = Math.max(device.x, texel.x), dy = Math.max(device.y, texel.y);
+    const left = seams.left ? dx : 0, right = seams.right ? dx : 0, top = seams.top ? dy : 0, bottom = seams.bottom ? dy : 0;
+    const width = rect.width - left - right, height = rect.height - top - bottom;
+    return width > 0 && height > 0 ? { x: rect.x + left, y: rect.y + top, width, height } : null;
+}
+/** Local size of one device pixel along each axis of the picture, at the presented device scale. */
+function devicePixel(localToWorld: Affine, deviceScale: number): { x: number; y: number } {
+    return { x: 1 / (Math.hypot(localToWorld[0], localToWorld[1]) * deviceScale), y: 1 / (Math.hypot(localToWorld[2], localToWorld[3]) * deviceScale) };
 }
 function wholePixels(crop: Rect, width: number, height: number): boolean {
-    return [crop.x, crop.y, crop.width, crop.height].every(Number.isInteger) && crop.x >= 0 && crop.y >= 0
-        && crop.width >= 1 && crop.height >= 1 && crop.x + crop.width <= width && crop.y + crop.height <= height;
+    return [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite) && crop.x >= 0 && crop.y >= 0
+        && crop.width > 0 && crop.height > 0 && crop.x + crop.width <= width && crop.y + crop.height <= height;
 }
 /** Sends one owned source to the export worker lane. The request is recorded so its lease and charge outlive it. */
 function send(cx: Coverage, payload: Omit<AlphaTraceRequest, 'maxRects'>, transfer: Transferable[]): Promise<AlphaTraceReply> {
@@ -215,12 +252,12 @@ function send(cx: Coverage, payload: Omit<AlphaTraceRequest, 'maxRects'>, transf
     cx.holds.requests.push(request);
     return request;
 }
-/** A crop of a held decoded frame is copied, so the worker only ever owns the copy and the lease never leaves the producer. */
-async function traceImage(cx: Coverage, lease: PaintImageLease, crop: Rect, opaqueAlpha: boolean): Promise<AlphaTraceReply | null> {
-    const reservation = cx.memory.reserve(crop.width * crop.height * 5 + RESULT_BYTES);
+/** A copy of the enclosing pixels of a held decoded frame, so the worker only ever owns the copy and the lease never leaves the producer. */
+async function traceImage(cx: Coverage, lease: PaintImageLease, region: Rect, opaqueAlpha: boolean): Promise<AlphaTraceReply | null> {
+    const reservation = cx.memory.reserve(region.width * region.height * 5 + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
-    const copy = await createImageBitmap(lease.source, crop.x, crop.y, crop.width, crop.height);
+    const copy = await createImageBitmap(lease.source, region.x, region.y, region.width, region.height);
     return send(cx, { bitmap: copy, opaqueAlpha }, [copy]);
 }
 async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceReply | null> {
@@ -229,37 +266,46 @@ async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceRep
     cx.holds.reservations.push(reservation);
     return send(cx, { png, opaqueAlpha: true }, []);
 }
-/** Maps a traced reply into coverage. An uncertain reply (its budget refused) claims no occlusion: the whole region is partial. */
-function addTraced(acc: LaterCoverage, reply: AlphaTraceReply | null, rect: Rect, localToWorld: Affine, cx: Coverage,
-    clips: readonly PaintClip[], whole: Rect): void {
+/** Maps a traced reply into coverage. Opaque pixels are certified only inside `cover`; partial pixels are real translucency
+ * wherever they fall inside the presented rectangle. A refused budget, or no reply, makes the whole picture partial: its opaque
+ * pixels are then unknown, so nothing may be claimed opaque. */
+function addTraced(acc: LaterCoverage, reply: AlphaTraceReply | null, pixelToLocal: Affine, cover: Rect | null, rect: Rect,
+    localToWorld: Affine, cx: Coverage, clips: readonly PaintClip[], whole: Rect): void {
     if (!reply || !reply.opaque || !reply.partial) { pushPartial(acc, whole, clips); return; }
-    const world = compose(localToWorld, maskMatrix(rect, reply.width, reply.height)), toPane = compose(cx.pane, world);
+    const toPane = compose(cx.pane, localToWorld), local = (x0: number, y0: number, x1: number, y1: number): Rect => ({
+        x: pixelToLocal[0] * x0 + pixelToLocal[4], y: pixelToLocal[3] * y0 + pixelToLocal[5],
+        width: pixelToLocal[0] * (x1 - x0), height: pixelToLocal[3] * (y1 - y0) });
     const d: PathCommand[] = [];
-    for (let i = 0; i < reply.opaque.length; i += 4) {
-        const [x0, y0, x1, y1] = [reply.opaque[i], reply.opaque[i + 1], reply.opaque[i + 2], reply.opaque[i + 3]];
+    for (let i = 0; i < reply.opaque.length && cover; i += 4) {
+        const piece = intersect(local(reply.opaque[i], reply.opaque[i + 1], reply.opaque[i + 2], reply.opaque[i + 3]), cover);
+        if (!piece) continue;
+        const x0 = piece.x, y0 = piece.y, x1 = piece.x + piece.width, y1 = piece.y + piece.height;
         d.push(['M', x0, y0], ['L', x1, y0], ['L', x1, y1], ['L', x0, y1], ['Z']);
     }
     if (d.length) acc.opaque.push({ opacity: 'opaque', coverage: { path: { d, fillRule: 'nonzero', toPane }, clips: clipsOf(clips, cx.pane) } });
     for (let i = 0; i < reply.partial.length; i += 4) {
-        const [x0, y0, x1, y1] = [reply.partial[i], reply.partial[i + 1], reply.partial[i + 2], reply.partial[i + 3]];
-        pushPartial(acc, rectWorld(x0, y0, x1, y1, world), clips);
+        const piece = intersect(local(reply.partial[i], reply.partial[i + 1], reply.partial[i + 2], reply.partial[i + 3]), rect);
+        if (piece) pushPartial(acc, rectWorld(piece.x, piece.y, piece.x + piece.width, piece.y + piece.height, localToWorld), clips);
     }
 }
 
-/** An image's decoded alpha is the exact coverage of its opaque pixels, traced in the worker from the frame's own imageKey.
- * A non-normal blend, a retained dense tile, a fractional crop or a refused budget is conservatively partial over its region. */
-async function imageCoverage(item: PaintImageItem, cx: Coverage, allocation: Rect): Promise<LaterCoverage> {
-    const acc = emptyCoverage();
-    const whole = rectWorld(item.rect.x, item.rect.y, item.rect.x + item.rect.width, item.rect.y + item.rect.height, item.localToWorld);
-    if (item.retainedTile) { pushPartial(acc, allocation, item.clips); return acc; }
+/** An image's decoded alpha, traced in the worker from the frame's own imageKey. Opaque coverage is certified by the bilinear
+ * cover rule; partial alpha is real translucency. A non-normal blend is translucent over the whole picture. */
+async function imageCoverage(item: PaintImageItem, cx: Coverage): Promise<LaterCoverage> {
+    const acc = emptyCoverage(), rect = item.rect;
+    const whole = rectWorld(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, item.localToWorld);
     if (item.blend !== 'normal') { pushPartial(acc, whole, item.clips); return acc; }
     const lease = await cx.images.acquire(item.imageKey, cx.frame.token, cx.signal);
     cx.holds.leases.push(lease);
     cx.signal.throwIfAborted();
     const crop = item.sourceRect ?? { x: 0, y: 0, width: lease.width, height: lease.height };
-    if (!wholePixels(crop, lease.width, lease.height)) { pushPartial(acc, whole, item.clips); return acc; }
-    const reply = await traceImage(cx, lease, crop, item.opacity >= 1);
-    addTraced(acc, reply, item.rect, item.localToWorld, cx, item.clips, whole);
+    if (!wholePixels(crop, lease.width, lease.height)) return acc;
+    const kind = item.retainedTile ? 'dense' : 'picture';
+    const region = enclosing(crop, lease.width, lease.height);
+    const reply = await traceImage(cx, lease, region, item.opacity >= 1);
+    const texel = { x: rect.width / crop.width, y: rect.height / crop.height };
+    const cover = pictureCover(rect, texel, devicePixel(item.localToWorld, cx.deviceScale), imageSeams(crop, lease.width, lease.height, kind));
+    addTraced(acc, reply, maskMatrix(rect, crop, region), cover, rect, item.localToWorld, cx, item.clips, whole);
     return acc;
 }
 
@@ -285,7 +331,11 @@ async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, cx: C
             const whole = rectWorld(piece.rect.x, piece.rect.y, piece.rect.x + piece.rect.width, piece.rect.y + piece.rect.height, item.localToWorld);
             if (piece.blend !== 'normal') { pushPartial(acc, whole, item.clips); continue; }
             const reply = await traceRaster(cx, piece.png);
-            addTraced(acc, reply, piece.rect, item.localToWorld, cx, item.clips, whole);
+            // The tile's own pixels span its rect; every edge is a seam, since adjacent text tiles carry no apron.
+            const crop = { x: 0, y: 0, width: reply?.width ?? 1, height: reply?.height ?? 1 }, rect = piece.rect;
+            const cover = reply ? pictureCover(rect, { x: rect.width / crop.width, y: rect.height / crop.height },
+                devicePixel(item.localToWorld, cx.deviceScale), imageSeams(crop, crop.width, crop.height, 'raster')) : null;
+            addTraced(acc, reply, maskMatrix(rect, crop, { x: 0, y: 0 }), cover, rect, item.localToWorld, cx, item.clips, whole);
         } else if (piece.kind === 'path') {
             const stroke = piece.stroke;
             const material: PathMaterial = { fill: piece.fill, blend: piece.blend ?? 'normal', stroke: stroke && stroke.miterLimit !== undefined
@@ -336,7 +386,7 @@ async function prepareLater(doc: BoardDoc, frame: PaintFrame, source: PaintNodeS
         const bounds = laterItemBounds(item, item.nodeId);
         if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j && overlaps(bounds, card.world))) continue;
         const coverage = item.kind === 'text' ? await glyphCoverage(item, source, cx, deviceScale)
-            : item.kind === 'image' ? await imageCoverage(item, cx, bounds)
+            : item.kind === 'image' ? await imageCoverage(item, cx)
             : syncCoverage(item, item.nodeId, cx.pane, deviceScale);
         cx.signal.throwIfAborted();
         later.set(j, coverage);
@@ -383,7 +433,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             const source = frameSource(frame, () => !signal.aborted && !disposed);
             const cx: Coverage = { frame, pane, signal, images: options.images, memory: options.memory, holds,
                 owner: { session: crypto.randomUUID(), epoch: frame.token.vaultEpoch, revision: frame.sceneRevision },
-                live: () => !signal.aborted && !disposed };
+                live: () => !signal.aborted && !disposed, deviceScale };
             const later = await prepareLater(doc, frame, source, cx, deviceScale);
             signal.throwIfAborted();
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,

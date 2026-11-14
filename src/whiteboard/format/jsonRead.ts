@@ -67,53 +67,88 @@ function kind(source: string, start: number): JsonKind {
     }
 }
 
+function complete<T>(steps: Generator<void, T>): T {
+    for (;;) { const step = steps.next(); if (step.done) return step.value; }
+}
 class Reader {
     stringUnits = 0;
+    private readonly longValues = new Map<number, number>();
+    private readonly longStrings = new Map<number, { end: number; units: number; escaped: boolean }>();
     constructor(readonly source: string, readonly maxDepth: number) { }
-    white(index: number): number {
-        while (index < this.source.length && whitespace(this.source.charCodeAt(index))) index++;
+    white(index: number): number { return complete(this.whiteSteps(index)); }
+    *whiteSteps(index: number): Generator<void, number> {
+        let count = 0;
+        while (index < this.source.length && whitespace(this.source.charCodeAt(index))) {
+            index++;
+            if ((++count & 4095) === 0) yield;
+        }
         return index;
     }
-    quoted(index: number, limit = FORMAT_LIMITS.recordBytes): number {
+    quoted(index: number, limit = FORMAT_LIMITS.recordBytes): number { return complete(this.quotedSteps(index, limit)); }
+    *quotedSteps(index: number, limit = FORMAT_LIMITS.recordBytes): Generator<void, number> {
+        const cached = this.longStrings.get(index);
+        if (cached) {
+            if (cached.units > limit) error('limit', `JSON string exceeds ${limit} UTF-16 units`, index);
+            this.stringUnits = cached.units;
+            return cached.end;
+        }
         if (this.source.charCodeAt(index) !== 34) return error('syntax', 'Expected a JSON string', index);
         const start = index++;
-        let units = 0;
+        let units = 0, escapedValue = false;
         while (index < this.source.length) {
             const code = this.source.charCodeAt(index++);
-            if (code === 34) { this.stringUnits = units; return index; }
+            if (code === 34) {
+                this.stringUnits = units;
+                if (index - start > 4096) this.longStrings.set(start, { end: index, units, escaped: escapedValue });
+                return index;
+            }
             if (code < 32) error('syntax', 'Unescaped control character in JSON string', index - 1);
             if (code === 92) {
+                escapedValue = true;
                 const escaped = this.source.charCodeAt(index++);
                 if (escaped === 117) {
                     for (let n = 0; n < 4; n++) if (!hex(this.source.charCodeAt(index++))) error('syntax', 'Invalid Unicode escape', index - 1);
-                } else if (!JSON_ESCAPES.includes(escaped)) {
-                    error('syntax', 'Invalid JSON escape', index - 1);
-                }
+                } else if (!JSON_ESCAPES.includes(escaped)) error('syntax', 'Invalid JSON escape', index - 1);
             }
             if (++units > limit) error('limit', `JSON string exceeds ${limit} UTF-16 units`, start);
+            if ((units & 4095) === 0) yield;
         }
         return error('syntax', 'Unterminated JSON string', start);
     }
-    skip(index: number, depth: number): number {
+    unescaped(index: number): boolean { return this.longStrings.get(index)?.escaped === false; }
+    skip(index: number, depth: number): number { return complete(this.skipSteps(index, depth)); }
+    *skipSteps(index: number, depth: number): Generator<void, number> {
+        const cached = this.longValues.get(index);
+        if (cached !== undefined) return cached;
+        const start = index;
+        const end = yield* this.skipValueSteps(index, depth);
+        if (end - start > 4096) this.longValues.set(start, end);
+        return end;
+    }
+    private *skipValueSteps(index: number, depth: number): Generator<void, number> {
         const start = index;
         const code = this.source.charCodeAt(index);
-        if (code === 34) return this.quoted(index);
+        if (code === 34) return yield* this.quotedSteps(index);
         if (code === 123 || code === 91) {
             if (depth >= this.maxDepth) error('limit', `JSON nesting exceeds ${this.maxDepth}`, start);
             const object = code === 123, close = object ? 125 : 93;
-            index = this.white(index + 1);
+            index = yield* this.whiteSteps(index + 1);
             if (this.source.charCodeAt(index) === close) return index + 1;
+            let members = 0;
             for (; ;) {
                 if (object) {
-                    index = this.white(this.quoted(index));
+                    index = yield* this.quotedSteps(index);
+                    index = yield* this.whiteSteps(index);
                     if (this.source.charCodeAt(index++) !== 58) error('syntax', 'Expected a colon after JSON key', index - 1);
-                    index = this.white(index);
+                    index = yield* this.whiteSteps(index);
                 }
-                index = this.white(this.skip(index, depth + 1));
+                index = yield* this.skipSteps(index, depth + 1);
+                index = yield* this.whiteSteps(index);
                 const separator = this.source.charCodeAt(index++);
                 if (separator === close) return index;
                 if (separator !== 44) error('syntax', 'Expected a JSON comma or closing delimiter', index - 1);
-                index = this.white(index);
+                index = yield* this.whiteSteps(index);
+                if ((++members & 255) === 0) yield;
             }
         }
         if (code === 116 && this.source.startsWith('true', index)) return index + 4;
@@ -124,18 +159,18 @@ class Reader {
         if (first === 48) index++;
         else {
             if (first < 49 || first > 57 || !Number.isFinite(first)) error('syntax', 'Expected a JSON value', start);
-            while (digit(this.source.charCodeAt(++index))) { /* integer digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         if (this.source.charCodeAt(index) === 46) {
             if (!digit(this.source.charCodeAt(++index))) error('syntax', 'Missing fractional digits', index);
-            while (digit(this.source.charCodeAt(++index))) { /* fractional digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         const exponent = this.source.charCodeAt(index);
         if (exponent === 69 || exponent === 101) {
             index++;
             if (this.source.charCodeAt(index) === 43 || this.source.charCodeAt(index) === 45) index++;
             if (!digit(this.source.charCodeAt(index))) error('syntax', 'Missing exponent digits', index);
-            while (digit(this.source.charCodeAt(++index))) { /* exponent digits */ }
+            while (digit(this.source.charCodeAt(++index))) { if ((index & 4095) === 0) yield; }
         }
         if (!Number.isFinite(Number(this.source.slice(start, index)))) error('limit', 'JSON number is not finite', start);
         return index;
@@ -176,6 +211,8 @@ class Span implements JsonSpan {
         if (!this.parsed) {
             if (this.parent?.parsed && this.key !== undefined) {
                 this.cached = (this.parent.cached as Record<string | number, unknown>)[this.key];
+            } else if (this.kind === 'string' && this.reader.unescaped(this.start)) {
+                this.cached = tokenText(this.source, this.start + 1, this.end - 1);
             } else {
                 this.cached = JSON.parse(this.text());
             }
@@ -265,4 +302,18 @@ export function parseJson(source: string, maxDepth: number = FORMAT_LIMITS.jsonD
     const span = reader.span(start, 0);
     if (reader.white(span.end) !== source.length) error('syntax', 'Unexpected text after JSON value', span.end);
     return span;
+}
+
+/** The same lexical admission, with resumable scans inside large strings and containers. */
+export async function parseJsonIncremental(source: string, cooperate: () => Promise<void>,
+    maxDepth: number = FORMAT_LIMITS.jsonDepth): Promise<JsonSpan> {
+    if (source.length > FORMAT_LIMITS.recordBytes) error('limit', 'JSON value exceeds 64 MiB', 0);
+    const reader = new Reader(source, maxDepth);
+    async function run<T>(steps: Generator<void, T>): Promise<T> {
+        for (;;) { const step = steps.next(); if (step.done) return step.value; await cooperate(); }
+    }
+    const start = await run(reader.whiteSteps(0));
+    const end = await run(reader.skipSteps(start, 0));
+    if (await run(reader.whiteSteps(end)) !== source.length) error('syntax', 'Unexpected text after JSON value', end);
+    return new Span(reader, start, end, 0);
 }

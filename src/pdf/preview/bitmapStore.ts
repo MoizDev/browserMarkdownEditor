@@ -91,7 +91,7 @@ export class PreviewBitmapStore {
                     this.pendingBytes += bytes;
                     let bitmap: ImageBitmap;
                     try {
-                        bitmap = await createImageBitmap(canvas, x, y, w, h);
+                        bitmap = await createImageBitmap(canvas, x, y, w, h, { premultiplyAlpha: 'premultiply' });
                     } catch (error) {
                         this.pendingBytes -= bytes;
                         this.allocator.release(lease);

@@ -40,18 +40,26 @@ export function textClipboardRendition(value: RichText, from: number, to: number
     const doc = document.implementation.createHTMLDocument('');
     const root = doc.createElement('div');
     const lists: { kind: 'ul' | 'ol'; element: Element; item: Element | null }[] = [];
+    const numbers = new Map<number, number>();
     const plain: string[] = [];
     for (const block of fragment.blocks) {
         const content = block.runs.map(run => run.text).join('').replace(/\u2028/g, '\n');
         const listKind = block.kind === 'ul' || block.kind === 'ol' ? block.kind : null;
         if (listKind) {
             const level = Math.max(0, Math.min(7, block.level));
+            for (const key of numbers.keys()) if (key > level) numbers.delete(key);
+            const number = listKind === 'ol' ? block.start ?? (numbers.get(level) ?? 0) + 1 : null;
+            if (number === null) numbers.delete(level); else numbers.set(level, number);
             while (lists.length > level + 1) lists.pop();
             if (lists[level] && lists[level].kind !== listKind) lists.length = level;
             while (lists.length <= level) {
                 const list = doc.createElement(listKind);
-                const container = lists.length ? lists[lists.length - 1].item : root;
-                (container ?? root).appendChild(list);
+                const parent = lists[lists.length - 1];
+                if (parent && !parent.item) {
+                    parent.item = doc.createElement('li');
+                    parent.element.appendChild(parent.item);
+                }
+                (parent?.item ?? root).appendChild(list);
                 lists.push({ kind: listKind, element: list, item: null });
             }
             const current = lists[level];
@@ -59,12 +67,14 @@ export function textClipboardRendition(value: RichText, from: number, to: number
                 current.element.setAttribute('start', String(block.start));
             const item = doc.createElement('li');
             current.element.appendChild(item);
+            if (listKind === 'ol' && block.start !== undefined && current.item) item.setAttribute('value', String(block.start));
             current.item = item;
             item.setAttribute('dir', block.dir);
             for (const run of block.runs) appendRun(doc, item, run.text, run.marks);
-            plain.push(content);
+            plain.push(`${'  '.repeat(level)}${number === null ? '•' : `${number}.`} ${content}`);
         } else {
             lists.length = 0;
+            numbers.clear();
             const element = doc.createElement(block.kind === 'p' ? 'p' : block.kind);
             element.setAttribute('dir', block.dir);
             root.appendChild(element);

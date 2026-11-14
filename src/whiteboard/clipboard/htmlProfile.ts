@@ -6,7 +6,7 @@ import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
 
 // Provenance: clipboard/security contracts and native rich-text representation;
 // independent isolated HTML extraction, no third-party source.
-const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_DEPTH = 128, MAX_NODES = 2_000_000;
+const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_NODES = 2_000_000;
 const pause = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const ignored = new Set(['script', 'style', 'form', 'object', 'iframe', 'embed', 'svg', 'math', 'template', 'noscript', 'head',
     'input', 'textarea', 'button', 'select', 'option', 'video', 'audio', 'canvas']);
@@ -105,9 +105,11 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
     const input = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer());
     // eslint-disable-next-line bme/html-sinks -- fixed opaque-origin sandbox, network-denied CSP; parsed nodes never enter its live DOM.
     const doc = new DOMParser().parseFromString(input, 'text/html');
-    let visited = 0, sliceStart = performance.now();
-    const tick = async (depth: number) => {
-        if (depth > MAX_DEPTH || ++visited > MAX_NODES) throw new RangeError('Clipboard HTML is too complex');
+    let visited = 0, elements = 0, sliceStart = performance.now();
+    const tick = async (node: Node, depth: number) => {
+        if (++visited > MAX_NODES || node.nodeType === 1 && (depth > SECURITY_LIMITS.htmlDepth || ++elements > SECURITY_LIMITS.htmlElements)) {
+            throw new RangeError('Clipboard HTML is too complex');
+        }
         if ((visited & 255) === 0 || performance.now() - sliceStart > 4) { await pause(); sliceStart = performance.now(); }
     };
     if (mode === 'metadata') {
@@ -126,7 +128,7 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
     if (mode === 'markers') {
         let hasPrivate = false, payload: string | null = null, legacy: string | null = null;
         const walk = async (node: Node, depth: number): Promise<void> => {
-            await tick(depth);
+            await tick(node, depth);
             if (node.nodeType === 1) {
                 const element = node as Element;
                 if (element.hasAttribute('data-wb-board') || element.hasAttribute('data-wb-board-payload')) hasPrivate = true;
@@ -169,7 +171,7 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
         }
     };
     const walk = async (node: Node, ctx: Context, depth: number): Promise<void> => {
-        await tick(depth);
+        await tick(node, depth);
         if (node.nodeType === 3) { await add(node.nodeValue ?? '', ctx.marks, ctx.pre); return; }
         if (node.nodeType !== 1) return;
         const el = node as Element, tag = el.localName.toLowerCase();

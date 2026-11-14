@@ -70,8 +70,8 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         ...reading,
         identity,
         // Read once, with the binding: it is the state this document OPENED
-        // with, and re-reading it per render re-ran its validation and cloned
-        // the record for nothing.
+        // with, including its source schema and write-protection metadata.
+        // Re-reading per render would validate and clone it for nothing.
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
@@ -138,8 +138,10 @@ interface EditorPaneProps {
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
+    onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
     /** Buffer content and write it immediately, skipping the save debounce. */
-    onFlushNow: (path: string, content: string) => void;
+    onFlushNow: (path: string, content: string) => Promise<void>;
+    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -306,7 +308,7 @@ interface PaneResize {
  * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -1110,10 +1112,14 @@ export default function EditorPane({ reading, tabs, layout, theme, tabSize, rain
                             content={tab.content}
                             onContentChange={onContentChange}
                             onFlushNow={onFlushNow}
+                            onPreparePrint={onPreparePdfPrint}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
                             isDirty={tab.dirty}
                             disk={tab.disk}
+                            pdfRebuild={tab.pdfRebuild}
+                            pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
+                            onAnnotationPreflight={onAnnotationPreflight}
                             onDiskAction={onDiskAction}
                         />
                     </React.Fragment>

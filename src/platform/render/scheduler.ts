@@ -211,7 +211,7 @@ interface PaneEntry {
     binding: FrameToken | null;
 }
 
-interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean }
+interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 interface ScheduledPoll { callback: () => void; earliestFrame: number }
 interface UploadMeter {
@@ -533,7 +533,7 @@ export class FrameScheduler {
                         layer, sceneRevision: entry.pane.sceneRevision(layer), critical: entry.pane.isCritical(layer, view),
                     })));
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons });
-                    work.push({ entry, frame, hadInput: entry.inputPriority || reasons.includes('input') });
+                    work.push({ entry, frame, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false });
                     entry.inputPriority = false;
                 });
             }
@@ -551,8 +551,10 @@ export class FrameScheduler {
                 () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
             for (const item of criticalOrder) {
                 prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, null, prepareDeadline, true, meter, criticalPending));
+                if (!item.platformPrepared && this.valid(item.entry, item.frame.token)) this.mark(item.entry, 'preparation-deferred');
             }
             for (const item of criticalOrder) {
+                if (!item.platformPrepared) continue;
                 for (const meta of item.frame.layers) {
                     if (meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
                 }
@@ -560,6 +562,7 @@ export class FrameScheduler {
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
             const optionalMs = Math.max(0, prepareDeadline - performance.now()) / Math.max(1, work.length);
             for (const item of optionalOrder) {
+                if (!item.platformPrepared) continue;
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressTileBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
                 const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
@@ -571,9 +574,10 @@ export class FrameScheduler {
             const presentationStarted = performance.now();
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
                 this.call(item.entry, () => {
-                    if (!this.valid(item.entry, item.frame.token)) return;
+                    if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
                     const encoding = item.entry.pane.encode(item.frame);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
+                    else this.mark(item.entry, 'presentation-deferred');
                 });
             }
             // 6: publish overlays only for the exact snapshot successfully submitted by its compositor.
@@ -629,10 +633,7 @@ export class FrameScheduler {
 
     private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
         meter: UploadMeter, criticalPending: () => boolean): number {
-        if (performance.now() >= deadline) {
-            if (!meta) this.mark(item.entry, 'platform-prepare-deferred');
-            return 0;
-        }
+        if (performance.now() >= deadline) return 0;
         let overshoot = 0;
         this.call(item.entry, () => {
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= deadline ||
@@ -669,8 +670,11 @@ export class FrameScheduler {
             };
             if (!shouldYield()) {
                 if (meta) meta.layer.prepare(item.frame.view, budget);
-                else item.entry.pane.prepareFrame(item.frame.view, budget);
-            } else if (!meta) this.mark(item.entry, 'platform-prepare-deferred');
+                else {
+                    item.entry.pane.prepareFrame(item.frame.view, budget);
+                    item.platformPrepared = true;
+                }
+            }
             overshoot = Math.max(0, performance.now() - deadline);
         });
         return overshoot;

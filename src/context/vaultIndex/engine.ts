@@ -14,6 +14,7 @@ export class IndexEngine {
     private graphGen = 0;
     private stopped = false;
     private foreground = 0;
+    private foregroundRevision = -1;
     private ioActive = 0;
     private ioWaiters: (() => void)[] = [];
     private reportedTimes = new Map<string, number>();
@@ -34,7 +35,9 @@ export class IndexEngine {
         this.stopped = true;
         this.ioWaiters.splice(0).forEach(wake => wake());
     }
-    foregroundIO(active: number): void {
+    foregroundIO(active: number, revision: number): void {
+        if (revision < this.foregroundRevision) return;
+        this.foregroundRevision = revision;
         this.foreground = Math.max(0, active);
         if (!this.foreground) this.ioWaiters.splice(0).forEach(wake => wake());
     }

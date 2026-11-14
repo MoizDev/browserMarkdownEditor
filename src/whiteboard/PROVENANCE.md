@@ -161,6 +161,7 @@ third-party code included (normally "none") · date.
 | `export/exportImage.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §5 | Export design; admitted origin-clean image leases, embedded source or normalized PNG, baked inversion; no tldraw source | none | 2026-11-13 |
 | `export/captureSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Pinned shared frame, display-list conversion and self-contained SVG serialization; no tldraw source | none | 2026-11-13 |
 | `export/capturePdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | Pinned shared frame, page-local projection and injected PDF domain writer; no tldraw source | none | 2026-11-13 |
+| `export/captureFrame.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §§2–3; rendering §3 | Shared paint stream, immutable scene capture, sliced admission and stale/cancelled partial-frame rejection; no tldraw source | none | 2026-11-13 |
 
 ## Text (lane w-n)
 

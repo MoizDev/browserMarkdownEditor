@@ -18,6 +18,7 @@ export interface GraphRepairOptions {
 export interface GraphRepairResult {
     readonly nodes: readonly NodeRecord[];
     readonly changedOrdinals: ReadonlySet<number>;
+    readonly sourceOrdinals: readonly number[];
     readonly notices: readonly LoadRepairNotice[];
     readonly readOnlyReason: string | null;
 }
@@ -34,7 +35,7 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         if (ids) ids.push(item.node.id); else messages.set(code, [item.node.id]);
     };
     const result = (items: readonly Item[], reason: string | null): GraphRepairResult => ({
-        nodes: items.map(item => item.node), changedOrdinals: changed,
+        nodes: items.map(item => item.node), sourceOrdinals: items.map(item => item.ordinal), changedOrdinals: changed,
         notices: [...messages].map(([code, nodeIds]) => ({ code, count: nodeIds.length, nodeIds })), readOnlyReason: reason,
     });
     const sheets = new Set<ParentId>(options.sheets.map(sheet => sheet.id));
@@ -103,6 +104,23 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         }
         if (refusal) return result(items, refusal);
         for (const member of path) done.add(member.node.id);
+    }
+    for (let i = 0; i < items.length; i++) {
+        if ((i & 255) === 0) await tick();
+        const item = items[i], rootNode = sheets.has(item.node.parent);
+        const nested = options.kind === 'whiteboard' || !rootNode;
+        if (nested ? item.node.page === -1 : Number.isSafeInteger(item.node.page) && item.node.page >= 0) continue;
+        if (item.node.kind === 'opaque' || NODE_FILE_FIELDS.page.some(token => item.node.ext?.raw.has(token))) {
+            return result(items, 'Page repair would override an opaque or preserved record');
+        }
+        if (nested) item.node = { ...item.node, page: -1 };
+        else {
+            if (['x', 'y'].some(key => NODE_FILE_FIELDS[key as 'x' | 'y'].some(token => item.node.ext?.raw.has(token)))) {
+                return result(items, 'Page repair would override preserved placement');
+            }
+            item.node = { ...item.node, ...options.rootPlacement(item.node, item.node.parent as SheetId, item.ordinal) };
+        }
+        record(item, 'page');
     }
     // A cached depth is needed even when a path terminates at a previously
     // visited ancestor: otherwise a long chain admitted in parent-first order

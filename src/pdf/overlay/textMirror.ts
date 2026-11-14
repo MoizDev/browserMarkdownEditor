@@ -8,8 +8,43 @@ export interface MirrorLine {
     direction: 'ltr' | 'rtl' | 'vertical';
     headingLevel?: 1 | 2 | 3 | 4 | 5 | 6;
 }
-export interface MirrorFigure { box: Rect; alt: string }
+export interface MirrorFigure { box: Rect; alt: string; offset: number }
 export interface MirrorPageText { text: string; lines: readonly MirrorLine[]; figures?: readonly MirrorFigure[] }
+
+/** The select-detail part of the planned page.text reply; arrays are in page space. */
+export interface MirrorTextReply {
+    text: string;
+    sel?: {
+        charU16: Uint32Array;
+        lines: Uint32Array;
+        lineBox: Float32Array;
+        lineDir: Float32Array;
+        lineBidi: Uint8Array;
+    };
+}
+
+/** Tags are resolved by the text model, not inferred from font size or geometry. */
+export function mirrorTextFromReply(reply: MirrorTextReply, tags?: {
+    headingLevels?: ReadonlyMap<number, 1 | 2 | 3 | 4 | 5 | 6>;
+    figures?: readonly MirrorFigure[];
+}): MirrorPageText | null {
+    const sel = reply.sel;
+    if (!sel) return null;
+    const lines: MirrorLine[] = [];
+    for (let i = 0; i * 2 + 1 < sel.lines.length; i++) {
+        const first = sel.lines[i * 2], end = sel.lines[i * 2 + 1];
+        const from = sel.charU16[first], to = sel.charU16[end];
+        const x0 = sel.lineBox[i * 4], y0 = sel.lineBox[i * 4 + 1];
+        const x1 = sel.lineBox[i * 4 + 2], y1 = sel.lineBox[i * 4 + 3];
+        if (from === undefined || to === undefined || from > to || to > reply.text.length ||
+            ![x0, y0, x1, y1].every(Number.isFinite) || x1 < x0 || y1 < y0) continue;
+        const vertical = Math.abs(sel.lineDir[i * 2 + 1] ?? 0) > Math.abs(sel.lineDir[i * 2] ?? 0);
+        lines.push({ from, to, box: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
+            direction: vertical ? 'vertical' : sel.lineBidi[i] ? 'rtl' : 'ltr',
+            headingLevel: tags?.headingLevels?.get(i) });
+    }
+    return { text: reply.text, lines, figures: tags?.figures };
+}
 export interface MirrorPosition { page: number; offset: number }
 export interface MirrorSelection { anchor: MirrorPosition; focus: MirrorPosition }
 export interface TextMirrorOptions {
@@ -128,7 +163,21 @@ export class PdfTextMirror {
         const section = this.sections[page];
         if (!section) return;
         const fragment = document.createDocumentFragment();
-        for (const line of data.lines) {
+        const entries = [
+            ...data.lines.map(line => ({ kind: 'line' as const, offset: line.from, line })),
+            ...(data.figures ?? []).map(figure => ({ kind: 'figure' as const, offset: figure.offset, figure })),
+        ].sort((a, b) => a.offset - b.offset);
+        for (const entry of entries) {
+            if (entry.kind === 'figure') {
+                const node = document.createElement('div');
+                node.setAttribute('role', 'img');
+                node.setAttribute('aria-label', entry.figure.alt);
+                node.style.position = 'absolute';
+                place(node, entry.figure.box);
+                fragment.append(node);
+                continue;
+            }
+            const line = entry.line;
             if (!Number.isInteger(line.from) || !Number.isInteger(line.to) || line.from < 0 || line.to < line.from || line.to > data.text.length) continue;
             const node = document.createElement('div');
             node.className = 'pdf-mirror-line';
@@ -147,14 +196,6 @@ export class PdfTextMirror {
             }
             place(node, line.box);
             node.textContent = data.text.slice(line.from, line.to);
-            fragment.append(node);
-        }
-        for (const figure of data.figures ?? []) {
-            const node = document.createElement('div');
-            node.setAttribute('role', 'img');
-            node.setAttribute('aria-label', figure.alt);
-            node.style.position = 'absolute';
-            place(node, figure.box);
             fragment.append(node);
         }
         section.replaceChildren(fragment);

@@ -12,6 +12,7 @@ export interface CachedClipboard {
 }
 export interface ClipboardCopyHost {
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
+    isCurrent(snapshot: CopySnapshot): boolean;
     /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
     prepareCut(snapshot: CopySnapshot): () => void;
     duplicate(snapshot: CopySnapshot): Promise<void>;
@@ -66,6 +67,7 @@ export class ClipboardCopy {
         if (!candidate || !event.clipboardData) return false;
         let commitCut: (() => void) | undefined;
         try {
+            if (!this.host.isCurrent(candidate.held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && candidate.held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${candidate.held.snapshot.skippedOpaque.join(', ')}`);
             if (cut) commitCut = this.host.prepareCut(candidate.held.snapshot);
             const envelope = candidate.envelope;
@@ -89,6 +91,7 @@ export class ClipboardCopy {
         const held = candidate.held;
         held.count++;
         try {
+            if (!this.host.isCurrent(held.snapshot)) throw new Error('Selection changed; copy again.');
             if (cut && held.snapshot.skippedOpaque.length) throw new Error(`This version can't cut opaque content: ${held.snapshot.skippedOpaque.join(', ')}`);
             const commitCut = cut ? this.host.prepareCut(held.snapshot) : undefined;
             const envelope = candidate.envelope;
@@ -112,6 +115,7 @@ export class ClipboardCopy {
         const held = candidate.held;
         held.count++;
         try {
+            if (!this.host.isCurrent(held.snapshot)) throw new Error('Selection changed; duplicate again.');
             await this.host.duplicate(held.snapshot);
             if (held.snapshot.skippedOpaque.length) this.host.notice(`This version can't copy: ${held.snapshot.skippedOpaque.join(', ')}`);
         } finally { release(held); }

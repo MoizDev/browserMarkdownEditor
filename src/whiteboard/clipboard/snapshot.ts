@@ -19,6 +19,8 @@ export interface BoardPayload {
 }
 export interface ClipboardLease { release(): void }
 export interface CopySnapshot {
+    readonly revision: number;
+    readonly textSelection?: { readonly node: NodeId; readonly anchor: number; readonly focus: number };
     readonly roots: readonly NodeId[];
     readonly selected: readonly NodeId[];
     readonly skippedOpaque: readonly NodeId[];
@@ -68,13 +70,16 @@ function mediaOf(node: Node, ids: Set<MediaId>): void {
     visitNodeRaw(node, raw => scanRawMedia(raw, id => ids.add(id)));
 }
 
-export function snapshotTextSelection(host: CopySnapshotHost, fragment: RichFragment, node: Node, bounds: ClipboardBounds): CopySnapshot {
-    if (!host.doc.sheets.has(host.sheet) || node.kind !== 'text' || node.parent !== host.sheet
+export function snapshotTextSelection(host: CopySnapshotHost, fragment: RichFragment, node: Node, bounds: ClipboardBounds,
+    textSelection: { readonly node: NodeId; readonly anchor: number; readonly focus: number }): CopySnapshot {
+    if (!host.doc.sheets.has(host.sheet) || !host.doc.nodes.has(textSelection.node)
+        || !Number.isSafeInteger(textSelection.anchor) || textSelection.anchor < 0 || !Number.isSafeInteger(textSelection.focus) || textSelection.focus < 0
+        || node.kind !== 'text' || node.parent !== host.sheet
         || node.text !== fragment || ![bounds.x, bounds.y, bounds.w, bounds.h].every(Number.isFinite)
         || bounds.w < 0 || bounds.h < 0) throw new Error('Invalid text clipboard snapshot');
     const encoded = encodeNode(node, host.doc, host.encoder);
     if (!encoded.ok) throw new Error(encoded.error.reason);
-    return { roots: [], selected: [], skippedOpaque: [], nodes: [node], textItems: [{ text: fragment, bounds }], media: [], leases: [],
+    return { revision: host.doc.rev, textSelection, roots: [], selected: [], skippedOpaque: [], nodes: [node], textItems: [{ text: fragment, bounds }], media: [], leases: [],
         payload: { v: 1, nonce: randomNonce(), from: { board: host.board, sheet: host.sheet, kind: host.doc.kind },
             bounds, records: [encoded.value.text], media: Object.create(null) as Record<string, string> } };
 }
@@ -142,7 +147,7 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
             records.push(result.value.text);
             media.push(entry);
         }
-        return { roots: copiedRoots, selected: [...chosen], skippedOpaque, nodes, textItems: texts, media, leases,
+        return { revision: host.doc.rev, roots: copiedRoots, selected: [...chosen], skippedOpaque, nodes, textItems: texts, media, leases,
             payload: { v: 1, nonce: randomNonce(), from: { board: host.board, sheet: host.sheet, kind: host.doc.kind },
                 bounds: { x: left, y: top, w: right - left, h: bottom - top }, records, media: Object.create(null) as Record<string, string> } };
     } catch (error) {

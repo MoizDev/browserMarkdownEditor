@@ -16,6 +16,8 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly toolsLabel: string;
     readonly moreLabel: string;
     readonly readOnly: boolean;
+    readonly readOnlyReason?: string;
+    readonly toolDisabledReason?: (choice: ToolChoice) => string | undefined;
     readonly focusMode?: boolean;
     readonly selectTool: (choice: ToolChoice) => void;
     readonly zoomControls: ZoomControlsProps;
@@ -25,7 +27,7 @@ export interface BoardChromeProps extends BoardHeaderProps {
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, focusMode, selectTool, zoomControls, penPanel, debug, ...header }: BoardChromeProps) {
+    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     return <>
         {debug && <DebugOverlay {...debug} />}
@@ -34,7 +36,9 @@ export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolL
         {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
         <div className="board-chrome-bottom">
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool}
-                toolsLabel={toolsLabel} moreLabel={moreLabel} disabled={readOnly} select={selectTool} />
+                toolsLabel={toolsLabel} moreLabel={moreLabel}
+                disabledReason={choice => readOnly && choice.id !== 'select' && choice.id !== 'hand'
+                    ? (readOnlyReason ?? moreLabel) : toolDisabledReason?.(choice)} select={selectTool} />
             <div className="board-chrome-zoom"><ZoomControls {...zoomControls} /></div>
         </div>
     </div>}

@@ -3,7 +3,16 @@ import type { Node } from '../model/nodes';
 import type { Vec2 } from './path';
 import { ResizePlan } from './resizePlan';
 import { rotatePoint } from './transforms';
-import type { TransformCommandServices } from './transformCommands.types';
+import type { NudgeTransaction, TransformCommandServices } from './transformCommands.types';
+import { TranslationPlan } from './translation';
+
+export const nudgeSelection: NudgeTransaction = (doc, ids, direction, coarse, geometry) => {
+    const step = coarse ? 10 : 1;
+    const delta = direction === 'left' ? { x: -step, y: 0 } : direction === 'right' ? { x: step, y: 0 }
+        : direction === 'up' ? { x: 0, y: -step } : { x: 0, y: step };
+    const transaction = new TranslationPlan(doc, ids, geometry).transaction(delta);
+    return { ...transaction, label: 'Nudge selection' };
+};
 
 function eligible(nodes: readonly Readonly<Node>[]): void {
     if (!nodes.length || nodes.some(node => node.kind === 'opaque' || node.locked)) throw new RangeError('Selection cannot be transformed');

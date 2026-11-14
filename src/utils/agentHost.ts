@@ -50,6 +50,7 @@ export interface AgentHostDeps {
     root: FileSystemDirectoryHandle | null;
     searchToken: object;
     searchAgent: VaultToolHost['searchAgent'];
+    closedPdfAgent?: VaultToolHost['closedPdfAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
@@ -214,6 +215,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     const toolHost: VaultToolHost = {
         vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
         searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
+        closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
 
         getFileTree: () => getDeps().fileTree,
 

@@ -65,7 +65,8 @@ export interface ScheduledPane {
     /** Immediate critical preparation, not "a worker is pending"; becomes false when that work drains. */
     isCritical(layer: Layer, view: ViewState): boolean;
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
-    prepareFrame(view: ViewState, budget: FrameBudget): void;
+    prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
+    finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
     /** Stop input/speculative work and synchronously checkpoint through the session, never await a frame. */
@@ -211,7 +212,7 @@ interface PaneEntry {
     binding: FrameToken | null;
 }
 
-interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean }
+interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 interface ScheduledPoll { callback: () => void; earliestFrame: number }
 interface UploadMeter {
@@ -583,6 +584,14 @@ export class FrameScheduler {
                     if (!meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
                 }
             }
+            // Layers declare group/mask inventory during prepare; admit it once afterward, without
+            // extending the critical preparation or upload deadline. A compositor owns runnable retries.
+            for (const item of criticalOrder) {
+                if (item.platformPrepared && item.platformBudget && this.valid(item.entry, item.frame.token)) {
+                    this.call(item.entry, () => item.entry.pane.finishPrepareFrame?.(item.frame, item.platformBudget!));
+                    prepareOvershootMs = Math.max(prepareOvershootMs, performance.now() - prepareDeadline);
+                }
+            }
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
             const presentationStarted = performance.now();
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
@@ -687,7 +696,8 @@ export class FrameScheduler {
             if (!shouldYield()) {
                 if (meta) meta.layer.prepare(item.frame.view, budget);
                 else {
-                    item.entry.pane.prepareFrame(item.frame.view, budget);
+                    item.platformBudget = budget;
+                    item.entry.pane.prepareFrame(item.frame, budget);
                     item.platformPrepared = true;
                 }
             }

@@ -25,7 +25,7 @@ function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCo
   })
 }
 
-async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
+export async function inkOutline(coverage: InkCoverage, scale: number, signal?: AbortSignal): Promise<PathCommand[]> {
   const commands: PathCommand[] = []
   const job = new InkOutlineJob(coverage, scale, command => commands.push(command), Number.MAX_SAFE_INTEGER)
   try {

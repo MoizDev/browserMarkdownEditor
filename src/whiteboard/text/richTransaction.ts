@@ -76,16 +76,20 @@ function* validationSteps(fragment: RichFragment): Generator<void, void> {
     if (!closed(fragment, fragmentKeys) || !Array.isArray(fragment.blocks) || !fragment.blocks.length || fragment.blocks.length > MAX_TEXT_BLOCKS)
         throw new RangeError('Invalid rich fragment blocks');
     let length = fragment.blocks.length - 1, visited = 0;
+    let immutable = Object.isFrozen(fragment) && Object.isFrozen(fragment.blocks);
     for (const block of fragment.blocks) {
         if ((++visited & 255) === 0) yield;
         if (!closed(block, blockKeys) || !attributes(block) || !Array.isArray(block.runs) || !block.runs.length || (block.tail !== undefined && !rawArray(block.tail))
             || (block.carriers !== undefined && !Array.isArray(block.carriers)))
             throw new RangeError('Invalid rich fragment block');
+        immutable &&= Object.isFrozen(block) && Object.isFrozen(block.runs)
+            && (block.carriers === undefined || Object.isFrozen(block.carriers));
         let blockLength = 0;
         for (const run of block.runs) {
             if (!closed(run, runKeys) || typeof run.text !== 'string' || !closed(run.marks, markKeys)
                 || (run.tail !== undefined && !rawArray(run.tail)) || !(yield* plainRun(run.text))) throw new RangeError('Invalid rich fragment run');
             if ((++visited & 255) === 0) yield;
+            immutable &&= Object.isFrozen(run) && Object.isFrozen(run.marks);
             for (const flag of flags) if (run.marks[flag] !== undefined && run.marks[flag] !== true) throw new RangeError('Invalid rich fragment mark');
             if (run.marks.link !== undefined && !link(run.marks.link)) throw new RangeError('Invalid rich fragment link');
             if (run.marks.x !== undefined && typeof run.marks.x !== 'string') throw new RangeError('Invalid rich opaque mark');
@@ -95,11 +99,12 @@ function* validationSteps(fragment: RichFragment): Generator<void, void> {
         }
         for (const carrier of block.carriers ?? []) {
             if ((++visited & 255) === 0) yield;
+            immutable &&= Object.isFrozen(carrier);
             if (!closed(carrier, carrierKeys) || !attributes(carrier) || !rawArray(carrier.tail) || !Number.isSafeInteger(carrier.from) || !Number.isSafeInteger(carrier.to)
                 || carrier.from < 0 || carrier.to < carrier.from || carrier.to > blockLength) throw new RangeError('Invalid rich block carrier');
         }
     }
-    validFragments.add(fragment);
+    if (immutable) validFragments.add(fragment);
 }
 
 /** Validate only the incoming immutable fragment, never rescan the whole document on each edit. */
@@ -108,7 +113,7 @@ export function validateRichFragment(fragment: RichFragment): void {
     while (!steps.next().done) { /* complete synchronously for an atomic transaction */ }
 }
 
-/** Large admitted fragments can be validated before a synchronous transaction is opened. */
+/** Caller owns immutability across yields; only deeply frozen fragments are cached for later apply. */
 export async function validateRichFragmentCooperative(fragment: RichFragment, options: PlainTextOptions): Promise<void> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich fragment validation time slice');

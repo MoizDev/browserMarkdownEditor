@@ -24,6 +24,8 @@ export { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDif
 export type { RichTextChange, RichTextDiffOptions } from './richDiff';
 export { applyRichTransaction, validateRichFragment, validateRichFragmentCooperative, richTransactionLength } from './richTransaction';
 export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
+export { snapshotRichFragmentCooperative } from './fragmentSnapshot';
+export type { FragmentSnapshotOptions } from './fragmentSnapshot';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {

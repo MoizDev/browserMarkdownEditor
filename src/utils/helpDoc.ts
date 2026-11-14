@@ -412,6 +412,15 @@ to go to that page. The button next to it **inverts the pages** so they are easy
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
 
+**Copying PDF text.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\` to copy it.
+With a PDF page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks
+**the whole document** for copying. Follow with \`Cmd + C\` / \`Ctrl + C\` to gather every
+physical page, including pages you have never opened, separated by a newline. A notice
+shows progress or a blocked clipboard write. Changing the selection returns to ordinary
+passage copying. Whole-document text above **16 MiB** is refused rather than silently
+cut off; select a smaller passage instead. The text-order/extraction warning can mean
+columns or unusual reading order, not necessarily missing text; compare the original.
+
 **Turning a sideways scan the right way up.** The two curved arrows beside the
 invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
 left. It turns the whole document; hold \`Alt\` (\`Option\`) while clicking an

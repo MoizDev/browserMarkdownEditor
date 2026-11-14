@@ -61,6 +61,7 @@ export interface BoardInputServices {
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
+  drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
   continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach

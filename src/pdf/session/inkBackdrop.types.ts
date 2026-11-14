@@ -12,6 +12,8 @@ export interface PdfInkBackdropOptions {
     isFocused(): boolean;
     emphasisEnabled(): boolean;
     onError(error: unknown): void;
+    /** Host must cover the original surface opaquely while this is true. */
+    onUpdating?(updating: boolean): void;
     signal?: AbortSignal;
 }
 export interface PdfInkBackdrop {
@@ -23,5 +25,7 @@ export interface PdfInkBackdrop {
         captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
     };
     setVisible(visible: boolean, focused?: boolean): void;
+    /** Call only after a real committed current shared frame, never a bridge presentation. */
+    notePresentation(): void;
     dispose(): void;
 }

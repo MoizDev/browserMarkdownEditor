@@ -629,7 +629,10 @@ export class FrameScheduler {
 
     private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
         meter: UploadMeter, criticalPending: () => boolean): number {
-        if (performance.now() >= deadline) return 0;
+        if (performance.now() >= deadline) {
+            if (!meta) this.mark(item.entry, 'platform-prepare-deferred');
+            return 0;
+        }
         let overshoot = 0;
         this.call(item.entry, () => {
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= deadline ||
@@ -667,7 +670,7 @@ export class FrameScheduler {
             if (!shouldYield()) {
                 if (meta) meta.layer.prepare(item.frame.view, budget);
                 else item.entry.pane.prepareFrame(item.frame.view, budget);
-            }
+            } else if (!meta) this.mark(item.entry, 'platform-prepare-deferred');
             overshoot = Math.max(0, performance.now() - deadline);
         });
         return overshoot;

@@ -22,19 +22,22 @@ function rectangle(x0: number, y0: number, x1: number, y1: number): readonly Vec
     return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
 }
 
-/** Exact visible logical AABB for unrotated rectangular semantics clipped by
- * convex ancestor frames. Other partial geometry is refused, never approximated. */
+/** Exact visible logical AABB for rectangular semantics clipped by convex
+ * ancestor frames. Other partial geometry is refused, never approximated. */
 export async function prepareVisibleSnapBounds(doc: BoardDoc, id: NodeId, bounds: Readonly<Rect>, options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<Rect | null> {
     const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Visible snap bounds became stale', 'AbortError'); };
     check(); const node = doc.nodes.get(id); if (!node) throw new Error('Snap target disappeared');
-    if (!['figure', 'text', 'sticky', 'clip', 'linkcard', 'embed', 'picture', 'frame'].includes(node.kind) || worldPose(doc, id).rotation !== 0)
-        throw new Error('Frame-clipped snap target requires exact visible geometry');
+    const pose = worldPose(doc, id);
+    if (!['figure', 'text', 'sticky', 'clip', 'linkcard', 'embed', 'picture', 'frame'].includes(node.kind)
+        || (node.kind !== 'frame' && pose.rotation !== 0)) throw new Error('Frame-clipped snap target requires exact visible geometry');
     if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0)
         throw new RangeError('Visible snap rectangle is degenerate');
-    const operands: ExactConvexOperand[] = [{ points: rectangle(bounds.x, bounds.y, sum(bounds.x, bounds.width), sum(bounds.y, bounds.height)) }];
+    const operands: ExactConvexOperand[] = node.kind === 'frame'
+        ? [{ points: rectangle(0, 0, node.w, node.h), transform: [Math.cos(pose.rotation), Math.sin(pose.rotation), -Math.sin(pose.rotation), Math.cos(pose.rotation), pose.x, pose.y] }]
+        : [{ points: rectangle(bounds.x, bounds.y, sum(bounds.x, bounds.width), sum(bounds.y, bounds.height)) }];
     for (const frame of boardFrameAncestors(doc, node)) {
         const pose = worldPose(doc, frame.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         operands.push({ points: rectangle(0, 0, frame.w, frame.h), transform: [c, s, -s, c, pose.x, pose.y] });

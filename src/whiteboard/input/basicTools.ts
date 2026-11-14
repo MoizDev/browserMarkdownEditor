@@ -1,4 +1,4 @@
-import type { GestureOwner, Modifiers, RealSample, Tool } from './tool'
+import { sampleSurface, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool'
 import type { NodeId } from '../model/ids'
 import { SweepQueue, type SweepQueueServices } from './sweepQueue'
 
@@ -115,13 +115,13 @@ class HandGesture implements GestureOwner {
   private last: InkPoint
   private ended = false
   constructor(sample: RealSample, private readonly context: HandContext) {
-    this.pointerIds = new Set([sample.pointerId]); this.last = context.toSurface(sample)
+    this.pointerIds = new Set([sample.pointerId]); this.last = sampleSurface(sample, context.toSurface)
   }
   update(samples: readonly RealSample[]): void {
     if (this.ended) return
     for (const sample of samples) {
       if (!this.pointerIds.has(sample.pointerId)) continue
-      const point = this.context.toSurface(sample)
+      const point = sampleSurface(sample, this.context.toSurface)
       this.context.panBy({ x: this.last.x - point.x, y: this.last.y - point.y })
       this.last = point
     }

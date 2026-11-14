@@ -159,6 +159,12 @@ export async function describeLiveAgentView(options: {
     readonly sheet: SheetId;
     isCurrent(): boolean;
 }): Promise<DrawingViewInfo | NotebookViewInfo | PdfViewInfo> {
+    const input = options.view;
+    const view: AgentViewSnapshot = input.kind === 'drawing'
+        ? { ...input, camera: { ...input.camera }, viewport: { ...input.viewport }, selectedShapeIds: [...input.selectedShapeIds] }
+        : input.kind === 'notebook'
+            ? { ...input, visiblePages: [...input.visiblePages], selectedShapeIds: [...input.selectedShapeIds] }
+            : { ...input, visiblePages: [...input.visiblePages], ...(input.selectedShapeIds ? { selectedShapeIds: [...input.selectedShapeIds] } : {}) };
     return options.authority.run(async context => {
         const revision = options.session.doc.rev;
         const guard = () => {
@@ -168,7 +174,6 @@ export async function describeLiveAgentView(options: {
         guard();
         const sheet = options.session.doc.sheets.get(options.sheet);
         if (!sheet) throw new RangeError('Sheet does not exist');
-        const view = options.view;
         const kind = options.session.doc.kind;
         if ((view.kind === 'drawing' && kind !== 'whiteboard') || (view.kind === 'notebook' && kind !== 'notebook')
             || (view.kind === 'pdf-annotate' && kind !== 'pdf-ink')) throw new TypeError('View kind does not match the board');

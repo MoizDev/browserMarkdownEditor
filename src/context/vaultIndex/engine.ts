@@ -16,11 +16,11 @@ export class IndexEngine {
     private ioActive = 0;
     private ioWaiters: (() => void)[] = [];
     private reportedTimes = new Map<string, number>();
-    private changedTimes = new Map<string, number>();
+    private changedTimes = new Map<string, [number, number]>();
     constructor(readonly session: IndexSession, private reader: IndexReader,
         private publish: (graph: IndexGraph) => void,
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,
-        private onTimes?: (changes: [string, number][], sweepComplete: boolean) => void) {}
+        private onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void) {}
 
     close(): void {
         this.stopped = true;
@@ -74,10 +74,11 @@ export class IndexEngine {
         if (!held) return;
         const rev = this.store.revision(file.path);
         try {
+            const startedAt = performance.timeOrigin + performance.now();
             const stat = await this.reader.stat(file);
             if (this.store.revision(file.path) === rev && this.reportedTimes.get(file.path) !== stat.mtime) {
                 this.reportedTimes.set(file.path, stat.mtime);
-                this.changedTimes.set(file.path, stat.mtime);
+                this.changedTimes.set(file.path, [stat.mtime, startedAt]);
             }
             const previous = this.store.records.get(file.path);
             if (previous && previous.mtime === stat.mtime && previous.size === stat.size) return;
@@ -102,7 +103,7 @@ export class IndexEngine {
         for (let start = 0; start < files.length && !this.stopped && !context.cancelled; start += 8) {
             const reads = await Promise.all(files.slice(start, start + 8).map(file => this.read(file, context)));
             if (this.changedTimes.size) {
-                this.onTimes?.([...this.changedTimes], false);
+                this.onTimes?.([...this.changedTimes].map(([path, [mtime, startedAt]]) => [path, mtime, startedAt]), false);
                 this.changedTimes.clear();
             }
             for (const read of reads) {

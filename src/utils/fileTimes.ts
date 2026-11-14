@@ -16,6 +16,7 @@
 import type { FileTreeFileNode } from '../types';
 
 let times = new Map<string, number>();
+const lastWrites = new Map<string, number>();
 let version = 0;
 const listeners = new Set<() => void>();
 
@@ -60,6 +61,7 @@ export function getFileTimes(): ReadonlyMap<string, number> {
  *  save without re-statting the vault. */
 export function recordFileWritten(path: string, time: number = Date.now()): void {
     times.set(path, time);
+    lastWrites.set(path, performance.timeOrigin + performance.now());
     for (const walk of walksInFlight) walk.set(path, time);
     notify();
 }
@@ -79,10 +81,20 @@ export function stampFileTimes(entries: Iterable<readonly [path: string, time: n
     if (any) notify();
 }
 
+/** A worker stat begun before an own save must not overwrite its newer stamp. */
+export function stampIndexedFileTimes(entries: Iterable<readonly [path: string, time: number, startedAt: number]>): void {
+    const current: [string, number][] = [];
+    for (const [path, time, startedAt] of entries) {
+        if ((lastWrites.get(path) ?? -Infinity) < startedAt) current.push([path, time]);
+    }
+    stampFileTimes(current);
+}
+
 /** For a vault switch: the old vault's paths mean nothing in the new one. */
 export function resetFileTimes(): void {
     generation++;
     walksInFlight.clear();
+    lastWrites.clear();
     times = new Map();
     notify();
 }

@@ -19,7 +19,11 @@ function validateReply(op: WriterOp, value: unknown): void {
     if (op === 'writer.prepareSource') {
         if (typeof value.writerSession !== 'string' || !value.writerSession || typeof value.sourceFingerprint !== 'string' || !HASH.test(value.sourceFingerprint) || !record(value.inspection)) throw new Error('Malformed PDF writer preparation');
     } else if (op === 'writer.emitInk') {
-        if (value.schema !== 1 || !(value.pdf instanceof Blob) || !Array.isArray(value.pages)) throw new Error('Malformed emitted ink');
+        if (value.schema !== 1 || !(value.pdf instanceof Blob) || !value.pdf.size || !Array.isArray(value.pages) ||
+            value.pages.some(page => !record(page) || !finiteCount(page.sourcePage) || !finiteCount(page.inkPage) ||
+                typeof page.width !== 'number' || !Number.isFinite(page.width) || page.width <= 0 ||
+                typeof page.height !== 'number' || !Number.isFinite(page.height) || page.height <= 0 ||
+                typeof page.hash !== 'string' || !HASH.test(page.hash))) throw new Error('Malformed emitted ink');
     } else if (op === 'writer.stageAnnotated') {
         if (typeof value.stageId !== 'string' || !value.stageId || typeof value.sourceFingerprint !== 'string' || !HASH.test(value.sourceFingerprint) || !record(value.geometryEngine)) throw new Error('Malformed staged PDF');
     } else if (op === 'writer.finishAnnotated') {
@@ -43,6 +47,16 @@ export function typedPdfWriter(session: PdfWriterSession): TypedPdfWriter {
         async request<K extends WriterOp>(op: K, args: Args<K>, options: PdfRequestOptions): Promise<Result<K>> {
             const result = await session.request(op, args, options);
             validateReply(op, result);
+            if (op === 'writer.prepareSource') {
+                const input = args as WriterOperations['writer.prepareSource']['args'];
+                const output = result as WriterOperations['writer.prepareSource']['result'];
+                if (output.sourceFingerprint !== input.source.pristineFingerprint) throw new Error('PDF writer prepared a different source');
+            }
+            if (op === 'writer.finishAnnotated') {
+                const input = args as WriterOperations['writer.finishAnnotated']['args'];
+                const output = result as WriterOperations['writer.finishAnnotated']['result'];
+                if (output.revision !== input.revision || output.writeId !== input.writeId) throw new Error('PDF writer returned a different revision');
+            }
             return result;
         },
         close: () => session.close(),

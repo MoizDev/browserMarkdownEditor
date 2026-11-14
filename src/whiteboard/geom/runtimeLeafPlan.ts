@@ -21,6 +21,8 @@ export interface BoardLeafResizePlanOptions {
     readonly ids: readonly NodeId[];
     readonly down: Vec2;
     readonly handle: ResizeHandle;
+    /** Programmatic whole-selection scaling can include a single sticky. */
+    readonly scope?: 'single' | 'multi';
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -172,7 +174,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                 return ops;
             } finally { if (!transferred) release(leases); }
         },
-    }); } catch (error) { scope.release(); throw error; }
+    }, options.scope); } catch (error) { scope.release(); throw error; }
     const close = () => {
         if (closed) return; closed = true; generation++; plan.cancel();
         try { clear(); } finally { if (pending) { release(pending.leases); pending = undefined; } scope.release(); }

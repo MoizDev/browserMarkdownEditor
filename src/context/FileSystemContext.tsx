@@ -1,5 +1,6 @@
 import { decodeDocumentText } from '../utils/diskVersion';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import { beginForegroundRead } from './vaultIndex/foreground';
 import type { ReadOnlyFileSnapshot } from '../types/reading';
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
@@ -2124,18 +2125,24 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      *  over the RAW bytes (CRLF and all) — hashing the normalized text would make
      *  a text document and a PDF disagree about what "unchanged" means. */
     const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        const version = await versionOfSnapshot(file, buf);
-        return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            const version = await versionOfSnapshot(file, buf);
+            return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+        } finally { endRead(); }
     }, []);
 
     const readFileSnapshot = useCallback(async (handle: FileSystemFileHandle, signal?: AbortSignal): Promise<ReadOnlyFileSnapshot> => {
         signal?.throwIfAborted();
         let blob: File;
-        try { blob = await handle.getFile(); } catch (error) {
-            if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
-            blob = await handle.getFile();
-        }
+        const endRead = beginForegroundRead();
+        try {
+            try { blob = await handle.getFile(); } catch (error) {
+                if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
+                blob = await handle.getFile();
+            }
+        } finally { endRead(); }
         signal?.throwIfAborted();
         const lifetime = new AbortController();
         const abort = () => lifetime.abort();
@@ -2160,8 +2167,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const { file, buf } = await readSnapshot(fileHandle);
-        return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        const endRead = beginForegroundRead();
+        try {
+            const { file, buf } = await readSnapshot(fileHandle);
+            return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+        } finally { endRead(); }
     }, []);
 
     /**

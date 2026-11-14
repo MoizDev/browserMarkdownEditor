@@ -8,6 +8,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, isSheetParent } from '../model/doc';
 import { inspectOpaqueSubtrees, prepareSelectionScope } from './selectionScope';
 import { prepareSelectionOrderPlan } from './selectionOrderPlan';
+import { prepareContainerContents } from './containerContents';
 import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/ids';
 import { createFrame, createGroup, type Node } from '../model/nodes';
 import { boardPageStack, pageOrigin } from '../model/pages';
@@ -177,12 +178,17 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                     width = box[2] - box[0] + 2 * padding; height = box[3] - box[1] + 2 * padding;
                 }
             }
+            const siblings = childrenOf(doc, parent), lastBranch = branch(roots[roots.length - 1], parent);
+            let insertion = -1;
+            for (let i = 0; i < siblings.length; i++) {
+                if (siblings[i].id === lastBranch.id) { insertion = i; break; }
+                if (++work >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); work = 0; started = performance.now(); }
+            }
+            if (insertion < 0) throw new Error('Selection insertion point disappeared');
+            const nextSibling = siblings[insertion + 1]?.id ?? null;
             return builder => {
                 if (kind === 'frame' && options.zoom() !== zoom) throw new DOMException('Frame selection view changed', 'AbortError');
-                const siblings = childrenOf(doc, parent), lastBranch = branch(roots[roots.length - 1], parent);
-                const index = siblings.findIndex(node => node.id === lastBranch.id);
-                if (index < 0) throw new Error('Selection insertion point disappeared');
-                const order = allocateOrderKeys(doc, builder, parent, lastBranch.id, siblings[index + 1]?.id ?? null, 1)[0];
+                const order = allocateOrderKeys(doc, builder, parent, lastBranch.id, nextSibling, 1)[0];
                 const place = local(parent, world), id = newNodeId(doc);
                 const base = { id, parent, order, page: place.page, x: place.x, y: place.y, ext: null };
                 const container = kind === 'group' ? createGroup(base) : createFrame({ ...base, w: width, h: height, name, color: null });
@@ -203,21 +209,9 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
         ungroup(ids: readonly NodeId[], signal?: AbortSignal) {
             return guarded(ids, 'Ungroup', signal, async (roots, state, activeSignal) => {
                 if (!roots.length || roots.some(node => node.kind !== 'group')) throw new Error('Ungroup requires groups');
-                const children = new Map<NodeId, Node[]>();
-                for (const root of roots) {
-                    const direct = [...childrenOf(doc, root.id)], pending = [...direct];
-                    let visited = 0, started = performance.now();
-                    while (pending.length) {
-                        const node = pending.pop()!;
-                        if (node.kind === 'opaque' || node.locked) throw new Error('Locked or opaque descendants prevent ungrouping');
-                        for (const child of childrenOf(doc, node.id)) {
-                            pending.push(child);
-                            if (++visited >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); visited = 0; started = performance.now(); }
-                        }
-                        if (++visited >= 256 || performance.now() - started >= 3) { await cooperate(); check(state, activeSignal); visited = 0; started = performance.now(); }
-                    }
-                    children.set(root.id, direct);
-                }
+                const children = await prepareContainerContents(doc, roots, { signal: activeSignal, cooperate,
+                    current: () => { try { check(state, activeSignal); return true; } catch { return false; } } });
+                check(state, activeSignal);
                 return builder => {
                     const moved: NodeId[] = [];
                     for (const root of roots) {
@@ -239,10 +233,11 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
             }, moved => moved);
         },
         removeFrames(ids: readonly NodeId[], signal?: AbortSignal) {
-            return guarded(ids, 'Remove frame', signal, async roots => {
+            return guarded(ids, 'Remove frame', signal, async (roots, state, activeSignal) => {
                 if (!roots.length || roots.some(node => node.kind !== 'frame')) throw new Error('Remove frame requires frames');
-                const contents = new Map<NodeId, readonly Node[]>();
-                for (const root of roots) contents.set(root.id, [...childrenOf(doc, root.id)]);
+                const contents = await prepareContainerContents(doc, roots, { signal: activeSignal, cooperate,
+                    current: () => { try { check(state, activeSignal); return true; } catch { return false; } } });
+                check(state, activeSignal);
                 return builder => {
                     const moved: NodeId[] = [];
                     for (const original of roots) {

@@ -2,6 +2,7 @@ import type { Rect } from '../../platform/types';
 
 /** Transferred selection geometry from one physical page, in page space. */
 export interface PdfHighlightGeometry {
+    readonly text: string;
     readonly charU16: Uint32Array;
     readonly loose: Float32Array;
     readonly flags: Uint8Array;
@@ -36,7 +37,9 @@ export function* pdfHighlightRuns(geometry: PdfHighlightGeometry, from: number, 
             const x0 = geometry.loose[index * 4], y0 = geometry.loose[index * 4 + 1];
             const x1 = geometry.loose[index * 4 + 2], y1 = geometry.loose[index * 4 + 3];
             if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
-            chunk.push({ index, from: geometry.charU16[index], to: geometry.charU16[index + 1],
+            const from = geometry.charU16[index], cp = geometry.text.codePointAt(from);
+            const to = Math.min(geometry.charU16[index + 1], from + (cp === undefined ? 0 : cp > 0xffff ? 2 : 1));
+            chunk.push({ index, from, to,
                 rect: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
                 coordinate: (x0 + x1) * dx + (y0 + y1) * dy });
         }

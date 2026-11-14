@@ -262,12 +262,23 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
+  let pointerClient: Point | null = null
+  const unbindPointer = services.tools.bindPresentedPointer(view.token, () => {
+    if (!current() || !pointerClient) return null
+    const mapping = view.mappings.latest()
+    return mapping ? mapping.clientToWorld(pointerClient.x, pointerClient.y) : null
+  })
+  const rememberPointer = (event: PointerEvent) => {
+    if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) pointerClient = { x: event.clientX, y: event.clientY }
+  }
+  const forgetPointer = () => { pointerClient = null }
   const doubleTap = new TouchDoubleTap({ doc: session.doc, camera: view.camera,
     eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
     changed: services.cameraChanged })
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
     id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
+    rememberPointer(event)
     services.textInput?.cancelPending()
     if (!current()) return
     services.cancelMotion?.()
@@ -289,6 +300,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
   }
   const move = (event: PointerEvent) => {
+    rememberPointer(event)
     services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
@@ -328,6 +340,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('dblclick', doubleClick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
+  view.surface.addEventListener('pointerleave', forgetPointer, true)
   view.surface.addEventListener('pointerup', up, true)
   view.surface.addEventListener('pointercancel', up, true)
   view.surface.addEventListener('lostpointercapture', up, true)
@@ -511,7 +524,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)
@@ -522,6 +535,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('dblclick', doubleClick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)
+    view.surface.removeEventListener('pointerleave', forgetPointer, true)
     view.surface.removeEventListener('pointerup', up, true)
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)

@@ -482,7 +482,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         current, changed: options.cameraChanged, error: report });
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         registerPending, error: report, keptLocked: options.onKeptLocked });
-    const styleShortcuts = createStyleShortcuts({ runtime, current, registerPending, error: report,
+    const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
+        hit: (point, signal) => options.point.hit(point, 'mouse', signal), current, registerPending, error: report,
         toggleWhiteboardTheme: options.toggleWhiteboardTheme });
     const command = (id: string): boolean => {
         if (cameraCommands.run(id) || selectionCommands.run(id) || styleShortcuts.run(id)) return true;

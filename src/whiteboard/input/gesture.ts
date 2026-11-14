@@ -1,4 +1,5 @@
 import type { NodeId } from '../model/ids'
+import type { InputToken } from './tool'
 
 // Tool choice is session UI state, not document history. Tool implementations and
 // their command services are registered by the host, not imported by the router.
@@ -34,6 +35,7 @@ export class ToolState {
   private readonly penContacts = new Map<symbol, Map<number, number>>()
   private readonly penContactListeners = new Set<(id: number, down: boolean, direct: boolean, time: number) => void>()
   private penContactSequence = 0
+  private readonly pointerResolvers = new Map<string, () => Readonly<{ x: number; y: number }> | null>()
   private documentSyncDepth = 0
 
   constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure', initialLocked = false) {
@@ -46,6 +48,15 @@ export class ToolState {
   }
 
   getSnapshot = (): ToolStateSnapshot => this.snapshot
+  private pointerKey(token: InputToken): string { return JSON.stringify([token.vaultEpoch, token.tabId, token.sessionGeneration, token.viewGeneration]) }
+  bindPresentedPointer(token: InputToken, resolve: () => Readonly<{ x: number; y: number }> | null): () => void {
+    const key = this.pointerKey(token); this.pointerResolvers.set(key, resolve)
+    return () => { if (this.pointerResolvers.get(key) === resolve) this.pointerResolvers.delete(key) }
+  }
+  presentedPointer(token: InputToken): Readonly<{ x: number; y: number }> | null {
+    const point = this.pointerResolvers.get(this.pointerKey(token))?.() ?? null
+    return point && Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null
+  }
   get syncingDocument(): boolean { return this.documentSyncDepth > 0 }
   withDocumentSync<T>(action: () => T): T {
     this.documentSyncDepth++

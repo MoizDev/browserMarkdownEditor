@@ -3,10 +3,13 @@ import type { Op } from '../change/ops';
 import { BoardStyleCommands } from '../chrome/styleCommands';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
+import type { InputToken } from '../input/tool';
 import type { Fill } from '../model/styles';
 
 export interface StyleShortcutOptions {
     readonly runtime: BoardRuntime;
+    readonly inputToken: InputToken;
+    hit(point: Readonly<{ x: number; y: number }>, signal: AbortSignal): Promise<NodeId | null>;
     current(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
@@ -72,6 +75,26 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
             .finally(() => { controllers.delete(controller); unregister?.(); });
         return true;
     };
+    const sampleAtPointer = (): boolean => {
+        if (!writable()) return false;
+        const point = runtime.tools.presentedPointer(options.inputToken);
+        if (!point) return false;
+        const initial = { x: point.x, y: point.y }, revision = doc.rev, selection = runtime.selection.getSnapshot();
+        const turn = generation, controller = new AbortController(); controllers.add(controller);
+        let unregister: (() => void) | undefined;
+        try { unregister = options.registerPending(() => controller.abort()); }
+        catch (error) { controllers.delete(controller); options.error(error); return false; }
+        const active = () => {
+            const now = runtime.tools.presentedPointer(options.inputToken);
+            return writable() && !controller.signal.aborted && generation === turn && doc.rev === revision
+                && runtime.selection.getSnapshot() === selection && !!now && now.x === initial.x && now.y === initial.y;
+        };
+        void options.hit(initial, controller.signal).then(id => {
+            if (id && active()) commands.sampleStyle(id);
+        }).catch(error => { if (!controller.signal.aborted && current()) options.error(error); })
+            .finally(() => { controllers.delete(controller); unregister?.(); });
+        return true;
+    };
     const flag = (key: 'view.grid' | 'view.focusMode'): boolean => {
         if (!writable()) return false;
         const value = key === 'view.grid' ? !doc.view.grid : !doc.view.focusMode;
@@ -85,13 +108,7 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
             case 'style.white': return change('white', null);
             case 'style.fill': return change(null, 'fill');
             case 'style.linedFill': return change(null, 'lined-fill');
-            case 'style.sample': {
-                if (!writable()) return false;
-                const active = runtime.selection.getSnapshot().active;
-                if (!active) return false;
-                try { commands.sampleStyle(active); } catch (error) { options.error(error); }
-                return true;
-            }
+            case 'style.sample': return sampleAtPointer();
             case 'preferences.grid': return flag('view.grid');
             case 'preferences.focus': return flag('view.focusMode');
             case 'preferences.theme':

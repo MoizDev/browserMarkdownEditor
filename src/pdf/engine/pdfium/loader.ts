@@ -150,7 +150,7 @@ export async function loadPdfiumModule(options: PdfiumLoadOptions): Promise<Pdfi
         },
         initLibrary(configPointer) {
             ensure();
-            if (initialized || !Number.isSafeInteger(configPointer) || configPointer <= 0 || configPointer + abi.structs.libraryConfig.size > module.HEAPU8.byteLength) throw broken('Invalid PDFium library initialization');
+            if (initialized || !Number.isSafeInteger(configPointer) || configPointer <= 0 || configPointer % 4 !== 0 || configPointer + abi.structs.libraryConfig.size > module.HEAPU8.byteLength) throw broken('Invalid PDFium library initialization');
             invoke('FPDF_InitLibraryWithConfig', [configPointer]);
             initialized = true;
         },

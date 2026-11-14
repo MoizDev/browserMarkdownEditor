@@ -2424,18 +2424,30 @@ export default function App() {
     }
     if (!current() || contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
     const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
-    const disk = await readBytesVersioned(handle as FileSystemFileHandle);
+    let disk: Awaited<ReturnType<typeof readBytesVersioned>>;
+    try { disk = await readBytesVersioned(handle as FileSystemFileHandle); }
+    catch (error) {
+      if (current() && error instanceof DOMException && error.name === 'NotFoundError') setDiskState(id, 'deleted');
+      throw error;
+    }
+    if (current() && baseline && disk.version.hash !== baseline.hash) setDiskState(id, 'conflict');
     if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
         contentOf(path) !== content || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
     const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && contentOf(path) === content &&
       !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
     const validate = async () => {
       if (!valid()) return false;
-      try { const latest = await readBytesVersioned(handle as FileSystemFileHandle); return valid() && latest.version.hash === disk.version.hash; }
-      catch { return false; }
+      try {
+        const latest = await readBytesVersioned(handle as FileSystemFileHandle);
+        if (valid() && latest.version.hash !== disk.version.hash) setDiskState(id, 'conflict');
+        return valid() && latest.version.hash === disk.version.hash;
+      } catch (error) {
+        if (valid() && error instanceof DOMException && error.name === 'NotFoundError') setDiskState(id, 'deleted');
+        return false;
+      }
     };
     return { bytes: disk.bytes, valid, validate };
-  }, [contentOf, flushTab, readBytesVersioned]);
+  }, [contentOf, flushTab, readBytesVersioned, setDiskState]);
 
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
@@ -2460,11 +2472,16 @@ export default function App() {
     const handle = tab?.file.handle as FileSystemFileHandle | undefined;
     const preview = tab ? takePdfRotation(tab.id) : undefined;
     if (!tab || !handle) return;
+    // Do this before taking the per-tab write chain: a canvas checkpoint itself
+    // uses that chain and would deadlock if awaited from inside a rotation.
+    try { await getView(path)?.flushPending?.(); }
+    catch { notifyRef.current('The PDF annotations could not be saved. Keep the file open and retry before rotating.'); return; }
+    if (!tabsRef.current.some(current => current.id === tab.id && current.file.path === path && current.file.handle === handle)) return;
     if (diskStateRef.current.get(tab.id)) {
       notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
       return;
     }
-    if (tab.dirty || flushingRef.current.has(tab.id)) {
+    if (tabsRef.current.find(current => current.id === tab.id)?.dirty || flushingRef.current.has(tab.id) || getView(path)?.hasPendingEdits?.()) {
       notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
       return;
     }

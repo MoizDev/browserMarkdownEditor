@@ -5308,6 +5308,14 @@ export default function App() {
     if (batch.rescan || batch.modified.size) notifySearchChanges();
     const graphOwner = indexGraphRef.current;
     if (graphOwner && graphOwner.activation === getVaultActivation()) {
+      const changedPaths = [...batch.modified, ...batch.appeared, ...batch.disappeared, ...batch.moved.flatMap(move => [move.from, move.to])];
+      if (batch.rescan || changedPaths.some(path => path.split('/').includes(ASSETS_DIR))) {
+        graphOwner.client.suspendMedia();
+        const tree = fileTreeRef.current;
+        void indexMediaAssets(tree).then(entries => {
+          if (indexGraphRef.current === graphOwner && graphOwner.activation === getVaultActivation() && fileTreeRef.current === tree) return graphOwner.client.setMediaAssets(entries);
+        }).catch(() => {});
+      }
       if (batch.rescan) void graphOwner.client.sweep('rescan').catch(() => {});
       else graphOwner.echo.hints([...batch.modified]);
     }
@@ -5327,7 +5335,7 @@ export default function App() {
         stampFileTimes(stamps);
       })();
     }
-  }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile, requeueAllAssets, requeueAssetsAffected]);
+  }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile, requeueAllAssets, requeueAssetsAffected, indexMediaAssets, indexGraphRef, getVaultActivation]);
 
   // The belt to the observer's braces: coming back to the window re-checks
   // every open document (one stat each). Without an observer at all — an older

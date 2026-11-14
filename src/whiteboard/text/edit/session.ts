@@ -359,7 +359,7 @@ export class TextEditSession {
         this.blinkTimer = null;
         this.typingHistory.dispose();
         this.pointer.dispose(); this.host.dispose();
-        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().trim()) {
+        if (this.services.alive() && this.services.isStandaloneText() && !this.services.plainText().length) {
             const history = this.services.history;
             const tokens = this.typingHistory.stepTokens;
             try {

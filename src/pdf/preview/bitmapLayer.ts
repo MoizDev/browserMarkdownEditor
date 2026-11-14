@@ -2,6 +2,11 @@ import type { ViewState, LayerHost, GfxDevice, GpuPass, TextureHandle, FrameBudg
 import { PreviewBitmapStore } from './bitmapStore';
 import type { PreviewRect, PreviewTile } from './bitmapStore';
 
+export interface PreviewExpectedPage {
+    readonly rect: PreviewRect;
+    readonly key: string;
+}
+
 interface UploadedTile {
     readonly device: GfxDevice;
     readonly texture: TextureHandle;
@@ -30,7 +35,7 @@ export class PreviewBitmapLayer implements Layer {
     private readonly uploaded = new Map<PreviewTile, UploadedTile>();
     private pendingFrame = false;
     private disposed = false;
-    private expected = new Map<number, PreviewRect>();
+    private expected = new Map<number, PreviewExpectedPage>();
 
     constructor(private readonly host: LayerHost) {
         this.bitmaps = new PreviewBitmapStore(host.allocator.cpu, () => {
@@ -39,7 +44,7 @@ export class PreviewBitmapLayer implements Layer {
         });
     }
 
-    setExpected(pages: ReadonlyMap<number, PreviewRect>): void {
+    setExpected(pages: ReadonlyMap<number, PreviewExpectedPage>): void {
         this.expected = new Map(pages);
         this.host.invalidate('pdf-preview-layout');
     }
@@ -49,14 +54,15 @@ export class PreviewBitmapLayer implements Layer {
             x: view.camera.x, y: view.camera.y,
             width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z,
         };
-        for (const [index, pageRect] of this.expected) {
+        for (const [index, expected] of this.expected) {
+            const pageRect = expected.rect;
             const left = Math.max(bounds.x, pageRect.x);
             const top = Math.max(bounds.y, pageRect.y);
             const right = Math.min(bounds.x + bounds.width, pageRect.x + pageRect.width);
             const bottom = Math.min(bounds.y + bounds.height, pageRect.y + pageRect.height);
             if (right <= left || bottom <= top) continue;
             const page = this.bitmaps.entries.get(index);
-            if (!page || !page.tiles.length) return { complete: false, sharp: false };
+            if (!page || page.key !== expected.key || !page.tiles.length) return { complete: false, sharp: false };
             const tiles = page.tiles;
             const x0 = Math.min(...tiles.map(tile => tile.destination.x));
             const y0 = Math.min(...tiles.map(tile => tile.destination.y));

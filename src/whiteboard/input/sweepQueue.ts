@@ -25,6 +25,8 @@ interface Segment {
 // revision change restarts every segment; never commit a mixture of revisions.
 export class SweepQueue {
   private readonly segments: Segment[] = []
+  private readonly visible = new Set<NodeId>()
+  private next = 0
   private revision: number
   private scheduled: (() => void) | null = null
   private closed = false
@@ -55,6 +57,8 @@ export class SweepQueue {
   }
   private restart(revision: number): void {
     this.revision = revision
+    this.next = 0
+    this.visible.clear()
     for (const segment of this.segments) { segment.cursor?.cancel(); segment.cursor = null; segment.ids.clear(); segment.complete = false }
     this.services.preview(new Set())
   }
@@ -63,26 +67,23 @@ export class SweepQueue {
     try {
       const revision = this.services.sceneRevision()
       if (revision !== this.revision) this.restart(revision)
-      const segment = this.segments.find(item => !item.complete)
+      const segment = this.segments[this.next]
       if (segment) {
         segment.cursor ??= this.services.beginSweep(segment.from, segment.to, segment.topOnly)
         const result = segment.cursor.step({ deadline: this.services.now() + 0.25, maxVisits: this.maxVisits })
         if (result.status === 'stale' || this.services.sceneRevision() !== this.revision) this.restart(this.services.sceneRevision())
         else if (result.status === 'cancelled') throw new Error('Sweep cursor cancelled unexpectedly')
         else {
-          for (const id of result.ids) segment.ids.add(id)
+          for (const id of result.ids) { segment.ids.add(id); this.visible.add(id) }
           segment.complete = result.status === 'complete'
-          const visible = new Set<NodeId>()
-          for (const item of this.segments) for (const id of item.ids) visible.add(id)
-          this.services.preview(visible)
+          if (segment.complete) this.next++
+          this.services.preview(new Set(this.visible))
         }
       }
-      if (this.closed && this.segments.every(item => item.complete) && this.services.sceneRevision() === this.revision) {
-        const ids = new Set<NodeId>()
-        for (const item of this.segments) for (const id of item.ids) ids.add(id)
+      if (this.closed && this.next === this.segments.length && this.services.sceneRevision() === this.revision) {
         this.cancelled = true
-        this.resolve(ids)
-      } else if (this.segments.some(item => !item.complete) || this.closed) this.request()
+        this.resolve(new Set(this.visible))
+      } else if (this.next < this.segments.length || this.closed) this.request()
     } catch (error) { this.cancelled = true; for (const segment of this.segments) segment.cursor?.cancel(); this.reject(error) }
   }
 }

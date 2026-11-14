@@ -43,7 +43,7 @@ import { useActivated } from './floatingSlot';
 const PdfPaneHost = React.memo(function PdfPaneHost({
     reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
     registerKeyboardTarget, ...rest
-}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading'> & {
+}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading' | 'documentId'> & {
     reading: ReaderIntegration;
     tab: OpenTab;
     emphasisEnabled: boolean;
@@ -91,7 +91,7 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
         </div>
     );
     const LoadedPdfPane = module.Component;
-    return <LoadedPdfPane reading={binding} {...rest} />;
+    return <LoadedPdfPane reading={binding} documentId={tab.id} {...rest} />;
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.

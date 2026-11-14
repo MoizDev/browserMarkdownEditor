@@ -133,8 +133,8 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
   `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop in
   `App.tsx` defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
-- **Anything repeated thousands of times carries `content-visibility: auto`** (`.tree-item`,
-  `.pdf-viewer-page`) plus a known box — or all of them lay out and paint on every ancestor's frame.
+- **Large repeated views need a bounded layout cost.** The file tree windows its flattened, fixed-height
+  rows; PDF pages use `content-visibility: auto` plus a known box so offscreen pages do not paint.
 - **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live
   parsed in memory (`utils/storage.ts`) per-vault `scopedKey`; never pruned (capping was **rejected**).
 - **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab

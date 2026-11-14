@@ -867,7 +867,14 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
                             publishLocation(cause);
                         }} onTextQuality={setTextQuality} />
                 </Suspense>
-            ) : <div className="pdf-pane-message">Opening extracted text…</div> : (
+            ) : (
+                <Suspense fallback={<div className="pdf-pane-message">Opening extracted text…</div>}>
+                    <PdfTiledSurface sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
+                        sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
+                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
+                        onSource={setTiledSource} notify={tiledNotify} openClassic={openClassic} />
+                </Suspense>
+            ) : (
                 <Suspense fallback={<div className="pdf-pane-message">Loading PDF…</div>}>
                     <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}

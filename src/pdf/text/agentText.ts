@@ -1,4 +1,8 @@
 import { assertPdfCaptureAllowed, assertPdfCopyAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
+import { getReadingPreferences } from '../../utils/readingPreferences';
+import { createPdfEmphasisController } from '../emphasis/controller';
+import type { PdfEmphasisCapability, PdfEmphasisController } from '../emphasis/controller';
+import { getPdfFontEpoch } from '../fonts/profiles';
 import { getPdfPageQuality } from '../quality/store';
 import type { PdfOpenOptions, PdfPool, PdfPoolDocument } from '../pool/types';
 
@@ -10,6 +14,29 @@ const check = (signal: AbortSignal, current: () => boolean, document?: PdfPoolDo
     signal.throwIfAborted();
     if (!current() || document?.closed) throw abort();
 };
+
+function waitForEmphasis(controller: PdfEmphasisController, page: number, signal: AbortSignal,
+    current: () => boolean, document: PdfPoolDocument): Promise<PdfEmphasisCapability> {
+    return new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (value?: PdfEmphasisCapability, error?: unknown) => {
+            if (done) return;
+            done = true; unsubscribe(); signal.removeEventListener('abort', onAbort);
+            if (error !== undefined) reject(error); else resolve(value!);
+        };
+        const onAbort = () => finish(undefined, signal.reason ?? abort());
+        const poll = () => {
+            try {
+                check(signal, current, document);
+                const capability = controller.capability(page);
+                if (capability.kind !== 'unknown') finish(capability);
+            } catch (error) { finish(undefined, error); }
+        };
+        const unsubscribe = controller.subscribe(poll);
+        signal.addEventListener('abort', onAbort, { once: true });
+        poll();
+    });
+}
 
 async function openAgentDocument(pool: PdfPool, options: PdfOpenOptions, signal: AbortSignal, current: () => boolean): Promise<PdfPoolDocument> {
     check(signal, current);
@@ -77,35 +104,54 @@ export async function readPdfAgentText(pool: PdfPool, options: PdfOpenOptions, f
 
 /** Closed-file vault_view: a transient lease on the same engine, never a second parser. */
 export async function renderPdfAgentPage(pool: PdfPool, options: PdfOpenOptions, page: number, maxSide: number,
-    signal: AbortSignal, current: () => boolean = () => true): Promise<{ pageCount: number; png: Blob | null }> {
-    const combined = deadline(signal, options.signal);
+    signal: AbortSignal, current: () => boolean = () => true): Promise<{ pageCount: number; png: Blob | null; emphasis?: PdfEmphasisCapability }> {
+    const combined = deadline(signal, options.signal), emphasisEnabled = getReadingPreferences().emphasis.enabled;
     const document = await openAgentDocument(pool, options, combined, current);
+    let controller: PdfEmphasisController | undefined;
     try {
         check(combined, current, document);
         assertPdfCaptureAllowed(tiledPdfCapabilities(document.info));
         const count = document.info.pageCount, key = document.docKey;
         if (!Number.isInteger(page) || page < 1 || page > count) return { pageCount: count, png: null };
         if (!Number.isFinite(maxSide) || maxSide <= 0) throw new RangeError('Invalid PDF image size');
+        const token = { ...document.token }, source = document.source;
         const assertComplete = () => {
             check(combined, current, document);
-            if (document.docKey !== key || getPdfPageQuality(key, page - 1).state === 'degraded') throw new Error('This PDF page may be incomplete and cannot be captured as complete.');
+            if (document.docKey !== key || document.source !== source || document.token.vaultEpoch !== token.vaultEpoch ||
+                document.token.documentId !== token.documentId || document.token.bytesGeneration !== token.bytesGeneration ||
+                document.token.session !== token.session || getReadingPreferences().emphasis.enabled !== emphasisEnabled) throw abort();
+            if (getPdfPageQuality(key, page - 1).state === 'degraded') throw new Error('This PDF page may be incomplete and cannot be captured as complete.');
         };
         assertComplete();
+        let capability: PdfEmphasisCapability | undefined;
+        if (emphasisEnabled) {
+            controller = createPdfEmphasisController(document);
+            controller.setEnabled(true);
+            controller.setVisiblePages([page - 1], page - 1, true);
+            capability = await waitForEmphasis(controller, page - 1, combined, current, document);
+            assertComplete();
+        }
+        const variant = controller?.variant(page - 1) ?? { variant: 'plain' as const, profileKey: 'plain' as const };
+        const profile = JSON.stringify(variant), fontEpoch = getPdfFontEpoch(key);
+        const assertProfile = () => {
+            assertComplete();
+            if (getPdfFontEpoch(key) !== fontEpoch || (controller && JSON.stringify(controller.variant(page - 1)) !== profile)) throw abort();
+        };
         const geometry = await document.resolveGeometry(page - 1, { priority: 0, signal: combined });
-        assertComplete();
+        assertProfile();
         const scale = Math.min(maxSide, 1568) / Math.max(geometry.width, geometry.height);
-        const bitmap = await document.renderPage(page - 1, scale, { priority: 0, variant: 'plain', profileKey: 'plain',
+        const bitmap = await document.renderPage(page - 1, scale, { priority: 0, ...variant,
             maxPixels: 1568 * 1568, signal: combined });
         try {
-            assertComplete();
+            assertProfile();
             if (bitmap.width < 1 || bitmap.height < 1 || bitmap.width > 1568 || bitmap.height > 1568) throw new RangeError('Invalid PDF capture dimensions');
             const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
             const context = canvas.getContext('2d');
             if (!context) throw new Error('Could not render the PDF page.');
             context.fillStyle = '#fff'; context.fillRect(0, 0, bitmap.width, bitmap.height); context.drawImage(bitmap, 0, 0);
             const png = await canvas.convertToBlob({ type: 'image/png' });
-            assertComplete();
-            return { pageCount: count, png };
+            assertProfile();
+            return { pageCount: count, png, ...(capability ? { emphasis: capability } : {}) };
         } finally { bitmap.close(); }
-    } finally { await document.close(); }
+    } finally { controller?.dispose(); await document.close(); }
 }

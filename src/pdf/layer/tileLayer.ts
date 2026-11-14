@@ -250,13 +250,14 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear', coverage: 'standin' });
         }
-        const stack = this.demand(view).stack;
+        const { stack, rasterScale } = this.demand(view);
         for (const entry of this.drawable(view)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
+                { opacity: 1, sampling: 'linear', coverage: entry.request.scale.scale === rasterScale ? 'current' : 'standin' });
         }
     }
 
@@ -271,13 +272,14 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear', coverage: 'standin' });
         }
-        const stack = this.demand(view).stack;
+        const { stack, rasterScale } = this.demand(view);
         for (const entry of this.drawable(view)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination, { opacity: 1, sampling: 'linear' });
+            this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
+                { opacity: 1, sampling: 'linear', coverage: entry.request.scale.scale === rasterScale ? 'current' : 'standin' });
             consumePdfTileArrival(entry.bitmap);
         }
     }

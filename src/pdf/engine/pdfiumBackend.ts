@@ -10,6 +10,7 @@ import type { PdfiumForms } from './pdfium/forms';
 import { pdfiumPageGeometry, pdfiumPageSize } from './pdfium/geometry';
 import type { PdfiumPageSize } from './pdfium/geometry';
 import { pdfiumLinks } from './pdfium/links';
+import { pdfiumJbig2Regions } from './pdfium/imageRegions';
 import { loadPdfiumModule } from './pdfium/loader';
 import type { PdfiumLoadOptions, PdfiumRuntime } from './pdfium/loader';
 import { heapView, withPdfiumMemory, withPdfiumPassword } from './pdfium/memory';
@@ -196,6 +197,13 @@ class PdfiumDocument implements BackendDoc {
             }
         }
         return this.render(request);
+    }
+    imageRegions(index: number) {
+        this.stopJobs();
+        const page = this.load(index);
+        const result = pdfiumJbig2Regions(this.runtime, page.handle, page.geometry, this.limits);
+        this.checkAccess();
+        return result;
     }
     links(index: number) {
         this.stopJobs(); const page = this.load(index);

@@ -365,6 +365,10 @@ export class SampleStore implements SampleStoreReader {
         return record.bytes + (record.encoded === null ? 0 : record.encoded.length * 2);
     }
     pressureMode(ref: SampleRef): 'real' | 'none' { return this.record(ref).hasPressure ? 'real' : 'none'; }
+    byteSize(ref: SampleRef): number {
+        const record = this.record(ref);
+        return record.bytes + (record.encoded === null ? 0 : 2 * record.encoded.length);
+    }
     private record(ref: SampleRef): SampleRecord {
         const record = this.records.get(ref);
         if (!record) throw new Error('Foreign or released ink sample reference');

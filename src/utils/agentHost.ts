@@ -418,6 +418,11 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 : { ok: false, reason: 'error', message: 'Nothing was moved; something inside may be in use.' };
         },
 
+        canvasWritable(path) {
+            const tab = openTabAt(getDeps(), path);
+            return !!tab && !tab.readError && tab.representation.status === 'ready' && !tab.representation.emergencyReadOnly;
+        },
+
         async openCanvasForAgent(path) {
             const deps = getDeps();
             const open = openTabAt(deps,path);

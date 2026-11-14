@@ -7,7 +7,8 @@ import { RecordKeyDigest, type RecordIntegrity } from './lineTable';
 import { readNative } from './read';
 import { extRawValues, hostRawValues, nodeRawValues, preservedRawValues } from '../model/rawMedia';
 import { createSerializerSession } from './serializerClient';
-import type { BaselineLine, SerializerChange, SerializerDelta, SerializerPrime } from './serializerProtocol';
+import type { BaselineLine, SerializerChange, SerializerDelta, SerializerPrime, SerializerRecordOverride } from './serializerProtocol';
+import { FORMAT_LIMITS } from './schema';
 import type { RecordIdentity, StoredRecordCategory } from './writeTypes';
 
 /** A dirty recipe is relative to the pinned parsed-byte baseline, not a live board session. */
@@ -19,6 +20,9 @@ export interface BoardRecoveryRecipe {
     readonly endFields: readonly (readonly [string, string])[];
     readonly retainedMedia: readonly RecoveryMediaAsset[];
     readonly mediaRecords: readonly MediaEntry[];
+    /** Snapshot-only existing-row values, e.g. the PDF outer build's exact
+     * write mark. They do not change model/content or record-key revisions. */
+    readonly overrides?: readonly SerializerRecordOverride[];
 }
 
 const categories = new Set(['pen', 'view', 'paper', 'host', 'media', 'sheet', 'node', 'opaque']);
@@ -268,10 +272,29 @@ export async function materializeBoardRecoveryRecipe(payload: unknown, signal: A
         if (entry.ext?.raw.has('file')) throw new Error(`Preserved media filename prevents recovery remap for ${id}`);
         remaps.set(id, { ...entry, file });
     }
+    let capturedOverrides: SerializerRecordOverride[] | undefined;
+    if (recipe.overrides !== undefined) {
+        if (!Array.isArray(recipe.overrides) || recipe.overrides.length > FORMAT_LIMITS.records) throw new TypeError('Invalid recovery snapshot overrides');
+        capturedOverrides = [];
+        const seen = new Set<string>();
+        let bytes = 0;
+        for (const value of recipe.overrides) {
+            signal.throwIfAborted();
+            const override = record(value);
+            if (Object.keys(override).some(key => key !== 'identity' && key !== 'bytes') || !(override.bytes instanceof Uint8Array)
+                || override.bytes.byteLength < 2 || override.bytes.byteLength > FORMAT_LIMITS.recordBytes) throw new TypeError('Invalid recovery snapshot override');
+            const key = identity(override.identity), token = `${key.category}\u0000${key.type}\u0000${key.id ?? ''}`;
+            bytes += override.bytes.byteLength;
+            if (seen.has(token) || bytes > FORMAT_LIMITS.fileBytes) throw new TypeError('Duplicate or oversized recovery snapshot overrides');
+            seen.add(token);
+            capturedOverrides.push({ identity: key, bytes: override.bytes.slice() });
+            if ((capturedOverrides.length & 127) === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+        }
+    }
     const session = createSerializerSession(prime, () => { /* build observes serializer failures */ });
     try {
         session.update(delta);
-        const checkpoint = session.checkpoint(integrity, end);
+        const checkpoint = session.checkpoint(integrity, end, capturedOverrides);
         const result = await checkpoint.build(signal);
         signal.throwIfAborted();
         if (!(result instanceof Blob) || (typeof File !== 'undefined' && result instanceof File)) throw new TypeError('Invalid recovered board bytes');

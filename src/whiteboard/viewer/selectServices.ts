@@ -110,7 +110,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         hold: () => session.beginGesture(), registerPending, toSurface, isCurrent: mutable,
         async hit(sample, signal) {
             check(signal); const revision = doc.rev;
-            const point = toSurface(sample), input = sample.source === 'keyboard' ? 'mouse' : sample.source;
+            const point = { x: sample.x, y: sample.y }, input = sample.source === 'keyboard' ? 'mouse' : sample.source;
             const id = await options.point.hit(point, input, signal); check(signal);
             const ids = new Set(runtime.selection.getSnapshot().selected); if (id) ids.add(id);
             await render.prepareChangeGeometry(ids, signal); check(signal);

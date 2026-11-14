@@ -229,16 +229,16 @@ third-party code included (normally "none") · date.
 | `geom/predicates.ts` | lane w-g | GE-1 | geometry §2.2 | Design; interval-filtered exact dyadic predicates and intersection-coordinate enclosures | none | 2026-11-13 |
 | `geom/affine.ts` | lane w-g | GE-1 | geometry §2.3 | Design; shared affine helpers and singular value identity | none | 2026-11-13 |
 | `geom/flatten.ts` | lane w-g | GE-1 | geometry §2.4 | Design; w-e's bounded ink cubic flattening job, de Casteljau splitting and circular sagitta bound | none | 2026-11-13 |
-| `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded inversion | none | 2026-11-13 |
+| `geom/metrics.ts` | lane w-g | GE-1 | geometry §2.4 | Design; chord/control-polygon length enclosure, greatest-uncertainty heap and bounded prefix inversion | none | 2026-11-13 |
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types; interval Bernstein radial error for tangent-matched arc cubics | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 | `ink/pick.ts` | lane w-g | GE-3 | geometry §5.2; ink §6.2 | Export existing w-e affine capsule-distance primitive for shared path picking | none | 2026-11-13 |
 | `geom/pick.ts` | lane w-g | GE-3; F-SEL-001/003/004 | geometry §5.1–5.4 | Design; shared ink affine-distance, exact line topology, w-h contour clipper and semantic-interior region geometry | none | 2026-11-13 |
-| `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; w-e SpatialQuery adapter, scene stamps and resumable narrow-phase services, no second index | none | 2026-11-13 |
+| `pick.ts` | lane w-g | GE-3; F-SEL-001/003/004/005/006 | geometry §§4–5 | Design; streamed w-e SpatialQuery candidates, revision stamps and resumable narrow phase, no second index | none | 2026-11-13 |
 | `selection.ts` | lane w-g | GE-3; F-SEL-002/005/006/007/011 | geometry §5.3; selection spec | Design; model child and sheet indexes; session-only selection, history restore, locked reconciliation and hierarchy navigation | none | 2026-11-13 |
 | `accessibility/selection.ts` | lane w-g | GE-3; INT-11 | integration §6.1; selection spec | Bounded viewport and selection mirror source; structural host contract, no React import | none | 2026-11-13 |
 | `commands/delete.ts` | lane w-g | GE-4; WB-D18; F-SEL-009; RV-22 | geometry §6.2; selection spec | Design; model indexed opaque guard and w-c's shared locked-descendant deletion command | none | 2026-11-13 |
-| `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool contract; injected resumable scene selection and transform services | none | 2026-11-13 |
+| `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and pending-gesture lifetime, injected selection and transform services | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 

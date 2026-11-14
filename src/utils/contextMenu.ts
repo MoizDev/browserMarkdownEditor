@@ -36,6 +36,7 @@ export interface ContextMenuCommand {
      * vault (see AGENTS.md on the two deliberate innerHTML sinks).
      */
     label: string;
+    shortcut?: string;
     run: () => void | Promise<void>;
     danger?: boolean;
     /**
@@ -111,7 +112,17 @@ export interface ContextMenuLabel {
     tooltip?: string;
 }
 
+export interface ContextMenuSubmenu {
+    kind: 'submenu';
+    id: string;
+    label: string;
+    entries: (ContextMenuCommand | ContextMenuSeparator | ContextMenuSubmenu)[];
+    disabled?: boolean;
+    reason?: string;
+}
+
 export type ContextMenuEntry =
+    | ContextMenuSubmenu
     | ContextMenuCommand
     | ContextMenuGrid
     | ContextMenuEntryStyle

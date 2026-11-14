@@ -17,12 +17,13 @@ export interface PointPathJobLimits {
     readonly maxNodes?: number;
     readonly maxWork?: number;
 }
-type BoundsPoint = Readonly<{ x: Interval; y: Interval }>;
-type Curve = Readonly<{ points: readonly [BoundsPoint, BoundsPoint] | readonly [BoundsPoint, BoundsPoint, BoundsPoint, BoundsPoint]; depth: number }>;
+export type BoundsPoint = Readonly<{ x: Interval; y: Interval }>;
+export type CertifiedCurve = Readonly<{ points: readonly [BoundsPoint, BoundsPoint] | readonly [BoundsPoint, BoundsPoint, BoundsPoint, BoundsPoint]; depth: number }>;
+type Curve = CertifiedCurve;
 const PENDING: PointPathJobResult = Object.freeze({ status: 'pending' });
 const opposite = (value: { readonly n: bigint; readonly e: number }) => ({ n: -value.n, e: value.e });
 function addDyadic(a: ReturnType<typeof dyadic>, b: ReturnType<typeof dyadic>) { return dyadicSubtract(a, opposite(b)); }
-function uniform(matrix: Affine): boolean {
+export function isUniformDistanceMatrix(matrix: Affine): boolean {
     const [a, b, c, d] = matrix.map(dyadic), aa = dyadicMultiply(a, a), bb = dyadicMultiply(b, b);
     const cc = dyadicMultiply(c, c), dd = dyadicMultiply(d, d);
     return dyadicSubtract(addDyadic(aa, bb), addDyadic(cc, dd)).n === 0n
@@ -32,7 +33,7 @@ function middle(a: BoundsPoint, b: BoundsPoint): BoundsPoint {
     const half = interval(0.5);
     return { x: multiply(add(a.x, b.x), half), y: multiply(add(a.y, b.y), half) };
 }
-function split(curve: Curve): readonly [Curve, Curve] {
+export function splitCertifiedCurve(curve: Curve): readonly [Curve, Curve] {
     const p = curve.points, depth = curve.depth + 1;
     if (p.length === 2) {
         const m = middle(p[0], p[1]);
@@ -70,14 +71,14 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
         || !Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid point path job');
     let finished: PointPathJobResult | undefined, cancelled = false, spent = 0, nodes = 0, commands = 0;
-    if (!uniform(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
+    if (!isUniformDistanceMatrix(matrix)) finished = { status: 'uncertain', reason: 'Nonuniform stroke transform requires an anisotropic distance certificate' };
     const scaleSquared = add(square(matrix[0]), square(matrix[1]));
     const scale = sqrtInterval({ lo: Math.max(0, scaleSquared.lo), hi: scaleSquared.hi });
     const radius = add(multiply(interval(options.strokeRadiusLocal), scale), interval(margin));
     if (![radius.lo, radius.hi].every(Number.isFinite)) finished = { status: 'uncertain', reason: 'Point path radius overflows' };
     const fill = options.interiorPaths?.length
         ? createFillPointJob(options.interiorPaths, query.point, 'nonzero', { localToWorld: matrix, maxCommands: options.maxSegments }) : undefined;
-    let fillPending = !!fill, fillUncertain = false, pathIndex = 0, commandIndex = 0;
+    let fillPending = !!fill, fillUncertain = false, curveUncertain = false, pathIndex = 0, commandIndex = 0;
     let start: BoundsPoint | undefined, previous: BoundsPoint | undefined, bestUpper = Infinity;
     const stack: Curve[] = [];
     const mapped = (point: Vec2): BoundsPoint => exactPointIntervals(exactAffinePoint(matrix, point));
@@ -109,11 +110,12 @@ export function createPointPathJob(paths: readonly (readonly PathOp[])[], query:
                     const upper = Math.min(upperDistance(query.point, curve.points[0]), upperDistance(query.point, curve.points[curve.points.length - 1]));
                     bestUpper = Math.min(bestUpper, upper);
                     if (upper <= radius.lo) return finish({ status: 'hit', distanceCss: upper });
-                    if (curve.depth >= maxDepth || nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Point path boundary or subdivision limit' });
-                    const [left, right] = split(curve); nodes += 2; stack.push(right, left); continue;
+                    if (curve.depth >= maxDepth) { curveUncertain = true; continue; }
+                    if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Point path node limit exhausted' });
+                    const [left, right] = splitCertifiedCurve(curve); nodes += 2; stack.push(right, left); continue;
                 }
-                if (pathIndex >= paths.length) return finish(fillUncertain
-                    ? { status: 'uncertain', reason: 'Point lies on or too near a fill boundary' }
+                if (pathIndex >= paths.length) return finish(fillUncertain || curveUncertain
+                    ? { status: 'uncertain', reason: 'Point lies on or too near a path boundary' }
                     : { status: 'miss', distanceCss: bestUpper });
                 const path = paths[pathIndex];
                 if (commandIndex >= path.length) { pathIndex++; commandIndex = 0; start = previous = undefined; continue; }

@@ -2,7 +2,8 @@ import type { Affine, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { worldPose } from '../change/coordinates';
 import { compose, inverse } from '../geom/affine';
-import { regionPath } from '../geom/pick';
+import { regionPath, type PathPickOptions } from '../geom/pick';
+import { createSweptPathJob } from '../geom/sweptPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { orient2d } from '../geom/predicates';
@@ -186,20 +187,33 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 } else if (prepared.connector && node.kind === 'connector') {
                     const connector = prepared.connector, worldQuery = { ...localQuery, localToSurface: worldToCss } as RegionQuery;
                     const pathOptions = { strokeRadiusLocal: node.width / 2, marginCss: 0, errorCss: 0.01, maxSegments: 8192 };
+                    const pathHit = async (paths: readonly (readonly PathOp[])[], region: RegionQuery, pathOptions: PathPickOptions) => {
+                        if (region.kind !== 'swept') return regionPath(paths, region, pathOptions).hit;
+                        const job = createSweptPathJob(paths, region, pathOptions);
+                        try {
+                            for (;;) {
+                                check(); const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                if (state.status === 'hit') return true;
+                                if (state.status === 'miss') return false;
+                                if (state.status === 'uncertain') throw new BoardRegionUncertain(state.reason);
+                                await cooperate();
+                            }
+                        } finally { job.cancel(); }
+                    };
                     const parts: boolean[] = [];
                     for (const head of connector.heads) {
-                        parts.push(regionPath([head], worldQuery, { ...pathOptions,
-                            ...(head[head.length - 1]?.op === 'Z' ? { interiorPaths: [head] } : {}) }).hit);
+                        parts.push(await pathHit([head], worldQuery, { ...pathOptions,
+                            ...(head[head.length - 1]?.op === 'Z' ? { interiorPaths: [head] } : {}) }));
                     }
                     if (connector.label) {
                         const box = connector.label.paint.box, labelQuery = { ...localQuery, localToSurface: compose(worldToCss, connector.label.localToWorld) } as RegionQuery;
-                        parts.push(regionPath([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [rectPath(0, 0, box.w, box.h)] }).hit);
+                        parts.push(await pathHit([], labelQuery, { ...pathOptions, strokeRadiusLocal: 0, interiorPaths: [rectPath(0, 0, box.w, box.h)] }));
                     }
                     const containment = query.kind === 'polygon' && query.containment;
                     if (!containment && parts.some(Boolean)) hit = true;
                     else {
                         if (node.dash !== 'none' && connector.body.length) {
-                            const body = regionPath([connector.body], worldQuery, pathOptions).hit;
+                            const body = await pathHit([connector.body], worldQuery, pathOptions);
                             if (connector.bodyExclusions.length && (body || containment)) throw new BoardRegionUncertain('Connector body exclusions require clipped geometry');
                             parts.push(body);
                         }

@@ -26,6 +26,8 @@ export const attachView: AttachView = options => {
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame } | null = null;
     let interaction: ViewerInteractionPorts | null = null;
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
+    let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
+    let clearPreview: (() => void) | null = null;
     const listeners = new Set<() => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
@@ -95,9 +97,10 @@ export const attachView: AttachView = options => {
         return { state: failed ? 'failed' : !runtime.scene ? 'loading' : options.session.isReadOnly ? 'read-only' : 'ready',
             readOnlyReason: failed?.message ?? runtime.session.readOnlyReason, sceneRevision: runtime.scene?.revision ?? options.session.doc.rev,
             layout: scene.layout, palette, appearance: { background: palettes[view.theme].background, inverted: view.inverted },
-            layers: interactionLayers
-                ? [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0], interactionLayers.underlay, layers[1], interactionLayers.content]
-                : [...view.backdrops ?? [], ...paper ? [paper] : [], ...layers], backendPreference: BOARD_BACKEND_PREFERENCE };
+            layers: [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
+                ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
+                layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : []],
+            backendPreference: BOARD_BACKEND_PREFERENCE };
     }
     function publish(): void {
         if (disposed) return;
@@ -147,11 +150,21 @@ export const attachView: AttachView = options => {
         stopScene = ready.subscribe(() => { publish(); requestPaint(); });
         publish(); requestPaint(); layers.invalidate('board-scene-ready');
     }, report);
-    const stopSelection = runtime.selection.subscribe(() => { revealJob?.abort(); publish(); requestPaint(); });
-    const stopSession = options.session.subscribe(() => { publish(); if (runtime.scene?.ready) requestPaint(); });
+    let previousSheet = sheet();
+    const stopSelection = runtime.selection.subscribe(() => {
+        const currentSheet = sheet();
+        if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
+        revealJob?.abort(); publish(); requestPaint();
+    });
+    let previousRevision = options.session.doc.rev;
+    const stopSession = options.session.subscribe(() => {
+        if (options.session.doc.rev !== previousRevision) { previousRevision = options.session.doc.rev; clearPreview?.(); }
+        publish(); if (runtime.scene?.ready) requestPaint();
+    });
     snapshot = makeSnapshot();
     const dispose = () => {
         if (disposed) return;
+        clearPreview?.(); clearPreview = null;
         disposed = true; paintJob?.abort(); revealJob?.abort(); interaction?.finishGesture(); interaction?.finishComposition();
         unbind(); stopScene?.(); stopSelection(); stopSession(); accessibility.dispose(); frames.dispose(); listeners.clear(); interaction = null;
         options.signal?.removeEventListener('abort', dispose);
@@ -160,11 +173,13 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {
             if (disposed) return;
-            const old = view; view = { ...next };
-            if (!view.visible) { paintJob?.abort(); revealJob?.abort(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            const old = view; view = { ...next }; previousSheet = sheet();
+            if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); revealJob?.abort(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');
@@ -181,6 +196,12 @@ export const attachView: AttachView = options => {
         },
         readyPaintFrame: () => disposed ? null : layers.readyFrame(),
         setInteractionLayers(next) { if (!disposed && interactionLayers !== next) { interactionLayers = next; publish(); layers.invalidate('board-interaction-layers'); } },
+        setPreviewLayers(next) { if (!disposed && previewLayers !== next) { previewLayers = next; publish(); layers.invalidate('board-preview-layers'); } },
+        bindPreviewClear(clear) {
+            if (disposed) throw new Error('Board view is disposed');
+            clearPreview?.(); clearPreview = clear;
+            return () => { if (clearPreview === clear) clearPreview = null; };
+        },
         dispose,
     };
 };

@@ -12,6 +12,8 @@ export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeText
 export type { TextAffinity, TextSpliceMap, MappedRichTextChange } from './rangeMap';
 export { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
 export type { RichTextChange, RichTextDiffOptions } from './richDiff';
+export { applyRichTransaction, validateRichFragment, richTransactionLength } from './richTransaction';
+export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {

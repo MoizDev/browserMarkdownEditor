@@ -130,5 +130,9 @@ export function blocks(value: RichText, from: number, to: number, kind: Block['k
     });
     return { from: first.start, to: end, insert: normalizeRichText({ blocks: changed }), selection: { anchor: from, focus: to }, replaceBlocks: true };
 }
-export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: spliceRichText, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
+function checkedSplice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks = false) {
+    check(value, from, to);
+    return spliceRichText(value, from, to, insert, wholeBlocks);
+}
+export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: checkedSplice, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
 export function projectionLength(text: RichText): number { return indexedLength(text); }

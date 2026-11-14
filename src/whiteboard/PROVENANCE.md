@@ -129,6 +129,14 @@ third-party code included (normally "none") · date.
 | `geom/path.ts` | lane w-g | GE-1 | geometry §§1–2 | Design path and curve types | none | 2026-11-13 |
 | `geom/types.ts` | lane w-g | GE-1 | geometry §§1,5 | Design; platform affine/rect and model node contracts; provider-owned types injected | none | 2026-11-13 |
 
+## Figures and geometry providers (lane w-h)
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `geom/styleMetrics.ts` | lane w-h | WB-D20 | geometry §3.2 | Geometry design and its provisional measurement table; no tldraw source | none | 2026-11-13 |
+| `geom/figures.ts` | lane w-h | F-FIG-001 | geometry §3 | Independent shape recipes from the design; no tldraw source | none | 2026-11-13 |
+| `geom/variants.ts` | lane w-h | WB-D20 | geometry §3.1 | Design's bounded deterministic displacement recipe; no tldraw source | none | 2026-11-13 |
+
 ## Editing lanes (w-f to w-j)
 
 ### Input (lane w-f)

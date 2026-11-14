@@ -1,5 +1,5 @@
 import { serve } from '../../platform/workers';
 import { boardHandlers } from './protocol';
+import { buildPacked } from './packedHandler';
 
-// Geometry operations are registered here as their bounded slab implementations land.
-serve({ protocol: 1, buildId: 'whiteboard-geometry-1', handlers: boardHandlers({}) });
+serve({ protocol: 1, buildId: 'whiteboard-geometry-1', handlers: boardHandlers({ buildPacked }) });

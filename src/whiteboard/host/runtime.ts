@@ -46,6 +46,8 @@ export interface BoardRuntime {
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
     bindView(sink: BoardRuntimeViewSink): () => void;
+    /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
+    registerOwned(dispose: () => void): () => void;
     flushFrame(frameId: number): void;
     dispose(): void;
 }
@@ -71,6 +73,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const jobs = createJobAuthority(`${options.owner.documentId}:${options.owner.session}`, options.scene.token.vaultEpoch, options.owner.session);
     const selection = new SelectionState(first.id), tools = createBoardToolState(options.doc.ui, options.doc.view.toolLock);
     const attached = new Set<Registration>(), controller = new AbortController();
+    const owned = new Set<{ dispose(): void }>();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
@@ -169,10 +172,23 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             let detached = false;
             return () => { if (detached) return; detached = true; attached.delete(entry); views.delete(entry); notices.visibilityChanged(); };
         },
+        registerOwned(dispose) {
+            if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
+            if (typeof dispose !== 'function') throw new TypeError('Owned resource requires a disposer');
+            const entry = { dispose }; owned.add(entry);
+            return () => { owned.delete(entry); };
+        },
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
             if (disposed) return;
-            disposed = true; jobs.dispose(); controller.abort(); stopSelection(); stopTools();
+            disposed = true;
+            // Cache/services stop accepting new work at document close. Already
+            // captured read-only jobs retain their own Scene/media/renderer leases.
+            for (const entry of owned) {
+                owned.delete(entry);
+                try { entry.dispose(); } catch (error) { try { report(error); } catch { /* Dispose every owner. */ } }
+            }
+            jobs.dispose(); controller.abort(); stopSelection(); stopTools();
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);

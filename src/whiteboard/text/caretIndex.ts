@@ -184,18 +184,24 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
             && (Math.abs(cluster.bounds.x - stop.x) < 0.001 || Math.abs(cluster.bounds.x + cluster.bounds.width - stop.x) < 0.001)));
         return primary ?? candidates[0];
     }
-    function selection(start: number, end: number): readonly Rect[] {
+    function visitSelection(start: number, end: number, visit: (rect: Rect) => void, visible?: { readonly top: number; readonly bottom: number }): void {
         if (start > end) [start, end] = [end, start];
-        const result: Rect[] = [];
-        for (let i = firstLine(start); i < lines.length && paint.lines[i].src[0] <= end; i++) {
+        let first = firstLine(start);
+        if (visible) {
+            let lo = 0, hi = lines.length;
+            while (lo < hi) { const mid = (lo + hi) >>> 1; if (lines[mid].bottom < visible.top) lo = mid + 1; else hi = mid; }
+            first = Math.max(first, lo);
+        }
+        for (let i = first; i < lines.length && paint.lines[i].src[0] <= end && (!visible || lines[i].top <= visible.bottom); i++) {
             const line = lines[i], paintLine = paint.lines[i];
             let current: Rect | undefined;
             for (const cluster of line.clusters) {
                 if (cluster.src[1] <= start || cluster.src[0] >= end) continue;
                 const rect = cluster.bounds;
                 if (current && rect.x <= current.x + current.width + 0.001) current.width = Math.max(current.x + current.width, rect.x + rect.width) - current.x;
-                else { current = { ...rect }; result.push(current); }
+                else { if (current) visit(current); current = { ...rect }; }
             }
+            if (current) visit(current);
             const boundary = paintLine.src[1];
             const consumedBreak = boundary > paintLine.src[0] && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary - 1, boundary));
             const breakAfter = !consumedBreak && boundary < length && /[\r\n\u0085\u2028\u2029]/u.test(projectionSlice(request.text, boundary, boundary + 1));
@@ -207,10 +213,22 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
                 const fallback = paintLine.direction === 'rtl' ? line.stops[0] : line.stops[line.stops.length - 1];
                 const edge = (stops.find(stop => stop.affinity === 'upstream') ?? stops[0] ?? fallback).x;
                 const x = paintLine.direction === 'rtl' ? 0 : edge;
-                result.push({ x, y: line.top, width: paintLine.direction === 'rtl' ? Math.max(0, edge) : Math.max(0, paint.box.w - edge), height: line.bottom - line.top });
+                visit({ x, y: line.top, width: paintLine.direction === 'rtl' ? Math.max(0, edge) : Math.max(0, paint.box.w - edge), height: line.bottom - line.top });
             }
         }
+    }
+    function selection(start: number, end: number, visible?: { readonly top: number; readonly bottom: number }): readonly Rect[] {
+        const result: Rect[] = [];
+        visitSelection(start, end, rect => result.push(rect), visible);
         return result;
+    }
+    function selectionBounds(start: number, end: number): Rect | null {
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        visitSelection(start, end, rect => {
+            left = Math.min(left, rect.x); top = Math.min(top, rect.y);
+            right = Math.max(right, rect.x + rect.width); bottom = Math.max(bottom, rect.y + rect.height);
+        });
+        return left === Infinity ? null : { x: left, y: top, width: right - left, height: bottom - top };
     }
     function characterBounds(start: number, end: number): readonly Rect[] {
         const byOffset = new Map<number, Rect>();
@@ -243,5 +261,5 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
         }
         return null;
     }
-    return { paintKey: paint.key, lines, hitTest, caret, clusterAt, selection, characterBounds };
+    return { paintKey: paint.key, lines, hitTest, caret, clusterAt, selection, selectionBounds, characterBounds };
 }

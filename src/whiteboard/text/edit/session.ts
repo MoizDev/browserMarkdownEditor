@@ -297,13 +297,13 @@ export class TextEditSession {
         this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
     }
 
-    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): {
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number, options?: { readonly visible?: { readonly top: number; readonly bottom: number }; readonly selection?: boolean }): {
         selection: readonly Rect[]; caret: Rect | null;
         composition: readonly { rect: Rect; style: string; thickness: string }[];
         handles: { anchor: { x: number; y: number }; focus: { x: number; y: number } };
     } {
         const layout = this.services.layout();
-        const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+        const selection = options?.selection === false ? [] : layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus), options?.visible);
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
         const active = now - this.lastActivity;
         const visible = reducedMotion || active < 530 || Math.floor(active / 530) % 2 === 0;
@@ -311,7 +311,7 @@ export class TextEditSession {
         const caret = visible && this.selection.anchor === this.selection.focus
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
         const formats = this.formats.length ? this.formats : this.compositionRange ? [{ ...this.compositionRange, style: 'solid', thickness: 'thin' }] : [];
-        const composition = formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        const composition = options?.selection === false ? [] : formats.flatMap(format => layout.caret.selection(format.from, format.to, options?.visible).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
         const anchor = layout.caret.caret({ offset: this.selection.anchor });
         const focus = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
         const handles = { anchor: point(layout.localToClient, anchor.x, anchor.bottom), focus: point(layout.localToClient, focus.x, focus.bottom) };
@@ -348,6 +348,7 @@ export class TextEditSession {
     getSelection(): EditSelection { return this.selection; }
     /** Local boxes share the same caret index as selection and IME geometry. */
     rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
+    rangeBounds(from: number, to: number): Rect | null { return this.services.layout().caret.selectionBounds(from, to); }
     offsetAtClient(x: number, y: number): number {
         const layout = this.services.layout(), local = point(layout.clientToLocal, x, y);
         return layout.caret.hitTest(local.x, local.y).offset;

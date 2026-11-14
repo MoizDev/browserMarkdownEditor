@@ -97,6 +97,20 @@ export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint
         const after = lo, before = Math.max(0, after - 1);
         return stopAt(Math.abs(xAt(before) - x) <= Math.abs(xAt(after) - x) ? before : after);
     };
+    const selectionBounds = (start: number, end: number): Rect | null => {
+        if (start > end) [start, end] = [end, start];
+        const from = clamp(start), to = clamp(end);
+        if (from >= to) return null;
+        let left = Infinity, right = -Infinity;
+        let index = parts.indexOf(partAtCharacter(from));
+        for (; index < parts.length && parts[index].from < to; index++) {
+            const part = parts[index], a = Math.max(from, part.from), b = Math.min(to, part.to);
+            if (a >= b) continue;
+            const x = xAt(part.firstStop + a - part.from), y = xAt(part.firstStop + b - part.from);
+            left = Math.min(left, x, y); right = Math.max(right, x, y);
+        }
+        return left === Infinity ? null : { x: left, y: line.top, width: right - left, height: line.bottom - line.top };
+    };
     const result: CaretIndex = {
         paintKey: paint.key,
         lines: [caretLine],
@@ -112,7 +126,8 @@ export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint
             }
             return null;
         },
-        selection(start, end) {
+        selection(start, end, visible) {
+            if (visible && (line.bottom < visible.top || line.top > visible.bottom)) return [];
             if (start > end) [start, end] = [end, start];
             const from = clamp(start), to = clamp(end), result: Rect[] = [];
             if (from >= to) return result;
@@ -129,6 +144,7 @@ export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint
             }
             return result;
         },
+        selectionBounds,
         characterBounds(start, end) {
             const result: Rect[] = [];
             for (let offset = start; offset < end; offset++) {

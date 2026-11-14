@@ -322,7 +322,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         },
         hitHandle(x, y) {
             if (!handles || !manager.current) return null;
-            const chrome = manager.current.editor.chrome(performance.now(), options.ui.reducedMotion(), options.viewport().dpr);
+            const chrome = manager.current.editor.chrome(performance.now(), options.ui.reducedMotion(), options.viewport().dpr, { selection: false });
             const a = Math.hypot(x - chrome.handles.anchor.x, y - chrome.handles.anchor.y);
             const b = Math.hypot(x - chrome.handles.focus.x, y - chrome.handles.focus.y);
             if (Math.min(a, b) > 22) return null;
@@ -386,11 +386,17 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         if (!current() || frame.token.documentId !== session.owner.documentId || frame.token.session !== session.owner.session
             || !manager.current || !paint || !faces || !currentWorld) { svg?.remove(); svg = null; return; }
         if (lastZoom !== frame.view.camera.z) { lastZoom = frame.view.camera.z; manager.refresh(); }
-        const chrome = manager.current.editor.chrome(frame.timestamp, options.ui.reducedMotion(), frame.view.viewport.dpr);
+        const matrix = compose(cameraTransform(frame.view.camera), currentWorld), back = inverse(matrix, 1e12);
+        const viewport = frame.view.viewport;
+        const corners = back ? [transformPoint(back, { x: 0, y: 0 }), transformPoint(back, { x: viewport.width, y: 0 }),
+            transformPoint(back, { x: 0, y: viewport.height }), transformPoint(back, { x: viewport.width, y: viewport.height })] : [];
+        const visible = corners.length ? { top: Math.min(...corners.map(point => point.y)), bottom: Math.max(...corners.map(point => point.y)) }
+            : { top: Infinity, bottom: -Infinity };
+        const chrome = manager.current.editor.chrome(frame.timestamp, options.ui.reducedMotion(), frame.view.viewport.dpr, { visible });
         if (!svg) { svg = document.createElementNS(svgNS, 'svg'); svg.setAttribute('aria-hidden', 'true');
             svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; overlay.append(svg); }
         svg.replaceChildren(); svg.setAttribute('viewBox', `0 0 ${frame.view.viewport.width} ${frame.view.viewport.height}`);
-        const group = document.createElementNS(svgNS, 'g'), matrix = compose(cameraTransform(frame.view.camera), currentWorld);
+        const group = document.createElementNS(svgNS, 'g');
         group.setAttribute('transform', `matrix(${matrix.join(' ')})`); svg.append(group);
         const spelling: string[] = []; let spellingStroke = 0;
         for (const item of visibleSpellingPaths(paint, misspellings, matrix, frame.view.viewport,
@@ -453,15 +459,10 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             if (!editor || !node || !transform) return null;
             const selection = editor.getSelection(), from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
             if (from === to) return null;
-            const boxes = editor.rangeRects(from, to);
-            if (!boxes.length) return null;
-            let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-            for (const box of boxes) {
-                left = Math.min(left, box.x); top = Math.min(top, box.y);
-                right = Math.max(right, box.x + box.width); bottom = Math.max(bottom, box.y + box.height);
-            }
+            const bounds = editor.rangeBounds(from, to);
+            if (!bounds) return null;
             const world = new Float64Array(4);
-            transformBox(world, 0, [left, top, right, bottom], 0, transform, 0);
+            transformBox(world, 0, [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height], 0, transform, 0);
             return { revision: doc.rev, node, selection: { ...selection }, fragment: editor.copySelection(),
                 bounds: { x: world[0], y: world[1], w: world[2] - world[0], h: world[3] - world[1] } };
         },

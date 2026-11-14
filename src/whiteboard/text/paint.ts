@@ -99,7 +99,9 @@ export interface CaretIndex {
     /** The painted grapheme actually under a point, or null outside text ink. */
     clusterAt(x: number, y: number): TextCluster | null;
     /** Selection boxes in visual order, including line-break extension where applicable. */
-    selection(start: number, end: number): readonly Rect[];
+    selection(start: number, end: number, visible?: { readonly top: number; readonly bottom: number }): readonly Rect[];
+    /** Aggregate without retaining an array for every selected line. */
+    selectionBounds(start: number, end: number): Rect | null;
     /** Character boxes for an EditContext UTF-16 range, one box per code unit. */
     characterBounds(start: number, end: number): readonly Rect[];
     navigate?(position: CaretPosition, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end', goalX?: number): CaretStop;

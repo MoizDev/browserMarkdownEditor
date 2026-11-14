@@ -1,6 +1,7 @@
 import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
-import { cpuGovernor } from './governor';
+import { cpuGovernor, workerPermitCounts } from './governor';
+import { recordWorkerPerf } from './perf';
 import { reportWorkerOwnedBytes, workerStopped } from './lifecycle';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
@@ -15,6 +16,9 @@ type Job = {
     args: unknown;
     options: RequestOptions;
     phase: 'queued' | 'sent' | 'running' | 'settled';
+    perfAsked?: number;
+    perfPosted?: number;
+    perfGeneration?: number;
     deadline?: number;
     deadlineTimer?: ReturnType<typeof setTimeout>;
     started: number;
@@ -97,6 +101,7 @@ class Client implements WorkerClient {
             started: 0, heard: 0, paused: false, admitted: false, bootstrap, resolve, reject,
         };
         this.pending.set(job.id, job);
+        if (__BME_BENCH__) { job.perfAsked = asked; this.record(job, 'request'); }
         this.promises.set(promise, job);
         job.abort = () => this.cancel(job, 'Cancelled', 'Request aborted');
         options.signal?.addEventListener('abort', job.abort, { once: true });
@@ -180,6 +185,7 @@ class Client implements WorkerClient {
                         connection.sent.set(job.id, job);
                         const remaining = job.deadline === undefined ? undefined : Math.max(0, job.deadline - now());
                         connection.endpoint.postMessage({ v: 1, id: job.id, op: job.op, args: job.args, priority: job.options.priority, deadlineMs: remaining } satisfies MainMessage, job.options.transfer ?? []);
+                        if (__BME_BENCH__) { job.perfPosted = now(); job.perfGeneration = connection.generation; this.record(job, 'post'); }
                         job.phase = 'running';
                         job.started = job.heard = now();
                     } catch (error) {
@@ -228,6 +234,7 @@ class Client implements WorkerClient {
         if (job.phase === 'settled') return;
         job.phase = 'settled';
         this.pending.delete(job.id);
+        if (__BME_BENCH__) this.record(job, 'settle');
         clearTimeout(job.deadlineTimer);
         if (job.abort) job.options.signal?.removeEventListener('abort', job.abort);
         // A caller can keep the returned promise for the document's life. Its WeakMap entry must
@@ -545,6 +552,15 @@ class Client implements WorkerClient {
         this.handlers.clear();
         if (clients.get(this.spec.name) === this) clients.delete(this.spec.name);
     };
+
+    private record(job: Job, phase: 'request' | 'post' | 'settle'): void {
+        if (!__BME_BENCH__) return;
+        // An injected permit provider has its own ledger, not the shared governor's.
+        const counts = this.spec.permits && this.spec.permits !== cpuGovernor ? { held: -1, queued: -1 } : workerPermitCounts();
+        recordWorkerPerf({ worker: this.spec.name, generation: job.perfGeneration ?? this.generation,
+            requestId: job.id, priority: job.options.priority, phase, time: now(), requestTime: job.perfAsked!,
+            postTime: job.perfPosted ?? null, inFlight: this.pending.size, permitsHeld: counts.held, permitsQueued: counts.queued });
+    }
 
     private discard(op: string, result: unknown): void {
         try { this.spec.disposeResult?.(op, result); }

@@ -137,6 +137,7 @@ third-party code included (normally "none") · date.
 | `render/colour.ts` | lane w-e | W-E4 shared contract | rendering §5.2; C2.4 | Public Rgba/RgbaP contracts; encoded-sRGB premultiplication and W3C source-over/multiply algebra from design; injected theme palettes, no legacy palette implementation | none | 2026-11-13 |
 | `render/material.ts` | lane w-e | W-E4 shared contract; R-20 | rendering §§3.1,4,5.2 | Design's non-isolated inherited opacity and two highlighter bands0.82/0.35; public stroke metrics; own resolved material construction | none | 2026-11-13 |
 | `render/paintStream.ts` | lane w-e | W-E4 shared contract | rendering §§2–5,11,12 | Shared platform/ink/TX-3 public types; direct consumer agreement; own ordered two-band emission with TEXT fragments retained for Canvas/PNG, SVG/PDF-only outline boundary, no second scene or stroker | none | 2026-11-13 |
+| `render/frameAssembler.ts` | lane w-e | W-E4 frame preparation | rendering §§2,3,11,12 | Own bounded PaintStreamJob assembly, source leases and complete-only frame publication; stale work discarded, retired frames explicitly released by backend | none | 2026-11-13 |
 | `render/frameTypes.ts` | lane w-e | W-E4 frame admission | rendering §§2,3,11,12 | Public immutable paint source and frame budget contracts; own explicit source-lease lifecycle and complete-only publication interface | none | 2026-11-13 |
 | `render/resources.ts` | lane w-e | W-E4 shared contract | rendering §§7,10,11; C4 | Public render tokens and direct v-b preparation/asset-lease agreement; injected origin-clean async decoder ownership, immutable frame source and existing-host invalidation, no private scheduler/context | none | 2026-11-13 |
 | `viewer/types.ts` | lane w-e | Viewer host; INT-11; C4; C-19 | rendering §§2,10,12; integration §2 | Public synchronous PlatformLayerDefinition and App-owned BoardSession; w-b accessibility agreement; view-only attachment, no second mutable doc, lifecycle-owned layer disposal | none | 2026-11-13 |
@@ -228,6 +229,7 @@ third-party code included (normally "none") · date.
 | `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssembly.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned pristine writer source, all-sheet ordered ink, exact legacy fence and verified revision/write mark; no tldraw source | none | 2026-11-13 |
+| `host/pdfInkCacheTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5 | Revision/font/writer-keyed page list cache and dirty-session eviction contract; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 

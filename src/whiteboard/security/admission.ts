@@ -1,4 +1,6 @@
 import { SECURITY_LIMITS } from './limits';
+export { createImportAdmission } from './validatedImport';
+export type { ImportAdmission, ImportData, ImportValidation, ProjectionLimits, ValidatedImport } from './validatedImport';
 
 /** No path or vault handle crosses a decoder boundary. */
 export interface ContentJob {
@@ -81,7 +83,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
         isCurrent,
         replace(nextEpoch, nextGeneration) {
             if (disposed || !validCounter(nextEpoch) || !validCounter(nextGeneration)) throw new RangeError('Invalid replacement identity');
-            if (nextEpoch === epoch && nextGeneration <= currentGeneration) throw new RangeError('Replacement generation must advance');
+            if (nextEpoch < epoch || (nextEpoch === epoch && nextGeneration <= currentGeneration)) throw new RangeError('Replacement identity must advance');
             abortAll('Session identity replaced');
             epoch = nextEpoch; currentGeneration = nextGeneration;
         },

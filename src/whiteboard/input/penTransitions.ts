@@ -54,6 +54,7 @@ export class PenContactTransitions {
                 this.closed = true;
                 try {
                     if (batch.reason === 'up') this.host.finish('up');
+                    else if (batch.reason === 'escape' || batch.reason === 'undo' || batch.reason === 'flush') this.host.interrupt(batch.reason);
                     else this.host.interrupt('os-cancel');
                 } finally { this.host.ended(batch.reason); }
                 return;
@@ -80,7 +81,20 @@ export class PenContactTransitions {
             if (this.cursor >= 128) { this.queue.splice(0, this.cursor); this.cursor = 0; }
         }
     }
-    /** External Escape/Undo/hide owns termination, including an in-flight handoff. */
+    /** Escape and Undo must reach the last acquired prefix even while an eraser
+     * sweep is finishing. The ordinary gesture owner still implements policy. */
+    interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
+        if (this.closed) return false;
+        if (reason === 'os-cancel' || !this.running || (this.host.owner() && this.cursor >= this.queue.length)) return this.stop(reason);
+        let samples: readonly RealSample[] = [], modifiers: Modifiers = { shift: false, alt: false, accel: false, control: false };
+        for (let index = this.queue.length - 1; index >= this.cursor; index--) {
+            const batch = this.queue[index];
+            if (batch.type === 'end') { samples = batch.samples; modifiers = batch.modifiers; this.queue.splice(index, 1); }
+        }
+        this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
+        return true;
+    }
+    /** Invalidations terminate immediately; no pending continuation may resurrect a closed view. */
     stop(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
         this.closed = true; this.terminal = true; this.controller.abort(); this.queue.length = 0; this.cursor = 0;

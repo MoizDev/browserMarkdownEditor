@@ -112,7 +112,7 @@ export class PointerRouter<Context> {
     if (this.options.router.discardPreview(this.options.token)) { this.pointerId = null; this.options.releaseClaim(); this.options.ended('os-cancel') }
   }
   interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
-    if (this.pen) return this.pen.stop(reason)
+    if (this.pen) return this.pen.interrupt(reason)
     const ended = this.options.router.interrupt(this.options.token, reason)
     if (ended) { this.pointerId = null; this.options.releaseClaim(); this.options.ended(reason) }
     return ended

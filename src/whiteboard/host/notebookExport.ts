@@ -23,6 +23,8 @@ export async function notebookExportPages(snapshot: NotebookExportSnapshot, sign
     const sheets = [...snapshot.sheets];
     const { width, height } = paperPageSize(paper);
     const pages: NotebookExportPage[] = [];
+    // Every sheet of paper is identical; keep one immutable geometry shared by the pages.
+    const paperItems = notebookPaperList(paper, 0).items;
     for (let page = 0; page < paper.pageCount; page++) {
         signal.throwIfAborted();
         const displayList: PageDisplayList = { page, items: [] };
@@ -32,7 +34,7 @@ export async function notebookExportPages(snapshot: NotebookExportSnapshot, sign
             if (list.page !== page) throw new Error('Notebook export returned the wrong physical page');
             for (const item of list.items) displayList.items.push(item);
         }
-        pages.push({ width, height, paper: notebookPaperList(paper, page), displayList });
+        pages.push({ width, height, paper: { page, items: paperItems }, displayList });
     }
     return pages;
 }

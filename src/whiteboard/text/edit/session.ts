@@ -1,5 +1,4 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
-import type { RichText } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -18,7 +17,6 @@ export interface EditLayout {
     readonly clientToLocal: TextTransform;
 }
 export interface EditSessionServices extends EditTransactions {
-    readText(): RichText;
     plainText(): string;
     alive(): boolean;
     layout(): EditLayout;
@@ -26,6 +24,7 @@ export interface EditSessionServices extends EditTransactions {
     compositionFormat(event: Event): void;
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
+    undoTransformation(): boolean;
     changed(selection: EditSelection): void;
     autoScroll(x: number, y: number): void;
     touchHandles(show: boolean): void;
@@ -47,6 +46,8 @@ export class TextEditSession {
     private affinity: CaretPosition['affinity'];
     private goalX: number | undefined;
     private lastActivity = performance.now();
+    private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
+    private compositionSelection: EditSelection | null = null;
     private closed = false;
 
     constructor(container: HTMLElement, label: string, id: NodeId, key: 'text' | 'label', selection: EditSelection,
@@ -67,8 +68,25 @@ export class TextEditSession {
             snapshot: () => ({ text: services.readText(), selection: this.selection }),
             change: change => this.replace(change, 'typing'),
             selection: next => this.select(next),
-            composition: change => services.composition(change),
-            compositionFormat: event => services.compositionFormat(event),
+            composition: change => {
+                if (change) {
+                    this.compositionSelection ??= this.selection;
+                    this.selection = change.selection;
+                } else {
+                    this.formats = [];
+                    if (this.compositionSelection) this.selection = this.compositionSelection;
+                    this.compositionSelection = null;
+                }
+                services.composition(change);
+                services.changed(this.selection);
+            },
+            compositionFormat: event => {
+                const update = event as Event & { getTextFormats?: () => readonly { rangeStart: number; rangeEnd: number; underlineStyle: string; underlineThickness: string }[] };
+                const base = this.host.textOffsetBase;
+                this.formats = (update.getTextFormats?.() ?? []).map(format => ({ from: base + format.rangeStart, to: base + format.rangeEnd, style: format.underlineStyle, thickness: format.underlineThickness }));
+                services.compositionFormat(event);
+                services.changed(this.selection);
+            },
             commitComposition: change => this.replace(change, 'composition'),
             keydown: event => this.keydown(event),
             characterBounds: (start, end) => {
@@ -80,8 +98,7 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): void {
         this.lastActivity = performance.now();
-        this.controller.replace(change, kind, this.selection);
-        this.selection = change.selection;
+        this.selection = this.controller.replace(change, kind, this.selection);
         this.affinity = undefined;
         this.goalX = undefined;
         this.services.changed(this.selection);
@@ -137,6 +154,7 @@ export class TextEditSession {
                 else this.services.command(command, this.selection);
             },
             inList: () => this.services.inList(this.selection.focus),
+            undoTransformation: () => this.services.undoTransformation(),
         }, this.mac);
     }
 
@@ -150,11 +168,17 @@ export class TextEditSession {
         Object.assign(this.host.element.style, { left: '0px', top: '0px', width: `${layout.paint.box.w}px`, height: `${layout.paint.box.h}px`, transformOrigin: '0 0', transform: `matrix(${a},${b},${c},${d},${e - (container?.left ?? 0)},${f - (container?.top ?? 0)})` });
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
         const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
-        const rect = selection[0] ?? { x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top };
-        this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), clientBounds(rect, layout.localToClient));
+        const rects = selection.length ? selection : [{ x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top }];
+        const client = rects.map(rect => clientBounds(rect, layout.localToClient));
+        const bounds = client.reduce((union, rect) => {
+            const left = Math.min(union.left, rect.left), top = Math.min(union.top, rect.top);
+            const right = Math.max(union.right, rect.right), bottom = Math.max(union.bottom, rect.bottom);
+            return new DOMRect(left, top, right - left, bottom - top);
+        });
+        this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
     }
 
-    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): { selection: readonly Rect[]; caret: Rect | null } {
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number): { selection: readonly Rect[]; caret: Rect | null; composition: readonly { rect: Rect; style: string; thickness: string }[] } {
         const layout = this.services.layout();
         const selection = layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
         const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
@@ -163,7 +187,8 @@ export class TextEditSession {
         const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
         const caret = visible && this.selection.anchor === this.selection.focus
             ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
-        return { selection, caret };
+        const composition = this.formats.flatMap(format => layout.caret.selection(format.from, format.to).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        return { selection, caret, composition };
     }
 
     applyLink(url: string, selection: EditSelection): boolean {

@@ -97,13 +97,29 @@ export class BoardTextLayout implements TextLayoutEngine {
         const style = request.style, pad = style.padding;
         const outerWidth = request.width === null ? null : Math.max(16, request.width);
         const available = outerWidth === null ? null : Math.max(0, outerWidth - pad.left - pad.right);
-        const drafts: LineDraft[] = [];
+        let drafts: LineDraft[] = [];
         let offset = 0, ordered = 0, previousList = false;
         let appliedScale = 1;
+        if (style.overflow === 'shrink' && available !== null) {
+            for (const block of request.text.blocks) {
+                const indexed = itemizeBlock(block, 0);
+                const heading = block.kind[0] === 'h';
+                const size = style.size * (headingScale[block.kind] ?? 1);
+                const listInset = block.kind === 'ul' || block.kind === 'ol' ? (block.level + 2) * size * 1.25 : 0;
+                const width = Math.max(0, available - listInset);
+                let previous = 0;
+                for (const point of indexed.breaks) {
+                    const pieces = this.pieces(indexed, previous, point.offset, request, size, heading);
+                    const wordWidth = pieces.reduce((sum, piece) => sum + piece.width, 0);
+                    if (wordWidth > width) appliedScale = Math.min(appliedScale, Math.max(0.5, width / wordWidth));
+                    previous = point.offset;
+                }
+            }
+        }
         for (const block of request.text.blocks) {
             const indexed = itemizeBlock(block, offset);
             const heading = block.kind[0] === 'h';
-            const baseSize = style.size * (headingScale[block.kind] ?? 1);
+            const baseSize = style.size * (headingScale[block.kind] ?? 1) * appliedScale;
             const isList = block.kind === 'ul' || block.kind === 'ol';
             ordered = block.kind === 'ol' ? block.start ?? (previousList ? ordered + 1 : 1) : 0;
             previousList = block.kind === 'ol';
@@ -112,18 +128,7 @@ export class BoardTextLayout implements TextLayoutEngine {
             const markerWidth = marker ? this.measurer.measure(this.faces[markerFace], marker, false, request.fontEpoch).width * baseSize / 64 + baseSize * 0.35 : 0;
             const indent = isList ? (block.level + 1) * baseSize * 1.25 + markerWidth : 0;
             const width = available === null ? null : Math.max(0, available - indent);
-            let size = baseSize;
-            if (style.overflow === 'shrink' && width !== null) {
-                let previous = 0, widest = 0;
-                for (const point of indexed.breaks) {
-                    const pieces = this.pieces(indexed, previous, point.offset, request, baseSize, heading);
-                    widest = Math.max(widest, pieces.reduce((sum, piece) => sum + piece.width, 0));
-                    previous = point.offset;
-                }
-                const factor = widest > width && widest > 0 ? Math.max(0.5, width / widest) : 1;
-                appliedScale = Math.min(appliedScale, factor);
-                size *= factor;
-            }
+            const size = baseSize;
             const advance = (a: number, b: number) => this.pieces(indexed, a, b, request, size, heading).reduce((sum, piece) => sum + piece.width, 0);
             const lines = wrapBlock(indexed, width, style.overflow === 'grapheme', advance);
             for (let i = 0; i < lines.length; i++) {
@@ -132,6 +137,33 @@ export class BoardTextLayout implements TextLayoutEngine {
                 drafts.push({ block: indexed, from, to, height: size * 1.35, heading, pieces, width: pieces.reduce((sum, p) => sum + p.width, 0), marker: i === 0 ? marker : '', markerFace, markerWidth, indent });
             }
             offset += indexed.text.length + 1;
+        }
+        if (style.maxLines !== undefined && Number.isFinite(style.maxLines)) {
+            const limit = Math.max(1, Math.floor(style.maxLines));
+            const clipped = drafts.length > limit;
+            drafts = drafts.slice(0, limit);
+            const last = drafts[drafts.length - 1];
+            const width = available === null ? null : Math.max(0, available - (last?.indent ?? 0));
+            if (last && style.ellipsis && (clipped || (width !== null && last.width > width))) {
+                const size = this.faces[last.pieces[0]?.face ?? last.markerFace].size;
+                const face = last.pieces[0]?.face ?? last.markerFace;
+                const ellipsis = '…';
+                const ellipsisWidth = this.measurer.measure(this.faces[face], ellipsis, false, request.fontEpoch).width * size / 64;
+                const boundaries = last.block.graphemes.filter(n => n >= last.from && n <= last.to);
+                const room = width === null ? Infinity : Math.max(0, width - ellipsisWidth);
+                let lo = 0, hi = boundaries.length - 1, fit = last.from;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    const candidate = this.pieces(last.block, last.from, boundaries[mid], request, size, last.heading);
+                    if (candidate.reduce((sum, piece) => sum + piece.width, 0) <= room) { fit = boundaries[mid]; lo = mid + 1; }
+                    else hi = mid - 1;
+                }
+                const pieces = this.visual(last.block, last.from, fit, this.pieces(last.block, last.from, fit, request, size, last.heading));
+                const item: TextItem = { from: fit, to: fit, level: last.block.bidi.level, marks: {} };
+                const marker: Piece = { from: fit, to: fit, item, face, ink: style.ink, text: ellipsis, width: ellipsisWidth, fallback: true };
+                if (last.block.bidi.level & 1) pieces.unshift(marker); else pieces.push(marker);
+                drafts[drafts.length - 1] = { ...last, to: fit, pieces, width: pieces.reduce((sum, piece) => sum + piece.width, 0) };
+            }
         }
         const contentWidth = drafts.reduce((maximum, line) => Math.max(maximum, line.width + line.indent), 0);
         const boxWidth = outerWidth ?? contentWidth + pad.left + pad.right;

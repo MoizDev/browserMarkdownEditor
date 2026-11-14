@@ -11,6 +11,7 @@ export interface KeyServices {
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
     command(command: string): void;
     inList(): boolean;
+    undoTransformation(): boolean;
 }
 
 function adjacentGrapheme(text: string, offset: number, direction: -1 | 1): number {
@@ -42,8 +43,9 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
             : lower === 'c' ? 'copy' : lower === 'x' ? 'cut' : lower === 'v' ? event.shiftKey ? 'paste-plain' : 'paste' : null;
         if (command) { consume(event); services.command(command); return true; }
     }
-    if (mod && event.altKey && /^[0-6]$/.test(event.key)) {
-        consume(event); services.command(`heading-${event.key}`); return true;
+    if (mod && event.altKey && (/^[0-6]$/.test(event.key) || /^Digit[0-6]$/.test(event.code))) {
+        const level = /^[0-6]$/.test(event.key) ? event.key : event.code.slice(-1);
+        consume(event); services.command(`heading-${level}`); return true;
     }
     if (mod && event.shiftKey && (event.key === '7' || event.key === '8' || event.code === 'Digit7' || event.code === 'Digit8')) {
         consume(event); services.command(event.code === 'Digit7' || event.key === '7' ? 'ordered-list' : 'bullet-list'); return true;
@@ -58,6 +60,7 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         consume(event); services.command('enter'); return true;
     }
     if (event.key === 'Backspace' || event.key === 'Delete') {
+        if (event.key === 'Backspace' && !mod && !event.altKey && anchor === focus && services.undoTransformation()) { consume(event); return true; }
         const backward = event.key === 'Backspace';
         let from = Math.min(anchor, focus), to = Math.max(anchor, focus);
         if (from === to) {

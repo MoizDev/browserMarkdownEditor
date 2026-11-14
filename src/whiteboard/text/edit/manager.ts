@@ -1,5 +1,5 @@
 import type { NodeId, ParentId, SheetId } from '../../model/ids';
-import { richTextOperations } from '../richOperations';
+import { projectionLength } from '../projection';
 import { bindTextEditor } from './binding';
 import type { EditSelection } from './host';
 import type { TextEditBinding } from './bindingTypes';
@@ -34,9 +34,9 @@ export function createTextEditingManager(ports: TextEditingManagerPorts): TextEd
         const key = editable(id);
         if (!key) return false;
         const item = session.doc.nodes.get(id)!;
-        const value = item.kind === 'frame' ? item.name : item.kind === 'text' || item.kind === 'sticky' ? richTextOperations.plain(item.text)
-            : item.kind === 'figure' || item.kind === 'connector' ? item.label ? richTextOperations.plain(item.label) : '' : '';
-        const initial = selection ?? { anchor: 0, focus: value.length };
+        const initial = selection ?? { anchor: 0, focus: item.kind === 'frame' ? item.name.length
+            : item.kind === 'text' || item.kind === 'sticky' ? projectionLength(item.text)
+            : item.kind === 'figure' || item.kind === 'connector' ? item.label ? projectionLength(item.label) : 0 : 0 };
         try {
             const supplied = ports.binding(id, key, initial, creationToken);
             const holder: { binding?: TextEditBinding } = {};

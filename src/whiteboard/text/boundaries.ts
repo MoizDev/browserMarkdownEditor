@@ -3,6 +3,7 @@ import { projectionBlockStart, projectionLength, projectionPosition } from './pr
 import { WeakIdentityLru } from './weakLru';
 import { WordBlockIndex } from './wordIndex';
 import { runIndex } from './runIndex';
+import { GraphemeNavigator } from './graphemes';
 
 export interface BoundarySelection { readonly anchor: number; readonly focus: number }
 export type BoundaryDirection = -1 | 1;
@@ -10,13 +11,11 @@ export type BoundaryDirection = -1 | 1;
 type Segments = ReturnType<Intl.Segmenter['segment']>;
 interface BlockEntry {
     readonly text: string;
-    readonly simple: boolean;
     readonly bytes: number;
-    graphemes?: Segments;
+    graphemes?: GraphemeNavigator;
     words?: Segments;
 }
 
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const DEFAULT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ENTRIES = 1024;
@@ -66,11 +65,9 @@ export class TextBoundaries {
         const cached = this.entries.get(block);
         if (cached) return cached;
         const text = blockString(block);
-        // ASCII without CR/LF has one UTF-16 unit per extended grapheme.
-        const simple = /^[\x00-\x09\x0b-\x0c\x0e-\x7f]*$/.test(text);
         // Charge for the retained string and both possible ICU segmentation views.
         const bytes = 512 + text.length * 12;
-        const result: BlockEntry = { text, simple, bytes };
+        const result: BlockEntry = { text, bytes };
         this.entries.set(block, result, bytes);
         return result;
     }
@@ -87,8 +84,7 @@ export class TextBoundaries {
         if (point.offset === point.length)
             return point.index + 1 >= text.blocks.length || !endsWithCR(point.block);
         const entry = this.entry(point.block);
-        if (entry.simple) return true;
-        return (entry.graphemes ??= graphemeSegmenter.segment(entry.text)).containing(point.offset)?.index === point.offset;
+        return (entry.graphemes ??= new GraphemeNavigator(entry.text)).isBoundary(point.offset);
     }
 
     /** One extended grapheme in projection order, including a CR+separator pair. */
@@ -103,12 +99,9 @@ export class TextBoundaries {
         }
         if (direction > 0 && point.offset === point.length)
             return point.index + 1 < text.blocks.length ? cursor + 1 : length;
-        const entry = this.entry(point.block);
-        if (entry.simple) return cursor + direction;
-        const part = (entry.graphemes ??= graphemeSegmenter.segment(entry.text)).containing(direction < 0 ? point.offset - 1 : point.offset);
-        if (!part) return cursor;
-        if (direction < 0) return point.start + part.index;
-        const end = part.index + part.segment.length;
+        const entry = this.entry(point.block), navigator = entry.graphemes ??= new GraphemeNavigator(entry.text);
+        if (direction < 0) return point.start + navigator.previous(point.offset);
+        const end = navigator.next(point.offset);
         return point.start + end + (end === entry.text.length && entry.text.endsWith('\r') && point.index + 1 < text.blocks.length ? 1 : 0);
     }
 

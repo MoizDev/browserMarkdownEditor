@@ -35,6 +35,10 @@ export async function mapPool<T, R>(
  * another, and a pool per level multiplies: twelve at the root, twelve inside
  * each of those, and a deep vault is back to firing everything at once. A
  * semaphore is counted once for the whole walk however deep it goes.
+ *
+ * A permit covers LOCAL IO only: release it before awaiting descendants that
+ * need the same limiter. `run` is not re-entrant; parents holding every slot
+ * while their children queue deadlock even with no native IO left in flight.
  */
 export class Limiter {
     private free: number;

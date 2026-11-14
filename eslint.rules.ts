@@ -20,9 +20,24 @@ function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: s
     ImportDeclaration: (n) => check(n, n.source.value),
     ExportAllDeclaration: (n) => check(n, n.source.value),
     ExportNamedDeclaration: (n) => { if (n.source) check(n, n.source.value) },
-    ImportExpression: (n) => { if (n.source.type === 'Literal') check(n, n.source.value) },
+    ImportExpression: (n) => {
+      if (n.source.type === 'Literal') check(n, n.source.value)
+      // a template with no substitutions is a literal by another name (r-gates on I-0)
+      else if (n.source.type === 'TemplateLiteral' && n.source.expressions.length === 0) check(n, n.source.quasis[0].value.cooked)
+    },
     CallExpression: (n) => {
       if (n.callee.type === 'Identifier' && n.callee.name === 'require' && n.arguments[0]?.type === 'Literal') check(n, n.arguments[0].value)
+    },
+    // Type positions count too: `import('tldraw').TLShape` and `import x = require('tldraw')`
+    // pull no runtime code, but they are still another package's material in the
+    // engine (found by the auditor on I-0: a type import passed every zone).
+    TSImportType: (n: unknown) => {
+      const arg = (n as { argument?: { type: string; literal?: { value?: unknown } } }).argument
+      if (arg?.type === 'TSLiteralType') check(n as Rule.Node, arg.literal?.value)
+    },
+    TSExternalModuleReference: (n: unknown) => {
+      const e = (n as { expression?: { type: string; value?: unknown } }).expression
+      if (e?.type === 'Literal') check(n as Rule.Node, e.value)
     },
   }
 }
@@ -84,7 +99,11 @@ const noTests: Rule.RuleModule = {
   create(context) {
     const file = rel(context.filename)
     const listeners = onImport(context, (node, source) => {
-      if (RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
+      // The browser-run driver is the `playwright` library root; every other entry point
+      // it exports (`playwright/test`, `/lib/runner`, `/types/test`, ...) is its test
+      // runner or that runner's machinery (r-gates on I-0: `playwright/test` passed).
+      const playwrightRunner = source.startsWith('playwright/') && source !== 'playwright/package.json'
+      if (playwrightRunner || RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
         context.report({ node, message: `Code-based tests are banned (AGENTS.md): no test runner may be imported (${source}). Verify with a browser run driving the real app.` })
       }
     })
@@ -186,6 +205,13 @@ const fsAccess: Rule.RuleModule = {
     const file = rel(context.filename)
     if (under(file, 'src/context') || baseline.has(file)) return {}
     return {
+      // the picker is also a global: a bare `showDirectoryPicker()` (r-gates on I-0)
+      Identifier(n) {
+        const parent = (n as Node).parent as Node
+        if (FS_NAMES.has(n.name) && parent.type === 'CallExpression' && parent.callee === n) {
+          context.report({ node: n, message: `File System Access call \`${n.name}\` outside src/context/ (AGENTS.md: the four layers). Go through useFileSystem().` })
+        }
+      },
       MemberExpression(n) {
         const prop = n.property
         const name = !n.computed && prop.type === 'Identifier' ? prop.name : prop.type === 'Literal' && typeof prop.value === 'string' ? prop.value : null
@@ -197,7 +223,61 @@ const fsAccess: Rule.RuleModule = {
   },
 }
 
+// P1-dev exports every public symbol; the worker adapter may use only the
+// canonical 136-export surface. An explicit dev import guard is also required
+// so a static import cannot silently carry its manifest into a shipping chunk.
+const pdfiumBoundaries: Rule.RuleModule = {
+  meta: { type: 'problem', schema: [{ type: 'array', items: { type: 'string' } }] },
+  create(context) {
+    const allowed = new Set((context.options[0] ?? []) as string[])
+    const file = rel(context.filename)
+    const checkNative = (node: Rule.Node, value: unknown) => {
+      if (typeof value !== 'string' || !/^_?(?:FPDF|FORM|FSDK)[A-Za-z0-9_]+$/.test(value)) return
+      if (!allowed.has(value.replace(/^_/, ''))) context.report({ node, message: `PDFium symbol ${value} is not in src/pdf/engine/pdfium/exports.json (02-engine-build section 3).` })
+    }
+    const enabled = (test: Node): boolean => {
+      const source = context.sourceCode.getText(test).replace(/\s+/g, '')
+      return source === 'import.meta.env.DEV||__BME_BENCH__' || source === '__BME_BENCH__||import.meta.env.DEV'
+    }
+    const guarded = (node: Node): boolean => {
+      let child = node
+      for (let parent = node.parent as Node; parent; parent = parent.parent as Node) {
+        if (parent.type === 'IfStatement' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'ConditionalExpression' && parent.consequent === child && enabled(parent.test as Node)) return true
+        if (parent.type === 'LogicalExpression' && parent.operator === '&&' && parent.right === child && enabled(parent.left as Node)) return true
+        child = parent
+      }
+      return false
+    }
+    return {
+      ...onImport(context, (node, source) => {
+        const local = target(context.filename, source).local
+        if (!local || !under(local, 'src/pdf/engine/dev') || under(file, 'src/pdf/engine/dev')) return
+        const n = node as Node
+        if (n.importKind === 'type' || n.exportKind === 'type') return
+        if (n.type !== 'ImportExpression' || !guarded(n)) context.report({ node, message: 'Import the development PDFium loader dynamically inside if (import.meta.env.DEV || __BME_BENCH__), never statically or from its production branch.' })
+      }),
+      Identifier(raw) {
+        const n = raw as Node
+        const parent = n.parent as Node
+        if (typeof n.name === 'string' && (n.name.startsWith('_') || (parent.type === 'CallExpression' && parent.callee === n))) checkNative(n, n.name)
+      },
+      MemberExpression(raw) {
+        const n = raw as Node
+        const property = n.property as Node
+        if (!n.computed && property.type === 'Identifier') checkNative(property, property.name)
+      },
+      Literal(raw) { const n = raw as Node; checkNative(n, n.value) },
+      TemplateLiteral(raw) {
+        const n = raw as Node
+        const parts = n.quasis as unknown as { value: { cooked: string | null } }[]
+        if (parts.length === 1) checkNative(n, parts[0].value.cooked)
+      },
+    }
+  },
+}
+
 export const bmePlugin = {
   meta: { name: 'bme' },
-  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess },
+  rules: { 'import-zones': importZones, 'no-tests': noTests, 'html-sinks': htmlSinks, 'fs-access': fsAccess, 'pdfium-boundaries': pdfiumBoundaries },
 }

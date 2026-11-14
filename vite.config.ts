@@ -3,19 +3,22 @@ import react from '@vitejs/plugin-react'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { developmentPdfiumAssets } from './build/pdfiumDevAssets'
+import { pdfClassicAssets } from './build/pdfClassicAssets'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
 
 export default defineConfig({
-  plugins: [react(), {
+  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
-    // in `vite build --mode benchmark`, so every measurement hook sits behind
-    // `if (__BME_BENCH__)` and the production build drops it. A plugin hook, not a
-    // function config, because scratch configs spread this object.
+    // in `vite build --mode benchmark` (a dev server in that mode stays false: the
+    // benchmark build is the production build plus hooks, nothing else), so every
+    // measurement hook sits behind `if (__BME_BENCH__)` and the production build
+    // drops it. A plugin hook, not a function config, because scratch configs spread this object.
     name: 'benchmark-build-constant',
-    config(_config, { mode }) {
-      return { define: { __BME_BENCH__: JSON.stringify(mode === 'benchmark') } }
+    config(_config, { command, mode }) {
+      return { define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark') } }
     },
   }, {
     name: 'contained-epub-frame',

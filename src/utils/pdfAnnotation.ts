@@ -1,8 +1,8 @@
-// The on-disk format for "<name> (annotated).pdf", and the reading/writing of it.
+// Read the editable role of a genuine PDF, and rasterize its validated source.
 //
 // An annotated PDF is a GENUINE PDF, not a container with a .pdf name:
 //
-//   <name> (annotated).pdf
+//   <name>.pdf
 //   ├── the original pages, intact          ← text stays selectable
 //   ├── a transparent stroke overlay/page   ← the annotations, stamped in
 //   └── two embedded attachments:
@@ -21,13 +21,15 @@
 import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
 import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { openClassicPdf, loadClassicPdf, closeClassicPdf, classicPdfHealth } from './pdfClassicOpen';
+import { openClassicPdf, loadClassicPdf, closeClassicPdf } from './pdfClassicOpen';
 import { classicAnnotationHealth, recordClassicRenderFailure } from './pdfClassicHealth';
 
 // Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
-// The shared names come from pdfFormat.ts rather than from pdfBuild directly —
-// importing pdfBuild here would pull pdf-lib into this main-thread module.
-import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
+// Role extraction uses the build worker's read-only inventory operation; this
+// main-thread module never imports pdf-lib or the writer implementation.
+import { authorizePdfRole } from './pdfRole';
+import type { PdfRole } from './pdfRole';
+export type { PdfRole } from './pdfRole';
 
 // Page stacking lives in paper.ts, which imports nothing — the notebook canvas
 // lays its pages out with the same function and must not pull pdf.js in to do it.
@@ -59,141 +61,20 @@ export const PAGE_RENDER_SCALE = 2;
 const PAGE_IMAGE_TYPE = 'image/jpeg';
 const PAGE_IMAGE_QUALITY = 0.82;
 
-export interface AnnotatedPdfContents {
-    /** The pristine original, with no strokes stamped in. */
-    original: Uint8Array;
-    /** Serialized tldraw snapshot, or '' for an annotated file with no strokes yet. */
-    snapshot: string;
-}
-
-/**
- * Open `bytes`, hand the document to `read`, and always tear the worker down
- * afterwards. destroy() lives on the loading task, not the document, and
- * skipping it leaks a worker per PDF opened.
- */
-async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
-    // pdf.js takes ownership of (and detaches) the buffer it is handed, which
-    // would corrupt a caller still holding the same bytes. Always give it a copy.
-    const diagnostics = classicAnnotationHealth(bytes);
-    const task = await openClassicPdf({ bytes, purpose: 'attachments', diagnostic: diagnostics.record, progress: diagnostics.progress });
+/** A refusal stays tagged through every entry point; it is never null/plain. */
+export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<PdfRole> {
     try {
-        return await classicPdfHealth(task).guard(read(await loadClassicPdf(task)));
-    } finally {
-        await closeClassicPdf(task);
+        const { inspectPdfRoleAsync } = await import('./pdfBuildClient');
+        const role = await inspectPdfRoleAsync(bytes, generation);
+        authorizePdfRole(role);
+        return role;
+    } catch (error) {
+        return { kind: 'unreadable', generation, alreadyAnnotated: true, attachment: 'attachment inventory',
+            reason: error instanceof Error && error.message.includes('timed out') ? 'timeout' : 'workerDeath' };
     }
 }
 
-/**
- * Pull the pristine original and the tldraw snapshot back out of an annotated
- * PDF. Returns null if this file wasn't produced by us (no attachments), which
- * is how a plain PDF is distinguished from one of ours regardless of its name.
- */
-export async function readAnnotatedPdf(bytes: Uint8Array): Promise<AnnotatedPdfContents | null> {
-    return withPdf(bytes, async doc => {
-        const attachments = await doc.getAttachments();
-        // NB: a Map, not a plain object — Object.keys() on it is always empty.
-        if (!attachments?.has(ORIGINAL_ATTACHMENT)) return null;
-
-        // pdf.js 6 lists attachments without their bytes; content is a 2nd call,
-        // and it yields null if the attachment is present but unreadable.
-        const original = await doc.getAttachmentContent(ORIGINAL_ATTACHMENT);
-        if (!original) return null;
-
-        let snapshot = '';
-        if (attachments.has(SNAPSHOT_ATTACHMENT)) {
-            const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
-            if (raw) snapshot = new TextDecoder().decode(raw);
-        }
-        // getAttachmentContent already hands back a fresh array, structured-cloned
-        // out of the worker — copying it again duplicated the whole document for
-        // nothing. Only re-wrap in the case the copy actually guards against: a
-        // view onto a larger buffer, where the extra bytes would travel with it.
-        const tight = original.byteOffset === 0 && original.byteLength === original.buffer.byteLength;
-        return { original: tight ? original : new Uint8Array(original), snapshot };
-    });
-}
-
-/** Everything the app needs to know about a PDF it is about to let you edit. */
-export interface PdfRole {
-    /**
-     * The pristine pages to draw on and rebuild from.
-     *
-     * For a file already annotated by this app, the embedded `original.pdf`.
-     * For any other PDF, ITS OWN BYTES — which is what makes annotating happen
-     * in the file you opened rather than in a copy beside it. Either way the
-     * load-bearing rule holds: every save stamps onto these, never onto pages
-     * that already carry strokes.
-     */
-    original: Uint8Array;
-    /** Strokes already in the file, or '' for a PDF being annotated first time. */
-    snapshot: string;
-    /** Set when this PDF is a notebook's export — see pdfFormat.ts. */
-    notebookSource: NotebookSource | null;
-    /** False the first time: the file has no embedded original yet, so the next
-     *  save is what converts it into one of ours. */
-    alreadyAnnotated: boolean;
-}
-
-/**
- * Read a PDF's role in ONE pdf.js open.
- *
- * Told by CONTENT, never by filename — the rule this format has always run on.
- * A file called "… (annotated).pdf" that this app did not write has no
- * attachments and is treated as the plain PDF it is; a renamed one of ours is
- * still ours.
- */
-export async function readPdfRole(bytes: Uint8Array): Promise<PdfRole> {
-    return withPdf(bytes, async doc => {
-        const attachments = await doc.getAttachments();
-        // NB: a Map, not a plain object — Object.keys() on it is always empty.
-        const has = (name: string) => !!attachments?.has(name);
-
-        let notebookSource: NotebookSource | null = null;
-        if (has(NOTEBOOK_SOURCE_ATTACHMENT)) {
-            const raw = await doc.getAttachmentContent(NOTEBOOK_SOURCE_ATTACHMENT);
-            if (raw) {
-                try {
-                    const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<NotebookSource>;
-                    // The path is the whole point; without one there is nothing
-                    // to follow, so treat it as absent rather than as broken.
-                    if (typeof parsed.path === 'string' && parsed.path) {
-                        notebookSource = { path: parsed.path, exportedAt: Number(parsed.exportedAt) || 0 };
-                    }
-                } catch { /* hand-edited, or a shape an older build wrote */ }
-            }
-        }
-
-        // pdf.js 6 lists attachments without their bytes; content is a 2nd call,
-        // and it yields null if the attachment is present but unreadable.
-        const embedded = has(ORIGINAL_ATTACHMENT)
-            ? await doc.getAttachmentContent(ORIGINAL_ATTACHMENT)
-            : null;
-
-        let snapshot = '';
-        if (embedded && has(SNAPSHOT_ATTACHMENT)) {
-            const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
-            if (raw) snapshot = new TextDecoder().decode(raw);
-        }
-
-        // getAttachmentContent already hands back a fresh array, structured-cloned
-        // out of the worker — copying it again duplicated the whole document for
-        // nothing. Only re-wrap in the case the copy actually guards against: a
-        // view onto a larger buffer, where the extra bytes would travel with it.
-        const tight = embedded
-            && embedded.byteOffset === 0
-            && embedded.byteLength === embedded.buffer.byteLength;
-
-        return {
-            // No embedded original means this PDF has never been annotated here,
-            // so the file itself IS the pristine copy. `bytes` is the caller's
-            // array and pdf.js was handed a slice, so it is intact.
-            original: embedded ? (tight ? embedded : new Uint8Array(embedded)) : bytes,
-            snapshot,
-            notebookSource,
-            alreadyAnnotated: !!embedded,
-        };
-    });
-}
+export const readAnnotatedPdf = readPdfRole;
 
 export interface PdfPageSize {
     /** Page size in PDF points — the coordinate space annotations live in. */
@@ -230,8 +111,8 @@ export interface PdfPageSource {
  * strokes load on top, i.e. everything doubled.
  */
 export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
-    // Not withPdf(): the document must outlive this call so pages can be
-    // rasterized on demand. close() is the caller's responsibility.
+    // The render task must outlive this call so pages can be rasterized on
+    // demand. Unlike the short role-read job, its close() belongs to the caller.
     const diagnostics = classicAnnotationHealth(original);
     const task = await openClassicPdf({ bytes: original, purpose: 'annotation-backdrop', diagnostic: diagnostics.record, progress: diagnostics.progress });
     let doc: PDFDocumentProxy;

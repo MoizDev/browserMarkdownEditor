@@ -146,11 +146,15 @@ const NODE_NAMES: Record<Node['kind'], readonly [string, string]> = {
     opaque: ['unsupported item', 'unsupported items'],
 };
 
-/** Describe the actual items, not every kind of content as a stroke (WB-D29). */
-export function describePageContents(contents: readonly Node[]): string {
+/** Structured counts let the host pluralize actual kinds, not call every item a stroke (WB-D29). */
+export function pageContentCounts(contents: readonly Node[]): ReadonlyMap<Node['kind'], number> {
     const counts = new Map<Node['kind'], number>();
     for (const node of contents) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
-    return [...counts].map(([kind, count]) => `${count} ${NODE_NAMES[kind][count === 1 ? 0 : 1]}`).join(', ');
+    return counts;
+}
+
+export function describePageContents(contents: readonly Node[]): string {
+    return [...pageContentCounts(contents)].map(([kind, count]) => `${count} ${NODE_NAMES[kind][count === 1 ? 0 : 1]}`).join(', ');
 }
 
 export function lastPageContents(doc: BoardDoc): readonly Node[] {

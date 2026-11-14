@@ -1,5 +1,5 @@
 import type { CanvasOp } from '../../../shared/vaultAgentProtocol';
-import type { NodeSetOp, TxBuilder } from '../change/ops';
+import type { CommandBuilder, NodeSetOp } from '../change/ops';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
@@ -11,7 +11,7 @@ export type UpdateOp = Extract<CanvasOp, { op: 'update' }>;
 export interface UpdateContext {
     readonly doc: BoardDoc;
     readonly sheet: SheetId;
-    readonly builder: TxBuilder;
+    readonly builder: CommandBuilder;
     resolve(reference: string): NodeId;
     /** Computes placement/resize with authoritative staged scene geometry, or refuses. */
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };

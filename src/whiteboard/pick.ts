@@ -3,12 +3,50 @@ import type { BoardDoc } from './model/doc';
 import type { NodeId, ParentId, SheetId } from './model/ids';
 import { selectableAtFocus } from './selection';
 import type { NarrowResult } from './geom/types';
+import { SpatialQuery } from './scene/query';
+import type { QueryRequest, SpatialQuerySource } from './scene/query';
 
 export interface SpatialRef { readonly slot: number; readonly generation: number; readonly localToWorld: Affine }
 export type SpatialQueryStatus = 'pending' | 'complete' | 'stale' | 'cancelled';
 export interface SpatialCursor {
     resume(budget: Readonly<{ deadline: number; maxVisits: number }>, visit: (ref: SpatialRef) => void): SpatialQueryStatus;
     cancel(): void;
+}
+// The scene owns the only index; this adapter streams its completed buffer without
+// imposing a fixed candidate cap or exposing a partial traversal as complete.
+export class SceneCursorAdapter implements SpatialCursor {
+    private readonly query: SpatialQuery;
+    private readonly sceneEpoch: number;
+    private readonly indexEpoch: number;
+    private emitted = 0;
+    private cancelled = false;
+    constructor(private readonly source: SpatialQuerySource, request: QueryRequest,
+        private readonly transform: (slot: number, generation: number) => Affine | null) {
+        this.sceneEpoch = source.epoch(); this.indexEpoch = source.index.epoch;
+        this.query = new SpatialQuery().begin(source, request);
+    }
+    cancel(): void { this.cancelled = true; this.query.cancel(); }
+    resume(budget: Readonly<{ deadline: number; maxVisits: number }>, visit: (ref: SpatialRef) => void): SpatialQueryStatus {
+        if (this.cancelled) return 'cancelled';
+        if (!Number.isSafeInteger(budget.maxVisits) || budget.maxVisits < 1 || !Number.isFinite(budget.deadline)) throw new RangeError('Invalid spatial cursor budget');
+        if (this.source.epoch() !== this.sceneEpoch || this.source.index.epoch !== this.indexEpoch) { this.cancel(); return 'stale'; }
+        if (this.query.status === 'pending') {
+            const status = this.query.step(Math.min(64, budget.maxVisits));
+            if (status !== 'complete') return status;
+            return 'pending';
+        }
+        if (this.query.status !== 'complete') return this.query.status;
+        const buffer = this.query.result;
+        let visits = 0;
+        while (this.emitted < buffer.length && visits++ < budget.maxVisits && performance.now() < budget.deadline) {
+            const i = this.emitted++, slot = buffer.slots[i], generation = buffer.generations[i];
+            if (!this.source.index.alive(slot) || this.source.index.generation(slot) !== generation) { this.cancel(); return 'stale'; }
+            const localToWorld = this.transform(slot, generation);
+            if (localToWorld) visit({ slot, generation, localToWorld });
+            if (this.cancelled) return 'cancelled';
+        }
+        return this.emitted === buffer.length ? 'complete' : 'pending';
+    }
 }
 export interface CandidateHit {
     readonly id: NodeId;

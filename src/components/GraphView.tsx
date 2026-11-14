@@ -61,6 +61,8 @@ interface GraphViewProps {
     activeFilePath: string | null;
     onOpenNode: OpenNodeHandler;
     theme: Theme;
+    indexing: boolean;
+    updating: boolean;
 }
 
 interface GraphMeasurement {
@@ -92,7 +94,7 @@ interface GraphColors {
     ring: string;
 }
 
-export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme }: GraphViewProps) {
+export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme, indexing, updating }: GraphViewProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -614,10 +616,10 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return (
             <div className="graph-view">
                 <div className="graph-empty">
-                    <p className="graph-empty-title">No notes to graph yet</p>
-                    <p className="graph-empty-hint">
+                    <p className="graph-empty-title">{indexing || updating ? 'Indexing your notes…' : 'No notes to graph yet'}</p>
+                    {!indexing && !updating && <p className="graph-empty-hint">
                         Create some <code>.md</code> notes and connect them with <code>[[wikilinks]]</code>.
-                    </p>
+                    </p>}
                 </div>
             </div>
         );
@@ -630,6 +632,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 <span className="graph-stats">
                     {noteCount} note{noteCount === 1 ? '' : 's'} · {links.length} link{links.length === 1 ? '' : 's'}
                 </span>
+                {updating && <span className="graph-stats" role="status">Updating…</span>}
                 <button className="graph-reset-btn" onClick={resetView} data-tooltip="Reset view">Reset view</button>
             </div>
             <div

@@ -75,10 +75,34 @@ function focusAt(root: HTMLElement, x: number, y: number): TextPoint | undefined
     return layer ? nearestEnd(layer, x, y) : undefined;
 }
 
+interface PdfTextSelectionOptions {
+    copyAll?(signal: AbortSignal): Promise<void>;
+    normalize?(text: string): string;
+    selectionChanged?(): void;
+}
+
 /** One delegated binding per viewer rather than a listener retained by each
  *  page: text-layer windowing/replacement needs no separate teardown path. */
-export function bindPdfTextLayerSelection(root: HTMLElement): () => void {
+export function bindPdfTextLayerSelection(root: HTMLElement, options: PdfTextSelectionOptions = {}): () => void {
     let drag: { id: number; layer: Element; anchor: TextPoint } | undefined;
+    let copying: AbortController | undefined;
+    let hadSelection = false;
+    // Keep endpoints, not a live clone: removing/replacing a layer can silently
+    // move a Range. That must revoke whole-document copy, not authorize it.
+    let whole: { range?: Range; anchor: Node | null; anchorOffset: number; focus: Node | null; focusOffset: number } | undefined;
+    const cancelCopy = () => { copying?.abort(); copying = undefined; };
+    const matchesWhole = (selection: Selection | null) => !!whole && !!selection &&
+        whole.range === (selection.rangeCount ? selection.getRangeAt(0) : undefined) &&
+        whole.anchor === selection.anchorNode && whole.anchorOffset === selection.anchorOffset &&
+        whole.focus === selection.focusNode && whole.focusOffset === selection.focusOffset;
+    const selectionChanged = () => {
+        const selection = document.getSelection();
+        const ownsSelection = !!selection?.anchorNode && root.contains(selection.anchorNode);
+        const affected = hadSelection || ownsSelection || !!whole;
+        hadSelection = ownsSelection;
+        if (whole && !matchesWhole(selection)) { whole = undefined; cancelCopy(); }
+        if (affected) options.selectionChanged?.();
+    };
     const finish = () => {
         const previous = drag;
         drag = undefined;
@@ -113,13 +137,38 @@ export function bindPdfTextLayerSelection(root: HTMLElement): () => void {
         event.preventDefault();
         const selection = document.getSelection();
         if (!selection) return;
+        cancelCopy();
         selection.removeAllRanges();
-        if (!first || !last) return;
-        const range = document.createRange();
-        range.setStart(first, 0);
-        range.setEnd(last, last.childNodes.length);
-        selection.addRange(range);
+        if (first && last) {
+            const range = document.createRange();
+            range.setStart(first, 0);
+            range.setEnd(last, last.childNodes.length);
+            selection.addRange(range);
+        }
+        whole = options.copyAll ? { range: selection.rangeCount ? selection.getRangeAt(0) : undefined,
+            anchor: selection.anchorNode, anchorOffset: selection.anchorOffset,
+            focus: selection.focusNode, focusOffset: selection.focusOffset } : undefined;
     };
+    const copy = (event: ClipboardEvent) => {
+        if (event.defaultPrevented) return;
+        const selection = document.getSelection();
+        if (whole && matchesWhole(selection) && options.copyAll) {
+            event.preventDefault();
+            cancelCopy();
+            const job = new AbortController(); copying = job;
+            void options.copyAll(job.signal).catch(error => {
+                if (!job.signal.aborted) console.error('Could not copy PDF text:', error);
+            }).finally(() => { if (copying === job) copying = undefined; });
+            return;
+        }
+        whole = undefined;
+        if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode ||
+            !root.contains(selection.anchorNode) || !root.contains(selection.focusNode) || !event.clipboardData || !options.normalize) return;
+        event.preventDefault();
+        event.clipboardData.setData('text/plain', options.normalize(selection.toString()));
+    };
+    document.addEventListener('selectionchange', selectionChanged);
+    root.addEventListener('copy', copy);
     root.addEventListener('pointerdown', pointerDown);
     root.addEventListener('pointermove', pointerMove);
     root.addEventListener('pointerup', pointerEnd);
@@ -127,7 +176,9 @@ export function bindPdfTextLayerSelection(root: HTMLElement): () => void {
     root.addEventListener('lostpointercapture', pointerEnd);
     root.addEventListener('keydown', selectAll, true);
     return () => {
-        finish();
+        finish(); cancelCopy(); whole = undefined;
+        document.removeEventListener('selectionchange', selectionChanged);
+        root.removeEventListener('copy', copy);
         root.removeEventListener('pointerdown', pointerDown);
         root.removeEventListener('pointermove', pointerMove);
         root.removeEventListener('pointerup', pointerEnd);

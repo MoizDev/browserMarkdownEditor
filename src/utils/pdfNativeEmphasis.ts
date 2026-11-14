@@ -1,7 +1,7 @@
 import { OPS, version } from 'pdfjs-dist';
-import type { PDFPageProxy, RenderTask } from 'pdfjs-dist';
+import type { PDFPageProxy } from 'pdfjs-dist';
 import type { EmphasisAvailability } from '../types/reading';
-import { emphasisRanges } from './readingEmphasis';
+import { EMPHASIS_ALGORITHM, emphasisRanges } from './readingEmphasis';
 
 /** This adapter is deliberately pinned: the public operator filter is stable,
  * but glyph payloads and the two canvas painting routes are pdf.js internals.
@@ -37,27 +37,32 @@ interface Glyph {
     unicode: string; fontChar: string; isSpace: boolean; isInFont: boolean;
     accent?: { fontChar: string } | null;
 }
-interface Paint { char: string; selected: boolean; inFont: boolean }
+interface Paint { readonly char: string; readonly selected: boolean; readonly inFont: boolean }
 interface RunGlyph { glyph: Glyph; op: number; from: number; to: number }
+export interface PdfEmphasisPlan {
+    readonly result: Readonly<PdfNativeEmphasisResult>;
+    readonly paints: ReadonlyMap<number, readonly Paint[]>;
+    readonly fontIds: ReadonlyMap<number, string>;
+}
 
 /** The operator stream carries the embedded font's own Unicode↔glyph mapping,
  * so TextItem merging/splitting and visual column order cannot move a prefix.
  * Ligatures are indivisible: a prefix ending INSIDE one leaves that glyph alone.
  * The shared Unicode policy currently selects Latin words only. */
-export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, enabled = true) {
+export function makePdfEmphasisPlan(list: Awaited<ReturnType<PDFPageProxy['getOperatorList']>>,
+    algorithm: typeof EMPHASIS_ALGORITHM = EMPHASIS_ALGORITHM, locale?: string): PdfEmphasisPlan {
     const result: PdfNativeEmphasisResult = { glyphs: 0, candidates: 0, painted: 0, eligible: 0, skipped: 0,
-        supported: version === PDF_EMPHASIS_RENDERER_VERSION,
+        supported: version === PDF_EMPHASIS_RENDERER_VERSION && algorithm === EMPHASIS_ALGORITHM,
         reason: version === PDF_EMPHASIS_RENDERER_VERSION ? undefined : 'renderer-version' };
     const paints = new Map<number, Paint[]>();
     const fontIds = new Map<number, string>();
     try {
         if (result.supported) {
-            const list = await page.getOperatorList();
             let text = '', glyphs: RunGlyph[] = [], fontId = '', codeUnits = 0;
             let annotation = false;
             const fonts: string[] = [];
             const flush = () => {
-                const ranges = emphasisRanges({ text, exclusions: [...text.matchAll(/\S+/gu)].filter(m => m[0].includes('\uFFFD')).map(m => ({ from: m.index, to: m.index + m[0].length })) });
+                const ranges = emphasisRanges({ text, locale, exclusions: [...text.matchAll(/\S+/gu)].filter(m => m[0].includes('\uFFFD')).map(m => ({ from: m.index, to: m.index + m[0].length })) });
                 let r = 0;
                 for (const g of glyphs) {
                     while (r < ranges.length && ranges[r].to <= g.from) r++;
@@ -110,9 +115,15 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
         paints.clear(); fontIds.clear();
     }
 
+    return { result, paints, fontIds };
+}
+
+export function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRenderingContext2D, plan: PdfEmphasisPlan) {
+    const { paints, fontIds } = plan;
+    const result = { ...plan.result };
     const originalFillText = ctx.fillText;
     const originalFill = ctx.fill;
-    let queue: Paint[] | undefined, cursor = 0;
+    let queue: readonly Paint[] | undefined, cursor = 0;
     let font: { isType3Font?: boolean; missingFile?: boolean } | undefined;
     const eligible = () => result.supported && queue && !font?.isType3Font;
     const take = (char?: string) => {
@@ -128,10 +139,9 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
         if (typeof ctx.fillStyle !== 'string' || ctx.globalAlpha !== 1 || ctx.globalCompositeOperation !== 'source-over') {
             result.skipped++; return;
         }
-        // Normal OFF rendering probes the exact same glyph/paint route without
-        // touching canvas state. Candidates alone include invisible OCR/Type3.
+        // Candidates alone include invisible OCR/Type3; only the separate
+        // final-composition proof can publish this counter as capability.
         result.eligible++;
-        if (!enabled) return;
         ctx.save();
         try {
             ctx.strokeStyle = ctx.fillStyle;
@@ -170,63 +180,10 @@ export async function bindPdfNativeEmphasis(page: PDFPageProxy, ctx: CanvasRende
             }
             return true; // Every original operation ALWAYS executes.
         },
-        /** Canvas calls can succeed outside the clip, under later artwork, or
-         * white on white. Only a final-composition difference establishes native
-         * support. Probe one counterpart at a time, never mutate the displayed
-         * bitmap, and release its backing store before returning the page lease. */
-        async verify(parameters: Pick<Parameters<PDFPageProxy['render']>[0], 'viewport' | 'transform'>,
-            onTask: (task: RenderTask) => void, current: () => boolean = () => true, wholePage = false): Promise<void> {
-            if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
-            if (wholePage && result.supported && result.candidates) {
-                // A high-zoom band is a temporary viewport clip, not a page
-                // capability. Assess the complete page with a bounded probe.
-                const base = page.getViewport({ scale: 1 });
-                const viewport = page.getViewport({ scale: Math.min(1.5, Math.sqrt(2 ** 20 / (base.width * base.height))) });
-                const full = document.createElement('canvas');
-                full.width = Math.max(1, Math.ceil(viewport.width)); full.height = Math.max(1, Math.ceil(viewport.height));
-                const context = full.getContext('2d');
-                if (!context) throw new Error('Could not verify full PDF page');
-                const binding = await bindPdfNativeEmphasis(page, context, enabled);
-                try {
-                    if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
-                    const task = page.render({ canvas: full, canvasContext: context, viewport, operationsFilter: binding.operationsFilter });
-                    onTask(task); await task.promise;
-                    await binding.verify({ viewport }, onTask, current);
-                    result.eligible = binding.result.eligible;
-                    if (!result.eligible) result.painted = 0;
-                } finally { binding.dispose(); full.width = full.height = 0; }
-                return;
-            }
-            if (!result.eligible) return;
-            const canvas = document.createElement('canvas');
-            canvas.width = ctx.canvas.width; canvas.height = ctx.canvas.height;
-            const other = canvas.getContext('2d');
-            if (!other) throw new Error('Could not verify original PDF glyph paint');
-            let binding: Awaited<ReturnType<typeof bindPdfNativeEmphasis>> | undefined;
-            try {
-                binding = await bindPdfNativeEmphasis(page, other, !enabled);
-                if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
-                const task = page.render({ ...parameters, canvas, canvasContext: other, operationsFilter: binding.operationsFilter });
-                onTask(task);
-                await task.promise;
-                if (!current()) throw new DOMException('Stale PDF paint', 'AbortError');
-                let different = false;
-                // Bounded readback: at most 64 rows, rather than two page-sized
-                // JS buffers in addition to the two canvas backing stores.
-                for (let y = 0; y < canvas.height && !different; y += 64) {
-                    const h = Math.min(64, canvas.height - y);
-                    const a = ctx.getImageData(0, y, canvas.width, h).data;
-                    const b = other.getImageData(0, y, canvas.width, h).data;
-                    for (let n = 0; n < a.length; n++) if (a[n] !== b[n]) { different = true; break; }
-                }
-                result.eligible = different ? result.eligible : 0;
-                result.painted = enabled && different ? result.painted : 0;
-            } finally { binding?.dispose(); canvas.width = canvas.height = 0; }
-        },
         dispose() {
             ctx.fillText = originalFillText;
             ctx.fill = originalFill;
-            paints.clear(); fontIds.clear(); queue = undefined; font = undefined;
+            queue = undefined; font = undefined;
         },
     };
 }

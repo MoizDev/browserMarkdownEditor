@@ -377,6 +377,7 @@
     "paper.deleteContents": "Tämä sivu sisältää {items}.",
     "paper.deleteConfirm": "Poista sivu",
     "paper.cancel": "Peruuta",
-    "paper.keepProtected": "Lukittu sisältö säilytetään."
+    "paper.keepProtected": "Lukittu sisältö säilytetään.",
+    "chrome.readOnly": "Tämä taulu on vain luku -tilassa."
   }
 }

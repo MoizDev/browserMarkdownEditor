@@ -377,6 +377,7 @@
     "paper.deleteContents": "Această pagină conține {items}.",
     "paper.deleteConfirm": "Șterge pagina",
     "paper.cancel": "Anulează",
-    "paper.keepProtected": "Conținutul blocat va fi păstrat."
+    "paper.keepProtected": "Conținutul blocat va fi păstrat.",
+    "chrome.readOnly": "Această placă este doar pentru citire."
   }
 }

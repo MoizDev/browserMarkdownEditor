@@ -5,6 +5,7 @@ import { InkPickJob } from '../ink/pick';
 import type { InkPickQuery } from '../ink/pick';
 import type { Fill } from '../model/styles';
 import type { TextLayoutRequest, TextPaint } from '../text/paint';
+import { transformPoint } from './affine';
 import { cubicBounds } from './bounds';
 import type { Box } from './bounds';
 import { ContourClipper, hatchLines, reflectHatch } from './clip';
@@ -51,9 +52,34 @@ export function figureLabelRequest(node: Readonly<FigureNode>, revision: string,
             padding: { top: 16, right: 16, bottom: 16, left: 16 }, minHeight: height, overflow: 'grapheme' } } };
 }
 
+export function stickyLabelRequest(node: Readonly<StickyNode>, revision: string, fontEpoch: number):
+    Readonly<{ request: TextLayoutRequest; scale: number }> {
+    if (![node.scale, node.growY, fontEpoch].every(Number.isFinite) || node.scale < 0 || node.growY < 0) throw new RangeError('Invalid sticky label layout');
+    const align = node.align.startsWith('start') ? 'start' : node.align.startsWith('end') ? 'end' : 'middle';
+    const fit = node.fit ?? 1;
+    if (!Number.isFinite(fit) || fit <= 0) throw new RangeError('Invalid sticky text fit');
+    return { scale: node.scale, request: { text: node.text, revision, fontEpoch, width: 200,
+        style: { font: node.font, size: FIGURE_LABEL_SIZE[node.size] * fit, ink: { swatch: node.labelColor, role: 'label' },
+            align, verticalAlign: node.valign, padding: { top: 16, right: 16, bottom: 16, left: 16 },
+            minHeight: 200 + node.growY, overflow: 'shrink' } } };
+}
+
+/** Frame titles are laid out as text, not a second editable content format. */
+export function frameTitleRequest(node: Readonly<FrameNode>, fallback: string, revision: string,
+    fontEpoch: number, zoom: number): TextLayoutRequest {
+    if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(node.w) || node.w < 0 || !Number.isFinite(fontEpoch)) throw new RangeError('Invalid frame title layout');
+    const text = node.name || fallback;
+    return { text: { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] }] },
+        revision, fontEpoch, width: node.w, style: { font: 'sans', size: 12 / zoom,
+            ink: { swatch: node.color ?? 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow',
+            maxLines: 1, ellipsis: true } };
+}
+
 export interface FigureGeometryOptions {
     readonly key: string;
     readonly kernelVersion: number;
+    readonly fontEpoch: number;
     readonly pathError: number;
     readonly lengthError: number;
     readonly maxPieces: number;
@@ -112,6 +138,40 @@ function pathBounds(ops: readonly PathOp[]): Rect | null {
     }
     return result;
 }
+export function transformedPathBounds(ops: readonly PathOp[], matrix: Affine): Rect | null {
+    if (!matrix.every(Number.isFinite)) throw new RangeError('Invalid path transform');
+    const mapped = ops.map((op): PathOp => {
+        if (op.op === 'Z') return op;
+        if (op.op === 'C') return { op: 'C', c1: transformPoint(matrix, op.c1), c2: transformPoint(matrix, op.c2), p: transformPoint(matrix, op.p) };
+        return { op: op.op, p: transformPoint(matrix, op.p) };
+    });
+    return pathBounds(mapped);
+}
+
+export interface FigureWorldBoundsOptions {
+    readonly kernelVersion: number; readonly pathError: number; readonly lengthError: number; readonly maxPieces: number;
+}
+
+/** Preserve the approximation enclosure so page-centre callers can defer an ambiguous boundary. */
+export function figureWorldSemanticBounds(node: Readonly<FigureNode>, matrix: Affine,
+    options: FigureWorldBoundsOptions): Readonly<{ bounds: Rect; errorWorld: number }> {
+    if (!Number.isFinite(options.pathError) || options.pathError <= 0 || !Number.isFinite(options.lengthError) || options.lengthError <= 0
+        || !Number.isSafeInteger(options.maxPieces) || options.maxPieces < 1) throw new RangeError('Invalid figure bounds budget');
+    const height = node.h + node.growY;
+    const contour = figureOutline(node.shape, node.w, height, node.flipX, node.flipY).primary;
+    let paths = Array.from(realiseFigureContour(contour, options.pathError, options.maxPieces));
+    if (paths.length > options.maxPieces) throw new RangeError('Figure bounds budget exhausted');
+    if (node.dash === 'draw') paths = Array.from(drawPath(paths, { nodeId: node.id, kernelVersion: options.kernelVersion,
+        width: node.width, referenceWidth: styleGeometryMetrics.actualWidth('figure', node.size, 1),
+        boxWidth: node.w, boxHeight: height }, options.lengthError, options.maxPieces));
+    const bounds = transformedPathBounds(paths, matrix);
+    if (!bounds) throw new RangeError('Figure has no outline');
+    const scale = Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]);
+    const errorWorld = contour.kind === 'path' && node.dash !== 'draw' ? 0 : options.pathError * scale;
+    if (!Number.isFinite(errorWorld)) throw new RangeError('Figure bounds error overflows');
+    return { bounds: errorWorld ? expand(bounds, errorWorld) : bounds, errorWorld };
+}
+
 function expand(rect: Rect, radius: number): Rect {
     return { x: rect.x - radius, y: rect.y - radius, width: rect.width + 2 * radius, height: rect.height + 2 * radius };
 }
@@ -138,12 +198,13 @@ export function prepareInkGeometry(key: string, coverage: InkCoverage): InkGeome
 }
 
 export interface TextGeometryOptions {
-    readonly key: string; readonly hitErrorCss: number; readonly maxSegments: number;
+    readonly key: string; readonly fontEpoch: number; readonly hitErrorCss: number; readonly maxSegments: number;
 }
 export type TextGeometry = KindGeometry<never, PositionedFigureText, FigureAttachmentSurface>;
 
 /** Whitespace remains selectable: text selection follows its layout box, not glyph alpha. */
-export function prepareTextGeometry(node: Readonly<TextNode>, paint: TextPaint, options: TextGeometryOptions): TextGeometry {
+export function prepareTextGeometry(node: Readonly<TextNode>, paint: TextPaint, options: TextGeometryOptions): TextGeometry | undefined {
+    if (paint.fontEpoch !== options.fontEpoch) return undefined;
     if (!Number.isFinite(node.scale) || node.scale < 0 || !Number.isFinite(options.hitErrorCss) || options.hitErrorCss <= 0
         || !Number.isSafeInteger(options.maxSegments) || options.maxSegments < 1) throw new RangeError('Invalid text geometry request');
     const scale = node.scale, box = { x: 0, y: 0, width: paint.box.w * scale, height: paint.box.h * scale };
@@ -167,7 +228,7 @@ export function prepareTextGeometry(node: Readonly<TextNode>, paint: TextPaint, 
 
 export interface ContainerPath { readonly ops: readonly PathOp[]; readonly role: 'surface' | 'outline'; readonly width: number }
 export interface ContainerGeometryOptions {
-    readonly key: string; readonly pathError: number; readonly maxPieces: number;
+    readonly key: string; readonly fontEpoch: number; readonly pathError: number; readonly maxPieces: number;
     readonly hitMarginCss: number; readonly hitErrorCss: number;
     readonly text: PositionedFigureText | null;
 }
@@ -224,7 +285,8 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
         } };
 }
 
-export function prepareStickyGeometry(node: Readonly<StickyNode>, options: ContainerGeometryOptions & Readonly<{ cornerRadius?: number }>): ContainerGeometry {
+export function prepareStickyGeometry(node: Readonly<StickyNode>, options: ContainerGeometryOptions & Readonly<{ cornerRadius?: number }>): ContainerGeometry | undefined {
+    if (!options.text || options.text.paint.fontEpoch !== options.fontEpoch) return undefined;
     const width = 200 * node.scale, height = (200 + node.growY) * node.scale;
     const radius = options.cornerRadius ?? styleGeometryMetrics.stickyCornerRadius(node.scale).value;
     if (!Number.isFinite(radius) || radius < 0) throw new RangeError('Invalid sticky radius');
@@ -232,13 +294,15 @@ export function prepareStickyGeometry(node: Readonly<StickyNode>, options: Conta
     return containerGeometry({ x: 0, y: 0, width, height }, outline, 0, true, options);
 }
 
-export function prepareFrameGeometry(node: Readonly<FrameNode>, options: ContainerGeometryOptions & Readonly<{ borderWidth?: number }>): ContainerGeometry {
+export function prepareFrameGeometry(node: Readonly<FrameNode>, options: ContainerGeometryOptions & Readonly<{ borderWidth?: number }>): ContainerGeometry | undefined {
+    if (!options.text || options.text.paint.fontEpoch !== options.fontEpoch) return undefined;
     const box = { x: 0, y: 0, width: node.w, height: node.h };
     return containerGeometry(box, rectPath(box), options.borderWidth ?? styleGeometryMetrics.frameBorderWidth().value, false, options);
 }
 
 export type MediaBoxNode = PictureNode | ClipNode | LinkcardNode | EmbedNode;
-export function prepareMediaBoxGeometry(node: Readonly<MediaBoxNode>, options: ContainerGeometryOptions): ContainerGeometry {
+export function prepareMediaBoxGeometry(node: Readonly<MediaBoxNode>, options: ContainerGeometryOptions): ContainerGeometry | undefined {
+    if (options.text && options.text.paint.fontEpoch !== options.fontEpoch) return undefined;
     const box = { x: 0, y: 0, width: node.w, height: node.h };
     const circular = node.kind === 'picture' && node.crop?.circle;
     const outline = circular ? Array.from(realiseFigureContour(figureOutline('ellipse', node.w, node.h, false, false).primary,
@@ -247,8 +311,9 @@ export function prepareMediaBoxGeometry(node: Readonly<MediaBoxNode>, options: C
 }
 
 /** Figure paint, attachment and hit geometry are derived from the same realized contours. */
-export function prepareFigureGeometry(node: Readonly<FigureNode>, options: FigureGeometryOptions): FigureGeometry {
+export function prepareFigureGeometry(node: Readonly<FigureNode>, options: FigureGeometryOptions): FigureGeometry | undefined {
     const { pathError, lengthError, maxPieces, hitMarginCss, hitErrorCss, label } = options;
+    if ((!node.label && label) || (node.label && (!label || label.paint.fontEpoch !== options.fontEpoch))) return undefined;
     const height = node.h + node.growY;
     if (![node.w, height, node.width, pathError, lengthError, hitMarginCss, hitErrorCss].every(Number.isFinite)
         || node.w < 0 || height < 0 || node.width < 0 || pathError <= 0 || lengthError <= 0 || hitMarginCss < 0

@@ -12,6 +12,7 @@ export interface PointerRouterOptions<Context> {
   readonly current: () => boolean
   claim(): boolean
   releaseClaim(): void
+  sampleChanged?(sample: RealSample): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<Context> | null
   ended(reason: FinishReason): void
   hover?(event: PointerEvent): void
@@ -30,17 +31,19 @@ export class PointerRouter<Context> {
     const sink: PointerSink = {
       down: (sample, modifiers, event) => {
         if (!options.current()) return false
-        const route = options.resolve(sample, modifiers, event)
-        if (!route || !options.claim()) return false
+        options.sampleChanged?.(sample)
+        if (!options.claim()) return false
         try {
-          if (!options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
+          const route = options.resolve(sample, modifiers, event)
+          if (!route || !options.router.begin(options.token, route.tool, sample, modifiers, route.context)) { options.releaseClaim(); return false }
           this.pointerId = sample.pointerId
           return true
         } catch (error) { options.releaseClaim(); throw error }
       },
-      move: (id, samples, modifiers) => { if (options.current()) options.router.update(options.token, id, samples, modifiers) },
+      move: (id, samples, modifiers) => { if (options.current()) { if (samples.length) options.sampleChanged?.(samples[samples.length - 1]); options.router.update(options.token, id, samples, modifiers) } },
       up: (id, samples, modifiers) => {
         if (this.pointerId !== id || !options.current()) return
+        if (samples.length) options.sampleChanged?.(samples[samples.length - 1])
         options.router.update(options.token, id, samples, modifiers)
         this.pointerId = null
         try { options.router.finish(options.token, id, 'up') } finally { options.releaseClaim(); options.ended('up') }

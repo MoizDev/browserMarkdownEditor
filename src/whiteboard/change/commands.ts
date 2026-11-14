@@ -19,6 +19,7 @@ export function isLocked(doc: BoardDoc, node: Node): boolean {
     let current: Node | undefined = node;
     for (let depth = 0; current && depth <= 64; depth++) {
         if (current.locked) return true;
+        if (isSheetParent(doc, current.parent)) break;
         current = doc.nodes.get(current.parent);
     }
     return false;
@@ -42,6 +43,7 @@ function selectedRoots(doc: BoardDoc, ids: Iterable<NodeId>): Node[] {
         output.length = 0;
         for (let depth = 0; depth <= 64; depth++) {
             output.push(node);
+            if (isSheetParent(doc, node.parent)) return;
             const parent = doc.nodes.get(node.parent);
             if (!parent) return;
             node = parent;

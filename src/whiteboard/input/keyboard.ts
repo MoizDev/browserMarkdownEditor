@@ -130,14 +130,16 @@ export interface KeyboardActions {
   clearLatches(): void
 }
 
-function textOwned(target: EventTarget | null): boolean {
+function textOwned(target: EventTarget | null, root: HTMLElement): boolean {
   if (!(target instanceof Element)) return false
-  return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], [role="menu"], [role="listbox"]')
+  if (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], [role="menu"]')) return true
+  const listbox = target.closest('[role="listbox"]')
+  return !!listbox && listbox !== root
 }
 
 export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac: boolean): () => void {
   const keydown = (event: KeyboardEvent): void => {
-    if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
+    if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target, root) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return
     actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
     const accel = mac ? event.metaKey : event.ctrlKey

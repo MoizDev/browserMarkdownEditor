@@ -377,6 +377,7 @@
     "paper.deleteContents": "דף זה מכיל {items}.",
     "paper.deleteConfirm": "מחק עמוד",
     "paper.cancel": "בטל",
-    "paper.keepProtected": "תוכן נעול יישמר."
+    "paper.keepProtected": "תוכן נעול יישמר.",
+    "chrome.readOnly": "לוח זה הוא לקריאה בלבד."
   }
 }

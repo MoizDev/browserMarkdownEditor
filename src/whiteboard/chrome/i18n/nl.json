@@ -377,6 +377,7 @@
     "paper.deleteContents": "Deze pagina bevat {items}.",
     "paper.deleteConfirm": "Pagina verwijderen",
     "paper.cancel": "Annuleer",
-    "paper.keepProtected": "Vergrendelde inhoud blijft behouden."
+    "paper.keepProtected": "Vergrendelde inhoud blijft behouden.",
+    "chrome.readOnly": "Dit bord is alleen-lezen."
   }
 }

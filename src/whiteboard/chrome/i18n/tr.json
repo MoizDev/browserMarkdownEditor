@@ -377,6 +377,7 @@
     "paper.deleteContents": "Bu sayfa {items} içeriyor.",
     "paper.deleteConfirm": "Sayfayı sil",
     "paper.cancel": "İptal",
-    "paper.keepProtected": "Kilitli içerik saklanacaktır."
+    "paper.keepProtected": "Kilitli içerik saklanacaktır.",
+    "chrome.readOnly": "Bu pano salt okunurdur."
   }
 }

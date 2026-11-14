@@ -89,7 +89,19 @@ export class SessionScene implements SceneSpatial {
                 await cooperate();
             }
             check();
-            return new SessionScene(options, bootstrap.result, records, metadata);
+            const scene = new SessionScene(options, bootstrap.result, records, metadata);
+            try {
+                const initial = new Map<NodeId, SceneBounds | null>();
+                let count = 0;
+                for (const id of bootstrap.result.slots.keys()) {
+                    initial.set(id, scene.live.worldBounds(id));
+                    if ((++count & 255) === 0) { check(); await cooperate(); }
+                }
+                const publish = scene.boundsVersions.updateSteps(revision, initial);
+                while (!publish.next().done) { check(); await cooperate(); }
+                check();
+                return scene;
+            } catch (error) { scene.dispose(); throw error; }
         } catch (error) { records?.dispose(); throw error; }
     }
     get revision(): number { return this.state.revision; }
@@ -121,6 +133,11 @@ export class SessionScene implements SceneSpatial {
         this.serial++;
         this.options.invalidate();
     }
+    private *update(dirty: SceneDirty): Generator<void, BootstrappedScene> {
+        const next = yield* updateScene(this.options.doc, this.state, dirty, this.provider);
+        yield* this.boundsVersions.updateSteps(next.revision, next.boundsChanges);
+        return next;
+    }
     /** Called by the platform's bounded CPU preparation task, including after a
      * packed-worker ready callback. No RAF/polling belongs to this Scene. */
     step(maxWork: number, deadline = Infinity): 'pending' | 'complete' {
@@ -135,7 +152,7 @@ export class SessionScene implements SceneSpatial {
                     return 'complete';
                 }
                 const dirty = { nodes: new Map(this.pendingNodes), sheets: new Set(this.pendingSheets), pages: this.pages };
-                this.active = { serial: this.serial, dirty, job: updateScene(this.options.doc, this.state, dirty, this.provider) };
+                this.active = { serial: this.serial, dirty, job: this.update(dirty) };
             }
             const active = this.active;
             try {
@@ -187,7 +204,7 @@ export class SessionScene implements SceneSpatial {
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
         return createSceneSnapshot({ token: this.options.token, revision: this.options.doc.rev, records: this.records.pin(),
-            metadata: this.metadata.pin(), bounds: this.boundsVersions.pin(), prepare: this.options.preparePaint,
+            metadata: this.metadata.pin(), ...(this.ready ? { bounds: this.boundsVersions.pin() } : {}), prepare: this.options.preparePaint,
             cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
     }
     dispose(): void {

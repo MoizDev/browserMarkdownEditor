@@ -3,6 +3,7 @@ import type { NodeId, ParentId, SheetId } from '../model/ids';
 import { compareOrder } from '../model/orderKey';
 import { boardPageStack, pageOrigin } from '../model/pages';
 import { BoundsQuality, localBounds, multiplyAffine, placement, transformBox, unionBox, type BoundsProvider } from './bounds';
+import type { SceneBounds } from './types';
 import type { BootstrappedScene } from './bootstrap';
 import { SceneDirtyFlag as Flag, type SceneDirty } from './dirty';
 
@@ -32,11 +33,20 @@ function* sort<T>(values: T[], compare: (a: T, b: T) => number): Generator<void>
 /** Mutable work is private until the returned revision is published. The owner
  * must keep all dirty flags if a later document edit interrupts this generator:
  * an interrupted order splice is completed before starting the newer revision. */
+export interface SceneUpdateResult extends BootstrappedScene { readonly boundsChanges: ReadonlyMap<NodeId, SceneBounds | null> }
 export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: SceneDirty, provider: BoundsProvider,
-    zoom = 1): Generator<void, BootstrappedScene> {
+    zoom = 1): Generator<void, SceneUpdateResult> {
     const revision = doc.rev, slots = state.slots as Map<NodeId, number>, ids = state.ids as NodeId[];
     const sheets = state.sheets as Map<SheetId, number>, unbounded = state.unbounded as Set<number>;
     const { columns: col, index, order } = state;
+    const boundsChanges = new Map<NodeId, SceneBounds | null>();
+    const captureBounds = (id: NodeId, slot: number) => {
+        const quality = col.quality[slot] as BoundsQuality;
+        const pending = unbounded.has(slot) || quality === BoundsQuality.Pending || quality === BoundsQuality.ColdLayout;
+        const copy = (values: Float64Array): readonly [number, number, number, number] =>
+            [values[slot * 4], values[slot * 4 + 1], values[slot * 4 + 2], values[slot * 4 + 3]];
+        boundsChanges.set(id, { revision, quality, ink: pending ? null : copy(col.ink), selectable: pending ? null : copy(col.hit) });
+    };
     const flags = new Map<NodeId, number>(), aggregate = new Set<NodeId>(), queue: NodeId[] = [];
     let work = 0;
     const add = (id: NodeId, bits: number) => {
@@ -100,7 +110,7 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
                 if (order.has(slot)) yield* order.spliceSteps(order.sheet(slot), order.rank(slot), 1, []);
                 let parent = col.parent[slot];
                 for (let depth = 0; parent >= 0 && depth <= 64; depth++) { col.count[parent]--; parent = col.parent[parent]; }
-                index.release(slot); unbounded.delete(slot); slots.delete(id);
+                index.release(slot); unbounded.delete(slot); slots.delete(id); boundsChanges.set(id, null);
             }
         } else changed.push(id);
         if ((++work & 255) === 0) yield;
@@ -130,7 +140,7 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
             const origin = root && stack && node.page >= 0 ? pageOrigin(stack, node.page) : undefined;
             placement(local, 0, node, origin?.x ?? 0, origin?.y ?? 0);
             if (root) col.world.set(local, slot * 6);
-            else multiplyAffine(col.world, slot * 6, col.world, parentSlot * 6, local);
+            else multiplyAffine(col.world, slot * 6, col.world, parentSlot * 6, local, 0);
             col.opacity[slot] = node.opacity * (root ? 1 : col.opacity[parentSlot]);
             col.locked[slot] = Number(node.locked || (!root && !!col.locked[parentSlot]));
             col.clip[slot] = root ? -1 : doc.nodes.get(ids[parentSlot])?.kind === 'frame' ? parentSlot : col.clip[parentSlot];
@@ -171,6 +181,7 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
                 unbounded.delete(slot); index.upsert(slot, col.hit.subarray(slot * 4, slot * 4 + 4), zoom);
             }
         }
+        captureBounds(id, slot);
         if (childrenOf(doc, id).length || node.kind === 'group') aggregate.add(id);
         if ((++work & 127) === 0) yield;
     }
@@ -199,8 +210,9 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
             if (unknown || !bounded) { col.quality[slot] = BoundsQuality.Pending; unbounded.add(slot); index.removeBounds(slot); }
             else { col.quality[slot] = quality; unbounded.delete(slot); index.upsert(slot, col.hit.subarray(slot * 4, slot * 4 + 4), zoom); }
         }
+        captureBounds(id, slot);
         if ((++work & 255) === 0) yield;
     }
     if (doc.rev !== revision) throw new StaleSceneUpdate();
-    return { ...state, revision };
+    return { ...state, revision, boundsChanges };
 }

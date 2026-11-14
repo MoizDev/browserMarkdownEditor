@@ -55,6 +55,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     if (options.scene.token.documentId !== options.owner.documentId || options.scene.token.session !== options.owner.session) throw new Error('Scene token does not match board session');
     const selection = new SelectionState(first.id), attached = new Set<Registration>(), controller = new AbortController();
     let scene: SessionScene | null = null, disposed = false, pendingReveal: Set<NodeId> | undefined;
+    const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
     const visible = (entry: Registration) => safe(entry, () => entry.sink.visible(), false);
     const focused = (entry: Registration) => safe(entry, () => entry.sink.focused(), false);
@@ -87,10 +88,9 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         const ordered = [...attached];
         const focus = preferred();
         if (focus) { const index = ordered.indexOf(focus); if (index >= 0) { ordered.splice(index, 1); ordered.unshift(focus); } }
-        for (const entry of ordered) {
-            const current = safe(entry, () => entry.sink.captureText?.(), undefined);
-            if (current?.node === text.node && entry.sink.restoreText) { safe(entry, () => entry.sink.restoreText!(text), undefined); break; }
-        }
+        const target = ordered.find(entry => safe(entry, () => entry.sink.captureText?.(), undefined)?.node === text.node && entry.sink.restoreText)
+            ?? ordered.find(entry => visible(entry) && entry.sink.restoreText);
+        if (target) safe(target, () => target.sink.restoreText!(text), undefined);
     };
     const session = createBoardSession({ ...options, selection, notices,
         sceneChanged(applied) {
@@ -139,7 +139,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         flushFrame(frameId) { if (!disposed) { notices.visibilityChanged(); flushReveal(); notices.flushFrame(frameId); } },
         dispose() {
             if (disposed) return;
-            disposed = true; controller.abort();
+            disposed = true; controller.abort(); stopSelection();
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);

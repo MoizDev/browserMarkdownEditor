@@ -1,4 +1,4 @@
-import type { Camera, ViewState } from '../types';
+import type { ViewState } from '../types';
 import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../renderStatus';
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
@@ -60,6 +60,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
     let lastInputAt = performance.now();
+    let pendingInputAt: number | null = null;
+    let healthyInputAt: number | null = null;
+    let lastFrameInterval: number | null = null;
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
@@ -87,15 +90,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }), evict: () => {} });
-        let gpu: MemoryCacheHandle;
+        let gpuCache: MemoryCacheHandle;
         try {
-            gpu = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
+            gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
                 evict: () => lifecycle?.releaseGpu('pressure') });
         } catch (error) { cpu.close(); throw error; }
-        caches.push({ cpu, gpu, layer: current });
+        caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
-            allocator: { cpu, gpu }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: () => surfaceHost.current,
             invalidate: reason => lifecycle?.invalidate(reason),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
@@ -103,7 +106,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     layerSet.replace(options.layers);
 
-    const created = cpuFactory<T>({
+    let created: CreatedCompositor2D<T>;
+    try { created = cpuFactory<T>({
         paneId: options.paneId, governor: runtime.governor, currentToken: token,
         invalidate: reason => lifecycle?.invalidate(reason), recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms),
         select2D: cpu => { if (!disposed) surfaceHost.select(cpu); },
@@ -115,7 +119,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
         mirrorCoverage: (view, entries) => options.mirrorCoverage?.(view, entries) ?? { complete: false, sharp: false },
-    });
+    }); } catch (error) {
+        for (const layer of layerSet.layers) layer.dispose();
+        for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
+        throw error;
+    }
     const compositor = created.compositor;
     compositorRef.current = compositor;
     compositor.setLayers(layerSet.compositorLayers);
@@ -147,7 +155,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
-        inputHealthy: () => false,
+        inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
+        frameInterval: () => lastFrameInterval,
         onEvict: () => {
             const surface = lifecycle?.surface;
             if (surface && gpu) surface.failGpu(surface.stamp, gpu.grant.generation, 'out-of-budget');
@@ -213,7 +222,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         if (cpu?.kind === 'ready') compositor.setMetrics(cpu.metrics);
                         return cpu;
                     },
-                    consumeInput: (time: number) => { options.consumeInput(time); camera.setCamera(options.readCamera()); },
+                    consumeInput: (time: number) => {
+                        options.consumeInput(time);
+                        if (pendingInputAt !== null) {
+                            const now = performance.now();
+                            if (now - pendingInputAt <= RENDER_CONSTANTS.stalledFenceMs) healthyInputAt = now;
+                            pendingInputAt = null;
+                        }
+                        camera.setCamera(options.readCamera());
+                    },
                     isInteracting: options.isInteracting,
                     snapshotScene: (view: ViewState) => { lastView = view; const drawing = drawCompositor(); drawing?.setAppearance(options.readAppearance()); drawing?.snapshot(view); },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
@@ -225,6 +242,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         if (drawing === compositor && mirror && options.session.mirrors) lifecycle?.prepare2D(mirror, budget);
                     },
                     encode: (frame: ScheduledFrame) => {
+                        lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
                         const encoding = drawing.encode(frame);
@@ -338,11 +356,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpu?.bundle.compositor.setLayers(layerSet.compositorLayers);
             runtime.refresh();
         },
-        invalidate(reason) { if (!disposed) { if (reason === 'input') lastInputAt = performance.now(); lifecycle?.invalidate(reason); } },
+        invalidate(reason) {
+            if (disposed) return;
+            if (reason === 'input') { lastInputAt = performance.now(); pendingInputAt = lastInputAt; }
+            lifecycle?.invalidate(reason);
+        },
         captureRegion(worldRect, maxSidePx, captureOptions) {
-            const capture = surfaceHost.current?.captureRegion;
-            if (disposed || !capture || !surfaceHost.current) return Promise.reject(new Error('Pane capture is unavailable'));
-            return capture.call(surfaceHost.current, worldRect, maxSidePx, captureOptions);
+            if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));
+            // Session capture owns its own revision lease and survives later pane unmount.
+            if (options.session.captureRegion) return options.session.captureRegion(worldRect, maxSidePx, captureOptions);
+            const selected = surfaceHost.current;
+            if (!selected?.captureRegion) return Promise.reject(new Error('Pane capture is unavailable'));
+            return selected.captureRegion(worldRect, maxSidePx, captureOptions);
         },
         dispose() {
             if (disposed) return;

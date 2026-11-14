@@ -23,7 +23,7 @@ import {
 import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
     FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
-    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess,
 } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
@@ -1573,6 +1573,111 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         // answer as App.writeEntryStyles.
     }), [rootHandle, withMutation]);
 
+    // Serializing puts prevents two in-app imports from choosing the same free
+    // name. File System Access has no exclusive create, so another process can
+    // still race the final name check; never deliberately replace a squatter.
+    const boardAssetQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const boardAssetGuard = useCallback(async (request: BoardAssetAccess, activation: number) => {
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+        if (!/^[a-f0-9]{64}$/.test(request.hash)) throw new Error('Invalid board media hash');
+        if (await request.root.resolve(request.parent) === null) throw new Error('Board folder is outside the vault');
+        const owner = await request.parent.getFileHandle(request.owner.name);
+        if (!await owner.isSameEntry(request.owner)) throw new Error('Board file changed');
+        request.signal.throwIfAborted();
+        if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
+            throw new DOMException('Board session ended', 'AbortError');
+        }
+    }, []);
+    const findBoardAsset = useCallback(async (dir: FileSystemDirectoryHandle, request: BoardAssetAccess) => {
+        const names: string[] = [];
+        for await (const [name, handle] of dir.entries()) {
+            request.signal.throwIfAborted();
+            if (handle.kind === 'file' && name.startsWith(`${request.hash}.`)) names.push(name);
+        }
+        const preferred = request.preferredName;
+        if (preferred && preferred !== '.' && preferred !== '..' && !/[\\/\0]/.test(preferred) && !names.includes(preferred)) names.push(preferred);
+        for (const name of names) {
+            try {
+                const file = await (await dir.getFileHandle(name)).getFile();
+                if (await hashBytes(await file.arrayBuffer()) === request.hash) return { name, blob: file as Blob };
+            } catch (error) {
+                if (!(error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError'))) throw error;
+            }
+        }
+        return null;
+    }, []);
+    const readBoardAsset = useCallback(async (request: BoardAssetAccess) => {
+        const activation = vaultActivationRef.current;
+        await boardAssetGuard(request, activation);
+        let dir: FileSystemDirectoryHandle;
+        try { dir = await request.parent.getDirectoryHandle(ASSETS_DIR); }
+        catch (error) {
+            if (error instanceof DOMException && error.name === 'NotFoundError') {
+                await boardAssetGuard(request, activation);
+                return null;
+            }
+            throw error;
+        }
+        const found = await findBoardAsset(dir, request);
+        await boardAssetGuard(request, activation);
+        return found;
+    }, [boardAssetGuard, findBoardAsset]);
+    const putBoardAsset = useCallback((request: BoardAssetAccess & { extension: string; blob: Blob }) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardAssetGuard(request, activation);
+            if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
+            if (await hashBytes(await request.blob.arrayBuffer()) !== request.hash) throw new Error('Board media hash mismatch');
+            await boardAssetGuard(request, activation);
+            const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
+            const existing = await findBoardAsset(dir, request);
+            await boardAssetGuard(request, activation);
+            if (existing) return existing.name;
+            const temporaryName = await freeEntryName(dir, `.incoming-${crypto.randomUUID()}`);
+            await boardAssetGuard(request, activation);
+            const temporary = await dir.getFileHandle(temporaryName, { create: true });
+            let tempVersion = await temporary.getFile();
+            try {
+                const write = await temporary.createWritable();
+                try {
+                    await write.write(request.blob);
+                    await boardAssetGuard(request, activation);
+                    await write.close();
+                } catch (error) { await write.abort().catch(() => {}); throw error; }
+                const prepared = await temporary.getFile();
+                tempVersion = prepared;
+                if (await hashBytes(await prepared.arrayBuffer()) !== request.hash) throw new Error('Board media staging failed');
+                const name = await freeEntryName(dir, `${request.hash}.${request.extension}`);
+                await boardAssetGuard(request, activation);
+                const target = await dir.getFileHandle(name, { create: true });
+                const output = await target.createWritable();
+                try {
+                    await output.write(prepared);
+                    await boardAssetGuard(request, activation);
+                    await output.close();
+                } catch (error) { await output.abort().catch(() => {}); throw error; }
+                await boardAssetGuard(request, activation);
+                return name;
+            } finally {
+                // Only remove the temp we created, never a name another actor
+                // replaced while the write was in flight.
+                try {
+                    const current = await dir.getFileHandle(temporaryName);
+                    const file = await current.getFile();
+                    if (await current.isSameEntry(temporary) && file.lastModified === tempVersion.lastModified && file.size === tempVersion.size
+                        && await hashBytes(await file.arrayBuffer()) === await hashBytes(await tempVersion.arrayBuffer())) {
+                        await dir.removeEntry(temporaryName);
+                    }
+                } catch { /* a failed cleanup leaves recoverable staging bytes */ }
+            }
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardAssetGuard, findBoardAsset, withMutation]);
+
     /**
      * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
      * happens once the last note in that folder stops referring to it (see
@@ -2562,6 +2667,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     }), [
         rootHandle,
         getVaultActivation,
@@ -2608,6 +2715,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         subscribeVaultChanges,
         liveDetection,
         keepCopyInGarbage,
+        readBoardAsset,
+        putBoardAsset,
     ]);
 
     return (

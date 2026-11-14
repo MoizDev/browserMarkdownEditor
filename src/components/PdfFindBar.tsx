@@ -8,7 +8,7 @@ import './PdfFindBar.css';
 
 export interface PdfFindStart { page: number; y: number }
 export interface PdfFindBarHandle {
-    openFind(): void;
+    openFind(query?: string): void;
     nextMatch(direction: 1 | -1): void;
     cancelReveal(): void;
     closeFind(): boolean;
@@ -145,11 +145,13 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
         if (keyOf(current.current) !== previous || requested !== pending.current) revealCurrent(scan.current?.signal.aborted === false ? scan.current.signal : new AbortController().signal);
     }, [begin, drainSteps, show, revealCurrent]);
     useImperativeHandle(forwarded, () => ({
-        openFind() {
+        openFind(explicitQuery) {
             if (composingRef.current || !live.current.isVisible) return;
-            const selected = live.current.selectedText();
-            if (selected && selected.length <= 256 && !selected.includes('\n') && !selected.includes('\r')) {
-                queryRef.current = selected; live.current.memory.query = selected; setQuery(selected);
+            const selected = explicitQuery ?? live.current.selectedText();
+            if (explicitQuery !== undefined || selected && selected.length <= 256 && !selected.includes('\n') && !selected.includes('\r')) {
+                let next = selected.slice(0, 256);
+                if (next.length < selected.length && /[\uD800-\uDBFF]/u.test(next.at(-1) ?? '')) next = next.slice(0, -1);
+                queryRef.current = next; live.current.memory.query = next; setQuery(next);
             }
             focusPending.current = true; explicitFocus.current = true; openRef.current = true; live.current.memory.open = true; setOpen(true);
             if (input.current) { input.current.focus(); input.current.select(); focusPending.current = false; explicitFocus.current = false; }
@@ -176,6 +178,9 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
         timer.current = setTimeout(() => { void begin(); }, 120);
         return () => { stopTimer(); scan.current?.abort(); reveal.current?.abort(); };
     }, [query, open, props.isVisible, props.engine, composing, begin, stopTimer]);
+    useLayoutEffect(() => {
+        if (!props.isVisible) { stopTimer(); scan.current?.abort(); reveal.current?.abort(); }
+    }, [props.isVisible, stopTimer]);
     useLayoutEffect(() => {
         if (!props.isVisible || !open) live.current.publish([], undefined);
         else live.current.publish(data.current?.hits ?? [], current.current);

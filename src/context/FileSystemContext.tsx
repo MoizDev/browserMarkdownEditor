@@ -26,7 +26,7 @@ import {
 import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
     FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
-    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess, BoardOwnerAccess,
 } from '../types';
 
 const FileSystemContext = createContext<FileSystemContextValue | null>(null);
@@ -41,6 +41,7 @@ const handleIO: FileSystemContextValue['handleIO'] = {
     entries: dir => dir.entries(),
     remove: (dir, name) => dir.removeEntry(name),
     relativeTo: (dir, handle) => dir.resolve(handle),
+    sameEntry: (a, b) => a.isSameEntry(b),
 };
 
 async function resolveVaultDir(root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle> {
@@ -54,6 +55,15 @@ async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
     const name = segments.pop()!;
     const parentHandle = await resolveVaultDir(root, segments.join('/'));
     return { handle: await parentHandle.getFileHandle(name), parentHandle };
+}
+
+async function verifyVaultFileIdentity(root: FileSystemDirectoryHandle, path: string, handle: FileSystemFileHandle): Promise<boolean> {
+    if (!path || path.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\') || part.includes('\0'))) return false;
+    try { return await (await resolveVaultFile(root, path)).handle.isSameEntry(handle); }
+    catch (error) {
+        if (error instanceof DOMException && error.name === 'NotFoundError') return false;
+        throw error;
+    }
 }
 
 async function vaultDirExists(root: FileSystemDirectoryHandle, path: string): Promise<boolean> {
@@ -1630,12 +1640,11 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     // name. File System Access has no exclusive create, so another process can
     // still race the final name check; never deliberately replace a squatter.
     const boardAssetQueueRef = useRef<Promise<void>>(Promise.resolve());
-    const boardAssetGuard = useCallback(async (request: BoardAssetAccess, activation: number) => {
+    const boardOwnerGuard = useCallback(async (request: BoardOwnerAccess, activation: number) => {
         request.signal.throwIfAborted();
         if (!request.isCurrent() || request.root !== rootHandleRef.current || activation !== vaultActivationRef.current) {
             throw new DOMException('Board session ended', 'AbortError');
         }
-        if (!/^[a-f0-9]{64}$/.test(request.hash)) throw new Error('Invalid board media hash');
         if (await request.root.resolve(request.parent) === null) throw new Error('Board folder is outside the vault');
         const owner = await request.parent.getFileHandle(request.owner.name);
         if (!await owner.isSameEntry(request.owner)) throw new Error('Board file changed');
@@ -1644,6 +1653,55 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             throw new DOMException('Board session ended', 'AbortError');
         }
     }, []);
+    const boardAssetGuard = useCallback(async (request: BoardAssetAccess, activation: number) => {
+        if (!/^[a-f0-9]{64}$/.test(request.hash)) throw new Error('Invalid board media hash');
+        await boardOwnerGuard(request, activation);
+    }, [boardOwnerGuard]);
+    const readLegacyBoardAsset = useCallback(async (request: BoardOwnerAccess & { src: string }): Promise<Blob | null> => {
+        const activation = vaultActivationRef.current, src = request.src;
+        const hasPathControl = (value: string) => {
+            for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) < 32 || value.charCodeAt(i) === 127) return true;
+            return false;
+        };
+        if (typeof src !== 'string' || !src || src.length > 8192 || /^[a-z][a-z0-9+.-]*:/i.test(src)
+            || src.startsWith('/') || /[\\?#]/.test(src) || hasPathControl(src)) throw new Error('Legacy asset is not a local relative path');
+        await boardOwnerGuard(request, activation);
+        const base = await request.root.resolve(request.parent);
+        if (!base) throw new Error('Board folder is outside the vault');
+        const segments = [...base], parts = src.split('/');
+        let first = true;
+        for (const [index, raw] of parts.entries()) {
+            let segment: string;
+            try { segment = decodeURIComponent(raw); } catch { throw new Error('Invalid legacy asset path encoding'); }
+            if (index === parts.length - 1 && (!segment || segment === '.' || segment === '..')) throw new Error('Legacy asset path does not name a file');
+            if (!segment || segment === '.') continue;
+            if (first && /^[a-z][a-z0-9+.-]*:/i.test(segment)) throw new Error('Legacy asset is not a local relative path');
+            first = false;
+            if (segment === '..') {
+                if (!segments.length) throw new Error('Legacy asset path leaves the vault');
+                segments.pop(); continue;
+            }
+            if (segment.length > 255 || /[\\/]/.test(segment) || hasPathControl(segment)) throw new Error('Invalid legacy asset path');
+            segments.push(segment);
+            if (segments.length > 256) throw new Error('Legacy asset path is too deep');
+        }
+        if (!segments.length || segments.some(segment => segment.toLowerCase() === '.vaultagent')) throw new Error('Legacy asset path is not accessible');
+        await boardOwnerGuard(request, activation);
+        try {
+            const { handle } = await resolveVaultFile(request.root, segments.join('/'));
+            request.signal.throwIfAborted();
+            const file = await handle.getFile();
+            if (file.size > 10 * 1024 * 1024) throw new RangeError('Legacy asset exceeds 10 MiB');
+            await boardOwnerGuard(request, activation);
+            return file.slice(0, file.size, file.type);
+        } catch (error) {
+            if (error instanceof DOMException && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError')) {
+                await boardOwnerGuard(request, activation);
+                return null;
+            }
+            throw error;
+        }
+    }, [boardOwnerGuard]);
     const findBoardAsset = useCallback(async (dir: FileSystemDirectoryHandle, request: BoardAssetAccess) => {
         const names: string[] = [];
         for await (const [name, handle] of dir.entries()) {
@@ -2531,7 +2589,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * along with the file are made again: the copy holds edits that exist
      * nowhere else (measured: closing such a tab lost them).
      */
-    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null,
+        guard?: () => boolean) => withMutation(async () => {
         const root = vaultRoot ?? rootHandleRef.current;
         if (!root) throw new Error('No vault open');
         const parentPath = parentVaultPath(filePath);
@@ -2543,6 +2602,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             copyName = conflictName(name, n);
             if (!(await entryExists(dir, copyName))) break;
         }
+        if (guard && !guard()) throw new DOMException('Copy source is no longer authorized', 'AbortError');
+        // Once creation starts, finish the immutable copy rather than leave an empty file.
         const handle = await dir.getFileHandle(copyName, { create: true });
         await writeAllBytes(handle, data instanceof Blob ? data : toBytes(data));
         // Only the tree on screen is patched: a copy left in the vault being
@@ -2836,6 +2897,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         registerBeforeRootChange,
         resolveVaultDir,
         resolveVaultFile,
+        verifyVaultFileIdentity,
         vaultDirExists,
         nameTaken: entryExists,
         fileTree,
@@ -2894,6 +2956,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,
+        readLegacyBoardAsset,
     }), [
         rootHandle,
         requestIndexPermission,
@@ -2948,6 +3011,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,
+        readLegacyBoardAsset,
     ]);
 
     return (

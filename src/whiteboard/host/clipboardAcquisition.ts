@@ -2,7 +2,10 @@ import type { CachedClipboard } from '../clipboard/copy';
 import { makeClipboardNativeRecords } from '../clipboard/nativeRecords';
 import type { BoardPayload, CopySnapshot } from '../clipboard/snapshot';
 import type { SampleStore } from '../ink/samples';
+import type { SampleRef } from '../model/samples';
 import type { MediaId } from '../model/media';
+import type { NodeId } from '../model/ids';
+import type { Attachment } from '../model/nodes';
 import type { RehydratedLoad } from '../model/loadTypes';
 import { SECURITY_LIMITS } from '../security/limits';
 import { boardWorker, importDeadline } from '../workers/client';
@@ -20,6 +23,9 @@ export interface BoardClipboardAcquisition {
     readonly load: RehydratedLoad;
     readonly samples: SampleStore;
     readonly inline: readonly Readonly<{ id: MediaId; blob: Blob }>[];
+    /** Exact in-window copy data for bindings outside the native source container. */
+    readonly externalBindings?: ReadonlyMap<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>;
+    readonly cachedSamples?: ReadonlyMap<NodeId, SampleRef>;
     readonly report: NativeLoadReply;
     readonly originalSourceKind: BoardPayload['from']['kind'];
     dispose(): void;
@@ -32,6 +38,8 @@ export interface BoardClipboardAcquisitionOptions {
     cooperate?(): Promise<void>;
     /** Must be the exact result of ClipboardCopy.match for these actual clipboard strings. */
     readonly cache?: Readonly<{ match: CachedClipboard; encoded: string; plain: string }>;
+    /** Actual same-session snapshot owned by the duplicate command, never an external payload. */
+    readonly duplicateSnapshot?: CopySnapshot;
 }
 function snapshot(payload: BoardPayload): BoardPayload {
     if (!payload || payload.v !== 1 || typeof payload.nonce !== 'string' || !/^[A-Za-z0-9]{16}$/.test(payload.nonce)
@@ -60,28 +68,55 @@ function sameMarker(marker: BoardPayload, value: BoardPayload): boolean {
 export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOptions): Promise<BoardClipboardAcquisition> {
     options.signal?.throwIfAborted();
     if (!validBoardIdentity(options.identity) || !options.decoded || typeof options.decoded.cacheOnly !== 'boolean'
-        || !Array.isArray(options.decoded.inline) || options.decoded.inline.length > SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard acquisition');
-    const marker = snapshot(options.decoded.payload);
+        || !Array.isArray(options.decoded.inline) || options.decoded.inline.length > SECURITY_LIMITS.clipboardNodes
+        || options.decoded.externalBindings !== undefined && (!Array.isArray(options.decoded.externalBindings)
+            || options.decoded.externalBindings.length > SECURITY_LIMITS.clipboardNodes)) throw new TypeError('Invalid clipboard acquisition');
+    const identity = Object.freeze({ ...options.identity }), marker = snapshot(options.decoded.payload);
     let source = marker;
     if (options.decoded.cacheOnly) {
-        if (marker.records.length || Object.keys(marker.media).length || options.decoded.inline.length) throw new TypeError('Invalid cache-only clipboard marker');
+        if (marker.records.length || Object.keys(marker.media).length || options.decoded.inline.length || options.decoded.externalBindings?.length) throw new TypeError('Invalid cache-only clipboard marker');
         const cache = options.cache;
         if (!cache || !cache.match.cacheOnly || cache.match.encoded !== cache.encoded || cache.match.plain !== cache.plain
             || !sameMarker(marker, cache.match.snapshot.payload)) throw new Error('This clipboard content requires its matching in-session copy cache');
         source = snapshot(cache.match.snapshot.payload);
     }
     if (!source.records.length) throw new Error('Clipboard contains no native records');
+    const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>(), cachedSamples = new Map<NodeId, SampleRef>();
+    let sidecars = 0;
+    for (const item of options.decoded.externalBindings ?? []) {
+        if (!item || typeof item.id !== 'string' || !item.id || externalBindings.has(item.id)) throw new TypeError('Invalid clipboard binding sidecar');
+        const copy = (value: Attachment | undefined) => {
+            if (!value) return undefined;
+            if (typeof value.target !== 'string' || !value.target || value.target.length > SECURITY_LIMITS.idCharacters
+                || !value.anchor || !Number.isFinite(value.anchor.x) || !Number.isFinite(value.anchor.y)
+                || value.anchor.x < 0 || value.anchor.x > 1 || value.anchor.y < 0 || value.anchor.y > 1
+                || typeof value.exact !== 'boolean' || typeof value.precise !== 'boolean'
+                || !['none', 'center', 'edge-point', 'edge'].includes(value.snap)) throw new TypeError('Invalid clipboard binding');
+            return Object.freeze({ ...value, anchor: Object.freeze({ ...value.anchor }) });
+        };
+        const start = copy(item.start), end = copy(item.end);
+        if (!start && !end) throw new TypeError('Empty clipboard binding sidecar');
+        externalBindings.set(item.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
+        if ((++sidecars & 255) === 0) {
+            options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
+        }
+    }
+    const cacheMatch = options.cache;
+    const cached = options.duplicateSnapshot ?? (cacheMatch && cacheMatch.match.encoded === cacheMatch.encoded
+        && (!cacheMatch.match.cacheOnly || cacheMatch.match.plain === cacheMatch.plain) ? cacheMatch.match.snapshot : undefined);
+    if (cached && sameMarker(marker, cached.payload)) await copiedSidecars(cached, externalBindings, cachedSamples, options);
     const inline: { id: MediaId; blob: Blob }[] = [], seen = new Set<string>();
     let total = 0;
     for (const item of options.decoded.inline) {
         if (!item || typeof item.id !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(item.id) || seen.has(item.id)
             || !(item.blob instanceof Blob) || (typeof File !== 'undefined' && item.blob instanceof File)
-            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > 32 * 1024 * 1024 - total) throw new TypeError('Invalid inline clipboard media');
+            || item.blob.size > SECURITY_LIMITS.mediaBytes || item.blob.size > SECURITY_LIMITS.inlineMediaBytes - total) throw new TypeError('Invalid inline clipboard media');
         total += item.blob.size; seen.add(item.id);
         inline.push(Object.freeze({ id: item.id, blob: new Blob([item.blob], { type: item.blob.type }) }));
     }
     Object.freeze(inline);
-    return acquireClipboardSource(source, inline, options);
+    return acquireClipboardSource(source, inline, options, externalBindings, cachedSamples);
 }
 
 export interface CopiedBoardClipboardOptions extends Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'> {
@@ -103,13 +138,43 @@ export async function acquireCopiedBoardClipboard(copy: CopySnapshot, options: C
         }
         seen.add(id); inline.push(Object.freeze({ id, blob: new Blob([blob], { type: blob.type }) }));
     }
+    const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>(), cachedSamples = new Map<NodeId, SampleRef>();
+    await copiedSidecars(copy, externalBindings, cachedSamples, options);
     // Each Blob still undergoes the same hash and actual downstream media inspection.
     // The browser envelope's 32 MiB inline cap is not an in-session source-data cap.
-    return acquireClipboardSource(source, Object.freeze(inline), options);
+    return acquireClipboardSource(source, Object.freeze(inline), options, externalBindings, cachedSamples);
+}
+
+async function copiedSidecars(copy: CopySnapshot,
+    externalBindings: Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>, cachedSamples: Map<NodeId, SampleRef>,
+    options: Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'>): Promise<void> {
+    const identity = Object.freeze({ ...options.identity }), present = new Set<NodeId>();
+    let visited = 0;
+    const tick = async () => {
+        options.signal?.throwIfAborted();
+        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        options.signal?.throwIfAborted();
+        if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
+    };
+    for (const node of copy.nodes) { present.add(node.id); if ((++visited & 255) === 0) await tick(); }
+    const external = (attachment: Attachment | null | undefined) => attachment && !present.has(attachment.target)
+        ? Object.freeze({ ...attachment, anchor: Object.freeze({ ...attachment.anchor }) }) : undefined;
+    for (const node of copy.nodes) {
+        if (node.kind === 'stroke') cachedSamples.set(node.id, node.samples);
+        if (node.kind === 'connector' || node.kind === 'polyline') {
+            const start = external(node.kind === 'connector' ? node.start.attach : node.startAttach);
+            const end = external(node.kind === 'connector' ? node.end.attach : node.endAttach);
+            if ((start || end) && !externalBindings.has(node.id)) externalBindings.set(node.id,
+                Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
+        }
+        if ((++visited & 255) === 0) await tick();
+    }
 }
 
 async function acquireClipboardSource(source: BoardPayload, inline: readonly Readonly<{ id: MediaId; blob: Blob }>[],
-    options: Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'>): Promise<BoardClipboardAcquisition> {
+    options: Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'>,
+    externalBindings: ReadonlyMap<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>,
+    cachedSamples: ReadonlyMap<NodeId, SampleRef>): Promise<BoardClipboardAcquisition> {
     if (!source.records.length) throw new Error('Clipboard contains no native records');
     const identity = Object.freeze({ ...options.identity });
     const signal = options.signal ?? new AbortController().signal;
@@ -129,15 +194,25 @@ async function acquireClipboardSource(source: BoardPayload, inline: readonly Rea
             identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision },
             signal, deadlineMs: importDeadline(result.bytes.size), cooperate });
         check();
-        if (acquisition.status !== 'editable' || !acquisition.report.complete || acquisition.report.format !== 'native') {
+        if (acquisition.status !== 'editable' || !acquisition.report.complete || acquisition.report.format !== 'native'
+            || !acquisition.report.repaired || acquisition.report.repaired.repairs.some(repair => repair.code !== 'detached-attachment'
+                || repair.count !== repair.nodeIds.length || repair.nodeIds.some(id => !externalBindings.has(id as NodeId)))) {
             throw new Error('Clipboard native records could not be admitted without loss');
+        }
+        let bindingCount = 0;
+        for (const [id, binding] of externalBindings) {
+            const node = acquisition.load.doc.nodes.get(id);
+            if (!node || node.kind !== 'connector' && node.kind !== 'polyline'
+                || binding.start && acquisition.load.doc.nodes.has(binding.start.target)
+                || binding.end && acquisition.load.doc.nodes.has(binding.end.target)) throw new TypeError('Invalid external clipboard binding');
+            if ((++bindingCount & 255) === 0) await cooperate();
         }
         const visual = await inspectPdfVisualModel(acquisition.load, { signal, cooperate }); check();
         if (visual.status !== 'known') throw new Error('Clipboard contains opaque or uninterpreted visual records');
         const owned = acquisition;
         acquisition = undefined;
         let disposed = false;
-        return { payload: source, load: owned.load, samples: owned.samples, inline, report: owned.report,
+        return { payload: source, load: owned.load, samples: owned.samples, inline, externalBindings, cachedSamples, report: owned.report,
             originalSourceKind: result.originalSourceKind,
             dispose() { if (!disposed) { disposed = true; owned.dispose(); } } };
     } catch (error) { acquisition?.dispose(); throw error; }

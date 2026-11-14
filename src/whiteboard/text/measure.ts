@@ -9,20 +9,25 @@ export interface ReferenceMetrics {
     readonly descent: number;
 }
 type MeasureContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+interface Entry { readonly value: ReferenceMetrics; readonly bytes: number }
+const MAX_CACHE_TEXT = 4096;
+const DEFAULT_CACHE_BYTES = 8 * 1024 * 1024;
 
 /** Per-context bounded cache: font arrival invalidates widths measured in a fallback face. */
 export class ReferenceMeasurer {
-    private readonly entries = new Map<string, ReferenceMetrics>();
+    private readonly entries = new Map<string, Entry>();
     private epoch = -1;
-    constructor(private readonly context: MeasureContext, private readonly capacity = 20000) {}
+    private bytes = 0;
+    constructor(private readonly context: MeasureContext, private readonly capacity = 20000, private readonly maxBytes = DEFAULT_CACHE_BYTES) {}
     measure(face: Face, text: string, rtl: boolean, fontEpoch: number): ReferenceMetrics {
-        if (fontEpoch !== this.epoch) { this.entries.clear(); this.epoch = fontEpoch; }
-        const key = JSON.stringify([face.css, rtl, text]);
-        const cached = this.entries.get(key);
-        if (cached) {
+        if (fontEpoch !== this.epoch) { this.clear(); this.epoch = fontEpoch; }
+        // Prefix geometry of a long line otherwise retained gigabytes of distinct, growing keys.
+        const key = this.capacity > 0 && this.maxBytes > 0 && text.length <= MAX_CACHE_TEXT ? JSON.stringify([face.css, rtl, text]) : null;
+        const cached = key === null ? undefined : this.entries.get(key);
+        if (cached && key !== null) {
             this.entries.delete(key);
             this.entries.set(key, cached);
-            return cached;
+            return cached.value;
         }
         const ctx = this.context;
         ctx.font = face.css;
@@ -42,11 +47,18 @@ export class ReferenceMeasurer {
             ascent: measured.actualBoundingBoxAscent,
             descent: measured.actualBoundingBoxDescent,
         };
-        if (this.capacity > 0) {
-            this.entries.set(key, result);
-            if (this.entries.size > this.capacity) this.entries.delete(this.entries.keys().next().value!);
+        if (key !== null) {
+            const bytes = key.length * 2 + 160;
+            if (bytes <= this.maxBytes) {
+                while (this.entries.size && (this.entries.size >= this.capacity || this.bytes + bytes > this.maxBytes)) {
+                    const oldest = this.entries.keys().next().value!;
+                    const entry = this.entries.get(oldest)!;
+                    this.entries.delete(oldest); this.bytes -= entry.bytes;
+                }
+                this.entries.set(key, { value: result, bytes }); this.bytes += bytes;
+            }
         }
         return result;
     }
-    clear(): void { this.entries.clear(); }
+    clear(): void { this.entries.clear(); this.bytes = 0; }
 }

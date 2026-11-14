@@ -3,6 +3,8 @@ import type { PaintNodeSource } from '../render/paintStream'
 import type { DisplayPdfWriter } from './capturePdf'
 import type { ExportImage } from './displayList'
 import { streamPageDisplayList } from './streamPage'
+import { streamIncrementalPdf } from './incrementalPdf'
+import type { IncrementalPdfWriter } from './incrementalPdf'
 
 export interface PdfStreamPage {
   readonly source: PaintNodeSource
@@ -12,11 +14,15 @@ export interface PdfStreamPage {
 
 /** Build each clipped physical page independently, preserving one pinned board revision. */
 export async function streamPdf(
-  pages: readonly PdfStreamPage[], scale: number, image: ExportImage, writer: DisplayPdfWriter,
+  pages: readonly PdfStreamPage[], scale: number, image: ExportImage, writer: DisplayPdfWriter | IncrementalPdfWriter,
   signal: AbortSignal, notebookSource?: { path: string },
 ): Promise<Uint8Array> {
   if (!pages.length || !Number.isFinite(scale) || scale <= 0) throw new RangeError('Invalid PDF capture')
   const first = pages[0].source
+  if (typeof writer !== 'function') {
+    return streamIncrementalPdf({ revision: first.sceneRevision, pageCount: pages.length,
+      async page(index, active) { active.throwIfAborted(); return pages[index] } }, scale, image, writer, signal, notebookSource)
+  }
   const output: Array<{ width: number; height: number; displayList: PageDisplayList; paper?: PageDisplayList }> = []
   for (let page = 0; page < pages.length; page++) {
     signal.throwIfAborted()

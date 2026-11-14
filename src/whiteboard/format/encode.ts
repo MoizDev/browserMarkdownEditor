@@ -53,10 +53,12 @@ function marks(value: RichText['blocks'][number]['runs'][number]['marks']): unkn
 function richText(value: RichText): unknown {
     if (!value.blocks.length || value.blocks.length > FORMAT_LIMITS.richTextBlocks) refuseWrite('limit', 'Rich text needs a bounded, nonempty block list');
     let chars = value.blocks.length - 1;
-    const blocks = value.blocks.map(block => {
+    const carriers: unknown[][] = [];
+    const blocks = value.blocks.map((block, index) => {
         if (!block.runs.length || block.runs.length > FORMAT_LIMITS.recordBytes / 2) refuseWrite('limit', 'Rich text needs a bounded, nonempty run list');
+        let blockLength = 0;
         const runs = block.runs.map(run => {
-            chars += run.text.length;
+            chars += run.text.length; blockLength += run.text.length;
             if (chars > FORMAT_LIMITS.textChars) refuseWrite('limit', 'Text exceeds one million UTF-16 units');
             if (run.text.includes('\n')) refuseWrite('invalid', 'Rich text run contains a paragraph break');
             for (let i = 0; i < run.text.length; i++) {
@@ -72,6 +74,17 @@ function richText(value: RichText): unknown {
             if (Object.keys(run.marks).length || hasTail) items.push(marks(run.marks));
             return tupleValue(items, run.tail);
         });
+        for (const carrier of block.carriers ?? []) {
+            if (carriers.length >= FORMAT_LIMITS.textChars + FORMAT_LIMITS.richTextBlocks
+                || !Number.isSafeInteger(carrier.from) || !Number.isSafeInteger(carrier.to) || carrier.from < 0
+                || carrier.to < carrier.from || carrier.to > blockLength || !['p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(carrier.kind)
+                || !Number.isInteger(carrier.level) || carrier.level < 0 || carrier.level > 7 || (carrier.kind === 'p' && carrier.level !== 0)
+                || !['auto', 'ltr', 'rtl'].includes(carrier.dir) || carrier.start !== undefined && !Number.isFinite(carrier.start)
+                || !compactRaw(carrier.tail).startsWith('[') || !compactRaw(carrier.tail).endsWith(']')) refuseWrite('invalid', 'Invalid opaque block carrier');
+            // The original tail stays an independent array with its original
+            // block attributes, never appended to another positional tuple.
+            carriers.push([index, carrier.from, carrier.to, carrier.kind, carrier.level, carrier.dir, carrier.start ?? null, rawValue(carrier.tail)]);
+        }
         const items: unknown[] = [block.kind, block.level, block.dir, runs];
         if (block.start !== undefined) items.push(block.start);
         // A removed list start still needs its slot: null denotes absence without
@@ -79,7 +92,7 @@ function richText(value: RichText): unknown {
         else if (block.tail !== undefined && compactRaw(block.tail) !== '[]') items.push(null);
         return tupleValue(items, block.tail);
     });
-    return objectValue([['b', blocks]]);
+    return objectValue([['b', blocks], ['carriers', carriers.length ? carriers : undefined]]);
 }
 function attachment(value: Attachment | null | undefined): unknown {
     return value == null ? null : objectValue([

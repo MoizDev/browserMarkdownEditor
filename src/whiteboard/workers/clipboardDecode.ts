@@ -1,21 +1,28 @@
 import type { WorkerContext } from '../../platform/workers';
 import { parseJsonIncremental, type JsonSpan } from '../format/jsonRead';
 import { FORMAT_LIMITS } from '../format/schema';
+import { utf8LengthAsync } from '../format/writeTypes';
 import { hashMedia } from '../media/sha256';
 import type { MediaId } from '../model/media';
 import type { BoardPayload } from '../clipboard/snapshot';
-import type { SheetId } from '../model/ids';
+import type { NodeId, SheetId } from '../model/ids';
+import type { Attachment } from '../model/nodes';
 import { SECURITY_LIMITS } from '../security/limits';
+import { htmlPreflight } from './htmlPreflight';
 
 // Provenance: private clipboard envelope, SEC-W1/W4, native limits and C5
 // transport contracts; independent bounded worker decoder, no third-party source.
-export const CLIPBOARD_JSON_LIMIT = 64 * 1024 * 1024;
-export const CLIPBOARD_INLINE_LIMIT = 32 * 1024 * 1024;
-export const CLIPBOARD_ENCODED_LIMIT = 2 + 4 * Math.ceil(CLIPBOARD_JSON_LIMIT / 3);
+export const CLIPBOARD_JSON_LIMIT = SECURITY_LIMITS.clipboardExpandedBytes;
+export const CLIPBOARD_INLINE_LIMIT = SECURITY_LIMITS.inlineMediaBytes;
+export const CLIPBOARD_ENCODED_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
+export interface ClipboardExternalBinding {
+    readonly id: NodeId; readonly start?: Attachment; readonly end?: Attachment;
+}
 export interface DecodedBoardClipboard {
     readonly payload: BoardPayload;
     readonly cacheOnly: boolean;
     readonly inline: readonly { readonly id: MediaId; readonly blob: Blob }[];
+    readonly externalBindings?: readonly ClipboardExternalBinding[];
 }
 const CHUNK = 64 * 1024;
 async function decodeOuter(blob: Blob, context: WorkerContext): Promise<{ mode: string; bytes: Blob }> {
@@ -44,6 +51,25 @@ async function decodeOuter(blob: Blob, context: WorkerContext): Promise<{ mode: 
     }
     add('', true);
     return { mode, bytes: new Blob(parts) };
+}
+async function measureJson(blob: Blob, compressed: boolean, context: WorkerContext): Promise<number> {
+    let stream: ReadableStream<Uint8Array> = blob.stream();
+    if (compressed) {
+        if (typeof DecompressionStream === 'undefined') throw new Error('Clipboard decompression is unavailable');
+        stream = stream.pipeThrough(new DecompressionStream('deflate-raw') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+    }
+    const reader = stream.getReader(); let total = 0;
+    const abort = () => { void reader.cancel(context.signal.reason).catch(() => {}); };
+    context.signal.addEventListener('abort', abort, { once: true });
+    try {
+        for (;;) {
+            context.signal.throwIfAborted(); const part = await reader.read(); context.signal.throwIfAborted();
+            if (part.done) break;
+            if (part.value.byteLength > CLIPBOARD_JSON_LIMIT - total) throw new RangeError('Clipboard JSON exceeds its limit');
+            total += part.value.byteLength; await context.slice();
+        }
+        return total;
+    } finally { context.signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 async function readJson(blob: Blob, compressed: boolean, context: WorkerContext): Promise<string> {
     let stream: ReadableStream<Uint8Array> = blob.stream();
@@ -84,6 +110,33 @@ function number(span: JsonSpan | undefined): number {
     if (!span || span.kind !== 'number') throw new TypeError('Missing clipboard number');
     const value = span.number(); if (!Number.isFinite(value)) throw new RangeError('Nonfinite clipboard bounds'); return value;
 }
+async function selected(span: JsonSpan, names: readonly string[], context: WorkerContext): Promise<Map<string, JsonSpan>> {
+    if (span.kind !== 'object') throw new TypeError('Clipboard record must be an object');
+    const found = new Map<string, JsonSpan>();
+    for await (const [key, value] of span.fieldsIncremental(context.slice)) if (names.includes(key)) {
+        if (found.has(key)) throw new TypeError('Duplicate clipboard record field');
+        found.set(key, value);
+    }
+    return found;
+}
+async function attachmentValue(span: JsonSpan | undefined, context: WorkerContext): Promise<Attachment | undefined> {
+    if (!span || span.kind === 'null') return undefined;
+    const item = await fields(span, ['target', 'anchor', 'exact', 'precise', 'snap'], context), anchorSpan = item.get('anchor');
+    if (!anchorSpan) throw new TypeError('Missing clipboard attachment anchor');
+    const anchor = await fields(anchorSpan, ['x', 'y'], context), x = number(anchor.get('x')), y = number(anchor.get('y'));
+    const exact = item.get('exact'), precise = item.get('precise'), snap = await text(item.get('snap'), 32, context);
+    if (x < 0 || x > 1 || y < 0 || y > 1 || exact?.kind !== 'boolean' || precise?.kind !== 'boolean'
+        || !['none', 'center', 'edge-point', 'edge'].includes(snap)) throw new TypeError('Invalid clipboard attachment');
+    const target = await text(item.get('target'), SECURITY_LIMITS.idCharacters, context);
+    if (!target) throw new TypeError('Invalid clipboard attachment target');
+    return { target: target as NodeId, anchor: { x, y }, exact: exact.text() === 'true', precise: precise.text() === 'true',
+        snap: snap as Attachment['snap'] };
+}
+async function externalAttachment(end: JsonSpan | undefined, context: WorkerContext): Promise<Attachment | undefined> {
+    if (!end) return undefined;
+    const data = await selected(end, ['attach'], context);
+    return attachmentValue(data.get('attach'), context);
+}
 async function inlineBlob(encoded: string, context: WorkerContext): Promise<Blob> {
     if (encoded.length > 4 * Math.ceil(SECURITY_LIMITS.mediaBytes / 3) || encoded.length % 4 !== 0) throw new RangeError('Clipboard media exceeds its limit');
     const parts: BlobPart[] = []; let size = 0;
@@ -99,10 +152,18 @@ async function inlineBlob(encoded: string, context: WorkerContext): Promise<Blob
     }
     return new Blob(parts);
 }
-export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard> {
-    const blob = (payload as { encoded?: unknown } | null)?.encoded;
-    if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)) throw new TypeError('Clipboard decoder requires copied Blob');
-    const decoded = await decodeOuter(blob, context), source = await readJson(decoded.bytes, decoded.mode === 'd.', context);
+export async function clipboardDecode(payload: unknown, context: WorkerContext): Promise<DecodedBoardClipboard | number | true> {
+    const request = payload as { encoded?: unknown; measure?: unknown; htmlPreflight?: unknown } | null;
+    if (request?.htmlPreflight !== undefined) {
+        if (!(request.htmlPreflight instanceof Blob) || request.encoded !== undefined || request.measure !== undefined) throw new TypeError('Invalid HTML preflight request');
+        return htmlPreflight(request.htmlPreflight, context);
+    }
+    const blob = request?.encoded;
+    if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)
+        || request?.measure !== undefined && request.measure !== true) throw new TypeError('Clipboard decoder requires copied Blob');
+    const decoded = await decodeOuter(blob, context);
+    if (request?.measure === true) return measureJson(decoded.bytes, decoded.mode === 'd.', context);
+    const source = await readJson(decoded.bytes, decoded.mode === 'd.', context);
     const root = await fields(await parseJsonIncremental(source, context.slice), ['v', 'nonce', 'from', 'bounds', 'records', 'media', 'cacheOnly'], context);
     if (number(root.get('v')) !== 1) throw new TypeError('Unsupported clipboard version');
     const nonce = await text(root.get('nonce'), 16, context);
@@ -116,32 +177,64 @@ export async function clipboardDecode(payload: unknown, context: WorkerContext):
     if (box.w < 0 || box.h < 0 || !Number.isFinite(box.x + box.w) || !Number.isFinite(box.y + box.h)) throw new RangeError('Invalid clipboard bounds');
     const recordsSpan = root.get('records'), mediaSpan = root.get('media');
     if (!recordsSpan || recordsSpan.kind !== 'array' || !mediaSpan || mediaSpan.kind !== 'object') throw new TypeError('Invalid clipboard records or media');
-    const records: string[] = []; let recordBytes = 0;
+    const records: string[] = [], nodeIds = new Set<NodeId>(), nodeKinds = new Map<NodeId, string | null>(), pending: ClipboardExternalBinding[] = []; let recordBytes = 0;
     for await (const item of recordsSpan.itemsIncremental(context.slice)) {
         if (records.length >= SECURITY_LIMITS.clipboardRecords) throw new RangeError('Too many clipboard records');
         const line = await text(item, FORMAT_LIMITS.recordBytes, context);
-        const length = new TextEncoder().encode(line).byteLength;
-        if (length > FORMAT_LIMITS.recordBytes || length > CLIPBOARD_JSON_LIMIT - recordBytes) throw new RangeError('Clipboard records exceed their limit');
-        if ((await parseJsonIncremental(line, context.slice)).kind !== 'object') throw new TypeError('Clipboard record must be a JSON object');
+        const measured = await utf8LengthAsync(line, FORMAT_LIMITS.recordBytes, { signal: context.signal, cooperate: context.slice });
+        if (!measured.ok || measured.value > CLIPBOARD_JSON_LIMIT - recordBytes) throw new RangeError('Clipboard records exceed their limit');
+        const length = measured.value;
+        const record = await parseJsonIncremental(line, context.slice);
+        if (record.kind !== 'object') throw new TypeError('Clipboard record must be a JSON object');
+        const row = await selected(record, ['type', 'kind', 'id', 'start', 'end', 'startAttach', 'endAttach'], context);
+        const rowType = row.get('type');
+        if (rowType?.kind === 'string' && await text(rowType, 32, context) === 'node') {
+            const id = await text(row.get('id'), SECURITY_LIMITS.idCharacters, context) as NodeId;
+            if (!id || nodeIds.has(id)) throw new TypeError('Duplicate clipboard node id');
+            nodeIds.add(id);
+            const kind = row.get('kind'), nodeKind = kind?.kind === 'string' ? await text(kind, 64, context) : null;
+            nodeKinds.set(id, nodeKind);
+            if (nodeKind === 'connector' || nodeKind === 'polyline') {
+                const start = nodeKind === 'connector' ? await externalAttachment(row.get('start'), context) : await attachmentValue(row.get('startAttach'), context);
+                const end = nodeKind === 'connector' ? await externalAttachment(row.get('end'), context) : await attachmentValue(row.get('endAttach'), context);
+                if (start || end) pending.push({ id, ...(start ? { start } : {}), ...(end ? { end } : {}) });
+            }
+        }
         recordBytes += length; records.push(line);
     }
     const media: Record<string, string> = Object.create(null) as Record<string, string>, inline: { id: MediaId; blob: Blob }[] = [];
+    const seenMedia = new Set<string>();
     let total = 0;
     for await (const [id, item] of mediaSpan.fieldsIncremental(context.slice)) {
-        if (!/^sha256:[0-9a-f]{64}$/.test(id) || Object.hasOwn(media, id) || inline.length >= SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard media identity');
+        if (!/^sha256:[0-9a-f]{64}$/.test(id) || seenMedia.has(id) || seenMedia.size >= SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard media identity');
+        seenMedia.add(id);
         const encoded = await text(item, 4 * Math.ceil(SECURITY_LIMITS.mediaBytes / 3), context);
         const expected = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
         if (!Number.isSafeInteger(expected) || expected < 0 || expected > CLIPBOARD_INLINE_LIMIT - total) throw new RangeError('Inline clipboard media exceeds its limit');
         const bytes = await inlineBlob(encoded, context);
         if (bytes.size > CLIPBOARD_INLINE_LIMIT - total) throw new RangeError('Inline clipboard media exceeds its limit');
         total += bytes.size;
-        if (await hashMedia(bytes, context.signal, context.slice) !== id) throw new Error('Clipboard media hash mismatch');
+        if (await hashMedia(bytes, context.signal, context.slice) !== id) continue;
         media[id] = encoded; inline.push({ id: id as MediaId, blob: bytes });
     }
     const marker = root.get('cacheOnly');
     if (marker && (marker.kind !== 'boolean' || marker.text() !== 'true')) throw new TypeError('Invalid cache-only marker');
     const cacheOnly = !!marker;
-    if (cacheOnly && (records.length || inline.length)) throw new TypeError('Cache-only marker cannot contain records');
+    if (cacheOnly && (records.length || seenMedia.size)) throw new TypeError('Cache-only marker cannot contain records');
     context.signal.throwIfAborted();
-    return { payload: { v: 1, nonce, from: { board, sheet: sheet as SheetId, kind: kind as BoardPayload['from']['kind'] }, bounds: box, records, media }, cacheOnly, inline };
+    const externalBindings: ClipboardExternalBinding[] = [];
+    let visited = 0;
+    for (const item of pending) {
+        for (const attachment of [item.start, item.end]) if (attachment && nodeIds.has(attachment.target)) {
+            const kind = nodeKinds.get(attachment.target);
+            if (attachment.target === item.id || !kind || kind === 'connector' || kind === 'group' || kind === 'opaque') {
+                throw new TypeError('Invalid internal clipboard binding');
+            }
+        }
+        const start = item.start && !nodeIds.has(item.start.target) ? item.start : undefined;
+        const end = item.end && !nodeIds.has(item.end.target) ? item.end : undefined;
+        if (start || end) externalBindings.push({ id: item.id, ...(start ? { start } : {}), ...(end ? { end } : {}) });
+        if ((++visited & 255) === 0) await context.slice();
+    }
+    return { payload: { v: 1, nonce, from: { board, sheet: sheet as SheetId, kind: kind as BoardPayload['from']['kind'] }, bounds: box, records, media }, cacheOnly, inline, externalBindings };
 }

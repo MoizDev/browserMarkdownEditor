@@ -3,18 +3,25 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import type { Face, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
+import { sameLayoutProduct, validLayoutProduct } from './layoutValidation';
 
+const scripts = [/\p{Script=Latin}/u, /\p{Script=Arabic}/u, /\p{Script=Hebrew}/u, /\p{Script=Han}/u,
+    /\p{Script=Devanagari}/u, /\p{Script=Thai}/u, /\p{Extended_Pictographic}/u];
 function layoutClass(request: TextLayoutRequest): string {
-    let text = '', styles = 0;
+    let variants = 0, mask = 0, headings = 0, previous = '';
     for (const block of request.text.blocks) {
+        if (block.kind.startsWith('h')) headings |= 1 << Number(block.kind.slice(1));
         for (const run of block.runs) {
-            text += run.text;
-            styles |= (run.marks.b ? 1 : 0) | (run.marks.i ? 2 : 0) | (run.marks.code ? 4 : 0);
+            const style = (run.marks.b ? 1 : 0) | (run.marks.i ? 2 : 0) | (run.marks.code ? 4 : 0);
+            variants |= 1 << style;
+            const text = previous ? previous + run.text : run.text;
+            for (let i = 0; i < scripts.length; i++) if (!(mask & (1 << i)) && scripts[i].test(text)) mask |= 1 << i;
+            const last = run.text.charCodeAt(run.text.length - 1);
+            previous = last >= 0xd800 && last <= 0xdbff ? run.text.slice(-1) : '';
         }
+        previous = '';
     }
-    const scripts = [/\p{Script=Latin}/u, /\p{Script=Arabic}/u, /\p{Script=Hebrew}/u, /\p{Script=Han}/u,
-        /\p{Script=Devanagari}/u, /\p{Script=Thai}/u, /\p{Extended_Pictographic}/u];
-    return JSON.stringify([request.style.font, styles, scripts.map(script => script.test(text))]);
+    return JSON.stringify([request.style.font, request.style.size, request.style.overflow, request.width === null, variants, headings, mask]);
 }
 
 export interface LayoutProduct {
@@ -22,19 +29,6 @@ export interface LayoutProduct {
     readonly measurement: TextMeasurement;
     /** The particular append-only face table that owns this paint's indices. */
     readonly faces: readonly Face[];
-}
-
-function matches(a: LayoutProduct, b: LayoutProduct): boolean {
-    if (a.paint.box.w !== b.paint.box.w || a.paint.box.h !== b.paint.box.h || a.paint.lines.length !== b.paint.lines.length) return false;
-    for (let i = 0; i < a.paint.lines.length; i++) {
-        const x = a.paint.lines[i], y = b.paint.lines[i];
-        if (x.top !== y.top || x.bottom !== y.bottom || x.baseline !== y.baseline || x.fragments.length !== y.fragments.length) return false;
-        for (let j = 0; j < x.fragments.length; j++) {
-            const f = x.fragments[j], g = y.fragments[j], ff = a.faces[f.face], gf = b.faces[g.face];
-            if (!ff || !gf || ff.css !== gf.css || ff.size !== gf.size || f.text !== g.text || f.rtl !== g.rtl || f.systemFallback !== g.systemFallback || f.x !== g.x || f.width !== g.width || f.src[0] !== g.src[0] || f.src[1] !== g.src[1]) return false;
-        }
-    }
-    return true;
 }
 
 /**
@@ -51,6 +45,7 @@ export class TextLayoutClient {
     constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
         const changed = (key: FontKey) => { this.compatibleClasses.clear(); this.different = false; onFontArrival?.(key); };
         this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
+        // A worker FontFaceSet is shared; the request identity that relays an arrival is not the only affected board.
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
             if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
             const key = payload.key as Partial<FontKey> | null;
@@ -62,6 +57,8 @@ export class TextLayoutClient {
     beginSession(): void {
         this.epoch++;
         this.versions.clear();
+        this.compatibleClasses.clear();
+        this.different = false;
         for (const controller of this.pending.values()) controller.abort();
         this.pending.clear();
     }
@@ -74,12 +71,14 @@ export class TextLayoutClient {
     }
     private onMain(request: TextLayoutRequest): LayoutProduct {
         const resolved = { ...request, fontEpoch: this.fonts.epoch };
-        const paint = this.main.layout(resolved);
-        return { paint, measurement: this.main.measure(resolved), faces: this.main.faceTable.faces };
+        const { paint, measurement } = this.main.product(resolved);
+        if (!paint.faceTable) throw new Error('Text paint has no owning face table');
+        return { paint, measurement, faces: paint.faceTable.faces };
     }
     /** Edited or immediately visible content never waits on a queued open-time job. */
     layoutNow(node: string, request: TextLayoutRequest): LayoutProduct {
         this.next(node);
+        this.versions.delete(node);
         void this.main.prepare(request).catch(() => {});
         return this.onMain(request);
     }
@@ -100,16 +99,17 @@ export class TextLayoutClient {
                     this.main.prepare(request),
                     this.worker.request<LayoutProduct>('layout', request, identity, { priority: 2, signal: controller.signal }, current),
                 ]);
-                workerProduct = product;
+                if (validLayoutProduct(product, request)) workerProduct = product;
+                else this.different = true;
             } catch {
                 if (!current()) return null;
-                this.different = true;
             }
         }
         if (!current()) return null;
         if (workerProduct && !this.compatibleClasses.has(kind)) {
             const mainProduct = this.onMain(request);
-            if (!matches(mainProduct, workerProduct)) { this.different = true; return mainProduct; }
+            if (!sameLayoutProduct(mainProduct, workerProduct)) { this.different = true; return mainProduct; }
+            if (this.compatibleClasses.size >= 1024) this.compatibleClasses.delete(this.compatibleClasses.values().next().value!);
             this.compatibleClasses.add(kind);
         }
         if (workerProduct && !this.different) return workerProduct;
@@ -119,7 +119,10 @@ export class TextLayoutClient {
         if (!current()) return null;
         return this.onMain(request);
         } finally {
-            if (this.pending.get(node) === controller) this.pending.delete(node);
+            if (this.pending.get(node) === controller) {
+                this.pending.delete(node);
+                if (this.versions.get(node) === version) this.versions.delete(node);
+            }
             signal?.removeEventListener('abort', abort);
         }
     }

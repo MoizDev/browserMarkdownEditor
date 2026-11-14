@@ -23,6 +23,9 @@ export interface JobAuthority {
     assertContext(context: JobContext): void;
     /** A vault switch/reload revokes all outstanding requests, including same-path requests. */
     replace(vaultEpoch: number, generation: number): void;
+    /** Await actual settlement/finally of all work queued before this call, not its abort reply.
+     * Dispose/revoke first when retiring an owner. Worker retirement remains the broker's contract. */
+    drain(): Promise<void>;
     dispose(): void;
 }
 function validCounter(value: number): boolean { return Number.isSafeInteger(value) && value >= 0; }
@@ -51,7 +54,8 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
                 || sessionField.value !== session || epochField.value !== epoch || generationField.value !== currentGeneration
                 || typeof requestField.value !== 'number' || !validCounter(requestField.value)) return false;
             const active = outstanding.get(requestField.value);
-            return !!active && !active.controller.signal.aborted;
+            // A value-equal clone is not the job object this authority issued.
+            return !!active && active.job === job && !active.controller.signal.aborted;
         } catch { return false; }
     }
     function abortAll(reason: string): void {
@@ -108,6 +112,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             abortAll('Session identity replaced');
             epoch = nextEpoch; currentGeneration = nextGeneration;
         },
+        drain() { return tail; },
         dispose() { if (!disposed) { disposed = true; abortAll('Session closed'); } },
     };
 }

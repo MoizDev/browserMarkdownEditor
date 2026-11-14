@@ -1,4 +1,4 @@
-import type { ContentJob, JobAuthority } from './admission';
+import type { ContentJob, JobAuthority, JobContext } from './admission';
 
 export type ImportData = null | boolean | number | string | readonly ImportData[] | { readonly [key: string]: ImportData };
 declare const importBrand: unique symbol;
@@ -13,9 +13,9 @@ export type ImportValidation<T extends ImportData> =
 export interface ProjectionLimits { readonly entries: number; readonly characters: number; readonly depth: number; }
 export type AdmissionResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
 export interface ImportAdmission<T extends ImportData> {
-    prepare(input: unknown, job: ContentJob): AdmissionResult<ValidatedImport<T>>;
-    /** One-shot: the issuer and job must match and the session must still be current. */
-    take(token: ValidatedImport<T>, job: ContentJob): T;
+    prepare(input: unknown, context: JobContext): AdmissionResult<ValidatedImport<T>>;
+    /** One-shot: only the issuing authority's actual running job can consume it. */
+    take(token: ValidatedImport<T>, context: JobContext): T;
 }
 
 // Copy fixed-shape validator output into owned inert data. Never invoke an accessor or spread an
@@ -85,28 +85,29 @@ export function createImportAdmission<T extends ImportData>(authority: JobAuthor
     validate: (input: unknown) => ImportValidation<T>): ImportAdmission<T> {
     const owned = new WeakMap<object, { readonly job: ContentJob; readonly value: T }>();
     return {
-        prepare(input, job) {
-            if (!authority.isCurrent(job)) return { ok: false, reason: 'Content job is no longer current' };
+        prepare(input, context) {
             try {
+                authority.assertContext(context);
                 const result = validate(input);
                 if (!result.ok) return result;
                 if (result.notices.length > 128 || result.notices.some(notice => typeof notice !== 'string' || notice.length > 1000)) {
                     return { ok: false, reason: 'Import notices exceed their budget' };
                 }
                 const value = ownProjection(result.value, limits) as T;
-                if (!authority.isCurrent(job)) return { ok: false, reason: 'Content job is no longer current' };
+                authority.assertContext(context);
                 const token = Object.freeze({ kind: 'validated-import', notices: Object.freeze([...result.notices]) }) as ValidatedImport<T>;
-                owned.set(token, { job, value });
+                owned.set(token, { job: context.job, value });
                 return { ok: true, value: token };
             } catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') return { ok: false, reason: 'Content job is no longer current' };
                 if (error instanceof TypeError || error instanceof RangeError) return { ok: false, reason: error.message };
                 throw error;
             }
         },
-        take(token, job) {
+        take(token, context) {
+            authority.assertContext(context);
             const entry = owned.get(token);
-            if (!entry || !authority.isCurrent(job) || entry.job.session !== job.session || entry.job.vaultEpoch !== job.vaultEpoch
-                || entry.job.generation !== job.generation || entry.job.request !== job.request) throw new TypeError('Unvalidated, stale or already-consumed import');
+            if (!entry || entry.job !== context.job) throw new TypeError('Unvalidated, stale or already-consumed import');
             owned.delete(token);
             return entry.value;
         },

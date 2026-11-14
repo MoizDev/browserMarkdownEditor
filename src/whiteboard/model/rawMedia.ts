@@ -1,3 +1,5 @@
+import { pdfHostMediaRawValues } from '../../pdf/session/inkHostMedia';
+export { pdfHostMediaRawValues } from '../../pdf/session/inkHostMedia';
 import type { HostBlock, PreservedBlock } from './doc';
 import type { ExtBag, RawJson } from './json';
 import type { MediaId } from './media';
@@ -121,6 +123,10 @@ export function* richTextRawValues(text: RichText | null): Iterable<RawJson | nu
     for (let b = 0; b < text.blocks.length; b++) {
         const block = text.blocks[b];
         if (block.tail !== undefined) yield block.tail;
+        for (const carrier of block.carriers ?? []) {
+            yield carrier.tail;
+            if ((++count & 255) === 0) yield null;
+        }
         for (let r = 0; r < block.runs.length; r++) {
             const run = block.runs[r];
             if (run.tail !== undefined) yield run.tail;
@@ -149,12 +155,12 @@ export function* nodeRawValues(node: NodeRawCarrier): Iterable<RawJson | null> {
 export function visitNodeRaw(node: NodeRawCarrier, visit: (raw: RawJson) => void): void {
     for (const raw of nodeRawValues(node)) if (raw !== null) visit(raw);
 }
-export function* hostRawValues(host: HostBlock): Iterable<RawJson> {
-    if (host.kind === 'pdf-ink') { yield host.pdf; yield* extRawValues(host.ext); }
+export function* hostRawValues(host: HostBlock): Iterable<RawJson | null> {
+    if (host.kind === 'pdf-ink') { yield* pdfHostMediaRawValues(host.pdf); yield* extRawValues(host.ext); }
     else if (host.kind === 'notebook') yield* extRawValues(host.ext);
 }
 export function visitHostRaw(host: HostBlock, visit: (raw: RawJson) => void): void {
-    for (const raw of hostRawValues(host)) visit(raw);
+    for (const raw of hostRawValues(host)) if (raw !== null) visit(raw);
 }
 export function* preservedRawValues(preserved: PreservedBlock): Iterable<RawJson> {
     yield* preserved.fields.values();

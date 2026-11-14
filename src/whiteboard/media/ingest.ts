@@ -6,9 +6,17 @@ import { isSafeMediaFile, type MediaEntry, type MediaId, type MediaMime } from '
 import { createClip, createPicture, type Crop } from '../model/nodes';
 import { keysBetween } from '../model/orderKey';
 import type { BoardSession } from '../session/BoardSession';
+import { pageAt } from '../../platform/render/pageStack';
+import { worldPose } from '../change/coordinates';
+import { notebookGrowthOp } from '../commands/pagesAndSheets';
+import { isSheetParent } from '../model/doc';
+import { boardPageStack, pageOrigin } from '../model/pages';
 import { checkMediaBytes, checkMediaDimensions, SECURITY_LIMITS } from '../security/limits';
 import type { JobAuthority, JobContext } from '../security/admission';
 import type { BoardJobIdentity } from '../workers/protocol';
+import type { BoardRuntime } from '../host/runtime';
+import type { MediaStorageReceipt, StoreMedia } from './storage.types';
+import { resolveMediaStorage } from './storage';
 
 export interface InspectedMedia {
     readonly id: MediaId;
@@ -23,7 +31,7 @@ export interface InspectedMedia {
 // store is the sole authority that can write an asset or stage a PDF attachment.
 export interface MediaIngestHost {
     inspectMedia(blob: Blob, options: { signal: AbortSignal; identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia>;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
     rememberMedia(id: MediaId, blob: Blob): void;
     /** Commit the active gesture before capturing the paste target. */
     finishGesture(): void;
@@ -79,12 +87,13 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
-function box(info: InspectedMedia, density?: number): { w: number; h: number } {
-    const scale = density === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / density;
+function box(info: InspectedMedia, pixelsPerWorldUnit?: number): { w: number; h: number } {
+    if (pixelsPerWorldUnit !== undefined && (info.mime !== 'image/png' || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid private PNG density');
+    const scale = pixelsPerWorldUnit === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / pixelsPerWorldUnit;
     return { w: info.width * scale, h: info.height * scale };
 }
 
-interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly density?: number }
+interface Staged { readonly info: InspectedMedia; readonly entry: MediaEntry; readonly blob: Blob; readonly file: string | null; readonly receipt: MediaStorageReceipt | null; readonly pixelsPerWorldUnit?: number }
 export interface MediaLocationWriter { setFile(id: MediaId, file: string | null): void }
 
 function setMediaFile(id: MediaId, file: string | null): Op {
@@ -105,7 +114,9 @@ export function updateMediaFile(session: BoardSession, locations: MediaLocationW
 
 export class MediaIngestor {
     constructor(private readonly session: BoardSession, private readonly host: MediaIngestHost,
-        private readonly jobs: JobAuthority, private readonly locations: MediaLocationWriter) {}
+        private readonly jobs: JobAuthority, private readonly locations: MediaLocationWriter, private readonly runtime: BoardRuntime) {
+        if (runtime.session !== session || runtime.jobs !== jobs) throw new Error('Media ingestion requires its canonical runtime');
+    }
 
     ingest(sources: readonly MediaSource[], options: MediaIngestOptions): Promise<readonly NodeId[]> {
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
@@ -155,37 +166,43 @@ export class MediaIngestor {
         if (!info.mime.startsWith('image/')) throw new Error('Replacement must be a picture');
         if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
         const priorEntry = this.session.doc.media.get(info.id);
+        if (priorEntry && (priorEntry.mime !== info.mime || priorEntry.bytes !== source.blob.size || priorEntry.w !== info.width || priorEntry.h !== info.height
+            || priorEntry.duration !== info.duration || priorEntry.animated !== info.animated)) throw new Error('Existing media metadata conflicts with verified bytes');
         const entry: MediaEntry = priorEntry ?? {
             id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
             duration: null, animated: info.animated, name: source.name, file: null, ext: null,
         };
-        const file = await this.host.storeMedia(entry, source.blob, signal);
-        current();
-        if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
-        const node = this.session.doc.nodes.get(id);
-        if (!node || node.kind !== 'picture' || node.locked || node.media !== initial.media) throw new Error('Picture changed during replacement');
-        const old = this.session.doc.media.get(initial.media);
-        if (!old) throw new Error('Original picture is missing');
-        const ops: Op[] = [];
-        if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
-        else if (entry.file !== file) ops.push(setMediaFile(info.id, file));
-        ops.push({ t: 'set', id, key: 'media', value: info.id });
-        ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
-        if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
-            && !(this.session.doc.preservedMediaRefs.get(initial.media) ?? 0)) {
-            ops.push({ t: 'media', op: 'drop', id: initial.media });
-        }
-        this.host.rememberMedia(info.id, source.blob);
-        current();
-        await this.session.enqueueAfterGesture(signal, () => {
+        const proof = { runtime: this.runtime, context, inspection: info };
+        const result = await this.host.storeMedia(entry, source.blob, signal, proof);
+        const storage = resolveMediaStorage(result, { ...proof, entry, blob: source.blob });
+        try {
+            const file = storage.file;
             current();
-            this.session.history.open('Replace media');
-            try {
-                const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
-                this.locations.setFile(info.id, file);
-                applied.release();
-            } finally { this.session.history.close(); }
-        });
+            const node = this.session.doc.nodes.get(id);
+            if (!node || node.kind !== 'picture' || node.locked || node.media !== initial.media) throw new Error('Picture changed during replacement');
+            const old = this.session.doc.media.get(initial.media);
+            if (!old) throw new Error('Original picture is missing');
+            const ops: Op[] = [];
+            if (!this.session.doc.media.has(info.id)) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });
+            else if (entry.file !== file) ops.push(setMediaFile(info.id, file));
+            ops.push({ t: 'set', id, key: 'media', value: info.id });
+            ops.push({ t: 'set', id, key: 'crop', value: replacementCrop(node.crop, old, info) });
+            if (initial.media !== info.id && this.session.doc.mediaRefs.get(initial.media)?.size === 1
+                && !(this.session.doc.preservedMediaRefs.get(initial.media) ?? 0)) {
+                ops.push({ t: 'media', op: 'drop', id: initial.media });
+            }
+            this.host.rememberMedia(info.id, source.blob);
+            current();
+            await this.session.enqueueAfterGesture(signal, () => {
+                current();
+                this.session.history.open('Replace media');
+                try {
+                    const applied = this.session.apply({ ops, origin: options.origin, label: 'Replace media' });
+                    try { this.locations.setFile(info.id, file); storage.receipt?.committed(); }
+                    finally { applied.release(); }
+                } finally { this.session.history.close(); }
+            });
+        } finally { storage.receipt?.release(); }
     }
 
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
@@ -196,9 +213,9 @@ export class MediaIngestor {
             context.assertCurrent();
             if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
         };
-        const staged: Staged[] = [];
+        const staged: Staged[] = [], receipts = new Set<MediaStorageReceipt>();
         const refused: { name: string; reason: string }[] = [];
-        {
+        try {
             for (const source of sources) {
                 current();
                 try {
@@ -211,14 +228,20 @@ export class MediaIngestor {
                     if (source.pixelsPerWorldUnit !== undefined && info.mime !== 'image/png') throw new TypeError('Density requires a PNG');
                     if (info.mime === 'image/svg+xml' && !checkMediaBytes(source.blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');
                     const old = this.session.doc.media.get(info.id);
+                    if (old && (old.mime !== info.mime || old.bytes !== source.blob.size || old.w !== info.width || old.h !== info.height
+                        || old.duration !== info.duration || old.animated !== info.animated)) throw new Error('Existing media metadata conflicts with verified bytes');
+                    box(info, source.pixelsPerWorldUnit);
                     const entry: MediaEntry = old ?? {
                         id: info.id, mime: info.mime, bytes: source.blob.size, w: info.width, h: info.height,
                         duration: info.duration, animated: info.animated, name: source.name, file: null, ext: null,
                     };
-                    const file = await this.host.storeMedia(entry, source.blob, signal);
+                    const proof = { runtime: this.runtime, context, inspection: info };
+                    const result = await this.host.storeMedia(entry, source.blob, signal, proof);
+                    const { file, receipt } = resolveMediaStorage(result, { ...proof, entry, blob: source.blob });
+                    if (receipt) receipts.add(receipt);
                     current();
-                    if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
-                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file, density: source.pixelsPerWorldUnit });
+                    staged.push({ info, entry: old ?? { ...entry, file }, blob: source.blob, file, receipt,
+                        ...(source.pixelsPerWorldUnit === undefined ? {} : { pixelsPerWorldUnit: source.pixelsPerWorldUnit }) });
                 } catch (error) {
                     current();
                     refused.push({ name: source.name, reason: error instanceof Error ? error.message : 'Media could not be read' });
@@ -227,15 +250,37 @@ export class MediaIngestor {
             current();
             if (refused.length) this.host.noticeRefused(refused);
             if (!staged.length) return [];
-            const { parent, page, x, y } = options.placement, angle = options.placement.rotation ?? 0;
-            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(angle)) throw new RangeError('Invalid placement');
-            const rotation = normalizedRotation(angle), c = Math.cos(rotation), s = Math.sin(rotation);
-            const sizes = staged.map(item => box(item.info, item.density));
-            let left = -sizes.reduce((sum, size) => sum + size.w, 0) / 2;
-            const siblings = this.session.doc.children.get(parent) ?? [];
+            const { parent, page, x, y } = options.placement;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');
+            const doc = this.session.doc, sizes = staged.map(item => box(item.info, item.pixelsPerWorldUnit));
+            const totalWidth = sizes.reduce((sum, size) => sum + size.w, 0), angle = normalizedRotation(options.placement.rotation ?? 0);
+            if (!Number.isFinite(angle)) throw new RangeError('Invalid media placement rotation');
+            let left = x - totalWidth / 2;
+            const originalLeft = left, root = isSheetParent(doc, parent), stack = boardPageStack(doc.host);
+            const origin = root && stack ? pageOrigin(stack, page) : undefined;
+            if (root && stack && !origin) throw new Error('Media placement page is unavailable');
+            const pose = root ? null : worldPose(doc, parent);
+            const localPosition = (rowLeft: number, width: number, height: number) => {
+                const distance = rowLeft - originalLeft + width / 2 - totalWidth / 2, cos = Math.cos(angle), sin = Math.sin(angle);
+                return { x: x + cos * distance - cos * width / 2 + sin * height / 2,
+                    y: y + sin * distance - sin * width / 2 - cos * height / 2 };
+            };
+            let deepest = -Infinity, cursor = originalLeft;
+            for (const size of sizes) {
+                const position = localPosition(cursor, size.w, size.h), localCos = Math.cos(angle), localSin = Math.sin(angle);
+                for (const dx of [0, size.w]) for (const dy of [0, size.h]) {
+                    const px = position.x + localCos * dx - localSin * dy, py = position.y + localSin * dx + localCos * dy;
+                    deepest = Math.max(deepest, pose ? pose.y + Math.sin(pose.rotation) * px + Math.cos(pose.rotation) * py : (origin?.y ?? 0) + py);
+                }
+                cursor += size.w;
+            }
+            const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, deepest) : undefined;
+            const grownHost = growth?.key === 'host.paper' && doc.host.kind === 'notebook' ? { ...doc.host, paper: growth.value } : doc.host;
+            const grownStack = boardPageStack(grownHost);
+            const siblings = doc.children.get(parent) ?? [];
             const orders = keysBetween(siblings.at(-1)?.order ?? null, null, staged.length);
-            const ids: NodeId[] = [];
-            const ops: Op[] = [];
+            const ids: NodeId[] = [], reserved = new Set<NodeId>();
+            const ops: Op[] = growth ? [growth] : [];
             const added = new Set<MediaId>();
             const files = new Map<MediaId, string | null>();
             for (let i = 0; i < staged.length; i++) {
@@ -251,10 +296,18 @@ export class MediaIngestor {
                     ops.push({ t: 'media', op: 'add', entry });
                     added.add(info.id);
                 }
-                const id = newNodeId({ nodes: { has: candidate => this.session.doc.nodes.has(candidate) || ids.includes(candidate) }, sheets: this.session.doc.sheets });
-                ids.push(id);
-                const common = { id, parent, order: orders[i], page, x: x + c * left + s * h / 2,
-                    y: y + s * left - c * h / 2, rotation, ext: null, w, h, media: info.id, alt: '' };
+                const id = newNodeId({ nodes: { has: candidate => doc.nodes.has(candidate) || reserved.has(candidate) }, sheets: doc.sheets });
+                ids.push(id); reserved.add(id);
+                const position = localPosition(left, w, h);
+                let targetPage = page, px = position.x, py = position.y;
+                if (root && grownStack && origin) {
+                    const centreY = position.y + Math.sin(angle) * w / 2 + Math.cos(angle) * h / 2;
+                    targetPage = pageAt(grownStack, origin.y + centreY);
+                    const target = grownStack.rects[targetPage];
+                    if (!target) throw new Error('Media destination page is unavailable');
+                    px += origin.x - target.x; py += origin.y - target.y;
+                } else if (!root) targetPage = -1;
+                const common = { id, parent, order: orders[i], page: targetPage, x: px, y: py, rotation: angle, ext: null, w, h, media: info.id, alt: '' };
                 const node = info.mime.startsWith('video/')
                     ? createClip({ ...common, time: 0, playing: true, autoplay: true })
                     : createPicture({ ...common, crop: null, flipX: false, flipY: false, inverted: false, playing: true, url: null });
@@ -268,12 +321,12 @@ export class MediaIngestor {
                 this.session.history.open('Insert media');
                 try {
                     const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
-                    for (const item of staged) this.locations.setFile(item.info.id, item.file);
-                    applied.release();
+                    try { for (const item of staged) { this.locations.setFile(item.info.id, item.file); item.receipt?.committed(); } }
+                    finally { applied.release(); }
                     this.host.select(ids);
                     return ids;
                 } finally { this.session.history.close(); }
             });
-        }
+        } finally { for (const receipt of receipts) receipt.release(); }
     }
 }

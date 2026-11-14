@@ -27,10 +27,19 @@ async function ordered<T>(values: Iterable<T>, options: LoadRepairOptions): Prom
 /** Repair is history-silent. Re-encoding flags and deleted-source tombstones are
  * preparation for the first user edit, not a write or a dirty admission itself. */
 export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOptions): Promise<LoadRepairResult> {
+    options = { ...options, cooperate: options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0))) };
     const sheets = await ordered<Sheet>(draft.input.sheets, options), nodes = await ordered<NodeRecord>(draft.input.nodes ?? [], options);
-    const media = await ordered<MediaEntry>(draft.input.media ?? [], options), notices: LoadRepairNotice[] = [], issues: ReadIssue[] = [];
+    const sourceMedia = await ordered<MediaEntry>(draft.input.media ?? [], options), media: MediaEntry[] = [], notices: LoadRepairNotice[] = [], issues: ReadIssue[] = [];
     const refuse = (reason: string): LoadRepairResult => ({ status: 'read-only', projection: null, repairs: notices,
         issues: [...issues, { code: 'repair', reason, readOnly: true }] });
+    const singletonSources = new Set<string>();
+    for (let i = 0; i < draft.sources.length; i++) {
+        if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
+        const source = draft.sources[i];
+        if (!['pen', 'view', 'paper', 'host', 'end'].includes(source.category)) continue;
+        if (singletonSources.has(source.category)) return refuse(`Duplicate ${source.category} records require original-byte recovery`);
+        singletonSources.add(source.category);
+    }
     const reserved = new Set<string>();
     for (let i = 0; i < nodes.length; i++) {
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
@@ -49,12 +58,29 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
     const sheetRepair = await repairSheets(identities.sheets, newId, options);
     notices.push(...sheetRepair.notices);
     if (sheetRepair.readOnlyReason) return refuse(sheetRepair.readOnlyReason);
-    const mediaIds = new Set<string>();
-    for (let i = 0; i < media.length; i++) {
+    const mediaById = new Map<string, MediaEntry>(), duplicateMedia = new Set<number>();
+    let mediaWork = 0;
+    const sameMap = async (a: ReadonlyMap<string, string> | undefined, b: ReadonlyMap<string, string> | undefined) => {
+        if ((a?.size ?? 0) !== (b?.size ?? 0)) return false;
+        if (a) for (const [key, value] of a) {
+            if ((mediaWork++ & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
+            if (b?.get(key) !== value) return false;
+        }
+        return true;
+    };
+    for (let i = 0; i < sourceMedia.length; i++) {
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
-        if (mediaIds.has(media[i].id)) return refuse('Conflicting duplicate media records require original-byte recovery');
-        mediaIds.add(media[i].id);
+        const entry = sourceMedia[i], first = mediaById.get(entry.id);
+        if (!first) { mediaById.set(entry.id, entry); media.push(entry); continue; }
+        // Only identical records collapse; conflicting metadata has no lossless winner.
+        if (entry.mime !== first.mime || entry.bytes !== first.bytes || entry.w !== first.w || entry.h !== first.h
+            || entry.duration !== first.duration || entry.animated !== first.animated || entry.name !== first.name || entry.file !== first.file
+            || !(await sameMap(entry.ext?.fields, first.ext?.fields)) || !(await sameMap(entry.ext?.raw, first.ext?.raw))) {
+            return refuse('Conflicting duplicate media records require original-byte recovery');
+        }
+        duplicateMedia.add(i);
     }
+    if (duplicateMedia.size) notices.push({ code: 'duplicate-media', count: duplicateMedia.size, nodeIds: [] });
     // Repair local values before group composition: NaN/Infinity must not spread
     // from a malformed container into an otherwise valid child transform.
     const values = await repairNodeValues(identities.nodes, media, options);
@@ -90,7 +116,7 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
         surviving.set(graph.sourceOrdinals[i], graph.nodes[i]); liveNodeIds.add(graph.nodes[i].id);
     }
-    let nodeOrdinal = 0, sheetOrdinal = 0;
+    let nodeOrdinal = 0, sheetOrdinal = 0, mediaOrdinal = 0;
     const sources: ReadSourceRecord[] = [], removedSources: ReadSourceRecord[] = [...draft.removedSources ?? []];
     for (let i = 0; i < draft.sources.length; i++) {
         if ((i & 255) === 0) { options.signal?.throwIfAborted(); await options.cooperate?.(); }
@@ -106,6 +132,10 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
         } else if (source.category === 'sheet') {
             const ordinal = sheetOrdinal++, sheet = sheetRepair.sheets[ordinal];
             sources.push(identities.changedSheetOrdinals.has(ordinal) || sheetRepair.changedOrdinals.has(ordinal) ? { ...source, id: sheet.id, reencode: true } : source);
+        } else if (source.category === 'media') {
+            const ordinal = mediaOrdinal++, entry = sourceMedia[ordinal];
+            if (!entry || source.id !== entry.id || source.type !== 'media') return refuse('Media source identity does not match its decoded record');
+            if (!duplicateMedia.has(ordinal)) sources.push(source);
         } else sources.push(source);
     }
     const projection = await projectLoad({ input, sources, removedSources, unmapped: draft.unmapped,

@@ -337,7 +337,7 @@ function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
                 extInverse = { t: 'ext', target, value: ext };
                 raw.extension(ext, extAfter);
             }
-            if (input.key === 'host.pdf') raw.value(boardValue(doc, input.key) as RawJson, input.value);
+            if (input.key === 'host.pdf') raw.pdf(boardValue(doc, input.key) as RawJson, input.value);
             break;
         }
         case 'ext': {

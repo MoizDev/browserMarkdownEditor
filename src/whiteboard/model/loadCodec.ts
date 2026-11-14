@@ -6,8 +6,10 @@ type Container = Record<string, unknown> | unknown[] | Map<string, unknown>;
 type Frame = { readonly source: object; readonly target: Container; readonly entries: Iterator<readonly [string | number, unknown]>; readonly depth: number };
 
 function* properties(source: object): Generator<readonly [string, unknown]> {
+    let count = 0;
     for (const key in source) {
         if (!Object.hasOwn(source, key)) continue;
+        if (++count > SECURITY_LIMITS.records) throw new RangeError('Load projection object exceeds its record budget');
         const descriptor = Object.getOwnPropertyDescriptor(source, key);
         if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) throw new TypeError('Load data contains an accessor');
         yield [key, descriptor.value];
@@ -48,6 +50,10 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
         if (!input || typeof input !== 'object' || ancestors.has(input)) throw new TypeError('Load data must be an acyclic inert value');
         const array = Array.isArray(input), map = input instanceof Map, prototype = Object.getPrototypeOf(input);
         if (map ? direction !== 'encode' : array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) throw new TypeError('Unsupported load data object');
+        // Reject hostile container sizes before constructing the receiving projection.
+        if ((array && (input as unknown[]).length > SECURITY_LIMITS.records) || (map && (input as Map<unknown, unknown>).size > SECURITY_LIMITS.records)) {
+            throw new RangeError('Load projection container exceeds its record budget');
+        }
         let target: Container, entries: Iterator<readonly [string | number, unknown]>, result: unknown;
         if (map) {
             const pairs: unknown[] = [];
@@ -65,6 +71,7 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
         } else if (direction === 'decode' && Object.hasOwn(input, MAP)) {
             const descriptor = Object.getOwnPropertyDescriptor(input, MAP);
             if (!descriptor || !('value' in descriptor) || !Array.isArray(descriptor.value)) throw new TypeError('Invalid tagged load map');
+            if (descriptor.value.length > SECURITY_LIMITS.records) throw new RangeError('Load projection map exceeds its record budget');
             for (const [key] of properties(input)) if (key !== MAP) throw new TypeError('Invalid tagged load map');
             target = new Map(); entries = mapEntries(descriptor.value); result = target;
         } else {
@@ -80,7 +87,9 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
     let advances = 0;
     while (stack.length) {
         if ((++advances & 255) === 0 && performance.now() - started >= 3) {
-            signal?.throwIfAborted(); await cooperate?.(); signal?.throwIfAborted(); started = performance.now();
+            signal?.throwIfAborted();
+            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            signal?.throwIfAborted(); started = performance.now();
         }
         const frame = stack[stack.length - 1], next = frame.entries.next();
         if (next.done) { ancestors.delete(frame.source); stack.pop(); continue; }

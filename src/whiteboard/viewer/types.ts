@@ -67,6 +67,7 @@ export interface ViewerEngine {
     subscribe(listener: () => void): () => void;
     setView(params: ViewerViewParams): void;
     focusNode(id: string): void;
+    cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     connectEmbeds(port: EmbedPresentationPort | null): void;
     readyPaintFrame(): PaintFrame | null;

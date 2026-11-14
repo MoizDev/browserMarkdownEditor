@@ -18,7 +18,7 @@ export interface EditTransactions {
     marksAt(offset: number): Marks;
     fragment(from: number, value: string, storedMarks: Marks | null): RichText;
     format(mark: ToggleMark, from: number, to: number): Transaction | null;
-    link(url: string, from: number, to: number): Transaction | null;
+    link(url: string | null, from: number, to: number): Transaction | null;
     enter(selection: EditSelection): { readonly transaction: Transaction; readonly selection: EditSelection };
 }
 
@@ -27,6 +27,13 @@ export class TextEditController {
     constructor(private readonly id: NodeId, private readonly key: 'text' | 'label', private readonly services: EditTransactions) {}
 
     setStoredMarks(marks: Marks | null): void { this.storedMarks = marks; }
+
+    cutTransaction(selection: EditSelection): Transaction {
+        const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+        if (from === to) throw new Error('There is no text range to cut');
+        const fragment = this.services.fragment(from, '', this.storedMarks);
+        return { origin: 'tool', label: 'Cut text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] };
+    }
 
     toggleMark(mark: ToggleMark, selection: EditSelection): void {
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
@@ -40,10 +47,16 @@ export class TextEditController {
         if (tx) { this.services.typing('boundary', selection, selection); this.services.apply(tx); }
     }
 
-    applyLink(href: string, selection: EditSelection): boolean {
+    applyLink(href: string | null, selection: EditSelection): boolean {
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
-        const url = linkUrl(href);
-        if (!url) return false;
+        const url = href === null ? null : linkUrl(href);
+        if (href !== null && !url) return false;
+        if (from === to) {
+            const marks = { ...(this.storedMarks ?? this.services.marksAt(from)) };
+            if (url === null) delete marks.link; else marks.link = url;
+            this.storedMarks = marks;
+            return true;
+        }
         const tx = this.services.link(url, from, to);
         if (!tx) return false;
         this.services.typing('boundary', selection, selection);

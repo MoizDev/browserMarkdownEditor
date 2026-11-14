@@ -15,7 +15,6 @@ import { zoomBrushTool } from '../input/zoomBrush';
 import { FIGURE_SHAPES, type FigureShape } from '../model/styles';
 import type { PaintImageProvider } from '../render/resources';
 import { textTool } from '../text/edit/tool';
-import { selectTool } from '../tools/select';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
 import { createBoardInkServices } from './inkServices';
@@ -29,6 +28,7 @@ import type { ViewerEngine } from './types';
 export interface BoardToolServicesOptions {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
+    readonly spelling: BoardTextEditorOptions['spelling'];
     readonly images: PaintImageProvider;
     readonly camera: CameraController;
     readonly view: () => ViewState;
@@ -46,7 +46,7 @@ export interface BoardToolServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
-    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; cancelMotion(): void; startFling(velocity: Point): void };
+    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; cancelMotion(): void };
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];
@@ -56,7 +56,7 @@ export interface BoardToolServicesOptions {
         ownsWheel(event: WheelEvent): boolean;
         error(error: unknown): void;
         contextMenu(event: MouseEvent): void;
-        persistToolLock(locked: boolean): void;
+        persistToolLock?(locked: boolean): void;
         penModeChanged(enabled: boolean): void;
         pointerChanged?(sample: RealSample): void;
         hover?(event: PointerEvent): void;
@@ -64,7 +64,7 @@ export interface BoardToolServicesOptions {
         keyboardNavigation?: BoardInputServices['keyboardNavigation'];
         keyboardCursorInitial?: BoardInputServices['keyboardCursorInitial'];
         keyboardCursorVisible?: BoardInputServices['keyboardCursorVisible'];
-        clearLatches(): void;
+        clearLatches?(): void;
     };
     readonly commands: BoardInputServices['commands'];
     /** The App supplies real permission-aware import and clipboard backends. */
@@ -95,10 +95,13 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const region = createBoardRegionQuery({ runtime, geometry: runtime.render, camera: options.view,
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
     const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error });
-    const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, point, region, preview,
-        overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames, onError: ui.error });
+    const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
+        surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
+        overlay: options.overlay, token, current: t => current() && options.current(t), inputFrames: options.inputFrames,
+        editSticky: async id => { await text.editText(id); }, onError: ui.error });
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
-        overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac, ui: ui.text, onError: ui.error });
+        overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
+        spelling: options.spelling, ui: ui.text, onError: ui.error });
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point, camera: options.view, current });
     const ink = createBoardInkServices({ runtime, samples: runtime.samples, token: inputToken, current: t => current()
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration
@@ -143,7 +146,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const resolve = (choice: ToolChoice, sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
         switch (choice.id) {
-            case 'select': return route(selectTool, select.select);
+            case 'select': return route(select.tool, undefined);
             case 'eraser': return route(eraserTool, select.eraser);
             case 'laser': return route(laserTool, laserContext);
             case 'zoom': return route(zoomBrushTool, zoom);
@@ -158,6 +161,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
                 return route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+                    sampleToSurface: options.sampleToSurface, guides: select.setGuides,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
                         { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error });
@@ -179,7 +183,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     options.surface.addEventListener('paste', paste);
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
-        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen, commands: options.commands, ink: ink.ink,
+        editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
+        commands: { run: (id, event) => select.command(id) || options.commands.run(id, event) },
+        ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,

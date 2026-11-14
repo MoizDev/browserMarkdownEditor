@@ -34,14 +34,15 @@ export class TouchArbiter {
   exitPenMode(): void { this.setPenMode(false) }
   penHover(time: number): void { this.hoverTime = time }
   penDown(id: number, directTouchDevice: boolean): void {
-    if (directTouchDevice) this.setPenMode(true)
-    if (!this.pens.size) {
-      this.actions.cancelTouchPreview()
-      if (this.pinch || this.pan) this.actions.endTouchCamera()
-      this.pinch = null; this.pendingPair = null; this.pan = null
-      for (const touch of this.touches.values()) touch.eligible = false
-    }
+    const first = !this.pens.size, hadCamera = !!(this.pinch || this.pendingPair || this.pan)
     this.pens.add(id)
+    try {
+      if (first) {
+        this.pinch = null; this.pendingPair = null; this.pan = null
+        for (const touch of this.touches.values()) touch.eligible = false
+        try { this.actions.cancelTouchPreview() } finally { if (hadCamera) this.actions.endTouchCamera() }
+      }
+    } finally { if (directTouchDevice) this.setPenMode(true) }
   }
   penUp(id: number, time: number): void { if (this.pens.delete(id) && !this.pens.size) this.lastPenUp = time }
 
@@ -90,12 +91,17 @@ export class TouchArbiter {
 
   touchUp(id: number): void {
     this.touches.delete(id)
-    if (this.pendingPair?.includes(id)) { this.pendingPair = null; this.actions.endTouchCamera() }
+    if (this.pendingPair?.includes(id)) {
+      this.pendingPair = null
+      const remaining = [...this.touches.values()].filter(t => t.eligible)
+      if (remaining.length >= 2) this.beginPinch(remaining[0].point, remaining[1].point)
+      else this.actions.endTouchCamera()
+    }
     if (this.pinch?.ids.includes(id)) {
       this.pinch = null
       const remaining = [...this.touches.values()].filter(t => t.eligible)
       if (remaining.length >= 2) this.beginPinch(remaining[0].point, remaining[1].point)
-      else if (remaining.length === 1) this.pan = { id: remaining[0].point.id, point: remaining[0].point }
+      else if (remaining.length === 1 && !this.mode) this.pan = { id: remaining[0].point.id, point: remaining[0].point }
       else this.actions.endTouchCamera()
     } else if (this.pan?.id === id) { this.pan = null; this.actions.endTouchCamera() }
   }

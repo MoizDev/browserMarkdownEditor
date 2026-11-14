@@ -12,7 +12,8 @@ import { isValidKey } from '../model/orderKey';
 import type { OrderKey } from '../model/orderKey';
 import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS } from '../model/styles';
 import type { UiBlock } from '../model/styles';
-import { normalizeRichText, type Block, type Marks, type RichText, type Run } from '../text/richText';
+import { normalizeRichText, type Block, type BlockCarrier, type Marks, type RichText, type Run } from '../text/richText';
+import { projectBlockCarrier } from '../model/projectCarrierRanges';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
 import { JsonReadError, parseJson, parseJsonIncremental } from './jsonRead';
@@ -171,19 +172,57 @@ async function normalizeRun(text: string, cooperate?: () => Promise<void>): Prom
     }
     return parts.join('');
 }
+async function readBlockCarriers(span: JsonSpan, blocks: Block[],
+    ranges: readonly { first: number; last: number; length: number }[], starts: readonly number[], lengths: readonly number[],
+    cooperate?: () => Promise<void>): Promise<void> {
+    const maximum = FORMAT_LIMITS.textChars + FORMAT_LIMITS.richTextBlocks;
+    if (cooperate) await span.lengthIncremental(maximum, cooperate); else span.length(maximum);
+    const lists = new Map<number, BlockCarrier[]>();
+    let emitted = 0;
+    const append = (index: number, carrier: BlockCarrier) => {
+        if (++emitted > maximum) fail('Rich block carrier expansion exceeds limit', span, true);
+        const list = lists.get(index);
+        if (list) list.push(carrier); else lists.set(index, [carrier]);
+    };
+    const entries = cooperate ? span.itemsIncremental(cooperate) : span.items();
+    for await (const entry of entries) {
+        if (cooperate) await entry.lengthIncremental(8, cooperate); else entry.length(8);
+        const tuple = (await prefix(entry, 8, cooperate)).values;
+        if (tuple.length !== 8) fail('Block carrier needs eight fields', entry);
+        const index = integer(tuple[0], 0, ranges.length - 1), range = ranges[index];
+        if (!range) fail('Block carrier names an absent block', tuple[0]);
+        const from = integer(tuple[1], 0, range.length), to = integer(tuple[2], from, range.length);
+        const kind = tuple[3].string(16), level = integer(tuple[4], 0, 7), dir = tuple[5].string(16);
+        if (!(BLOCKS as readonly string[]).includes(kind) || (kind === 'p' && level !== 0)
+            || !(DIRECTIONS as readonly string[]).includes(dir) || tuple[7].kind !== 'array') fail('Invalid opaque block carrier attributes', entry);
+        const start = tuple[6].kind === 'null' ? undefined : number(tuple[6]);
+        const tail = cooperate ? await tuple[7].rawIncremental(cooperate) : tuple[7].raw();
+        const carrier: BlockCarrier = { from, to, kind: kind as Block['kind'], level, dir: dir as Block['dir'],
+            ...(start === undefined ? {} : { start }), tail };
+        for (const projected of projectBlockCarrier(carrier, range.first, range.last, starts, lengths)) {
+            if (projected) append(projected.index, projected.carrier);
+            if (cooperate) await cooperate();
+        }
+    }
+    for (const [index, carriers] of lists) { blocks[index] = { ...blocks[index], carriers }; if (cooperate) await cooperate(); }
+}
 async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value: RichText; unknown: boolean; repaired: boolean; }> {
     // The depth check and block count precede every block/run allocation and every JSON.parse of text.
     const cooperate = context.options.cooperate;
     const source = cooperate ? await span.textIncremental(cooperate) : span.text();
-    const text = cooperate ? await parseJsonIncremental(source, cooperate, FORMAT_LIMITS.richTextDepth)
-        : parseJson(source, FORMAT_LIMITS.richTextDepth);
+    // A carrier wraps an already permitted opaque tuple tail in one array level.
+    const text = cooperate ? await parseJsonIncremental(source, cooperate, FORMAT_LIMITS.richTextDepth + 1)
+        : parseJson(source, FORMAT_LIMITS.richTextDepth + 1);
     const fields = await fieldMap(text, cooperate), sourceBlocks = required(fields, 'b');
     if (cooperate) await sourceBlocks.lengthIncremental(FORMAT_LIMITS.richTextBlocks, cooperate);
     else sourceBlocks.length(FORMAT_LIMITS.richTextBlocks);
-    const blocks: Block[] = [];
-    let chars = 0, unknown = hasExtras(fields, ['b']), repaired = false;
+    const blocks: Block[] = [], ranges: { first: number; last: number; length: number }[] = [], starts: number[] = [], lengths: number[] = [];
+    const sourceCarriers = fields.get('carriers');
+    let chars = 0, unknown = hasExtras(fields, ['b', 'carriers']), repaired = false;
     const sourceBlockItems = cooperate ? sourceBlocks.itemsIncremental(cooperate) : sourceBlocks.items();
     for await (const sourceBlock of sourceBlockItems) {
+        const firstBlock = blocks.length;
+        let blockLength = 0, sourceOffset = 0, currentLength = 0;
         const blockTuple = await prefix(sourceBlock, 5, cooperate), values = blockTuple.values;
         if (values.length < 4) fail('Rich block needs kind, level, direction and runs', sourceBlock);
         const kind = await enumeration(values[0], BLOCKS, 'p', context, () => { unknown = true; });
@@ -200,27 +239,34 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
             const runTuple = await prefix(sourceRun, 2, cooperate), run = runTuple.values;
             if (!run.length) fail('Rich run needs text', sourceRun);
             const length = run[0].stringLength(FORMAT_LIMITS.textChars);
-            chars += length;
+            chars += length; blockLength += length;
             if (chars + blocks.length > FORMAT_LIMITS.textChars) fail('Text exceeds one million UTF-16 units', run[0], true);
             const markFields = run[1] ? await fieldMap(run[1], cooperate) : undefined;
-            const hasUnknownMarks = markFields ? hasExtras(markFields, MARKS) : false;
-            unknown ||= hasUnknownMarks;
             const marks: Record<string, unknown> = {};
+            // text.md §4.3 on load: an explicit false mark is the absence of the mark, an invalid link is
+            // dropped to plain text (formatting only), and a known mark holding anything else is kept in x
+            // verbatim rather than refusing the board. Structure that cannot be read stays read-only.
+            const malformedMarks = new Set<string>();
             if (markFields) {
                 for (const key of MARKS) {
                     const value = markFields.get(key);
                     if (!value) continue;
                     if (key === 'x') marks.x = cooperate ? await value.rawIncremental(cooperate) : value.raw();
-                    else if (key === 'link') marks.link = url(value);
-                    else {
-                        if (value.kind !== 'boolean' || value.value() !== true) fail('Present rich marks must be true', value);
-                        marks[key] = true;
-                    }
+                    else if (key === 'link') {
+                        try { marks.link = url(value); } catch (error) {
+                            if (!(error instanceof JsonReadError)) throw error;
+                            repaired = true;
+                        }
+                    } else if (value.kind === 'boolean' && value.value() === true) marks[key] = true;
+                    else if (value.kind === 'boolean' && value.value() === false) repaired = true;
+                    else { malformedMarks.add(key); repaired = true; }
                 }
+                const hasUnknownMarks = hasExtras(markFields, MARKS) || malformedMarks.size > 0;
+                unknown ||= hasUnknownMarks;
                 if (hasUnknownMarks) {
                     const entries: string[] = [];
                     for (const [key, value] of markFields) {
-                        if (!MARKS.includes(key)) entries.push(`${JSON.stringify(key)}:${cooperate ? await value.rawIncremental(cooperate) : value.raw()}`);
+                        if (!MARKS.includes(key) || malformedMarks.has(key)) entries.push(`${JSON.stringify(key)}:${cooperate ? await value.rawIncremental(cooperate) : value.raw()}`);
                     }
                     const previous = marks.x;
                     const rawText = previous === undefined ? `{${entries.join(',')}}` : `{"previous":${previous},"unknown":{${entries.join(',')}}}`;
@@ -245,24 +291,29 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
         let current: Run[] = [], first = true;
         const flush = () => {
             if (blocks.length >= FORMAT_LIMITS.richTextBlocks) fail('Rich text block count exceeds limit', sourceBlock, true);
+            if (sourceCarriers) { starts.push(sourceOffset); lengths.push(currentLength); sourceOffset += currentLength + 1; }
             blocks.push({ kind: kind as Block['kind'], level, dir: dir as Block['dir'],
                 runs: current.length ? current : [{ text: '', marks: {} }],
                 ...(first && start !== undefined && (kind === 'ol' || extra !== undefined) ? { start } : {}), ...(first && extra !== undefined ? { tail: extra } : {}) });
-            current = []; first = false;
+            current = []; currentLength = 0; first = false;
         };
         for (const run of runs) {
             const parts = run.text.split('\n');
             if (parts.length > 1) repaired = true;
             for (let i = 0; i < parts.length; i++) {
-                if (parts[i] || parts.length === 1 || run.tail !== undefined || run.marks.x !== undefined)
+                if (parts[i] || parts.length === 1 || run.tail !== undefined || run.marks.x !== undefined) {
                     current.push({ ...run, text: parts[i], ...(i > 0 ? { tail: undefined } : {}) });
+                    currentLength += parts[i].length;
+                }
                 if (i + 1 < parts.length) flush();
                 if (cooperate && i > 0 && i % 1024 === 0) await cooperate();
             }
             if (cooperate) await cooperate();
         }
         flush();
+        if (sourceCarriers) ranges.push({ first: firstBlock, last: blocks.length, length: blockLength });
     }
+    if (sourceCarriers) await readBlockCarriers(sourceCarriers, blocks, ranges, starts, lengths, cooperate);
     if (!blocks.length) { blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); repaired = true; }
     const value = normalizeRichText({ blocks });
     if (value.blocks !== blocks) repaired = true;

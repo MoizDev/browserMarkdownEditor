@@ -7,6 +7,7 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 import { createDuplicateDragPlan, type DuplicateDragPreview } from './duplicateDrag';
+import { prepareNotebookTranslation, type NotebookTranslation } from './notebookTranslation';
 
 export interface AsyncTransformGestureHost {
     hold(): () => void;
@@ -115,27 +116,34 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
         return { preview: (point, keys, request) => plan.preview(point, keys.shift, keys.accel, request),
             display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
     }, host);
-    type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview; readonly drop: FrameDropPlan | null };
+    type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview;
+        readonly drop: FrameDropPlan | null; readonly notebook: NotebookTranslation | null };
     return new AsyncTransformGesture<Preview>(sample, modifiers, async signal => {
         const plan = await createBoardTranslationPlan({ ...options, down: sample, signal });
-        let drop: FrameDropPlan | null = null;
-        const clear = () => { drop?.release(); drop = null; };
+        let drop: FrameDropPlan | null = null, notebook: NotebookTranslation | null = null;
+        const clear = () => { try { drop?.release(); } finally { drop = null; notebook?.release(); notebook = null; } };
         return {
             async preview(point, keys, request, commit) {
                 clear(); const base = await plan.preview(point, keys.shift, keys.accel, request);
                 if (commit && base.ops.length) {
-                    const prepared = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: base,
-                        signal: request, current: () => !signal.aborted && options.current() && host.current(), cooperate: options.cooperate });
+                    const active = () => !signal.aborted && options.current() && host.current();
+                    const grown = await prepareNotebookTranslation({ runtime: options.runtime, ids: options.ids, preview: base,
+                        signal: request, current: active, cooperate: options.cooperate });
+                    if (request.aborted || signal.aborted) { grown?.release(); throw new DOMException('Notebook move cancelled', 'AbortError'); }
+                    notebook = grown;
+                    const prepared = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: notebook?.preview ?? base,
+                        signal: request, current: active, cooperate: options.cooperate });
                     if (request.aborted || signal.aborted) { prepared?.release(); throw new DOMException('Frame drop cancelled', 'AbortError'); }
                     drop = prepared;
                 }
-                return { base, drop, ops: drop ? [...base.ops, ...drop.ops] : base.ops };
+                const ops = notebook?.ops ?? base.ops;
+                return { base, drop, notebook, ops: drop ? [...ops, ...drop.ops] : ops };
             },
             display: value => host.guides?.(value.base.guides),
             commit(value) {
-                if (!value.drop) { plan.commit(value.base); return; }
+                if (!value.drop && !value.notebook) { plan.commit(value.base); return; }
                 try {
-                    if (value.drop !== drop || signal.aborted || !options.current() || !host.current()) throw new DOMException('Frame drop became stale', 'AbortError');
+                    if (value.drop !== drop || value.notebook !== notebook || signal.aborted || !options.current() || !host.current()) throw new DOMException('Translation became stale', 'AbortError');
                     const applied = options.runtime.session.apply({ origin: 'tool', label: 'Move selection', ops: value.ops }); applied.release();
                 } finally { clear(); plan.cancel(); }
             },

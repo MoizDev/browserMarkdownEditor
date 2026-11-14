@@ -12,6 +12,7 @@ export interface ArrangementAsyncOptions {
     readonly cooperate?: () => Promise<void>;
     readonly origin?: TransactionOrigin;
 }
+const DEFAULT_GAP = 10; // default, calibration cut by owner
 interface Runner { check(): void; tick(): Promise<void>; due(): boolean }
 function runner(options: ArrangementAsyncOptions): Runner {
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
@@ -96,14 +97,14 @@ async function stack(items: readonly ArrangeItem[], axis: Axis, run: Runner): Pr
         const position = horizontal ? item.bounds.x : item.bounds.y, extent = horizontal ? item.bounds.width : item.bounds.height, delta = next - position;
         if (!Number.isFinite(delta)) throw new RangeError('Stack placement overflows');
         if (delta) result.push(moved(item.id, horizontal ? delta : 0, horizontal ? 0 : delta));
-        next += extent + 10; if (run.due()) await run.tick();
+        next += extent + DEFAULT_GAP; if (run.due()) await run.tick();
     }
     if (!Number.isFinite(next)) throw new RangeError('Stack placement overflows');
     return result;
 }
 async function pack(items: readonly ArrangeItem[], before: Rect, run: Runner): Promise<ArrangeMove[]> {
     let area = 0, maxWidth = 0;
-    for (const { bounds } of items) { area += (bounds.width + 10) * (bounds.height + 10); maxWidth = Math.max(maxWidth, bounds.width); if (run.due()) await run.tick(); }
+    for (const { bounds } of items) { area += (bounds.width + DEFAULT_GAP) * (bounds.height + DEFAULT_GAP); maxWidth = Math.max(maxWidth, bounds.width); if (run.due()) await run.tick(); }
     const width = Math.max(maxWidth, Math.sqrt(area)); if (!Number.isFinite(width)) throw new RangeError('Pack dimensions overflow');
     let capacity = 1; while (capacity < items.length) { capacity *= 2; if (!Number.isSafeInteger(capacity)) throw new RangeError('Pack index is too large'); }
     const tree = new Float64Array(capacity * 2), free: number[] = [], heights: number[] = [];
@@ -114,13 +115,13 @@ async function pack(items: readonly ArrangeItem[], before: Rect, run: Runner): P
         if (tree[1] < item.bounds.width) { row = free.length; free.push(width); heights.push(0); }
         else { let i = 1; while (i < capacity) i = tree[2 * i] >= item.bounds.width ? 2 * i : 2 * i + 1; row = i - capacity; }
         const x = width - free[row]; placements.push({ item, row, x });
-        free[row] -= item.bounds.width + 10; heights[row] = Math.max(heights[row], item.bounds.height);
+        free[row] -= item.bounds.width + DEFAULT_GAP; heights[row] = Math.max(heights[row], item.bounds.height);
         let i = capacity + row; tree[i] = free[row];
         while (i > 1) { i >>= 1; tree[i] = Math.max(tree[2 * i], tree[2 * i + 1]); }
         if (run.due()) await run.tick();
     }
     const y: number[] = []; let top = 0;
-    for (const height of heights) { y.push(top); top += height + 10; if (run.due()) await run.tick(); }
+    for (const height of heights) { y.push(top); top += height + DEFAULT_GAP; if (run.due()) await run.tick(); }
     let maxX = 0, maxY = 0;
     for (const item of placements) { maxX = Math.max(maxX, item.x + item.item.bounds.width); maxY = Math.max(maxY, y[item.row] + item.item.bounds.height); if (run.due()) await run.tick(); }
     const offsetX = before.x + before.width / 2 - maxX / 2, offsetY = before.y + before.height / 2 - maxY / 2;

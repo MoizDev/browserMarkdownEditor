@@ -1,9 +1,12 @@
 import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect } from '../../platform/types';
+import { createPlatformCapturer } from '../../platform/render/captureRuntime';
+import type { CompositorCaptureOptions } from '../../platform/render/compositor.types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
+import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import type { MediaId } from '../../whiteboard/model/media';
@@ -30,6 +33,7 @@ export interface NativeViewLease extends BoardViewLease<object> {
     jump(page: number): void;
     zoomBy(factor: number): void;
     reveal(rect: Rect): void;
+    captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     changed(): void;
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
@@ -108,8 +112,27 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform) });
+    const paneId = `native-${identity.documentId}-${viewLease}`;
+    const captureRegion = (rect: Rect, maxSide: number, request: CompositorCaptureOptions): Promise<ImageBitmap> => {
+        if (!current() || board.doc.kind === 'pdf-ink') return Promise.reject(new Error('Native view capture is unavailable'));
+        const sheetId = runtime.selection.getSnapshot().sheet;
+        const blobs = new Map<MediaId, Blob>();
+        for (const id of board.doc.media.keys()) { const blob = runtime.media.get(id); if (blob) blobs.set(id, blob); }
+        const capturer = createPlatformCapturer({ paneId, owner: token, snapshot: (capture, memory) => {
+            if (!current()) throw new DOMException('Native view ended', 'AbortError');
+            return createBoardCaptureSnapshot({ runtime, sheetId, request: capture, memory, onError: options.onError,
+                async readMedia(entry, signal) {
+                    signal.throwIfAborted();
+                    const blob = blobs.get(entry.id);
+                    if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${entry.id}`);
+                    return blob;
+                } });
+        } });
+        return capturer.captureRegion(rect, maxSide, request).finally(() => capturer.dispose());
+    };
     const services = createNativeViewPlatform({ host, identity, board, viewer, camera,
-        paneId: `native-${identity.documentId}-${viewLease}`, viewLease,
+        paneId, viewLease,
+        ...(board.doc.kind !== 'pdf-ink' ? { captureRegion } : {}),
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
             setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
@@ -138,6 +161,8 @@ export function createNativeViewLease(options: {
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
     const lease: NativeViewLease = {
         runtime, camera, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false,
+            layers: board.doc.kind === 'notebook' ? ['notebook-paper', 'board-underlay', 'board-content'] : ['board-underlay', 'board-content'] }),
         replaceBackdrop(next) {
             if (disposed || board.doc.kind !== 'pdf-ink' || !current()) throw new Error('PDF view is not current');
             if (next === backdrop) return;

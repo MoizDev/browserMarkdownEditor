@@ -46,7 +46,7 @@ export interface BoardToolServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
-    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; cancelMotion(): void; startFling(velocity: Point): void };
+    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; cancelMotion(): void };
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];

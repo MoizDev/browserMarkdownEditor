@@ -222,12 +222,33 @@ export function createBoardRenderServices(options: {
         const revision = doc.rev, host = doc.host, seen = new Set<NodeId>(), queue = [...ids];
         const captured = new Map<NodeId, Readonly<Node>>(), children = new Map<NodeId, readonly Node[] | undefined>();
         const incidents = new Map<NodeId, ReadonlySet<NodeId> | undefined>();
-        const stable = () => {
+        // A candidate's explicit current callback fences the immutable overlay's base too.
+        const fenced = doc === options.doc || current !== undefined;
+        const fast = () => {
             check(signal);
             if ((current && !current()) || doc.rev !== revision || doc.host !== host) throw new DOMException('Board changed during geometry preparation', 'AbortError');
+        };
+        const all = () => {
             for (const [id, node] of captured) if (doc.nodes.get(id) !== node) throw new DOMException('Geometry dependency changed', 'AbortError');
             for (const [id, value] of children) if (doc.children.get(id) !== value) throw new DOMException('Geometry children changed', 'AbortError');
             for (const [id, value] of incidents) if (doc.attachedTo.get(id) !== value) throw new DOMException('Geometry attachments changed', 'AbortError');
+        };
+        const stable = () => { fast(); if (!fenced) all(); };
+        const nodeStable = (node: Readonly<Node>) => {
+            let value: Readonly<Node> | undefined = node;
+            for (let depth = 0; value && depth < 64; depth++) {
+                if (doc.nodes.get(value.id) !== captured.get(value.id)) throw new DOMException('Geometry ancestor changed', 'AbortError');
+                value = doc.nodes.get(value.parent as NodeId);
+            }
+        };
+        const sweep = async () => {
+            let work = 0, started = performance.now();
+            const due = () => ++work >= 256 || performance.now() - started >= 3;
+            const yieldWork = async () => { stable(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); stable(); work = 0; started = performance.now(); };
+            for (const [id, node] of captured) { if (doc.nodes.get(id) !== node) throw new DOMException('Geometry dependency changed', 'AbortError'); if (due()) await yieldWork(); }
+            for (const [id, value] of children) { if (doc.children.get(id) !== value) throw new DOMException('Geometry children changed', 'AbortError'); if (due()) await yieldWork(); }
+            for (const [id, value] of incidents) { if (doc.attachedTo.get(id) !== value) throw new DOMException('Geometry attachments changed', 'AbortError'); if (due()) await yieldWork(); }
+            stable();
         };
         const capture = (node: Readonly<Node>) => {
             let current: Readonly<Node> | undefined = node;
@@ -273,7 +294,7 @@ export function createBoardRenderServices(options: {
                     for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required board font could not be loaded'); stable(); }
                 }
                 const value = await prepare(node, doc, signal);
-                stable(); scope?.set(id, value);
+                stable(); nodeStable(node); scope?.set(id, value);
             }
             if ((at & 63) === 63) { await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); stable(); }
         }
@@ -284,11 +305,14 @@ export function createBoardRenderServices(options: {
             const epoch = text.fonts.epoch;
             for (const id of seen) {
                 const node = doc.nodes.get(id); if (!node || node.kind === 'group') continue;
-                const value = await prepare(node, doc, signal); stable();
-                if (text.fonts.epoch !== epoch) throw new DOMException('Fonts changed during geometry preparation', 'AbortError');
+                const value = await prepare(node, doc, signal); stable(); nodeStable(node);
+                if (text.fonts.epoch !== epoch || !sameGeometrySignature(value.signature, signature(node, doc))) {
+                    throw new DOMException('Geometry changed during preparation', 'AbortError');
+                }
                 scope.set(id, value);
             }
         }
+        await sweep(); stable();
     };
     const changeVector = (doc: BoardDoc, node: Readonly<Node>) => {
         check();

@@ -4,6 +4,7 @@ import { createConvertedPdfInkSource } from '../../pdf/session/convertedInkSourc
 import { createPdfInkConversionHost } from '../../pdf/session/inkHost';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { acquireLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
+import type { NativeLoadReply } from '../workers/nativeLoad';
 import { acquireNativeBoard } from './nativeAcquisition';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
 import { prepareAcceptedPdfInkSession, type PreparePdfInkSessionOptions } from './preparePdfInkSession';
@@ -64,9 +65,14 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             if (preview.status !== 'editable') throw new Error(`Legacy PDF ink cannot be converted: ${preview.legacyReport.unrepresentable.map(issue => issue.reason).join('; ')}`);
             const visual = await inspectPdfVisualModel(preview.native.load, { signal: internal.signal });
             if (visual.status !== 'known') throw new Error('The legacy PDF ink cannot be safely represented');
+            const qualificationFor = (board: Blob, report: NativeLoadReply, checkedVisual: typeof visual) => ({ board,
+                report: Object.freeze({ format: report.format, complete: report.complete, bytesRead: report.bytesRead }), visual: checkedVisual });
+            let qualification = qualificationFor(preview.bytes, preview.native.report, visual);
             const checkRenderable = () => {
                 internal.signal.throwIfAborted();
-                if (!current() || !source.isCurrent() || visual.status !== 'known') throw stale();
+                if (!current() || !source.isCurrent() || qualification.visual.status !== 'known'
+                    || qualification.report.format !== 'native' || !qualification.report.complete
+                    || qualification.report.bytesRead !== qualification.board.size) throw stale();
             };
             checkRenderable();
             if (source.writeMark.kind !== 'foreign') {
@@ -91,7 +97,10 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             const finalVisual = await inspectPdfVisualModel(final.native.load, { signal: internal.signal });
             checkRenderable();
             if (finalVisual.status !== 'known') throw new Error('The final PDF conversion cannot be safely represented');
-            const accepted = await createConvertedPdfInkSource(ready, { board: final.bytes, host: finalHost, media: final.media, signal: internal.signal });
+            qualification = qualificationFor(final.bytes, final.native.report, finalVisual);
+            checkRenderable();
+            const accepted = await createConvertedPdfInkSource(ready, { board: qualification.board, host: finalHost, media: final.media, signal: internal.signal });
+            if (accepted.board !== qualification.board) { await accepted.release(); throw new Error('Converted PDF source changed its qualified board'); }
             transferred = true;
             const prepared = await prepareAcceptedPdfInkSession(options, accepted, detach);
             return { ...prepared, async dispose() { try { await prepared.dispose(); } finally { detach(); } } };

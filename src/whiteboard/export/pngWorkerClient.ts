@@ -41,9 +41,11 @@ export async function encodeTiledPngInWorker(
     activePulls.add(pull)
     void pull.then(() => { activePulls.delete(pull) })
   })
+  let startRequest: Promise<Blob> | undefined
   try {
-    const result = await client.request<Blob>('pngStart', { streamId, width, height, clipboard: options.clipboard,
+    startRequest = client.request<Blob>('pngStart', { streamId, width, height, clipboard: options.clipboard,
       pixelsPerWorldUnit: options.pixelsPerWorldUnit }, identity, { priority: 0, signal: abort.signal }, isCurrent)
+    const result = await startRequest
     if (!(result instanceof Blob) || result.type !== 'image/png') throw new TypeError('Invalid PNG worker result')
     return result
   } catch (error) { throw failure ?? error }
@@ -53,5 +55,6 @@ export async function encodeTiledPngInWorker(
     options.signal?.removeEventListener('abort', cancelled)
     await Promise.allSettled([...activePulls])
     await rows.return?.(undefined).catch(() => {})
+    if (startRequest) await client.whenRetired(startRequest)
   }
 }

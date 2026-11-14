@@ -1759,6 +1759,7 @@ export default function App() {
       // having for code — the syntax colours are the same either way, and the
       // only difference is whether the caret works (⌘E still toggles it).
       const mode: EditorMode = isCodeFile(node.name) ? 'edit' : 'read';
+      documentBuffers.open(id, content, !readError && representationFor(node.name).bufferKind === 'text');
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
         : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
@@ -1771,7 +1772,7 @@ export default function App() {
       console.error('Failed to read file:', err);
       return false;
     }
-  }, [handleIO, readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
+  }, [handleIO, readFileVersioned, rememberAssetRefs, seedPdfBaseline, documentBuffers]);
 
   /**
    * Hand a notebook's exported PDF back to its notebook.
@@ -2573,10 +2574,20 @@ export default function App() {
           const newer = documentBuffers.get(id);
           const liveTab = tabsRef.current.find(t => t.id === id);
           const vaultId = currentVaultIdRef.current;
-          if (newer && newer.revision > bufferRevision && typeof newer.source === 'string' && liveTab && canReadTabText(liveTab) && vaultId) {
-            const text = newer.source;
-            void recoveryEvent({ type: 'change', documentId: id, vaultId, path: liveTab.file.path, fingerprint: result.version.hash,
-              kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => ({ payload: text, copy: text, mediaRefs: [] }) });
+          if (newer && newer.revision > bufferRevision && liveTab && vaultId) {
+            if (typeof newer.source === 'string' && canReadTabText(liveTab)) {
+              const text = newer.source;
+              void recoveryEvent({ type: 'change', documentId: id, vaultId, path: liveTab.file.path, fingerprint: result.version.hash,
+                kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => ({ payload: text, copy: text, mediaRefs: [] }) });
+            } else if (sessionAtCall?.adapter.journalDelta && documentSessions.get(id) === sessionAtCall) {
+              void recoveryEvent({ type: 'change', documentId: id, vaultId, path: liveTab.file.path, fingerprint: result.version.hash,
+                kind: liveTab.representation.loadedKind, revision: newer.revision, capture: () => {
+                  if (documentSessions.get(id) !== sessionAtCall || documentBuffers.get(id)?.revision !== newer.revision) throw new Error('Recovery revision changed before capture');
+                  const capture = sessionAtCall.adapter.journalDelta?.();
+                  if (!capture) throw new Error('This session cannot yet capture recovery data');
+                  return capture;
+                } });
+            }
           }
         }
         const current = !currentRevision || currentRevision.revision === revision;
@@ -2684,10 +2695,22 @@ export default function App() {
     }
     reportRevision(target.id);
     const baseline = getBaseline(target.id), vaultId = currentVaultIdRef.current;
-    if (baseline && vaultId && typeof content === 'string' && canReadTabText(target)) {
-      void recoveryEvent({ type: 'change', documentId: target.id, vaultId, path,
-        fingerprint: baseline.hash, kind: target.representation.loadedKind, revision: buffer.revision,
-        capture: () => ({ payload: content, copy: content, mediaRefs: [] }) });
+    if (baseline && vaultId) {
+      const session = documentSessions.get(target.id);
+      if (typeof content === 'string' && canReadTabText(target)) {
+        void recoveryEvent({ type: 'change', documentId: target.id, vaultId, path,
+          fingerprint: baseline.hash, kind: target.representation.loadedKind, revision: buffer.revision,
+          capture: () => ({ payload: content, copy: content, mediaRefs: [] }) });
+      } else if (session?.adapter.journalDelta) {
+        void recoveryEvent({ type: 'change', documentId: target.id, vaultId, path,
+          fingerprint: baseline.hash, kind: target.representation.loadedKind, revision: buffer.revision,
+          capture: () => {
+            if (documentSessions.get(target.id) !== session || documentBuffers.get(target.id)?.revision !== buffer.revision) throw new Error('Recovery revision changed before capture');
+            const capture = session.adapter.journalDelta?.();
+            if (!capture) throw new Error('This session cannot yet capture recovery data');
+            return capture;
+          } });
+      }
     }
     notifySearchChanges();
     setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, ...(typeof content === 'string' ? { content } : {}), dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
@@ -3864,6 +3887,7 @@ export default function App() {
         // stored for the task or two until the merge's own write. flushSync is
         // not used to close it: only a reload landing in that gap could cost
         // anything.
+        for (const tab of restored) documentBuffers.open(tab.id, tab.content, canReadTabText(tab));
         release();
         setTabs(prev => {
           const open = new Set(prev.map(t => t.file.path));
@@ -3880,7 +3904,7 @@ export default function App() {
         indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled, documentBuffers]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable
@@ -3976,8 +4000,10 @@ export default function App() {
     // The guide is its own chunk (utils/helpDocLoader.ts). One network round
     // trip on the first open of a session, nothing on every other start.
     const content = await loadHelpDoc();
+    const id = newTabId();
+    documentBuffers.open(id, content, true);
     setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
-      id: newTabId(),
+      id,
       file: { name: 'Help Guide', isHelp: true, path },
       content,
       representation: representationFor('Help Guide', true),
@@ -3986,7 +4012,7 @@ export default function App() {
     }]);
     setLayout(l => openTabIn(l, path));
     setSaveStatus('');
-  }, []);
+  }, [documentBuffers]);
 
   const createInFlightRef = useRef(false);
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
@@ -5408,6 +5434,7 @@ export default function App() {
       // The disk baseline, as handleFileClick takes it.
       const id = newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
+      documentBuffers.open(id, content, representationFor(node.name).bufferKind === 'text');
       setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
         : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
@@ -5416,7 +5443,7 @@ export default function App() {
       console.error('Agent could not open a file:', err);
       return false;
     }
-  }, [readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
+  }, [readFileVersioned, rememberAssetRefs, seedPdfBaseline, documentBuffers]);
 
   // ── Where a new terminal starts ────────────────────────────────────────
   // The folder of the file in front of the user, as the helper can resolve it:

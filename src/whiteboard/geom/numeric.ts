@@ -18,6 +18,10 @@ export function nextUp(value: number): number {
 }
 export function nextDown(value: number): number { return -nextUp(-value); }
 export function interval(value: number): Interval { return { lo: value, hi: value }; }
+export function add(a: Interval, b: Interval): Interval {
+    const lo = a.lo + b.lo, hi = a.hi + b.hi;
+    return Number.isNaN(lo) || Number.isNaN(hi) ? { lo: -Infinity, hi: Infinity } : { lo: nextDown(lo), hi: nextUp(hi) };
+}
 export function subtract(a: Interval, b: Interval): Interval {
     const lo = a.lo - b.hi, hi = a.hi - b.lo;
     return Number.isNaN(lo) || Number.isNaN(hi) ? { lo: -Infinity, hi: Infinity } : { lo: nextDown(lo), hi: nextUp(hi) };
@@ -26,6 +30,15 @@ export function multiply(a: Interval, b: Interval): Interval {
     const values = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi];
     if (values.some(Number.isNaN)) return { lo: -Infinity, hi: Infinity };
     return { lo: nextDown(Math.min(...values)), hi: nextUp(Math.max(...values)) };
+}
+
+export function divide(a: Interval, b: Interval): Interval {
+    if (b.lo <= 0 && b.hi >= 0) return { lo: -Infinity, hi: Infinity };
+    return multiply(a, { lo: nextDown(1 / b.hi), hi: nextUp(1 / b.lo) });
+}
+export function sqrtInterval(a: Interval): Interval {
+    if (a.hi < 0 || Number.isNaN(a.lo) || Number.isNaN(a.hi)) throw new RangeError('Invalid square-root interval');
+    return { lo: Math.max(0, nextDown(Math.sqrt(Math.max(0, a.lo)))), hi: nextUp(Math.sqrt(a.hi)) };
 }
 
 export interface Dyadic { readonly n: bigint; readonly e: number }

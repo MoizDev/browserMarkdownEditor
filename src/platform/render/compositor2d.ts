@@ -505,7 +505,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                                 const s = quad.sourceRect, d = quad.destRect;
                                 this.nativeUploadUsed = true;
                                 job.buffer.native.drawImage(quad.image, s.x, s.y, s.width, s.height, d.x, d.y, d.width, d.height);
-                                if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(job.buffer.native, d, 'standin', 1);
+                                if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(job.buffer.native, d, 'standin', 1,
+                                    Math.min(1, s.width / d.width, s.height / d.height));
                                 succeeded = true; drawn.push(entry);
                             } finally { frame.recordImplicit(entry.entry.id, performance.now() - start, succeeded); }
                         }
@@ -550,7 +551,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     releaseGpu(_reason: GpuReleaseReason): void {
         if (this.disposed) return;
         this.dropWork();
-        if (__BME_BENCH__) { benchmarkCanvas?.managers.get(this)?.dispose(); benchmarkCanvas?.managers.delete(this); benchmarkCanvas?.coverageKinds.delete(this); }
+        if (__BME_BENCH__) { benchmarkCanvas?.managers.get(this)?.dispose(); benchmarkCanvas?.managers.delete(this); benchmarkCanvas?.coverageKinds.delete(this); benchmarkCanvas?.scaleRatios.delete(this); }
         this.surface.width = 0; this.surface.height = 0;
         this.backing?.releaseZeroed(); this.displayReserved = 0;
         this.metrics = null; this.scene = null; this.report = null; this.presentedKey = '';
@@ -835,7 +836,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (!('drawImage' in ctx) || !(image instanceof ImageBitmap)) throw new TypeError('A CPU quad needs a 2D context and ImageBitmap');
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1) throw new TypeError('Invalid image quad');
         const previousCoverage = __BME_BENCH__ ? benchmarkCanvas?.coverageKinds.get(this) : undefined;
-        if (__BME_BENCH__) benchmarkCanvas?.coverageKinds.set(this, options.coverage ?? 'none');
+        const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;
+        if (__BME_BENCH__) {
+            benchmarkCanvas?.coverageKinds.set(this, options.coverage ?? 'none');
+            benchmarkCanvas?.scaleRatios.set(this, (options as TexturedQuadOptions & { standInRatio?: number }).standInRatio ?? 1);
+        }
         ctx.save();
         try {
             ctx.resetTransform(); ctx.globalAlpha *= options.opacity; ctx.imageSmoothingEnabled = options.sampling === 'linear';
@@ -843,6 +848,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { ctx.restore(); if (__BME_BENCH__) {
             if (previousCoverage) benchmarkCanvas?.coverageKinds.set(this, previousCoverage);
             else benchmarkCanvas?.coverageKinds.delete(this);
+            if (previousRatio !== undefined) benchmarkCanvas?.scaleRatios.set(this, previousRatio);
+            else benchmarkCanvas?.scaleRatios.delete(this);
         } }
     }
     private intersectsBuffer(buffer: Buffer2D, rect: Rect): boolean {
@@ -912,7 +919,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const start = performance.now();
         try {
             buffer.native.drawImage(source, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
-            if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(buffer.native, dst, benchmarkCanvas.coverageKinds.get(this) ?? 'none', buffer.native.globalAlpha);
+            if (__BME_BENCH__) benchmarkCanvas?.managers.get(this)?.mark(buffer.native, dst, benchmarkCanvas.coverageKinds.get(this) ?? 'none', buffer.native.globalAlpha, benchmarkCanvas.scaleRatios.get(this) ?? 1);
             use.resident = true; use.admission = null;
         } finally { this.options.recordUpload(bytes, performance.now() - start); }
     }

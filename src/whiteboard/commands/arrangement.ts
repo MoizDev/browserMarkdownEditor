@@ -1,9 +1,12 @@
 import { isLocked, selectedRoots } from '../change/commands';
+import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
+import type { NodeSetOp } from '../change/ops';
 import type { ArrangementAction, ArrangementServices } from '../geom/arrangement.types';
 import { arrangementTransaction } from '../geom/arrangement';
 import type { Align, Axis } from '../geom/arrange';
 import type { BoardRuntime } from '../host/runtime';
-import { isSheetParent, sheetOf } from '../model/doc';
+import { childrenOf, isSheetParent, sheetOf } from '../model/doc';
+import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { NodeId, ParentId } from '../model/ids';
 import { acquireBoardGeometryScope } from './geometryScope';
 
@@ -56,8 +59,48 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
             const transaction = arrangementTransaction(doc, eligible, action, services);
             check();
             if (!transaction.ops.length) return;
-            const applied = session.apply(transaction);
-            applied.release();
+            const ops: NodeSetOp[] = transaction.ops.map(op => { if (op.t !== 'set') throw new Error('Arrangement produced a non-set operation'); return op; });
+            const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+            const protectedRoots: { id: NodeId; pose: ReturnType<typeof worldPose> }[] = [], pending = eligible.map(id => doc.nodes.get(id)!);
+            let visited = 0;
+            while (pending.length) {
+                check(); const node = pending.pop()!;
+                if (++visited % 256 === 0) { await cooperate(); check(); }
+                if (node.locked) { protectedRoots.push({ id: node.id, pose: worldPose(doc, node.id) }); continue; }
+                if (node.kind === 'group' || node.kind === 'frame') for (const child of childrenOf(doc, node.id)) pending.push(child);
+            }
+            const project = () => projectBoardGeometrySets(doc, ops, { signal, current: () => {
+                try { check(); return true; } catch { return false; }
+            }, cooperate });
+            let candidate = await project(); check();
+            for (const saved of protectedRoots) {
+                const node = candidate.nodes.get(saved.id); if (!node) throw new Error('Protected arrangement descendant disappeared');
+                const pose = poseInParent(candidate, node, node.parent, saved.pose);
+                if (pose.x !== node.x) ops.push({ t: 'set', id: node.id, key: 'x', value: pose.x });
+                if (pose.y !== node.y) ops.push({ t: 'set', id: node.id, key: 'y', value: pose.y });
+                if (pose.rotation !== node.rotation) ops.push({ t: 'set', id: node.id, key: 'rotation', value: pose.rotation });
+                if (++visited % 256 === 0) { await cooperate(); check(); }
+            }
+            if (protectedRoots.length) { candidate = await project(); check(); }
+            const staged = await acquireBoardGeometryScope(runtime, eligible, { doc: candidate, signal, cooperate,
+                current: () => { try { check(); return true; } catch { return false; } } });
+            try {
+                for (const id of eligible) {
+                    check(); const original = doc.nodes.get(id)!, node = candidate.nodes.get(id)!;
+                    const bounds = staged.logicalBounds(id), world = worldPose(candidate, id);
+                    const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => runtime.render.changeGeometry.resolvedTip(d, connector, terminal),
+                        worldBoundsCenter: () => ({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }) };
+                    const pose = poseInParent(doc, original, original.parent, world, geometry);
+                    if (pose.page !== node.page) ops.push({ t: 'set', id, key: 'page', value: pose.page });
+                    if (pose.x !== node.x) ops.push({ t: 'set', id, key: 'x', value: pose.x });
+                    if (pose.y !== node.y) ops.push({ t: 'set', id, key: 'y', value: pose.y });
+                }
+                const finalDoc = await project(); check();
+                const final = await acquireBoardGeometryScope(runtime, eligible, { doc: finalDoc, signal, cooperate,
+                    current: () => { try { check(); return true; } catch { return false; } } });
+                try { check(); const applied = session.apply({ ...transaction, ops }); applied.release(); }
+                finally { final.release(); }
+            } finally { staged.release(); }
         } finally { scope.release(); }
     }
     return {

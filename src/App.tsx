@@ -3151,6 +3151,10 @@ export default function App() {
     }
 
     const { id } = tab;
+    const rotationRevision = documentBuffers.revisionForDocument(id)?.revision;
+    const rotationSession = documentSessions.get(id);
+    const annotationsChanged = () => documentBuffers.revisionForDocument(id)?.revision !== rotationRevision
+      || documentSessions.get(id) !== rotationSession || !!rotationSession?.adapter.hasPendingEdits();
     const run = async (): Promise<void> => {
       try {
         const bytes = await readFileBytes(handle);
@@ -3174,7 +3178,7 @@ export default function App() {
         const seed = pdfSeedForRef.current(id);
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? seeded ?? null;
-        if (documentSessions.hasPendingEdits(id) || getView(path)?.hasPendingEdits?.()) {
+        if (annotationsChanged() || documentSessions.hasPendingEdits(id) || getView(path)?.hasPendingEdits?.()) {
           notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
           return;
         }
@@ -3184,6 +3188,15 @@ export default function App() {
         const result = await writeFileVersionedRef.current(handle, rotated, expected);
         if (result.status !== 'written') {
           setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
+          return;
+        }
+        if (annotationsChanged() || getView(path)?.hasPendingEdits?.()) {
+          // The rotated bytes landed, but the newer ink still belongs to the
+          // original geometry. Keep its owner and baseline for conflict handling.
+          bumpBytesGeneration(id, documentSessions.get(id) === rotationSession);
+          setDiskState(id, 'conflict');
+          recordFileWritten(path, result.version.lastModified);
+          notifyRef.current('The PDF rotation was saved, but newer annotations are held in conflict. Resolve the conflict to preserve your edits.');
           return;
         }
         let replacedNative = false;

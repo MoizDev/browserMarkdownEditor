@@ -266,6 +266,7 @@ export function createPdfTextReader(session: PdfDocumentSession, _identity: PdfR
         setVisible(next) {
             if (visible === next) return;
             visible = next;
+            findEngine.setVisible(next);
             if (next) { visibility = new AbortController(); if (hiddenTimer !== undefined) clearTimeout(hiddenTimer); hiddenTimer = undefined; }
             else {
                 visibility.abort(); for (const request of requests.values()) request.cancel.abort();

@@ -64,6 +64,9 @@ async function videoProbe(blob: Blob, header: WorkerInspection, signal: AbortSig
 }
 
 export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator }): Promise<InspectedMedia> {
+    // File objects carry path-like metadata and are refused by the worker host;
+    // a Blob slice preserves the bytes without sending that metadata across.
+    blob = blob.slice(0, blob.size, blob.type);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
     signal.throwIfAborted();
     if (!checkMediaBytes(blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');

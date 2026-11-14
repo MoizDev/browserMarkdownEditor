@@ -66,7 +66,9 @@ export class PdfTileLayer implements Layer {
     private readonly retiring = new Set<Entry>();
     private desired = new Set<string>();
     private sequence = 0;
+    private contentRevision = 0;
     private pendingFrame = false;
+    private frameTexture: { device: GfxDevice; handle: TextureHandle } | null = null;
     private disposed = false;
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
@@ -80,6 +82,22 @@ export class PdfTileLayer implements Layer {
         this.pendingFrame = false;
         if (this.disposed || !this.isCurrent()) return;
         const device = this.host.device();
+        if (device && this.frameTexture?.device !== device) {
+            if (this.frameTexture) { this.frameTexture.device.destroy(this.frameTexture.handle); this.frameTexture = null; }
+            if (budget.shouldYield() || !budget.claimUpload(8)) { this.pendingFrame = true; return; }
+            const lease = this.host.allocator.gpu.reserve(8);
+            if (lease) {
+                let handle: TextureHandle;
+                try { handle = device.createTexture(2, 1, 'rgba8', ['sample', 'copy-dst'], lease); }
+                catch (error) { this.host.allocator.gpu.release(lease); throw error; }
+                try {
+                    device.writeTexture(handle, { x: 0, y: 0, width: 2, height: 1 },
+                        { source: new Uint8Array([190, 190, 190, 255, 255, 255, 255, 255]), rowBytes: 8,
+                            premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                    this.frameTexture = { device, handle };
+                } catch (error) { device.destroy(handle); throw error; }
+            }
+        }
         const input = this.demand(view);
         const identity = JSON.stringify([renderTokenKey(input.token), input.source, input.variant]);
         if (identity !== this.contentIdentity) {
@@ -126,7 +144,7 @@ export class PdfTileLayer implements Layer {
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
             if (!lease) {
-                this.evictUnneeded();
+                this.evictUnneeded(input.viewport);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
             if (!lease) continue;
@@ -142,6 +160,7 @@ export class PdfTileLayer implements Layer {
                     return;
                 }
                 entry.bitmap = bitmap;
+                this.contentRevision++;
                 this.host.invalidate('pdf-tile-arrived');
             }, error => {
                 const current = this.entries.get(key) === entry;
@@ -158,6 +177,9 @@ export class PdfTileLayer implements Layer {
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
         if (this.disposed || !this.isCurrent()) return { complete: false, sharp: false };
         const input = this.demand(view);
+        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) {
+            return { complete: false, sharp: false };
+        }
         const device = gpu ? this.host.device() : null;
         if (gpu && !device) return { complete: false, sharp: false };
         for (let page = Math.max(0, pageAt(input.stack, input.viewport.y)); page < input.stack.rects.length; page++) {
@@ -181,6 +203,16 @@ export class PdfTileLayer implements Layer {
     }
 
     drawGpu(pass: GpuPass, view: ViewState): void {
+        if (this.disposed || !this.isCurrent()) return;
+        const texture = this.frameTexture;
+        if (texture && texture.device === this.host.device()) for (const page of this.visiblePages(view)) {
+            const destination = project(page, view);
+            this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
+                { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
+                { opacity: 1, sampling: 'nearest' });
+            this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
+                destination, { opacity: 1, sampling: 'nearest' });
+        }
         for (const entry of this.drawable(view)) {
             if (!entry.texture || entry.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, view);
@@ -189,6 +221,12 @@ export class PdfTileLayer implements Layer {
     }
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
+        if (this.disposed || !this.isCurrent()) return;
+        for (const page of this.visiblePages(view)) {
+            const box = project(page, view);
+            ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
+            ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
+        }
         for (const entry of this.drawable(view)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, view);
@@ -196,13 +234,18 @@ export class PdfTileLayer implements Layer {
         }
     }
 
-    releaseGpu(_reason: GpuReleaseReason): void {
+    releaseGpu(reason: GpuReleaseReason): void {
+        if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
+        this.frameTexture = null;
         for (const entry of this.entries.values()) {
-            if (entry.texture && entry.device) entry.device.destroy(entry.texture);
+            if (entry.texture && entry.device && reason !== 'context-lost') entry.device.destroy(entry.texture);
             entry.texture = undefined; entry.device = undefined;
         }
         this.pendingFrame = false;
     }
+
+    /** Explicit retry is the only way a failed tile is requested again. */
+    retry(): void { this.failed.clear(); this.host.invalidate('pdf-tile-retry'); }
 
     /** Called by the pane on hide after the session has published its mirror. */
     hide(): void {
@@ -212,7 +255,7 @@ export class PdfTileLayer implements Layer {
     }
 
     memory(): { gpuBytes: number; cpuBytes: number } {
-        let gpuBytes = 0, cpuBytes = 0;
+        let gpuBytes = this.frameTexture ? 8 : 0, cpuBytes = 0;
         for (const entry of this.entries.values()) {
             cpuBytes += entry.lease.bytes;
             if (entry.texture) gpuBytes += entry.lease.bytes;
@@ -220,6 +263,7 @@ export class PdfTileLayer implements Layer {
         for (const entry of this.retiring) cpuBytes += entry.lease.bytes;
         return { gpuBytes, cpuBytes };
     }
+    revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
     dispose(): void { if (!this.disposed) { this.disposed = true; this.hide(); this.failed.clear(); } }
 
@@ -232,7 +276,19 @@ export class PdfTileLayer implements Layer {
         return covers(area, boxes);
     }
 
+    private visiblePages(view: ViewState): readonly Rect[] {
+        const input = this.demand(view), result: Rect[] = [];
+        for (let index = Math.max(0, pageAt(input.stack, input.viewport.y)); index < input.stack.rects.length; index++) {
+            const page = input.stack.rects[index];
+            if (page.y >= input.viewport.y + input.viewport.height) break;
+            if (intersects(page, input.viewport)) result.push(page);
+        }
+        return result;
+    }
+
     private drawable(view: ViewState): Entry[] {
+        const input = this.demand(view);
+        if (JSON.stringify([renderTokenKey(input.token), input.source, input.variant]) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
@@ -244,8 +300,9 @@ export class PdfTileLayer implements Layer {
             width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, view) };
     }
 
-    private evictUnneeded(): void {
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key))
+    private evictUnneeded(viewport: Readonly<Rect>): void {
+        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap && !this.desired.has(key) &&
+            !intersects(rect(entry.request), viewport))
             .sort((a, b) => a[1].used - b[1].used);
         for (const [key, entry] of candidates) this.remove(key, entry);
     }
@@ -256,6 +313,7 @@ export class PdfTileLayer implements Layer {
         entry.controller.abort();
         if (entry.texture && entry.device) entry.device.destroy(entry.texture);
         if (entry.bitmap) {
+            this.contentRevision++;
             entry.bitmap.close();
             this.host.allocator.cpu.release(entry.lease);
         } else {

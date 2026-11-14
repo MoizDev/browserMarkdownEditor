@@ -139,6 +139,9 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         setPrint('closed'); setPrintError('');
     }, []);
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
+    // A pane can be reused for another document without losing focus. Retire
+    // the old handoff before a pending validation can navigate its reserved tab.
+    useLayoutEffect(() => { cancelPrint(); }, [file.path, file.handle, reading?.identity.vaultId, reading?.identity.vaultEpoch, reading?.identity.documentId, reading?.identity.diskRev, cancelPrint]);
     useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); printPopup.current?.close(); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
         if (print === 'preparing' || printPending.current !== null || printPopup.current) return;
@@ -768,7 +771,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />
-            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
+            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} previewIdentity={reading?.identity} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
                 onLocation={() => publishLocation('layout', false)} onPageRendered={previewPainted} emphasisEnabled={reading?.emphasisEnabled ?? false}
                 onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
                 retryDisabled={retryBusy || isDirty || flushing || !!disk} />

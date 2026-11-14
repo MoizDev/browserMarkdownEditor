@@ -15,7 +15,7 @@ import { isEmptyOverlay, type PageOverlay } from './pdfOverlay';
 import type { VectorOp } from './pdfVector';
 import { PDF_WRITE_MARK_PLACEHOLDER, sealPdfWriteMark } from './pdfWriteMark';
 import { PdfBuildRefused, pdfSnapshotRefusal } from './pdfBuildRefusal';
-import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
+import { markEmbeddedFile, rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree';
 import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 
 /**
@@ -313,10 +313,13 @@ export async function buildNotebookPdf(
         // is not embedded, because this file is an output and the notebook is
         // the original that stays put and keeps being edited. Annotating this
         // PDF follows the pointer back rather than forking a third file.
-        doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
+        const marker = 'local-vault-pdf/v1;role=notebook-source;format=notebook-source';
+        const attachment = await doc.attach(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
             mimeType: 'application/json',
-            description: 'local-vault-pdf/v1;role=notebook-source;format=notebook-source\nThe notebook this PDF was exported from. Edit that, then export again.',
+            description: `${marker}\nThe notebook this PDF was exported from. Edit that, then export again.`,
         });
+        await attachment.embed();
+        markEmbeddedFile(doc, attachment.ref, marker);
         // Said in the document properties too, where any PDF viewer will show
         // it — the attachment is for this app, this line is for a person.
         doc.setProducer(`Exported from ${source.path}`);

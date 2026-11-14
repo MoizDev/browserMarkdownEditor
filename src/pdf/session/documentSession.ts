@@ -2,11 +2,13 @@ import type { PageGeometry } from '../../platform/types';
 import type { RenderToken } from '../../platform/render';
 import type { PdfPageLink } from '../pdfLinkModel';
 import type { PdfTileProducer } from '../layer/tileLayer';
+import type { PdfPoolDocument } from '../pool/types';
 import { stablePdfBlob } from './stableBlob';
 
 /** The pool adapter is the only engine-specific half of this session. */
 export interface OpenTiledDocument {
     readonly pages: readonly PageGeometry[];
+    readonly poolDocument: PdfPoolDocument;
     readonly producer: PdfTileProducer;
     links(page: number, signal: AbortSignal): Promise<readonly PdfPageLink[]>;
     close(): Promise<void>;
@@ -38,7 +40,7 @@ export class PdfTiledDocumentSession {
     private closed = false;
 
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
-        private readonly file: File, private readonly pool: TiledDocumentPool,
+        private readonly file: Blob, private readonly pool: TiledDocumentPool,
         private readonly isTokenCurrent: (token: RenderToken) => boolean) {}
 
     open(): Promise<OpenTiledDocument> {

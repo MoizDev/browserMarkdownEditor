@@ -51,6 +51,7 @@ function sameFrame(a: FrameToken, b: FrameToken): boolean {
 /** View lifetime only: the session, its source and its mirrors survive disposal. */
 export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => {
     if (!cpuFactory) throw new Error('Register the 2D compositor before attaching a platform pane');
+    const backendPreference = options.backendPreference ?? 'auto';
     const runtime = getPlatformRuntime();
     const surfaceHost = new PaneBackendSwitch(createPaneSurfaceHost(host));
     const cpuMetrics = new SurfaceMetricsCommitter();
@@ -253,7 +254,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
     });
     const requestGpu = (): void => {
-        if (disposed || !visible || !cpuPresented || gpuRequested || !lifecycle) return;
+        if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || gpuRequested || !lifecycle) return;
         gpuRequested = true;
         const canvas = host.ownerDocument.createElement('canvas');
         canvas.width = 0; canvas.height = 0;
@@ -436,7 +437,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
         removeCapture = registerCaptureGpu(options.paneId, () => {
-            if (disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
             const snapshot = lifecycle?.surface.snapshot();
             if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
             return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);

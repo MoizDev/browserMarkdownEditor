@@ -19,6 +19,7 @@ export interface PreparedClipboardMedia {
     readonly mediaOps: readonly Op[];
     readonly files: ReadonlyMap<MediaId, string | null>;
     readonly blobs: ReadonlyMap<MediaId, Blob>;
+    readonly missing: readonly MediaId[];
     /** Release only after the destination transaction has retained its media. */
     release(): void;
 }
@@ -86,7 +87,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             && session.owner.documentId === owner.documentId && session.owner.session === owner.session;
         const check = () => { runtime.jobs.assertContext(context); context.assertCurrent(); if (!current(identity)) throw new DOMException('Clipboard media staging became stale', 'AbortError'); };
         const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
-        const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [];
+        const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [], missing: MediaId[] = [];
         let held = true;
         const release = () => { if (!held) return; held = false; for (const lease of leases) lease.release(); leases.length = 0; };
         try {
@@ -97,7 +98,17 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 if (existing && !compatible(existing, entry)) throw new Error(`Conflicting destination media metadata: ${id}`);
                 let candidate = runtime.media.get(id) ?? inline.get(id);
                 if (!candidate) { candidate = await options.readBlob(entry, context.signal) ?? undefined; check(); }
-                if (!(candidate instanceof Blob)) throw new Error(`Clipboard media bytes are missing: ${id}`);
+                if (!(candidate instanceof Blob)) {
+                    if (!existing) {
+                        if (entry.file !== null && (entry.ext && (entry.ext.raw.size || entry.ext.fields.size)
+                            || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw)) {
+                            throw new Error(`Cannot remap missing media with uninterpreted filename dependencies: ${id}`);
+                        }
+                        ops.push({ t: 'media', op: 'add', entry: { ...entry, file: null } });
+                        files.set(id, null);
+                    }
+                    missing.push(id); await cooperate(); continue;
+                }
                 const blob = new Blob([candidate], { type: candidate.type });
                 const info = await inspectMedia(blob, { memory: options.memory, signal: context.signal, identity, isCurrent: current });
                 check();
@@ -123,7 +134,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
             abortOwned = release;
             context.signal.addEventListener('abort', release, { once: true });
             check();
-            return { stamp, mediaOps: Object.freeze(ops), files, blobs, release };
+            return { stamp, mediaOps: Object.freeze(ops), files, blobs, missing: Object.freeze(missing), release };
         } catch (error) { release(); throw error; }
     };
     const operation = existingContext ? work(existingContext) : runtime.jobs.run(work, { signal: options.signal, deadlineMs });

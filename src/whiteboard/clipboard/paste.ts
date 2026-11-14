@@ -5,7 +5,7 @@ import { decodeLegacyClipboard, type LegacyClipboardDecodeLease } from '../host/
 import { readExcalidrawClipboard } from '../host/excalidrawClipboard';
 import { inspectMedia } from '../media/inspect';
 import type { MediaIngestor } from '../media/ingest';
-import type { MediaEntry } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import { newSheetId, type NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
@@ -79,8 +79,10 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
             && runtime.jobs.isCurrent(context.job) && host.current(captured) && session.doc === doc && doc.rev === revision;
         check();
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal); check();
+        const noticeMissing = (ids: readonly MediaId[]) => host.notice(`${ids.length} clipboard media item(s) are missing; placeholders were pasted.`);
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
-            cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin }, cooperate: host.cooperate };
+            cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
+            noticeMissing, cooperate: host.cooperate };
         if (classification.kind === 'private') return pastePrivateClipboardInJob({ ...base, memory: host.memory, encoded: classification.encoded,
             plain: copied.text ?? '', cache: host.cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {
@@ -136,8 +138,10 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
                 }, storeMedia: host.storeMedia, cooperate: host.cooperate }, context);
             try {
                 check(); const owned = acquisition; acquisition = undefined;
-                return await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target: captured,
-                    current: host.current, signal: context.signal, cooperate: host.cooperate });
+                const inserted = await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target: captured,
+                    receivingBoardId: host.receivingBoardId, external: true, current: host.current, signal: context.signal, cooperate: host.cooperate });
+                if (media.missing.length) noticeMissing(media.missing);
+                return inserted;
             } finally { media.release(); }
         } finally { acquisition?.dispose(); draft?.release(); wire?.release(); legacy?.release(); }
     }, { signal, deadlineMs: 120_000 });

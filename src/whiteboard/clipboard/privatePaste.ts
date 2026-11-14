@@ -2,7 +2,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { BoardRuntime } from '../host/runtime';
 import { acquireBoardClipboard } from '../host/clipboardAcquisition';
 import { decodeBoardClipboard } from '../host/clipboardDecode';
-import type { MediaEntry } from '../model/media';
+import type { MediaEntry, MediaId } from '../model/media';
 import type { NodeId } from '../model/ids';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
@@ -28,6 +28,7 @@ export interface PrivateClipboardPasteOptions {
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    noticeMissing(ids: readonly MediaId[]): void;
     cooperate?(): Promise<void>;
 }
 /** The caller owns the one session job; this function never enqueues another job. */
@@ -70,8 +71,10 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
         try {
             check();
             const owned = acquisition; acquisition = undefined;
-            return await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target, signal: context.signal,
-                current: () => current(identity), cooperate: options.cooperate });
+            const inserted = await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target, signal: context.signal,
+                receivingBoardId: options.receivingBoardId, external: false, current: () => current(identity), cooperate: options.cooperate });
+            if (media.missing.length) options.noticeMissing(media.missing);
+            return inserted;
         } finally { media.release(); }
     } finally { decoded.release(); acquisition?.dispose(); }
 }
@@ -115,8 +118,10 @@ export async function duplicateClipboardInJob(options: DuplicateClipboardOptions
         try {
             check();
             const owned = acquisition; acquisition = undefined;
-            return await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target, signal: context.signal,
-                current: () => current(identity), cooperate: options.cooperate });
+            const inserted = await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target, signal: context.signal,
+                receivingBoardId: options.receivingBoardId, external: false, current: () => current(identity), cooperate: options.cooperate });
+            if (media.missing.length) options.noticeMissing(media.missing);
+            return inserted;
         } finally { media.release(); }
     } finally { acquisition?.dispose(); }
 }

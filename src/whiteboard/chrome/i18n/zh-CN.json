@@ -377,6 +377,7 @@
     "paper.deleteContents": "本页包含{items}。",
     "paper.deleteConfirm": "删除页面",
     "paper.cancel": "取消",
-    "paper.keepProtected": "锁定的内容将被保留。"
+    "paper.keepProtected": "锁定的内容将被保留。",
+    "chrome.readOnly": "该板是只读的。"
   }
 }

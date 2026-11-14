@@ -377,6 +377,7 @@
     "paper.deleteContents": "આ પૃષ્ઠમાં {items} છે.",
     "paper.deleteConfirm": "પૃષ્ઠ કાઢી નાખો",
     "paper.cancel": "રદ કરો",
-    "paper.keepProtected": "લૉક કરેલ સામગ્રી રાખવામાં આવશે."
+    "paper.keepProtected": "લૉક કરેલ સામગ્રી રાખવામાં આવશે.",
+    "chrome.readOnly": "આ બોર્ડ ફક્ત વાંચવા માટે છે."
   }
 }

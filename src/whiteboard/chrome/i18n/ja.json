@@ -377,6 +377,7 @@
     "paper.deleteContents": "このページには {items} が含まれています。",
     "paper.deleteConfirm": "ページの削除",
     "paper.cancel": "キャンセル",
-    "paper.keepProtected": "ロックされたコンテンツは保持されます。"
+    "paper.keepProtected": "ロックされたコンテンツは保持されます。",
+    "chrome.readOnly": "このボードは読み取り専用です。"
   }
 }

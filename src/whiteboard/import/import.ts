@@ -42,7 +42,7 @@ export interface LegacyImportResult<T> {
 // I-1: the original text and admitted media remain in memory; this function has no file capability.
 export async function importLegacy<T>(text: string, options: LegacyImportOptions<T>): Promise<LegacyImportResult<T>> {
     const report = new ReportBuilder();
-    let draft: Awaited<ReturnType<typeof readLegacyRecords>> = null;
+    let draft: Awaited<ReturnType<typeof readLegacyRecords>> | null = null;
     try {
         if (options.kind === 'pdf-ink' && options.pageSource?.kind !== 'pdf-ink') {
             throw new Error('PDF import requires display page geometry');
@@ -77,7 +77,9 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
         try {
             if (options.host.kind !== options.kind) throw new Error('Host kind does not match imported board');
             const sheets = repairLegacySheets(draft.sheets, report);
-            const nodes = options.repair(draft.nodes, sheets, options.kind, options.repairRoot, report);
+            const root: RootMapper = node => node.page >= 0
+                ? { page: node.page, x: node.x, y: node.y } : options.repairRoot(node);
+            const nodes = options.repair(draft.nodes, sheets, options.kind, root, report);
             const view = readLegacyView(draft.envelope.session);
             savedView = view.camera;
             let host = options.host;

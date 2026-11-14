@@ -119,6 +119,8 @@ opens that note and scrolls to the line it matched, then puts the tree back. EPU
 them is not text.
 
 ### Drag and Drop
+Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
+
 You can drag and drop files and folders within the file tree to reorganize your vault:
 - Drag any item and drop it onto a folder to move it inside that folder.
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.

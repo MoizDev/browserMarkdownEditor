@@ -57,6 +57,36 @@ export function fitFigureCreation(shape: FigureShape, requested: Rect): Rect {
     return { x: x - width * (profile?.xInset ?? 0), y: y - height * (profile?.yInset ?? 0), width, height };
 }
 
+export interface FigureCreationModifiers { readonly shift: boolean; readonly alt: boolean }
+
+export function figureClickBox(shape: FigureShape, at: Vec2): Rect {
+    if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new RangeError('Invalid figure origin');
+    const width = shape === 'cloud' ? 300 : 200;
+    const height = shape === 'cloud' ? 180 : shape === 'star' ? 190 : 200;
+    return { x: at.x - width / 2, y: at.y - height / 2, width, height };
+}
+
+/** The one-world-unit seed fixes the centre of Alt-created figures across all camera zooms. */
+export function figureDragBox(shape: FigureShape, down: Vec2, pointer: Vec2, modifiers: FigureCreationModifiers): Rect {
+    if (![down.x, down.y, pointer.x, pointer.y].every(Number.isFinite)) throw new RangeError('Invalid figure gesture');
+    const dx = pointer.x - down.x, dy = pointer.y - down.y;
+    const cx = down.x + .5, cy = down.y + .5;
+    let w = modifiers.alt ? 2 * Math.abs(pointer.x - cx) : Math.abs(dx);
+    let h = modifiers.alt ? 2 * Math.abs(pointer.y - cy) : Math.abs(dy);
+    w = Math.max(1, w); h = Math.max(1, h);
+    if (modifiers.shift) w = h = Math.max(w, h);
+    const x = modifiers.alt ? cx - w / 2 : dx < 0 ? down.x - w : down.x;
+    const y = modifiers.alt ? cy - h / 2 : dy < 0 ? down.y - h : down.y;
+    const result = fitFigureCreation(shape, { x, y, width: w, height: h });
+    if (!modifiers.shift || !CREATION_FIT[shape]) return result;
+    const side = Math.max(result.width, result.height);
+    return {
+        x: modifiers.alt ? cx - side / 2 : dx < 0 ? down.x - side : down.x,
+        y: modifiers.alt ? cy - side / 2 : dy < 0 ? down.y - side : down.y,
+        width: side, height: side,
+    };
+}
+
 /** The polygonal forms; curved forms require their analytic outlines. */
 export function polygonFigure(shape: FigureShape): readonly (readonly PathOp[])[] | null {
     let points: readonly Vec2[];
@@ -233,6 +263,26 @@ export function* stadiumPath(stadium: Extract<FigureContour, { kind: 'stadium' }
         yield* ellipseArcPath(r, r, r, r, Math.PI, Math.PI, tolerance, maxPieces, false);
     }
     yield { op: 'Z' };
+}
+
+export function* realiseFigureContour(contour: FigureContour, tolerance: number, maxPieces: number): Generator<PathOp> {
+    switch (contour.kind) {
+        case 'path': yield* contour.ops; return;
+        case 'ellipse':
+            yield* ellipseArcPath(contour.cx, contour.cy, contour.rx, contour.ry, 0, 2 * Math.PI, tolerance, maxPieces);
+            yield { op: 'Z' }; return;
+        case 'stadium': yield* stadiumPath(contour, tolerance, maxPieces); return;
+        case 'cloud': {
+            const [a, b, c, d, e, f] = contour.transform;
+            const scale = Math.hypot(a, b, c, d);
+            const transform = (p: Vec2): Vec2 => P(a * p.x + c * p.y + e, b * p.x + d * p.y + f);
+            for (const op of cloudPath(contour.shape, scale === 0 ? tolerance : tolerance / scale, maxPieces)) {
+                if (op.op === 'C') yield { op: 'C', c1: transform(op.c1), c2: transform(op.c2), p: transform(op.p) };
+                else if (op.op === 'Z') yield op;
+                else yield { op: op.op, p: transform(op.p) };
+            }
+        }
+    }
 }
 
 export function cloudPoint(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, theta: number): Vec2 {

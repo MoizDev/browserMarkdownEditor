@@ -225,6 +225,10 @@ async function buildFileTree(
     return (await listDir(dirHandle, path, reuse)).children;
 }
 
+// Reuse the same locale/options ordering without constructing a collator for
+// every comparison in a directory with thousands of siblings.
+const treeNameCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
+
 /**
  * `buildFileTree` for one directory, plus the one thing about the directory
  * ITSELF that the walk is the cheap place to learn: whether it holds an
@@ -245,42 +249,43 @@ async function listDir(
 ): Promise<{ children: FileTreeNode[]; styleFile?: FileSystemFileHandle }> {
     const children: FileTreeNode[] = [];
     let styleFile: FileSystemFileHandle | undefined;
-    // Subfolders are listed AFTER this directory's own entries, several at a
-    // time (below). Walking them inline made the whole vault one long chain:
-    // every folder's round trip waited for the previous folder's entire
-    // subtree, so opening a vault took the SUM of every directory read on the
-    // disk, and the sidebar showed "Loading vault…" for all of it.
+    // A permit covers only this directory's enumeration, NEVER its children.
+    // Measured: twelve parents held all twelve slots while their children
+    // waited, leaving a small finite vault stuck with zero active native IO.
+    // The root takes a permit too; descent begins only after it is released.
     const subdirs: { index: number; name: string; handle: FileSystemDirectoryHandle; path: string }[] = [];
 
-    for await (const [name, handle] of dirHandle.entries()) {
-        if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
-        if (isHiddenEntryName(name, !path, handle.kind)) continue;
+    await limiter.run(async () => {
+        for await (const [name, handle] of dirHandle.entries()) {
+            if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
+            if (isHiddenEntryName(name, !path, handle.kind)) continue;
 
-        const entryPath = path ? `${path}/${name}` : name;
+            const entryPath = path ? `${path}/${name}` : name;
 
-        if (handle.kind === 'directory') {
-            const kept = reuse?.get(name);
-            if (kept && kept.kind === 'directory') {
-                children.push(kept);
-                continue;
+            if (handle.kind === 'directory') {
+                const kept = reuse?.get(name);
+                if (kept && kept.kind === 'directory') {
+                    children.push(kept);
+                    continue;
+                }
+                // A placeholder keeps this child's place in the list while its own
+                // walk runs; the sort below is by name and kind, so the slot is
+                // filled before anything reads it.
+                subdirs.push({ index: children.length, name, handle, path: entryPath });
+                children.push(null as unknown as FileTreeNode);
+            } else {
+                children.push({
+                    name,
+                    kind: 'file',
+                    path: entryPath,
+                    handle,
+                    parentHandle: dirHandle,
+                });
             }
-            // A placeholder keeps this child's place in the list while its own
-            // walk runs; the sort below is by name and kind, so the slot is
-            // filled before anything reads it.
-            subdirs.push({ index: children.length, name, handle, path: entryPath });
-            children.push(null as unknown as FileTreeNode);
-        } else {
-            children.push({
-                name,
-                kind: 'file',
-                path: entryPath,
-                handle,
-                parentHandle: dirHandle,
-            });
         }
-    }
+    });
 
-    await Promise.all(subdirs.map(dir => limiter.run(async () => {
+    await Promise.all(subdirs.map(async dir => {
         const sub = await listDir(dir.handle, dir.path, undefined, limiter);
         children[dir.index] = {
             name: dir.name,
@@ -291,12 +296,12 @@ async function listDir(
             children: sub.children,
             styleFile: sub.styleFile,
         };
-    })));
+    }));
 
     // Sort: directories first, then files. Alphabetical within each group.
     children.sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        return treeNameCollator.compare(a.name, b.name);
     });
 
     return { children, styleFile };

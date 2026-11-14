@@ -4,7 +4,7 @@ import { singularValues, transformPoint } from './affine';
 import { ContourClipper } from './clip';
 import { flattenCubic } from './flatten';
 import type { Cubic, PathOp, Vec2 } from './path';
-import { winding } from './predicates';
+import { segmentIntersection, winding } from './predicates';
 import type { NarrowResult, PointQuery, RegionQuery } from './types';
 
 export interface PathPickOptions {
@@ -40,12 +40,11 @@ function segments(paths: readonly (readonly PathOp[])[], tolerance: number, maxS
             if (op.op === 'M') { current = start = op.p; continue; }
             if (!current || !start) throw new RangeError('Path must begin with M');
             if (op.op === 'Z') { add(current, start); current = start; continue; }
-            if (op.op === 'L') add(current, op.p);
-            else {
+            if (op.op === 'C') {
                 const curve: Cubic = { p0: current, p1: op.c1, p2: op.c2, p3: op.p };
                 const points = collapsed ? [current, op.p] : flattenCubic(curve, tolerance);
                 for (let i = 1; i < points.length; i++) add(points[i - 1], points[i], collapsed);
-            }
+            } else add(current, op.p);
             current = op.p;
         }
     }
@@ -68,6 +67,7 @@ export function pointPath(paths: readonly (readonly PathOp[])[], query: PointQue
         const distance = new ConvexDistance(query.localToSurface, query.point.x, query.point.y, tolerance / 8);
         let best = Infinity, uncertain = false;
         for (const line of lines) {
+            if (line.exact && radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), query.point, query.point).kind !== 'none') return result(true, 0);
             distance.run(line.a.x, line.a.y, radius, line.b.x, line.b.y, radius, 0, 0);
             best = Math.min(best, distance.upper);
             if ((line.exact && distance.inside) || distance.upper + tolerance <= margin) return result(true, distance.upper);
@@ -97,7 +97,10 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
     }
     let tolerance = errorCss;
     for (let refinement = 0; refinement < 24; refinement++, tolerance /= 2) {
-        const lines = segments(paths, scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const strokeLines = segments(paths, scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const interiorLines = segments(options.interiorPaths ?? [], scale ? tolerance / scale : tolerance, maxSegments, scale === 0);
+        const lines = [...strokeLines.map(line => ({ ...line, radius })), ...interiorLines.map(line => ({ ...line, radius: 0 }))];
+        if (lines.length > maxSegments) throw new RangeError('Path picking exceeds its segment budget');
         let uncertain = false, intersectsBoundary = false, anyInside = false, allInside = lines.length > 0;
         for (const line of lines) {
             if (polygon) {
@@ -107,6 +110,10 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
                 allInside &&= a !== 0 && b !== 0;
             }
             for (const edge of edges) {
+                if (line.exact && line.radius === 0 && margin === 0 && segmentIntersection(transformPoint(query.localToSurface, line.a), transformPoint(query.localToSurface, line.b), edge.a, edge.b).kind !== 'none') {
+                    intersectsBoundary = true;
+                    continue;
+                }
                 const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y, length = Math.hypot(dx, dy);
                 if (!Number.isFinite(length)) throw new RangeError('Path region edge overflows');
                 const ux = length ? dx / length : 1, uy = length ? dy / length : 0;
@@ -114,7 +121,7 @@ export function regionPath(paths: readonly (readonly PathOp[])[], query: RegionQ
                 const rotated: Affine = [ux * m[0] + uy * m[1], -uy * m[0] + ux * m[1], ux * m[2] + uy * m[3], -uy * m[2] + ux * m[3], ux * m[4] + uy * m[5], -uy * m[4] + ux * m[5]];
                 const midX = edge.a.x / 2 + edge.b.x / 2, midY = edge.a.y / 2 + edge.b.y / 2;
                 const distance = new ConvexDistance(rotated, ux * midX + uy * midY, -uy * midX + ux * midY, tolerance / 8);
-                distance.run(line.a.x, line.a.y, radius, line.b.x, line.b.y, radius, length / 2, 0);
+                distance.run(line.a.x, line.a.y, line.radius, line.b.x, line.b.y, line.radius, length / 2, 0);
                 if ((line.exact && distance.inside) || distance.upper + tolerance <= margin) intersectsBoundary = true;
                 else if (distance.lower - tolerance <= margin) uncertain = true;
             }

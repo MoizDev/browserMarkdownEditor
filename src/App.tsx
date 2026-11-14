@@ -2127,7 +2127,7 @@ export default function App() {
     // that '' would erase a note the app merely failed to read.
     const pendingRevision = pendingRevisionsRef.current.get(tab.id);
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
-    if (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path)))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.

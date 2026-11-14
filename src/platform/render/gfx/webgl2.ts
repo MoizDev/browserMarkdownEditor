@@ -20,6 +20,12 @@ import type {
     BrokerGpuOwner, ContextDisposeReason, GpuPreparation, SurfaceResizeResult,
 } from '../surfaceBroker.types';
 import type { GpuReleaseReason } from '../types';
+import type { BenchmarkPaintDomain } from '../benchmarkPaintDomain';
+import type { Webgl2Coverage, CoverageFrameTag } from './webgl2Coverage';
+
+const coverageModule = __BME_BENCH__ ? await import('./webgl2Coverage') : null;
+const coverageShaders = __BME_BENCH__ ? await import('./webgl2CoverageShaders') : null;
+const coveragePerf = __BME_BENCH__ ? await import('../renderPerf') : null;
 
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
@@ -72,6 +78,9 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     memory(): ArenaMemory;
     leaseMemory(lease: ByteLease): ArenaLeaseMemory;
     cpuStagingMemory(): ArenaMemory;
+    prepareCoverageFrame(tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void): boolean;
+    commitCoverage(serial: number): void;
+    cancelCoverage(serial: number): void;
 }
 
 type BufferDesc = { bytes: number; uses: readonly BufferUse[]; pack?: boolean };
@@ -176,7 +185,10 @@ interface FrameWork {
     surfaceRevision: number;
     issued: number | null;
     finished: boolean;
+    coverage: CoveragePlan | null;
 }
+type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null };
+type CoverageRoot = { width: number; height: number; texture: TextureHandle; target: TargetHandle };
 
 const CAPABILITY_SHADER: ShaderModule = {
     id: 'platform-colour-capability', revision: 1,
@@ -248,6 +260,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #coverageTextures = new WeakMap<WebGLTexture, TextureHandle>();
     readonly #pool: Webgl2TargetPool;
     readonly #frames = new Map<ArenaEncoding, FrameWork>();
+    readonly #coverageTickets = new Map<number, { commit(): void; cancel(): void }>();
+    #coverage: Webgl2Coverage | null = null;
+    #coveragePrograms: { classify: WebGLProgram; reduce: WebGLProgram } | null = null;
+    #coverageCompiling = false;
+    #coverageRoot: CoverageRoot | null = null;
+    #coveragePlan: CoveragePlan | null = null;
     readonly #controlledFrames = new WeakMap<FrameEncoder, ControlledFrame>();
     readonly #uniformSlots: UniformSlot[] = [];
     readonly #pipelines = new Set<NativePipeline>();
@@ -364,6 +382,67 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     get uniformRingBytes(): number { return this.#uniformBytes; }
 
+    prepareCoverageFrame(tag: CoverageFrameTag, domain: BenchmarkPaintDomain, wake: () => void): boolean {
+        if (!coverageModule || !coverageShaders || !coveragePerf) return false;
+        const width = this.#canvas?.width ?? 0, height = this.#canvas?.height ?? 0;
+        if (!this.#coveragePrograms && !this.#coverageCompiling) {
+            this.#coverageCompiling = true;
+            const make = (id: string, fragment: string): ShaderModule => ({ id, revision: 1,
+                glsl: { vertex: coverageShaders.COVERAGE_REDUCE_VERTEX, fragment },
+                layout: { uniforms: [], textures: [], attributes: [] } });
+            void Promise.all([
+                this.#program(make('benchmark-coverage-classify', coverageShaders.COVERAGE_CLASSIFY_FRAGMENT), this.#work.signal),
+                this.#program(make('benchmark-coverage-reduce', coverageShaders.COVERAGE_SUM_FRAGMENT), this.#work.signal),
+            ]).then(([a, b]) => {
+                const classify = this.#arena.validate(a, 'pipeline'), reduce = this.#arena.validate(b, 'pipeline');
+                if (classify.role === 'program' && reduce.role === 'program') this.#coveragePrograms = { classify: classify.program, reduce: reduce.program };
+                wake();
+            }).catch(() => {}).finally(() => { this.#coverageCompiling = false; });
+        }
+        let root: CoverageRoot | null = null;
+        try {
+            if (this.#coveragePrograms && width > 0 && height > 0) {
+                this.#coverage ??= new coverageModule.Webgl2Coverage({ generation: this.generation, gl: () => this.#healthy(),
+                    memory: this.#services.working, reset: () => this.#reset(), schedulePoll: this.#services.schedulePoll,
+                    programs: () => this.#coveragePrograms,
+                    onCount: (result, counts) => coveragePerf.recordCoverageFrame({ ...result, backend: 'webgl2',
+                        outside: counts[0], hole: counts[1], standin: counts[2], current: counts[3],
+                        invalid: result.width * result.height - counts[0] - counts[1] - counts[2] - counts[3] }),
+                    onDrop: () => {} });
+                if (this.#coverage.prepare(width, height)) root = this.#prepareCoverageRoot(width, height);
+            }
+        } catch { root = null; }
+        this.#coveragePlan = { tag, domain, root };
+        return root !== null;
+    }
+
+    commitCoverage(serial: number): void { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.commit(); }
+    cancelCoverage(serial: number): void { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.cancel(); }
+
+    #prepareCoverageRoot(width: number, height: number): CoverageRoot {
+        if (this.#coverageRoot?.width === width && this.#coverageRoot.height === height) return this.#coverageRoot;
+        const lease = this.#reserve(this.#services.working, byteSize(width, height, 12));
+        let texture: TextureHandle | null = null;
+        try {
+            texture = this.#allocate('texture', { width, height, format: 'rgba8', uses: ['sample', 'render', 'copy-src'] }, width * height * 4, lease);
+            const target = this.#allocateColorTarget(texture, 1, true, width * height * 8, lease, [texture]);
+            const previous = this.#coverageRoot;
+            this.#coverageRoot = { width, height, texture, target };
+            if (previous) { this.destroy(previous.target); this.destroy(previous.texture); }
+            return this.#coverageRoot;
+        } catch (error) { if (texture) this.destroy(texture); throw error; }
+        finally { this.closeLease(lease); }
+    }
+
+    #releaseCoverage(abandon: boolean): void {
+        for (const ticket of this.#coverageTickets.values()) ticket.cancel();
+        this.#coverageTickets.clear(); this.#coveragePlan = null;
+        if (abandon) this.#coverage?.abandon(); else this.#coverage?.dispose();
+        this.#coverage = null; this.#coveragePrograms = null;
+        const root = this.#coverageRoot; this.#coverageRoot = null;
+        if (root && !abandon) { this.destroy(root.target); this.destroy(root.texture); }
+    }
+
     get frameResourcesReady(): boolean { return this.#white !== null && !this.#lost && !this.#disposed && !this.#paused; }
     prepareFrameResources(): void { this.#usable(); this.#ensureWhite(); }
     admitIsolation(plan: readonly IsolationReservation[]): boolean { this.#usable(); return this.#isolation.admit(plan); }
@@ -373,7 +452,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
         const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null,
-            offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
+            offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false,
+            coverage: this.#coveragePlan };
+        this.#coveragePlan = null;
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
         const frame = createWebgl2Frame(this.#frameBackend(work));
@@ -650,6 +731,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     releaseGpu(reason: GpuReleaseReason): void {
         if (reason === 'context-lost') { this.abandon(); return; }
         if (this.#lost || this.#disposed) return;
+        this.#releaseCoverage(false);
         this.#paused = true;
         this.#work.abort();
         try {
@@ -676,6 +758,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     dispose(reason: ContextDisposeReason): void {
         if (this.#disposed) return;
         this.#disposed = true;
+        this.#releaseCoverage(reason === 'context-lost' || this.#lost || !!this.#gl?.isContextLost());
         if (reason === 'context-lost' || this.#lost || this.#gl?.isContextLost()) { this.abandon(); return; }
         this.#work.abort();
         this.#cleanup([
@@ -692,6 +775,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     abandon(): void {
         if (this.#lost) return;
         this.#lost = true;
+        this.#releaseCoverage(true);
         this.#work.abort();
         try {
             this.#cleanup([
@@ -905,6 +989,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const target = (handle: TargetHandle | 'surface'): FrameTarget => {
             if (handle === 'surface') {
                 const gl = this.#usable();
+                const root = work.coverage?.root;
+                if (root) {
+                    const native = this.#pin(work.encoding, root.target, 'target');
+                    return { handle, framebuffer: native.framebuffer, resolveFramebuffer: native.framebuffer, coverage: native.coverage?.texture ?? null,
+                        width: root.width, height: root.height, format: 'rgba8', samples: 1, stencil: false, capture: false,
+                        color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
+                        usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
+                }
                 return { handle, framebuffer: null, resolveFramebuffer: null, coverage: null, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
@@ -954,7 +1046,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             releaseTarget: lease => this.#isolation.put(work.encoding, lease, true),
             acquireIsolation: request => this.#isolation.borrow(work.encoding, request, false),
             releaseIsolation: lease => this.#isolation.put(work.encoding, lease, false),
-            issue: () => { if (work.surface) this.#timer.end(); return this.#issue(work.encoding); },
+            issue: () => {
+                if (work.surface) this.#timer.end();
+                const observation = work.surface ? this.#finishCoverage(work) : null;
+                try {
+                    const serial = this.#issue(work.encoding);
+                    if (observation) this.#coverageTickets.set(serial, observation);
+                    return serial;
+                } catch (error) { observation?.cancel(); throw error; }
+            },
             cancel: () => this.#cancelEncoding(work.encoding),
             finish: serial => {
                 if (work.finished) return;
@@ -969,7 +1069,48 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 }
             },
             failure: error => this.#failure(error), onPass: surface => { work.passes = true; work.surface ||= surface; },
+            afterClear: target => {
+                if (target.handle !== 'surface' || !work.coverage?.root || !target.coverage) return;
+                const gl = this.#usable();
+                gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]);
+                gl.enable(gl.SCISSOR_TEST);
+                for (const rect of work.coverage.domain.rects) {
+                    gl.scissor(rect.x, target.height - rect.y - rect.height, rect.width, rect.height);
+                    gl.clearBufferfv(gl.COLOR, 1, new Float32Array([1 / 255, 0, 0, 1]));
+                }
+                gl.disable(gl.SCISSOR_TEST);
+                gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+            },
         };
+    }
+
+    #finishCoverage(work: FrameWork): { commit(): void; cancel(): void } | null {
+        const plan = work.coverage;
+        if (!plan || !coveragePerf) return null;
+        const root = plan.root;
+        const drop = () => coveragePerf.recordCoverageDrop({ ...plan.tag, backend: 'webgl2',
+            width: this.#canvas?.width ?? 0, height: this.#canvas?.height ?? 0 }, 'unavailable');
+        if (!root) return { commit: drop, cancel: () => {} };
+        const gl = this.#usable();
+        const target = this.#arena.validate(root.target, 'target');
+        let ticket: { commit(): void; cancel(): void } | null = null;
+        try {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+            if (plan.domain.vector) {
+                gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
+                for (const rect of plan.domain.rects) {
+                    gl.scissor(rect.x, root.height - rect.y - rect.height, rect.width, rect.height);
+                    gl.clearBufferfv(gl.COLOR, 1, new Float32Array([3 / 255, 0, 0, 1]));
+                }
+                gl.disable(gl.SCISSOR_TEST); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+            }
+            try { if (target.coverage) ticket = this.#coverage?.enqueue(target.coverage.texture, root.width, root.height, plan.tag) ?? null; }
+            catch { ticket = null; }
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer); gl.readBuffer(gl.COLOR_ATTACHMENT0);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null); gl.drawBuffers([gl.BACK]); gl.disable(gl.SCISSOR_TEST);
+            gl.blitFramebuffer(0, 0, root.width, root.height, 0, 0, root.width, root.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        } finally { this.#reset(); }
+        return ticket ?? { commit: drop, cancel: () => {} };
     }
 
     #frameTexture(encoding: ArenaEncoding, handle: TextureHandle, texture: NativeTexture): FrameTexture {

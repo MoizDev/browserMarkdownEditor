@@ -16,6 +16,8 @@ import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics'
 import { allocateSurfaceGeneration } from './surfaceGeneration';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
 
+const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
+
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
     readonly canvas: HTMLCanvasElement;
@@ -234,6 +236,9 @@ export class GpuCompositor implements PaneCompositor {
                 this.#options.invalidate('gpu-frame-resources-deferred'); return;
             }
             this.#options.owner.prepareFrameResources(); this.#prepareQuad();
+            if (benchmarkDomain) this.#options.owner.prepareCoverageFrame({ frameId: frame.frameId, token: frame.token,
+                cameraEpoch: frame.view.epoch, sceneRevision: frame.damage.contentRevision },
+                benchmarkDomain.benchmarkPaintDomain(snapshot, frame), () => this.#options.invalidate('coverage-ready'));
         } catch (error) { this.#failure(error); }
     }
 
@@ -324,7 +329,9 @@ export class GpuCompositor implements PaneCompositor {
                             qualityScale: snapshot.metrics!.qualityScale });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
-                        completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial) };
+                        completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
+                        ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage(submitted.serial),
+                            cancelObservation: () => this.#options.owner.cancelCoverage(submitted.serial) } : {}) };
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);

@@ -105,6 +105,7 @@ export interface FrameBackend {
     finish(serial: number | null): void;
     failure(error: unknown): ArenaError;
     onPass(surface: boolean): void;
+    afterClear(target: FrameTarget): void;
 }
 export interface ControlledFrame extends FrameEncoder { cancel(): void; }
 
@@ -329,6 +330,7 @@ class DeviceFrame implements ControlledFrame {
                     gl.clearBufferfv(gl.COLOR, 1, new Float32Array([0, 0, 0, 0]));
                     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
                 }
+                if (desc.load.kind === 'clear') this.#backend.afterClear(target);
             } finally { this.#backend.reset(); }
         });
     }

@@ -217,9 +217,8 @@ export interface TabLayout {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * GRAPH MODEL
- * Built by buildGraph() (graph.js:71-142). Node objects are documented at
- * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117
- * (unresolved placeholder). Consumed by GraphView, BacklinksPanel, App,
+ * Built by the vault-index worker, with current tree nodes attached by the host
+ * (context/vaultIndex/graphView.ts). Consumed by GraphView, BacklinksPanel, App,
  * EditorPane (via getBacklinkNodes).
  * ───────────────────────────────────────────────────────────────────────── */
 

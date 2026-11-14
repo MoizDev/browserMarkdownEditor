@@ -1,7 +1,7 @@
 // Read-only and worker-only. pdf.js's public attachment map selects a branch
 // and collapses duplicate names: neither behaviour can authorize replacing pages.
 import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream } from 'pdf-lib';
-import { boundedAttachmentBytes, inventoryAttachments, type AttachmentEntry } from './pdfAttachmentTree';
+import { attachmentText, boundedAttachmentBytes, inventoryAttachments, type AttachmentEntry } from './pdfAttachmentTree';
 import { BOARD_ATTACHMENT, NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, PDF_APP_MARKER_NAMESPACE, SNAPSHOT_ATTACHMENT } from './pdfFormat';
 import { compatibleLegacySnapshot, PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT } from './pdfRole';
 import type { PdfRole, PdfRoleFailure } from './pdfRole';
@@ -19,14 +19,35 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
         const has = (entry: Entry, name: string) => entry.keys.length
             ? entry.keys.some(value => value.decodeText() === name)
             : entry.names.has(name);
-        // The namespace is fail-closed; only exact, bounded declarations with
-        // their expected names are understood by this writer.
+        // Filespec /Desc and EmbeddedFile /Params/LocalVaultMarker are equal
+        // authorities: PDFium's public attachment API writes only the latter.
+        const declarations = new Map<Entry, { value?: string; conflict: boolean; invalid: boolean }>();
+        for (const entry of all) {
+            const desc = entry.description.startsWith(PDF_APP_MARKER_NAMESPACE) ? entry.description.split('\n', 1)[0] : undefined;
+            const ef = entry.spec.lookup(key('EF'));
+            const streams = ef instanceof PDFDict ? [ef.lookup(key('F')), ef.lookup(key('UF'))] : [];
+            let param: string | undefined, invalid = false, conflict = false;
+            for (const stream of streams) {
+                if (!(stream instanceof PDFRawStream)) continue;
+                const params = stream.dict.lookup(key('Params'));
+                if (!(params instanceof PDFDict)) continue;
+                const raw = params.lookup(key('LocalVaultMarker'));
+                if (raw === undefined) continue;
+                const value = attachmentText(raw);
+                if (value === undefined) invalid = true;
+                else if (param !== undefined && param !== value) conflict = true;
+                else param = value;
+            }
+            if (desc !== undefined && param !== undefined && desc !== param) conflict = true;
+            declarations.set(entry, { value: desc ?? param, conflict, invalid });
+        }
+        const conflicting = all.filter(entry => declarations.get(entry)!.conflict);
+        if (conflicting.length) return { kind: 'ambiguous', alreadyAnnotated: true, generation, candidates: conflicting.map(entry => entry.id) };
         const marker = (entry: Entry, name: string, role: string, format: string) => {
             const prefix = `local-vault-pdf/v1;role=${role};format=${format}`;
-            return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 &&
-                (entry.description === prefix || entry.description.startsWith(prefix + '\n'));
+            return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 && declarations.get(entry)!.value === prefix;
         };
-        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || entry.description.startsWith(PDF_APP_MARKER_NAMESPACE) &&
+        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || declarations.get(entry)!.invalid || declarations.get(entry)!.value !== undefined &&
             !marker(entry, NOTEBOOK_SOURCE_ATTACHMENT, 'notebook-source', 'notebook-source') &&
             !marker(entry, ORIGINAL_ATTACHMENT, 'pristine', 'tldraw-legacy') &&
             !marker(entry, SNAPSHOT_ATTACHMENT, 'editable', 'tldraw-legacy'));
@@ -62,8 +83,14 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
             if (!(raw instanceof Uint8Array)) return raw;
             try {
                 const pointer = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)) as { path?: unknown; exportedAt?: unknown };
-                if (typeof pointer.path !== 'string' || !pointer.path || pointer.path.startsWith('/') || pointer.path.split('/').some(p => p === '.' || p === '..' || !p)) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');
-                return { kind: 'notebookExport', generation, alreadyAnnotated: true, notebookSource: { path: pointer.path, exportedAt: typeof pointer.exportedAt === 'number' && Number.isFinite(pointer.exportedAt) ? pointer.exportedAt : 0 } };
+                if (typeof pointer.path !== 'string' || !pointer.path || pointer.path.startsWith('/') ||
+                    /^[a-z][a-z\d+.-]*:/i.test(pointer.path) || pointer.path.includes('\\') || [...pointer.path].some(c => c.charCodeAt(0) < 32) ||
+                    (pointer.exportedAt !== undefined && (typeof pointer.exportedAt !== 'number' || !Number.isFinite(pointer.exportedAt)))) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');
+                const parts = pointer.path.split('/');
+                if (parts.some(p => p === '..' || ['.Assets', '.Garbage', '.VaultAgent', '.appearance.json'].includes(p))) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');
+                const path = parts.filter(p => p && p !== '.').join('/');
+                if (!path.toLowerCase().endsWith('.notebook')) return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt');
+                return { kind: 'notebookExport', generation, alreadyAnnotated: true, notebookSource: { path, exportedAt: typeof pointer.exportedAt === 'number' ? pointer.exportedAt : 0 } };
             } catch { return unreadable(NOTEBOOK_SOURCE_ATTACHMENT, 'corrupt'); }
         }
         if (!originals.length && !snapshots.length) return { kind: 'plain', generation, alreadyAnnotated: false, original: bytes, snapshot: '', notebookSource: null };
@@ -83,6 +110,19 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
         try {
             const pristine = await PDFDocument.load(original, { parseSpeed: Infinity, updateMetadata: false });
             if (!pristine.getPageCount()) return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id);
+            // A nested editable source is not pristine. Inspect just this one
+            // level; recursively unwrapping would promote stamped pages.
+            const nested = inventoryAttachments(pristine);
+            if (nested.some(entry => {
+                if ([ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, BOARD_ATTACHMENT, NOTEBOOK_SOURCE_ATTACHMENT].some(name => entry.names.has(name)) || entry.description.startsWith(PDF_APP_MARKER_NAMESPACE)) return true;
+                const ef = entry.spec.lookup(key('EF'));
+                if (!(ef instanceof PDFDict)) return false;
+                return [ef.lookup(key('F')), ef.lookup(key('UF'))].some(stream => {
+                    if (!(stream instanceof PDFRawStream)) return false;
+                    const params = stream.dict.lookup(key('Params'));
+                    return params instanceof PDFDict && params.has(key('LocalVaultMarker'));
+                });
+            })) return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id);
         } catch { return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id); }
         const mark = await checkPdfWriteMark(bytes);
         // A board-bound v2 mark is not authority for a legacy-only snapshot.

@@ -6354,7 +6354,8 @@ export default function App() {
       if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
       // ensureNativeBoard calls take inside attachCanvasSession, so this covers the attachment too.
       return { ...prepared, take(owner: Parameters<typeof prepared.take>[0], isLiveOwner: Parameters<typeof prepared.take>[1], readOnlyReason: Parameters<typeof prepared.take>[2]) {
-        if (!pdfPinHolds(pin)) { void prepared.dispose(); throw changed(); }
+        // No dispose here: ensureNativeBoard's finally awaits prepared.dispose when take never ran.
+        if (!pdfPinHolds(pin)) throw changed();
         return prepared.take(owner, isLiveOwner, readOnlyReason);
       } };
     };

@@ -28,7 +28,7 @@ export function createNativeViewPlatform(options: {
         vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     return {
         paneId, viewLease, backendPreference: viewer.getSnapshot().backendPreference,
-        session: { mirrors: null, checkpoint: () => { board.checkpoint(); } },
+        session: { mirrors: null, checkpoint: () => { if (board.hasPendingEdits()) board.checkpoint(); } },
         layout: viewer.getSnapshot().layout,
         readLayout: () => viewer.getSnapshot().layout,
         readAppearance: () => viewer.getSnapshot().appearance,

@@ -239,7 +239,7 @@ class SurfaceBroker {
                     entry.state = 'context-reserved';
                     try { reservation.owner.releaseGpu('hidden'); }
                     catch { this.abandon(entry, 'creation-failed'); }
-                    finally { zeroCanvas(reservation.canvas); }
+                    finally { zeroCanvas(reservation.canvas); entry.callbacks.onSurfaceZeroed?.(reservation.canvas); }
                 } else if (reservation) {
                     this.abandon(entry, 'stale');
                 }
@@ -421,6 +421,7 @@ class SurfaceBroker {
             try { owner?.dispose('context-lost'); }
             finally {
                 zeroCanvas(reservation.canvas);
+                entry.callbacks.onSurfaceZeroed?.(reservation.canvas);
                 if (entry.circuit.losses.length >= RENDER_CONSTANTS.contextLossPinCount) {
                     entry.circuit.pinned = true;
                     this.abandon(entry, 'cpu-pinned');
@@ -498,6 +499,8 @@ class SurfaceBroker {
         entry.reservation = null;
         entry.pending = null;
         entry.checkedGeneration = null;
+        // Retire the generation before callbacks can observe or publish stale device resources.
+        entry.generation = ++entry.circuit.generation;
         entry.state = entry.circuit.pinned ? 'cpu-pinned' : 'dormant';
         const owner = reservation.owner;
         reservation.owner = null;
@@ -508,7 +511,8 @@ class SurfaceBroker {
         } finally {
             try {
                 zeroCanvas(reservation.canvas);
-                if (reservation.context) destroyContext(reservation.context);
+                try { entry.callbacks.onSurfaceZeroed?.(reservation.canvas); }
+                finally { if (reservation.context) destroyContext(reservation.context); }
             } finally {
                 try { this.returnContextReserve(reservation); }
                 finally { this.notifyAvailable(); }

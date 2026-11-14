@@ -15,7 +15,9 @@ const listeners = new Set<() => void>();
 let drainQueue: Promise<void> = Promise.resolve();
 
 function notifyPending(): void {
-    for (const listener of listeners) listener();
+    for (const listener of [...listeners]) {
+        try { listener(); } catch (error) { console.error('Pending-work subscriber failed:', error); }
+    }
 }
 
 /** Report in the first unserialised-change task, not in a later pane effect. */
@@ -44,10 +46,11 @@ export function anyPending(): boolean {
 }
 
 /** Start every current serializer before awaiting a PDF's asynchronous build. */
-async function drainRegistered(): Promise<void> {
+async function drainRegistered(documentId?: string): Promise<void> {
     const failures: unknown[] = [];
     const work: Promise<void>[] = [];
     for (const { serializer } of [...registrations.values()]) {
+        if (documentId !== undefined && serializer.documentId !== documentId) continue;
         try {
             if (serializer.hasPendingEdits()) work.push(Promise.resolve(serializer.flushPending()));
         } catch (error) { failures.push(error); }
@@ -55,17 +58,22 @@ async function drainRegistered(): Promise<void> {
     for (const result of await Promise.allSettled(work)) {
         if (result.status === 'rejected') failures.push(result.reason);
     }
-    try { notifyPending(); } catch (error) { failures.push(error); }
+    notifyPending();
     if (failures.length) throw new AggregateError(failures, 'Could not drain pending document serializers.');
 }
 
 /** A second checkpoint re-reads the pending set after the first drain settles. */
-export function drainAll(): Promise<void> {
-    const run = drainQueue.then(drainRegistered);
+function enqueueDrain(documentId?: string): Promise<void> {
+    const run = drainQueue.then(() => drainRegistered(documentId));
     // A refused PDF drain must not poison the queue and prevent a later retry.
     drainQueue = run.catch(() => {});
     return run;
 }
+
+export function drainAll(): Promise<void> { return enqueueDrain(); }
+
+/** Drain the current reporter for this document without draining other panes. */
+export function drain(documentId: string): Promise<void> { return enqueueDrain(documentId); }
 
 /** Registration, removal and completed drains synchronously notify subscribers. */
 export function subscribePending(listener: () => void): () => void {

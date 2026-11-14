@@ -13,20 +13,33 @@ import { incrementalEditorEnabled } from '../utils/engineRouting';
 import { overlapsRange } from '../utils/rangeSearch';
 import type { CharRange } from '../utils/rangeSearch';
 
-import type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
+import type { AnalysisDelta, DocAnalysis, FilteredLineMatch } from './docAnalysisTypes';
 export type { AnalysisDelta, DocAnalysis } from './docAnalysisTypes';
 
 function makeAnalysis(state: EditorState, tree: Tree, rev: number, codeRanges: CharRange[],
     lines: LineScans, blockPairs: BlockPair[], delta: AnalysisDelta | null,
-    update?: { previous: DocAnalysis; transaction: Transaction; inlineRaw: InlineMath[] }): DocAnalysis {
+    update?: { previous: DocAnalysis; transaction: Transaction; inlineRaw: InlineMath[]; dirty: CharRange[] }): DocAnalysis {
     const inlineRaw = update?.inlineRaw ?? filterInlineMath(lines.inline, codeRanges, blockPairs);
     const mathRegions = acceptedMath(blockPairs, inlineRaw);
     const outside = (item: LineMatch) => !overlapsRange(codeRanges, item.from, item.to)
         && !overlapsRange(mathRegions, item.from, item.to);
-    const dollarRuns = lines.dollars.map(item => ({ ...item, accepted: (item.to - item.from) % 2 === 0
-        && state.sliceDoc(Math.max(0, item.from - 1), item.from) !== '\\' && outside(item) }));
-    const highlights = lines.highlights.map(item => ({ ...item, accepted: outside(item) }));
-    const wikilinks = lines.wikilinks.map(item => ({ ...item, accepted: item.groups[0] !== '!' && outside(item) }));
+    const filter = (raw: LineMatch[], previous: FilteredLineMatch[] | undefined, accept: (item: LineMatch) => boolean): FilteredLineMatch[] => {
+        const old = new Map<string, FilteredLineMatch>();
+        if (previous && update) for (const item of previous) {
+            const from = update.transaction.changes.mapPos(item.from, 1), to = update.transaction.changes.mapPos(item.to, -1);
+            old.set(`${from}:${to}:${item.groups.join('\0')}`, item);
+        }
+        return raw.map(item => {
+            const existing = old.get(`${item.from}:${item.to}:${item.groups.join('\0')}`);
+            const accepted = existing && update && !overlapsRange(update.dirty, item.from, item.to)
+                ? existing.accepted : accept(item);
+            return { ...item, accepted };
+        });
+    };
+    const dollarRuns = filter(lines.dollars, update?.previous.dollarRuns, item => (item.to - item.from) % 2 === 0
+        && state.sliceDoc(Math.max(0, item.from - 1), item.from) !== '\\' && outside(item));
+    const highlights = filter(lines.highlights, update?.previous.highlights, outside);
+    const wikilinks = filter(lines.wikilinks, update?.previous.wikilinks, item => item.groups[0] !== '!' && outside(item));
     const objects = update
         ? updateObjects(update.previous.objects, update.transaction.startState.doc, state.doc,
             update.transaction.changes, lines.embedOpeners, codeRanges, mathRegions)
@@ -101,7 +114,10 @@ function updateAnalysis(previous: DocAnalysis, tr: Transaction): DocAnalysis {
     difference(previous.blockPairs, pairs, item => `${item.accepted}:${item.latex}`);
     const inlineRaw = updateInlineMath(lines.inline, previous.inlineRaw, tr.changes, codeRanges, pairs,
         mergeAnalysisRanges(invalidated));
-    const result = makeAnalysis(state, tree, rev, codeRanges, lines, pairs, null, { previous, transaction: tr, inlineRaw });
+    difference(previous.mathRegions, acceptedMath(pairs, inlineRaw), item => `${item.block}:${item.latex}`);
+    const dirtyFilters = mergeAnalysisRanges([...invalidated, ...treeChanged]);
+    const result = makeAnalysis(state, tree, rev, codeRanges, lines, pairs, null,
+        { previous, transaction: tr, inlineRaw, dirty: dirtyFilters });
     const dirty = [...treeChanged];
     const compare = <T extends CharRange>(before: readonly T[], after: readonly T[], value: (item: T) => string) => {
         const old = new Map<string, CharRange>();

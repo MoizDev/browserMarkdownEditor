@@ -61,6 +61,7 @@ export function createBoardSelectionNavigation(options: BoardSelectionNavigation
     const stopSelection = runtime.selection.subscribe(() => { geometry?.abort(); geometry = undefined; reveal.cancel(); });
     return {
         navigation,
+        reveal: request,
         present(frame: ScheduledFrame) {
             const a = frame.token, b = options.token;
             if (!active() || a.vaultEpoch !== b.vaultEpoch || a.documentId !== b.documentId

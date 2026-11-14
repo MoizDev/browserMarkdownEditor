@@ -3201,7 +3201,7 @@ export default function App() {
     } finally { captured?.release(); }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -3383,7 +3383,7 @@ export default function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryEvent]);
+  }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, recoveryEvent]);
 
   const preparePdfPrint = useCallback(async (path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -6213,7 +6213,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -6422,7 +6422,7 @@ export default function App() {
         return result?.blob ?? null;
       } };
     } finally { if (!pinTransferred) pinned?.release(); }
-  }, [announce, attachNativeCanvasSession, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
+  }, [announce, attachNativeCanvasSession, documentBuffers, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
 
   const [closedCanvasVersions] = useState(() => createClosedCanvasVersions());
   const closedCanvasReads = useRef(new Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>());

@@ -650,6 +650,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         return null;
     }
     private closeBuffer(key: string, buffer: Buffer2D): void {
+        // A colour job owns both its accumulated back pixels and its current band.
+        // Retiring either must prevent a later frame from acknowledging the cleared canvas.
+        if (this.job && (this.job.back === buffer || this.job.band === buffer)) this.cancelJob();
+        if (this.mirrorJob?.buffer === buffer) this.cancelMirror();
+        if (key === 'back') { this.presentedKey = ''; this.report = null; }
         buffer.canvas.width = 0; buffer.canvas.height = 0;
         for (const use of buffer.images.values()) this.releaseGpuLease(use.lease);
         this.releaseGpuLease(buffer.lease); this.buffers.delete(key);

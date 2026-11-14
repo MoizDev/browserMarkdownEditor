@@ -44,6 +44,10 @@ export class TextEditController {
         const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
         const url = linkUrl(href);
         if (!url) return false;
+        if (from === to) {
+            this.storedMarks = { ...(this.storedMarks ?? this.services.marksAt(from)), link: url };
+            return true;
+        }
         const tx = this.services.link(url, from, to);
         if (!tx) return false;
         this.services.typing('boundary', selection, selection);

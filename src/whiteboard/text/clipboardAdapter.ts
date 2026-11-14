@@ -28,22 +28,26 @@ export interface TextClipboardAdapterOptions {
 /** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
 export function createTextClipboardAdapter(options: TextClipboardAdapterOptions) {
     let disposed = false, serial = 0, pending: AbortController | null = null;
+    const owners = new WeakMap<CopySnapshot, BoardJobIdentity>();
     const cancel = () => { serial++; pending?.abort(); pending = null; };
     const current = (snapshot: CopySnapshot): boolean => {
-        const expected = snapshot.textSelection, actual = options.editor.clipboardContext();
-        return !disposed && !!expected && !!actual && actual.revision === snapshot.revision && actual.node.id === expected.node
+        const owner = owners.get(snapshot), expected = snapshot.textSelection, actual = options.editor.clipboardContext();
+        return !disposed && !!owner && options.isCurrent(owner) && !!expected && !!actual && actual.revision === snapshot.revision && actual.node.id === expected.node
             && actual.selection.anchor === expected.anchor && actual.selection.focus === expected.focus;
     };
     return {
         /** Prime h2's real clipboard cache; Core then calls its copyEvent/copyMenu. */
         prepareCopy(): CopySnapshot | null {
             if (disposed) return null;
+            // A failed capture must not leave the previous range available to an OS event.
+            options.copy.setSelection(null);
             const range = options.editor.clipboardSelection();
-            if (!range) { options.copy.setSelection(null); return null; }
-            const host = options.copyHost();
-            if (host.doc.rev !== range.revision || !options.isCurrent(options.identity())) { options.copy.setSelection(null); return null; }
+            if (!range) return null;
+            const identity = { ...options.identity() }, host = options.copyHost();
+            if (host.doc.rev !== range.revision || !options.isCurrent(identity)) return null;
             const snapshot = snapshotCopiedTextRange(host, range.node, range.selection, range.fragment, range.bounds);
-            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); options.copy.setSelection(null); return null; }
+            owners.set(snapshot, identity);
+            if (!current(snapshot)) { for (const lease of snapshot.leases) lease.release(); return null; }
             options.copy.setSelection(snapshot);
             return snapshot;
         },

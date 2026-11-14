@@ -1,4 +1,5 @@
 import { copyText, CLIPBOARD_WRITE_BLOCKED } from '../../utils/clipboard';
+import { pdfSelectionQuote } from '../../utils/pdfTextMenu';
 import { COPY_TOO_LARGE, MAX_COPY_UTF16_UNITS, copySelection, normalizeForClipboard } from '../text/copy';
 import { selectionRange } from '../text/selection';
 import type { PdfSelection } from '../text/selection';
@@ -13,6 +14,7 @@ export interface PdfTextCopyHost {
 }
 export interface PdfTextCopyBinding {
     copy(): Promise<void>;
+    copyQuote(filename: string, path: string): Promise<void>;
     /** Call on selection, docKey or visibility change. */
     cancel(): void;
     dispose(): void;
@@ -47,7 +49,7 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         }
         return { count, pages, first, last, range };
     };
-    const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number) => {
+    const gather = async (selection: PdfSelection, state: ReturnType<typeof initial>, ticket: number, format: (text: string) => string = text => text) => {
         cancel();
         const controller = new AbortController(), epoch = localEpoch; pending = controller;
         const valid = () => !disposed && epoch === localEpoch && !controller.signal.aborted && sameSelection(selection, host.selection()) && host.pageCount() === state.count;
@@ -79,26 +81,27 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
             if (!valid()) return;
             const result = parts.join('');
             if (result.length > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
-            const copied = await writeLatest(result, ticket, valid);
+            const copied = await writeLatest(format(result), ticket, valid);
             if (valid() && copied !== undefined) host.notice(copied ? '' : CLIPBOARD_WRITE_BLOCKED);
         } catch (error) {
             if (valid()) host.notice(`Could not copy PDF text: ${error instanceof Error ? error.message : String(error)}`);
         } finally { if (pending === controller) pending = null; }
     };
-    const copy = async () => {
+    const copy = async (quote?: { filename: string; path: string }) => {
         const current = host.selection();
         if (!current || disposed) return;
         const selection = snapshot(current), state = initial(selection), ticket = ++latestCopy;
         const result = copySelection(selection, state.count, state.pages);
+        const format = quote ? (text: string) => pdfSelectionQuote(text, quote.filename, quote.path, state.first, state.last) : (text: string) => text;
         if (result.kind === 'too-large') { cancel(); host.notice(result.message); return; }
         if (result.kind === 'ready') {
             cancel();
             const epoch = localEpoch;
-            const copied = await writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
+            const copied = await writeLatest(format(result.text), ticket, () => !disposed && epoch === localEpoch && sameSelection(selection, host.selection()));
             if (copied === false) host.notice(CLIPBOARD_WRITE_BLOCKED);
             return;
         }
-        await gather(selection, state, ticket);
+        await gather(selection, state, ticket, format);
     };
     const onCopy = (event: ClipboardEvent) => {
         const target = event.target as HTMLElement | null;
@@ -116,5 +119,6 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         else void gather(selection, state, ticket);
     };
     element.addEventListener('copy', onCopy);
-    return { copy, cancel, dispose() { disposed = true; cancel(); element.removeEventListener('copy', onCopy); } };
+    return { copy: () => copy(), copyQuote: (filename, path) => copy({ filename, path }), cancel,
+        dispose() { disposed = true; cancel(); element.removeEventListener('copy', onCopy); } };
 }

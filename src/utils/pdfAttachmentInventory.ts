@@ -47,7 +47,7 @@ export async function inspectPdfRole(bytes: Uint8Array, generation: string): Pro
             const prefix = `local-vault-pdf/v1;role=${role};format=${format}`;
             return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 && declarations.get(entry)!.value === prefix;
         };
-        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || (declarations.get(entry)!.value !== undefined || declarations.get(entry)!.invalid) &&
+        const newer = all.filter(entry => has(entry, BOARD_ATTACHMENT) || declarations.get(entry)!.invalid || declarations.get(entry)!.value !== undefined &&
             !marker(entry, NOTEBOOK_SOURCE_ATTACHMENT, 'notebook-source', 'notebook-source') &&
             !marker(entry, ORIGINAL_ATTACHMENT, 'pristine', 'tldraw-legacy') &&
             !marker(entry, SNAPSHOT_ATTACHMENT, 'editable', 'tldraw-legacy'));

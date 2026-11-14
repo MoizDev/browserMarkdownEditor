@@ -13,7 +13,8 @@ export interface EditTransactions {
     markTransformation(): number;
     rememberTransformation(mark: number, before: EditSelection, after: EditSelection): void;
     setSelection(selection: EditSelection): void;
-    typing(kind: 'typing' | 'composition' | 'boundary', before: EditSelection, after: EditSelection): void;
+    typing(kind: 'typing' | 'composition' | 'boundary', before: EditSelection, after: EditSelection, change?: TextChange): void;
+    completeTyping(kind: 'typing' | 'composition' | 'boundary', after: EditSelection): void;
     marksAt(offset: number): Marks;
     fragment(from: number, value: string, storedMarks: Marks | null): RichText;
     format(mark: ToggleMark, from: number, to: number): Transaction | null;
@@ -52,7 +53,7 @@ export class TextEditController {
 
     replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary', before: EditSelection): EditSelection {
         const fragment = this.services.fragment(change.from, change.text, this.storedMarks);
-        this.services.typing(kind, before, change.selection);
+        this.services.typing(kind, before, change.selection, change);
         this.services.apply({ origin: 'tool', label: kind === 'composition' ? 'Compose text' : 'Edit text',
             ops: [{ t: 'splice', id: this.id, key: this.key, from: change.from, to: change.to, insert: fragment }] });
         let selection = change.selection;
@@ -67,6 +68,7 @@ export class TextEditController {
             }
         }
         this.services.setSelection(selection);
+        this.services.completeTyping(kind, selection);
         return selection;
     }
 }

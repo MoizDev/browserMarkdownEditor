@@ -10,6 +10,7 @@ import { createClippedPointPathJob, type PointClipContour } from '../geom/clippe
 import { createClippedFilledPointJob } from '../geom/clippedFilledPointJob';
 import type { PathPickOptions } from '../geom/pick';
 import { pointInTransformedFrame } from '../geom/frameContainment';
+import { boardFrameAncestors } from '../geom/ancestorFrames';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorPointJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
@@ -173,23 +174,20 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         || node.kind === 'stroke' || node.kind === 'polyline')) continue;
                     const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
                     if (!selected || node.kind === 'group') continue;
-                    let parent = doc.nodes.get(node.parent as NodeId), clipped = false, clipUncertain = false;
+                    let clipped = false, clipUncertain = false;
                     const frameClips: PointClipContour[] = [];
-                    for (let depth = 0; parent && depth < 64; depth++) {
-                        if (parent.kind === 'frame') {
-                            const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-                            const frame: Affine = [c, s, -s, c, pose.x, pose.y];
-                            frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
-                            if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) {
-                                if (targetMode) { clipped = true; break; }
-                                clipUncertain = true;
-                            }
-                            const local = worldToLocal(doc, parent, point);
-                            // A halo witness near the clip edge can belong entirely to hidden geometry.
-                            const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
-                            if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
+                    for (const parent of boardFrameAncestors(doc, node)) {
+                        const pose = worldPose(doc, parent.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+                        const frame: Affine = [c, s, -s, c, pose.x, pose.y];
+                        frameClips.push({ outline: rectPath({ x: 0, y: 0, width: parent.w, height: parent.h }), localToSurface: compose(matrix, frame) });
+                        if (!pointInTransformedFrame(point, { x: 0, y: 0, width: parent.w, height: parent.h }, frame)) {
+                            if (targetMode) { clipped = true; break; }
+                            clipUncertain = true;
                         }
-                        parent = doc.nodes.get(parent.parent as NodeId);
+                        const local = worldToLocal(doc, parent, point);
+                        // A halo witness near the clip edge can belong entirely to hidden geometry.
+                        const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
+                        if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                     }
                     if (clipped) continue;
                     const prepared = await options.geometry.prepareForPick(node, combined);

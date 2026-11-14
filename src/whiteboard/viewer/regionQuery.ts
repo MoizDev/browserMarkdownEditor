@@ -15,6 +15,7 @@ import { preparePolylineGeometry } from '../geom/providers';
 import { createVectorRegionJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
 import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
+import { boardFrameAncestors } from '../geom/ancestorFrames';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactIntersection, exactLineBetween, exactPoint, exactPointIntervals, exactSide, type ExactPoint } from '../geom/homogeneous';
 import type { PathOp, Vec2 } from '../geom/path';
@@ -139,9 +140,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     groups.set(selected, Math.max(groups.get(selected) ?? -Infinity, resolved.rank));
                 let localPoints: readonly Vec2[] = points, partialFrame = false;
                 const frameClips: PointClipContour[] = [];
-                let ancestor = doc.nodes.get(node.parent as NodeId);
-                for (let depth = 0; ancestor && depth < 64; depth++) {
-                    if (ancestor.kind === 'frame') {
+                for (const ancestor of boardFrameAncestors(doc, node)) {
                         const frameWorld = matrix(doc, ancestor.id), toFrame = inverse(frameWorld, 1e12), record = scene.worldBounds(node.id);
                         frameClips.push({ outline: rectPath(0, 0, ancestor.w, ancestor.h), localToSurface: compose(worldToCss, frameWorld) });
                         const bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
@@ -164,8 +163,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                 if (localPoints.length < 3) throw new BoardRegionUncertain('Frame-clipped polygon has a degenerate intersection');
                             }
                         }
-                    }
-                    ancestor = doc.nodes.get(ancestor.parent as NodeId);
                 }
                 const prepared = await options.geometry.prepareForPick(node, signal); check();
                 const localToSurface = compose(worldToCss, ref.localToWorld);

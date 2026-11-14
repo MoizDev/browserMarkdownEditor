@@ -2,7 +2,7 @@ import type { Affine } from '../../platform/types';
 import { worldPose, worldToLocal } from '../change/coordinates';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
-import { isSheetParent, type BoardDoc } from '../model/doc';
+import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Attachment, Node, Point, PolylineNode } from '../model/nodes';
 import { transformPoint } from './affine';
@@ -12,6 +12,7 @@ import type { AttachmentSurface } from './connectorTypes';
 import type { PathOp } from './path';
 import { preparePolylineGeometry } from './providers';
 import { prepareBoardAttachmentSurface } from '../render/attachmentSurfaces';
+import { boardFrameAncestors } from './ancestorFrames';
 
 /** H4 owns the persisted fields; this reader also accepts documents predating them. */
 type AttachedPolyline = Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
@@ -40,15 +41,9 @@ function rectangle(w: number, h: number): readonly PathOp[] {
 }
 export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
     const result: AttachmentSurface['clips'][number][] = [];
-    let parent = node.parent;
-    for (let depth = 0; depth <= 64; depth++) {
-        if (isSheetParent(doc, parent)) return result.reverse();
-        const ancestor = doc.nodes.get(parent as NodeId);
-        if (!ancestor) throw new Error('Polyline attachment ancestor disappeared');
-        if (ancestor.kind === 'frame') result.push({ outline: rectangle(ancestor.w, ancestor.h), localToWorld: matrix(doc, ancestor.id) });
-        parent = ancestor.parent;
-    }
-    throw new RangeError('Polyline attachment hierarchy exceeds its depth limit');
+    for (const ancestor of boardFrameAncestors(doc, node))
+        result.push({ outline: rectangle(ancestor.w, ancestor.h), localToWorld: matrix(doc, ancestor.id) });
+    return result.reverse();
 }
 
 /** Canonical terminal resolution shared by staged geometry and attachment gestures. */

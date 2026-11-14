@@ -13,6 +13,7 @@ export interface KeyboardCursorServices {
   escape(): void
 }
 export interface KeyboardCursor {
+  readonly active: boolean
   activate(point: KeyboardCursorPoint): void
   move(dx: number, dy: number, coarse: boolean, modifiers: Modifiers): void
   enter(modifiers: Modifiers): boolean

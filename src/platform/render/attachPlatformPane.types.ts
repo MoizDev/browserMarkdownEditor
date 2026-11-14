@@ -12,6 +12,11 @@ export interface PlatformLayerDefinition {
     readonly isolation?: CompositorIsolation;
     create(host: LayerHost): Layer;
     revision(layer: Layer): number;
+    /** Prospective CPU bytes for the physical viewport, separate from currently leased memory. */
+    cpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{
+        mandatoryBytes: number;
+        prefetchBytes: number;
+    }>;
     critical(layer: Layer, view: ViewState): boolean;
     coverage(layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
 }

@@ -45,6 +45,10 @@ export function countEditorTransaction(state: EditorState): void {
     } catch { /* Measurement cannot interrupt a transaction. */ }
 }
 
+export function countEditorWindow(length: number): void {
+    try { editor.windows++; editor.windowChars += length; publish(); } catch { /* Instrumentation is optional. */ }
+}
+
 export function countEditorSlice(length: number): void {
     try { editor.slicedChars += length; publish(); } catch { /* Instrumentation is optional. */ }
 }
@@ -54,6 +58,19 @@ export function countEditorWidget(): void {
         editor.widgetsBuilt++;
         publish();
     } catch { /* Measurement cannot interrupt widget construction. */ }
+}
+
+export function measureEditorWork<T>(state: EditorState, render: () => T): T {
+    let started: number | undefined;
+    try { latestState = state; started = performance.now(); } catch { /* Optional instrumentation. */ }
+    const result = render();
+    try {
+        if (started !== undefined) {
+            const elapsed = performance.now() - started;
+            editor.l3Ms.total += elapsed; editor.l3Ms.samples.push(elapsed); publish();
+        }
+    } catch { /* Instrumentation cannot change rendering. */ }
+    return result;
 }
 
 /** Time only the existing pass; preserve its result, exceptions and widget identities. */

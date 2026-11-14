@@ -517,30 +517,28 @@ function buildDecorations(view: StateView, imageCtx: ImageContext, editorMode: E
                 if (opening.to > startLine.to) return false;
                 const closed = closing !== null && endLine.number > startLine.number && closing.to <= endLine.to;
 
-                const firstContent = startLine.number + 1;
-                const lastContent = closed ? endLine.number - 1 : endLine.number;
-                const code = firstContent <= lastContent
-                    ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to)
-                    : '';
-
                 // === MERMAID DIAGRAMS ===
                 // A closed mermaid fence renders as a diagram widget while
                 // the cursor is elsewhere; editing anywhere in it falls back
                 // to the ordinary code panel so the source stays editable.
                 const lang = startLine.text.trim().match(/^(?:`{3,}|~{3,})\s*(\S*)/)?.[1]?.toLowerCase() ?? '';
-                if (lang === 'mermaid' && closed && code.trim() &&
-                    (editorMode === 'read' || !cursorOnLine(state, from, to))) {
-                    decorations.push(
-                        Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
-                    );
-                    return false;
+                if (lang === 'mermaid' && closed && (editorMode === 'read' || !cursorOnLine(state, from, to))) {
+                    const firstContent = startLine.number + 1, lastContent = endLine.number - 1;
+                    const code = firstContent <= lastContent
+                        ? state.doc.sliceString(state.doc.line(firstContent).from, state.doc.line(lastContent).to) : '';
+                    if (code.trim()) {
+                        decorations.push(
+                            Decoration.replace({ widget: new MermaidWidget(code) }).range(startLine.from, endLine.to)
+                        );
+                        return false;
+                    }
                 }
 
                 // Copy button, pinned to the panel's top-right. The fence row
                 // hosts it in every state (hidden = padding row, revealed =
                 // the source fence line), so it never displaces code text.
                 decorations.push(
-                    Decoration.widget({ widget: new CopyCodeWidget(code), side: -1 }).range(startLine.from)
+                    Decoration.widget({ widget: new CopyCodeWidget(), side: -1 }).range(startLine.from)
                 );
 
                 // The panel is permanent — every line gets it, fence lines

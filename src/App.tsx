@@ -35,6 +35,7 @@ import RecoverySurface, { type RecoveryInspection } from './components/RecoveryS
 import type { RecoveryEntry } from './utils/recoveryJournal';
 import { recoveryAdapter } from './utils/recoveryAdapters';
 import { createRecoveryJournal } from './utils/recoveryJournalCoordinator';
+import { createRecoveryFunnel } from './utils/recoveryFunnel';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
@@ -992,6 +993,10 @@ export default function App() {
   const [recoveryJournal] = useState(() => createRecoveryJournal({
     refused: () => announce('Recovery storage may be evicted by the browser.'),
     failed: () => announce('Could not write recovery storage; keep your edits open.'),
+  }));
+  const [recoveryEvent] = useState(() => createRecoveryFunnel(recoveryJournal, error => {
+    console.error('Could not capture recovery changes:', error);
+    announce('Could not capture recovery changes; keep your edits open.');
   }));
   useEffect(() => subscribeRenderStatus(announce), [announce]);
   useEffect(() => {
@@ -2539,8 +2544,8 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribePending(syncExitGuard);
     syncExitGuard();
-    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryJournal.flush().catch(() => {}); void checkpointAll(); } };
-    const pagehide = () => { void recoveryJournal.flush().catch(() => {}); void checkpointAll(); };
+    const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
+    const pagehide = () => { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -2550,7 +2555,7 @@ export default function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryJournal]);
+  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryEvent]);
 
   const preparePdfPrint = useCallback(async (path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -4497,9 +4502,12 @@ export default function App() {
         notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
       }
     }
-    if (vaultIdAtMove) await recoveryJournal.retarget(vaultIdAtMove, fromPath, newPath, isFolder).catch(error => console.error('Could not move recovery records:', error));
+    if (vaultIdAtMove) {
+      try { await recoveryEvent({ type: 'retarget', vaultId: vaultIdAtMove, from: fromPath, to: newPath, folder: isFolder }); }
+      catch (error) { console.error('Could not move recovery records:', error); }
+    }
     return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryJournal]);
+  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, rememberAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce, resolveVaultFile, preparePdfDeparture, recoveryEvent]);
   const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
     node.path, node.kind === 'directory', newPath,
     node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],

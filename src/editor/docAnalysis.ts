@@ -58,9 +58,11 @@ function updateCodeRanges(previous: readonly CharRange[], tree: Tree, tr: Transa
         to: tr.changes.mapPos(range.to, -1) })).filter(range =>
         !changed.some(window => range.from <= window.to && range.to >= window.from)
         && !found.some(item => range.from < item.to && range.to > item.from));
-    const sorted = retained.concat(found).sort((a, b) => a.from - b.from || b.to - a.to);
     const result: CharRange[] = [];
-    for (const range of sorted) {
+    let i = 0, j = 0;
+    while (i < retained.length || j < found.length) {
+        const range = j === found.length || (i < retained.length && retained[i].from <= found[j].from)
+            ? retained[i++] : found[j++];
         const last = result[result.length - 1];
         if (!last || range.from >= last.to) result.push(range);
     }

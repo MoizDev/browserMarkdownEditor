@@ -64,6 +64,7 @@ export class GpuPaneCandidate {
                     const interval = this.options.frameInterval();
                     if (interval !== null) this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint);
                 },
+                onFramebufferFailure: () => this.options.runtime.trouble('framebuffer'),
                 evict: this.options.onEvict });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null, disposed: false, failureReported: false };
@@ -78,7 +79,15 @@ export class GpuPaneCandidate {
                     return backing.resize(width, height, grant.resizeSurface) ??
                         { width: 0, height: 0, complete: false, generation: preparation.generation };
                 },
-                invalidate: this.options.invalidate, onError: this.options.onError,
+                invalidate: this.options.invalidate,
+                onError: error => {
+                    try { this.options.onError(error); }
+                    finally {
+                        const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+                        this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
+                            code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
+                    }
+                },
                 onDeferred: () => this.options.invalidate('gpu-deferred'),
             });
             generation.bundle = bundle;

@@ -441,6 +441,10 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
     return { manager, input, editText, writeOverlays, captureText,
+        clipboardContext() {
+            const editor = manager.current?.editor, node = active && doc.nodes.get(active), text = node && nodeText(node);
+            return editor && node && text ? { node, revision: doc.rev, selection: { ...editor.getSelection() }, text } : null;
+        },
         clipboardSelection() {
             const editor = manager.current?.editor, node = active && doc.nodes.get(active), transform = currentWorld;
             if (!editor || !node || !transform) return null;

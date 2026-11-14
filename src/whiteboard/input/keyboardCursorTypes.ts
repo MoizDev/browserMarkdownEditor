@@ -5,7 +5,7 @@ export interface KeyboardCursorServices {
   readonly token: InputToken
   current(token: InputToken): boolean
   toWorld(surface: KeyboardCursorPoint): KeyboardCursorPoint
-  ensureVisible(surface: KeyboardCursorPoint): void
+  ensureVisible(surface: KeyboardCursorPoint): KeyboardCursorPoint
   show(point: KeyboardCursorPoint | null, activeGesture: boolean): void
   begin(sample: RealSample, modifiers: Modifiers): boolean
   update(sample: RealSample, modifiers: Modifiers): void
@@ -13,6 +13,7 @@ export interface KeyboardCursorServices {
   escape(): void
 }
 export interface KeyboardCursor {
+  readonly active: boolean
   activate(point: KeyboardCursorPoint): void
   move(dx: number, dy: number, coarse: boolean, modifiers: Modifiers): void
   enter(modifiers: Modifiers): boolean

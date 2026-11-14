@@ -3,6 +3,9 @@ import { worldPose } from '../change/coordinates';
 import type { WorldPose } from '../change/coordinates';
 import type { Box } from '../geom/bounds';
 import { inverse } from '../geom/affine';
+import type { AttachmentSurface } from '../geom/connectorTypes';
+import { attachedPolylineTargets, isAttachedPolyline, polylineSurface, resolvePolylinePoints, TOLERANCE_WORLD, type AttachedPolyline } from '../geom/polylineResolve';
+import type { Point } from '../model/nodes';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
@@ -82,7 +85,7 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
     check();
     const unique = new Set<NodeId>();
     for (const id of ids) { if (!unique.has(id)) { unique.add(id); roots.push(id); } if (due()) await tick(); }
-    const closure = [...roots], visited = new Set<NodeId>();
+    const closure = [...roots], visited = new Set<NodeId>(), dependencies = new Set<NodeId>(roots);
     for (let i = 0; i < closure.length; i++) {
         const id = closure[i]; if (visited.has(id)) continue; visited.add(id);
         const node = doc.nodes.get(id); if (!node) throw new Error(`Geometry node not found: ${id}`); capture(node);
@@ -99,14 +102,32 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
             for (const child of doc.children.get(id) ?? []) { closure.push(child.id); if (due()) await tick(); }
         }
         if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) closure.push(end.attach.target);
+        // An attached polyline's resolved ends depend on its targets' actual surfaces, so they are pinned too.
+        for (const target of attachedPolylineTargets(node)) { closure.push(target); dependencies.add(target); }
         if (due()) await tick();
     }
     const rendererCurrent = fenced ? () => source.isCurrent() && (!options.current || options.current()) : undefined;
-    const lease = await render.pinChangeGeometry(roots, signal, doc, rendererCurrent);
+    const lease = await render.pinChangeGeometry(dependencies, signal, doc, rendererCurrent);
     try {
         check();
         const font = render.text.fonts.epoch;
         const prepared = new Map<NodeId, Prepared>(), pending = [...roots], seen = new Set<NodeId>();
+        const polylinePoints = new Map<NodeId, readonly Point[]>();
+        // Attached ends resolve from the renderer's real surfaces: the cooperative crossings run inside this scope.
+        const resolveAttached = async (node: Readonly<Node>): Promise<readonly Point[]> => {
+            const surfaces = new Map<NodeId, AttachmentSurface>();
+            for (const targetId of attachedPolylineTargets(node)) {
+                const target = doc.nodes.get(targetId); if (!target) throw new Error('Polyline attachment target disappeared');
+                const value = await render.prepareForPick(target, signal, doc); check();
+                if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+                const attachments = value.vector?.attachments;
+                if (!attachments) throw new Error(`Polyline attachment target has no supported surface: ${targetId}`);
+                surfaces.set(targetId, polylineSurface(doc, target, attachments, revision));
+            }
+            const points = await resolvePolylinePoints(node as AttachedPolyline, doc, surfaces, { tolerance: TOLERANCE_WORLD, signal, cooperate, check });
+            check(); if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
+            return points;
+        };
         while (pending.length) {
             const id = pending.pop()!; if (seen.has(id)) continue; seen.add(id);
             const node = doc.nodes.get(id); if (!node) throw new Error(`Geometry node disappeared: ${id}`);
@@ -120,13 +141,15 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
                 const value = await render.prepareForPick(node, signal, doc);
                 check(); checkNode(id); if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError');
                 prepared.set(id, value);
+                if (isAttachedPolyline(node)) polylinePoints.set(id, await resolveAttached(node));
             }
             if (due()) await tick();
         }
         const poses = new Map<NodeId, WorldPose>();
         const pose = (id: NodeId) => { let value = poses.get(id); if (!value) { value = worldPose(doc, id); poses.set(id, value); } return value; };
         // The same generators serve the synchronous staged reader; `due` only decides where this scope yields.
-        const source: LogicalSource = { prepared: id => prepared.get(id), children: id => doc.children.get(id) ?? [], pose, check };
+        const source: LogicalSource = { prepared: id => prepared.get(id), polylinePoints: id => polylinePoints.get(id),
+            children: id => doc.children.get(id) ?? [], pose, check };
         const drive = async <T>(work: Generator<void, T, void>): Promise<T> => {
             for (;;) { const step = work.next(); if (step.done) return step.value; await tick(); }
         };

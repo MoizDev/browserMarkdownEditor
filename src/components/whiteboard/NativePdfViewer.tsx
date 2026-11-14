@@ -83,8 +83,8 @@ function PdfViewLease({ props, sourceState, handoff, awaitingPresentation, rebin
     awaitingPresentation: boolean; rebind(lease: NativeViewLease): void; presented(): void;
 }) {
     const sourceSnapshot = useSyncExternalStore(sourceState.subscribe, sourceState.getSnapshot, sourceState.getSnapshot);
-    const latest = useRef(props);
-    useLayoutEffect(() => { latest.current = props; }, [props]);
+    const latest = useRef(props), latestInverted = useRef(inverted);
+    useLayoutEffect(() => { latest.current = props; latestInverted.current = inverted; }, [props, inverted]);
     const [lease, setLease] = useState<NativeViewLease | null>(null);
     const [loading, setLoading] = useState(true), [updating, setUpdating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -138,7 +138,7 @@ function PdfViewLease({ props, sourceState, handoff, awaitingPresentation, rebin
                     try {
                         view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
                             ...(cameraHandoff ? { cameraHandoff } : {}),
-                            parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
+                            parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: latestInverted.current },
                             limits: { min, max }, insets: { left, right, top, bottom }, onError: report, onNotice: message => latest.current.onNotice(message) });
                     } catch (cause) { backdrop.dispose(); throw cause; }
                     if (handoff.current === cameraHandoff) handoff.current = null;
@@ -223,7 +223,9 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [updating, setUpdating] = useState(false), [viewGeneration, setViewGeneration] = useState(0);
-    const [awaitingPresentation, setAwaitingPresentation] = useState(false);
+    const [awaitingPresentation, setAwaitingPresentation] = useState(false), [inverted, setInverted] = useState(false);
+    const invertedRef = useRef(inverted);
+    useLayoutEffect(() => { invertedRef.current = inverted; }, [inverted]);
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
     useEffect(() => {
         if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
@@ -241,7 +243,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
                 const view = await createNativePdfEditingLease({ board: value.board, host: value.host, identity: value.identity,
                     sourceState: value.sourceState, editing, signal, ...(capturedHandoff ? { cameraHandoff: capturedHandoff } : {}),
                     limits: value.zoomLimits, insets: value.insets,
-                    parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: false },
+                    parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: invertedRef.current },
                     isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
                     emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
                     onPresented: () => setAwaitingPresentation(false), onError: value.onError, onNotice: notice });
@@ -279,7 +281,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     return <NativeCanvasEditing key={viewGeneration} props={{ identity: props.identity, nativeCanvasHost: props.host, isVisible: props.isVisible,
         isFocused: props.isFocused, theme: props.theme }} board={props.board} adapter={props.adapter}
         factory={props.host.createEditingCapabilities} createLease={createLease} renderView={renderView}
-        onError={props.onError} onUnavailable={editingUnavailable} />;
+        inversion={{ value: inverted, set: setInverted }} onError={props.onError} onUnavailable={editingUnavailable} />;
 }
 
 function PdfEditingAttached({ props, context, updating, rebind }: { props: NativePdfViewerProps; context: NativeEditingRenderContext;

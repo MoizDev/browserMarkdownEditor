@@ -108,7 +108,10 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
             || (result.underlay !== undefined && (!Array.isArray(result.underlay) || result.underlay.length > SECURITY_LIMITS.records))) throw new TypeError('Invalid resolved paint node');
         const copyItems = function* (items: readonly PaintItem[]): Generator<PaintStep, readonly PaintItem[], PaintNode | undefined> {
             const copy: PaintItem[] = [];
-            for (const item of items) { if (due()) { check(); yield { kind: 'cooperate' }; reset(); } copy.push(item); }
+            for (const item of items) {
+                if (due()) { check(); yield { kind: 'cooperate' }; reset(); }
+                copy.push(result.allocationBounds ? Object.freeze({ ...item, allocationBounds: result.allocationBounds }) : item);
+            }
             return Object.freeze(copy);
         };
         const underlay = result.underlay ? yield* copyItems(result.underlay) : undefined;

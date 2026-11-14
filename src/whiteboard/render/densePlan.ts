@@ -7,13 +7,16 @@ import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintFrame, type PaintImageItem, type PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { chooseTileScale } from './tileHierarchy';
+import { PaintBoundsCache } from './paintBoundsCache';
+import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BITMAP_BYTES = 516 * 516 * 4, BLOCK = 65_536;
 type Command = { band: PaintBand; first: number; end: number; direct: boolean };
 type Plan = {
-    source: PaintFrame; view: string; scale: number; live: ReadonlySet<string> | undefined;
+    source: PaintFrame; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
+    bounds: PaintBoundsCache;
     phase: 'partition' | 'raster' | 'direct' | 'complete'; band: PaintBand; index: number; run: number;
     commands: Command[]; command: number; outputs: Record<PaintBand, PaintItem[]>; direct: Record<PaintBand, PaintItem[]>;
     directAdapter: CanvasPaintAdapter | null; directLease: ByteLease | null; directEstimate: number; directDemandPublished: boolean;
@@ -24,22 +27,27 @@ type Plan = {
 };
 const projection = (view: ViewState) => [view.camera.x, view.camera.y, view.camera.z,
     view.viewport.width, view.viewport.height, view.viewport.dpr].join(':');
+const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
+    if (plan.live === live || !live) return true;
+    for (const id of live) if (!plan.live?.has(id)) return false;
+    return true;
+};
 const directItem = (item: PaintItem, live?: ReadonlySet<string>) => live?.has(item.nodeId)
     || (item.kind === 'image' ? item.blend : item.material.blend) !== 'normal';
 
 /** A private ordered-interval replay. Neither its first tile nor one finished band is a frame.
  * Source pins remain the caller's; retainedFrames includes aborted native image acquisitions. */
 export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void) {
-    let staged: Plan | null = null, ready: Plan | null = null, disposed = false, serial = 0;
+    let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
     let lastFrame = -1;
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.blocks.length * BLOCK + (p.directLease?.bytes ?? 0)
-        + p.bitmaps.size * BITMAP_BYTES + (p.tile?.memoryBytes ?? 0);
+        + p.bitmaps.size * BITMAP_BYTES + (p.tile?.memoryBytes ?? 0) + p.bounds.memoryBytes;
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
         p.retired = true;
-        p.tile?.cancel(); p.tile = null;
+        p.tile?.cancel(); p.tile = null; p.bounds.dispose();
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.bitmaps.values()) bitmap.release(); p.bitmaps.clear();
         p.commands.length = 0; p.outputs.underlay.length = p.outputs.content.length = 0;
@@ -56,26 +64,33 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         }
         p.used += 512; return true;
     };
-    const start = (frame: PaintFrame, view: ViewState, live?: ReadonlySet<string>): Plan => {
-        const scale = chooseTileScale(view.camera.z * view.viewport.dpr).scale;
+    const start = (frame: PaintFrame, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
+        const demand = view.camera.z * view.viewport.dpr, target = chooseTileScale(demand).scale;
+        const levels = fine ? 0 : Math.max(0, Math.ceil(Math.log2(Math.max(view.viewport.width, view.viewport.height) * target / (view.camera.z * EDGE))));
+        const scale = target / 2 ** levels;
         const side = EDGE / scale;
         const x0 = Math.floor(view.camera.x / side), y0 = Math.floor(view.camera.y / side);
         const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) / side);
         const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) / side);
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
-        const p: Plan = { source: frame, view: projection(view), scale, live, phase: 'partition', band: 'underlay', index: 0, run: 0,
-            commands: [], command: 0, outputs: { underlay: [], content: [] }, direct: { underlay: [], content: [] },
-            directAdapter: null, directLease: null, directEstimate: 0, directDemandPublished: false, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
-            tile: null, tileX: x0, tileY: y0, x0, x1, y0, y1, bitmaps: new Map(), blocks: [], used: 0, pending: 0,
-            retired: false, blocked: false, prepared: null, resources };
-        p.resources = { ...resources, images: { acquire(key, token, signal) {
-            p.pending++;
-            let promise;
-            try { promise = resources.images.acquire(key, token, signal); }
-            catch (error) { p.pending--; finishRetirement(p); throw error; }
-            return promise.finally(() => { p.pending--; finishRetirement(p); resources.invalidate(); });
-        } } };
-        plans.add(p); return p;
+        const lease = host.allocator.cpu.reserve(BLOCK);
+        if (!lease) { denied = true; return null; }
+        try {
+            const p: Plan = { source: frame, view: projection(view), scale, sharp: scale >= demand, live,
+                bounds: new PaintBoundsCache(host.allocator.cpu), phase: 'partition', band: 'underlay', index: 0, run: 0,
+                commands: [], command: 0, outputs: { underlay: [], content: [] }, direct: { underlay: [], content: [] },
+                directAdapter: null, directLease: null, directEstimate: 0, directDemandPublished: false, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
+                tile: null, tileX: x0, tileY: y0, x0, x1, y0, y1, bitmaps: new Map(), blocks: [lease], used: 512, pending: 0,
+                retired: false, blocked: false, prepared: null, resources };
+            p.resources = { ...resources, images: { acquire(key, token, signal) {
+                p.pending++;
+                let promise;
+                try { promise = resources.images.acquire(key, token, signal); }
+                catch (error) { p.pending--; finishRetirement(p); throw error; }
+                return promise.finally(() => { p.pending--; finishRetirement(p); resources.invalidate(); });
+            } } };
+            plans.add(p); return p;
+        } catch (error) { host.allocator.cpu.release(lease); throw error; }
     };
     const estimateDirect = (p: Plan): boolean => {
         const items = p.direct[p.estimateBand];
@@ -98,8 +113,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const publish = (p: Plan) => {
         const direct = p.directAdapter!.borrowPrepared();
         if (!direct) return;
-        const frame: PaintFrame = { ...p.source, underlay: Object.freeze(p.outputs.underlay), content: Object.freeze(p.outputs.content) };
-        p.prepared = { frame, sourceFrame: p.source, resources: {
+        const frame: PaintFrame = { ...p.source, underlay: Object.freeze(p.outputs.underlay), content: Object.freeze(p.outputs.content),
+            inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
+        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
         } };
@@ -131,7 +147,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (command.direct) { p.outputs[command.band].push(items[command.first]); p.command++; return; }
         const side = EDGE / p.scale;
         const rect: Rect = { x: p.tileX * side, y: p.tileY * side, width: side, height: side };
-        p.tile ??= new DenseTileJob(p.resources, host, report, p.source, items, rect, p.scale, command);
+        p.tile ??= new DenseTileJob(p.resources, host, report, p.source, items, rect, p.scale, command, p.bounds);
         p.tile.prepare(view, budget);
         if (!p.tile.isEmpty) {
             if (!p.tile.isComplete) return;
@@ -150,19 +166,21 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
         coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
         retainedFrames(): ReadonlySet<PaintFrame>;
-        cpuWorkingSet(): number;
+        cpuWorkingSet(nativePathUpperBound?: number): number;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {
             if (disposed || lastFrame === budget.frameId) return;
-            lastFrame = budget.frameId;
+            lastFrame = budget.frameId; denied = false;
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) { drop(staged); staged = null; return; }
             const key = projection(view);
-            if (staged && (staged.source !== frame || staged.view !== key || staged.live !== liveNodes)) { drop(staged); staged = null; }
-            if (ready?.source === frame && ready.view === key && ready.live === liveNodes) return;
+            if (staged && (staged.source !== frame || staged.view !== key || !supportsLive(staged, liveNodes))) { drop(staged); staged = null; }
+            const matches = ready?.source === frame && ready.view === key && supportsLive(ready, liveNodes);
+            if (matches && ready?.sharp) return;
             try {
-                staged ??= start(frame, view, liveNodes);
-                const p = staged; p.blocked = false;
+                staged ??= start(frame, view, liveNodes, matches);
+                const p = staged; if (!p) return;
+                p.blocked = false;
                 while (!budget.shouldYield() && !p.retired) {
                     if (!resources.frames.isCurrent(frame)) { drop(p); staged = null; return; }
                     if (p.phase === 'partition') partition(p);
@@ -221,25 +239,29 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             }
         },
         coverage(view, liveNodes) {
-            const complete = !!ready && ready.view === projection(view) && ready.live === liveNodes;
-            return { complete, sharp: complete, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
+            const complete = !!ready && ready.view === projection(view) && supportsLive(ready, liveNodes);
+            return { complete, sharp: complete && !!ready?.sharp, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),
-        cpuWorkingSet() {
+        cpuWorkingSet(nativePathUpperBound = 0) {
             let held = 0; for (const p of plans) held += working(p);
+            const pending = !!staged || !ready || !ready.sharp || ready.source !== resources.frames.readFrame() || !resources.frames.isCurrent(ready.source);
+            if (!pending) return held;
             return held + (staged?.tile ? Math.max(0, staged.tile.cpuWorkingSet - staged.tile.memoryBytes) : 2 * BITMAP_BYTES)
-                + (staged && !staged.directAdapter ? staged.directEstimate : 0) + BLOCK;
+                + Math.max(0, (staged?.bounds.cpuWorkingSet ?? 0) - (staged?.bounds.memoryBytes ?? 0))
+                + (staged && !staged.directAdapter ? staged.directEstimate : 0) + BLOCK + nativePathUpperBound;
         },
         memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {
-            if (disposed || !staged || staged.blocked) return false;
+            if (disposed || denied || staged?.blocked) return false;
+            if (!staged) return !!ready && !ready.sharp;
             if (staged.tile) return staged.tile.needsFrame();
             if (staged.directAdapter) return staged.directAdapter.needsFrame();
             return true;
         },
         release(reason: GpuReleaseReason) {
             if (reason === 'context-lost') return;
-            drop(staged); drop(ready); staged = ready = null; lastFrame = -1;
+            drop(staged); drop(ready); staged = ready = null; lastFrame = -1; denied = false;
         },
         dispose() { if (!disposed) { disposed = true; drop(staged); drop(ready); staged = ready = null; } },
     };

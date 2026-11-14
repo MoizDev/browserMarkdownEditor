@@ -11,6 +11,7 @@ import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/c
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
 import { DensityController } from './density';
+import { FilteredInk, LiveNodeUnion } from './nodeSets';
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
@@ -21,21 +22,9 @@ export interface BoardLayersOptions {
     readonly requestedRevision: () => number;
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintFrame) => ReadonlySet<string> | null;
+    readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame) => void;
-}
-class FilteredInk implements ReadonlySet<string> {
-    readonly [Symbol.toStringTag] = 'FilteredInk';
-    constructor(private readonly source: ReadonlySet<string>, private readonly omitted: ReadonlySet<string>) {}
-    get size(): number { let count = 0; for (const _ of this) count++; return count; }
-    has(id: string): boolean { return this.source.has(id) && !this.omitted.has(id); }
-    *values(): SetIterator<string> { for (const id of this.source) if (!this.omitted.has(id)) yield id; }
-    keys(): SetIterator<string> { return this.values(); }
-    *entries(): SetIterator<[string, string]> { for (const id of this) yield [id, id]; }
-    [Symbol.iterator](): SetIterator<string> { return this.values(); }
-    forEach(fn: (value: string, value2: string, set: ReadonlySet<string>) => void, thisArg?: unknown): void {
-        for (const id of this) fn.call(thisArg, id, id, this);
-    }
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -110,18 +99,39 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const retiringDense = new Set<ReturnType<typeof createDensePaintAdapter>>();
     const density = new DensityController();
     let useDense = false, deferredClear = false;
-    const liveSets = new WeakMap<PaintFrame, { omit: ReadonlySet<string>; live: ReadonlySet<string> }>();
+    const liveSets = new WeakMap<PaintFrame, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintFrame): ReadonlySet<string> | undefined => {
-        const omit = options.omitNodes?.(frame);
-        if (!omit?.size) return frame.sensitiveNodes;
-        const old = liveSets.get(frame); if (old?.omit === omit) return old.live;
-        const live = new Set(frame.sensitiveNodes); for (const id of omit) live.add(id);
-        liveSets.set(frame, { omit, live }); return live;
+        const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
+        if (!omit?.size && !wet?.size) return frame.sensitiveNodes;
+        const old = liveSets.get(frame); if (old && old.omit === omit && old.wet === wet) return old.live;
+        const live = new LiveNodeUnion(frame.sensitiveNodes, omit, wet);
+        liveSets.set(frame, { omit, wet, live }); return live;
     };
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
-    let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null;
-    let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackMask = 0;
-    const drawn = new Map<PaintBand, { frame: PaintFrame; omit: ReadonlySet<string> | null }>();
+    let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
+    let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
+    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string> };
+    const drawn = new Map<PaintBand, Drawn>();
+    let drawSource: PaintFrame | null = null, prepareToken: RenderToken | null = null;
+    let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
+    const recordDraw = (band: PaintBand, value: Drawn) => {
+        // Accepted acknowledgements retain this exact frozen budget token. Revision alone cannot
+        // distinguish a coarse summary from its fine replacement of the SAME immutable source.
+        if (drawSource !== value.frame) { drawTokens = new WeakMap(); drawSource = value.frame; }
+        drawn.set(band, value);
+        if (!prepareToken) return;
+        let bands = drawTokens.get(prepareToken);
+        if (!bands) { bands = new Map(); drawTokens.set(prepareToken, bands); }
+        bands.set(band, value);
+    };
+    const inkFrames = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
+    const inkFrame = (frame: PaintFrame, ink: ReadonlySet<string>): PaintFrame => {
+        if (frame.inkNodeIds === ink) return frame;
+        let versions = inkFrames.get(frame); if (!versions) { versions = new WeakMap(); inkFrames.set(frame, versions); }
+        let result = versions.get(ink);
+        if (!result) { result = { ...frame, inkNodeIds: ink }; versions.set(ink, result); }
+        return result;
+    };
     const filtered = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
     const presentedFrame = (frame: PaintFrame, omit: ReadonlySet<string> | null): PaintFrame => {
         if (!omit?.size) return frame;
@@ -161,7 +171,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); ackFrame = null; ackOmit = null; ackMask = 0;
+        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); drawSource = null; prepareToken = null;
+        ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; presentedInk = null;
         if (reason === 'hidden') {
             deferredClear = true; collectRetired(); presented = null;
             density.reset(); useDense = false;
@@ -208,7 +219,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
         if (!adapter || disposed || lastPrepareFrame === budget.frameId) return;
-        lastPrepareFrame = budget.frameId;
+        lastPrepareFrame = budget.frameId; prepareToken = budget.token;
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);
@@ -252,19 +263,22 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         } catch (error) { report(error); }
     };
     const acknowledge = (band: PaintBand, revision: number, token: RenderToken) => {
-        const drawnBand = drawn.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null;
-        if (!frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
-        if (ackFrame !== frame || ackOmit !== omit) { ackFrame = frame; ackOmit = omit; ackMask = 0; }
+        const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null, ink = drawnBand?.ink;
+        if (!frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
+        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink) { ackFrame = frame; ackOmit = omit; ackInk = ink; ackMask = 0; }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
-        if (presented === frame && presentedOmit === omit) { ackFrame = null; ackOmit = null; ackMask = 0; return; }
+        if (presented === frame && presentedOmit === omit && presentedInk === ink) {
+            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; drawTokens.delete(token); return;
+        }
         try {
             options.frames.presented(frame);
-            const previous = presented; presented = frame; presentedOmit = omit; ackFrame = null; ackOmit = null; ackMask = 0;
+            const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink;
+            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; drawTokens.delete(token);
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
                 options.frames.retire(previous); releaseFrame(previous); known.delete(previous);
             }
-            options.onPresented?.(revision, token, presentedFrame(frame, omit));
+            options.onPresented?.(revision, token, presentedFrame(inkFrame(frame, ink), omit));
         } catch (error) { report(error); }
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
@@ -279,14 +293,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const frame = gpu?.readyFrame();
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
-                    drawn.set(band, { frame, omit });
+                    recordDraw(band, { frame, omit, ink: gpu!.readyInkNodeIds() ?? frame.inkNodeIds });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
                 },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
-                    drawn.set(band, { frame, omit });
+                    recordDraw(band, { frame, omit, ink: adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
                 },
                 releaseGpu(reason) { clearResources(reason); },
@@ -325,22 +339,30 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;
             const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
             return { mandatoryBytes: hosts.get(band) === allocatorHost
-                ? reserved + upcoming + scratch + (useDense ? (dense?.cpuWorkingSet() ?? 0) + (estimate?.maxItemBytes ?? 0) : 0) + (options.frames.cpuWorkingSet?.() ?? 0) : 0, prefetchBytes: 0 };
+                ? reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0) : 0, prefetchBytes: 0 };
         },
         critical() { return !adapter?.readyFrame(); },
         coverage(layer, frame, backend) {
             const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
             const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
             const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
-            if (useDense && (!ready || !dense?.coverage(frame.view, liveFor(ready)).complete)) return { complete: false, sharp: false };
+            const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
+            if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
             if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
             if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
             const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision() && options.frames.isCurrent(ready);
-            return current ? { complete: true, sharp: gpuCoverage?.sharp ?? true } : { complete: false, sharp: false, staleVersion: true };
+            return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
         },
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
-    pair.readyFrame = () => disposed ? null : adapter?.readyFrame() ?? null;
+    pair.readyFrame = () => {
+        if (disposed) return null;
+        const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;
+        const frame = gpuFrame ?? adapter?.readyFrame();
+        if (!frame) return null;
+        const ink = gpuFrame ? gpu?.readyInkNodeIds() : adapter?.borrowPrepared()?.frame.inkNodeIds;
+        return ink ? inkFrame(frame, ink) : frame;
+    };
     return Object.freeze(pair);
 }

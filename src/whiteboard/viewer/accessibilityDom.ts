@@ -120,7 +120,7 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
             announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.');
         }
         else exitPenMode.hidden = true;
-    });
+    }, report);
     const a11y: BoardInputView['a11y'] = {
         toolState(snapshot: ToolStateSnapshot) {
             if (!active()) return;

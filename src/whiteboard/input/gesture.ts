@@ -56,14 +56,18 @@ export class ToolState {
     this.penModeValue = enabled
     for (const listener of [...this.penModeListeners]) listener(enabled)
   }
-  subscribePenMode(listener: (enabled: boolean) => void): () => void {
-    this.penModeListeners.add(listener)
-    return () => { this.penModeListeners.delete(listener) }
+  subscribePenMode(listener: (enabled: boolean) => void, onError?: (error: unknown) => void): () => void {
+    const safe = (enabled: boolean) => { try { listener(enabled) } catch (error) { try { onError?.(error) } catch { /* Notify the other views. */ } } }
+    this.penModeListeners.add(safe)
+    return () => { this.penModeListeners.delete(safe) }
   }
-  subscribePenContacts(listener: (id: number, down: boolean, direct: boolean, time: number) => void): () => void {
-    this.penContactListeners.add(listener)
-    for (const contacts of this.penContacts.values()) for (const id of contacts.values()) listener(id, true, false, 0)
-    return () => { this.penContactListeners.delete(listener) }
+  subscribePenContacts(listener: (id: number, down: boolean, direct: boolean, time: number) => void, onError?: (error: unknown) => void): () => void {
+    const safe = (id: number, down: boolean, direct: boolean, time: number) => {
+      try { listener(id, down, direct, time) } catch (error) { try { onError?.(error) } catch { /* Notify the other views. */ } }
+    }
+    this.penContactListeners.add(safe)
+    for (const contacts of this.penContacts.values()) for (const id of contacts.values()) safe(id, true, false, 0)
+    return () => { this.penContactListeners.delete(safe) }
   }
   penDown(owner: symbol, pointerId: number, direct: boolean, time: number): void {
     let contacts = this.penContacts.get(owner)

@@ -7,6 +7,8 @@ import { ToolState, type ToolStateSnapshot } from './gesture'
 import { installKeyboard } from './keyboard'
 import { createKeyboardCursor } from './keyboardCursor'
 import { LiveInk, WetInkHandover } from './liveInk'
+import { InkContinuationGesture } from './continueInkGesture'
+import type { InkContinuation } from './continueInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
@@ -65,7 +67,7 @@ export interface BoardInputServices {
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
   linkAt?(sample: RealSample): (() => void) | null
-  continueInk?(sample: RealSample): ((endpoint: RealSample, signal: AbortSignal) => Promise<boolean>) | null
+  continueInk?(sample: RealSample): InkContinuation | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
@@ -132,25 +134,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const tool = sessionInkTool(id, handover)
     return { id, begin: (sample, modifiers) => tool.begin(sample, modifiers, { ...services.ink(id, sample), session, tool: id, clearRedoAtDown: () => services.history.clearRedo() }) }
   }
-  const continuationTool = (sample: RealSample, commit: (endpoint: RealSample, signal: AbortSignal) => Promise<boolean>): Tool<unknown> => ({
-    id: 'continue-ink', begin: () => {
-      let endpoint = sample, ended = false, running = false, cleaned = false
-      const controller = new AbortController(), release = session.beginGesture()
-      const cleanup = () => { if (cleaned) return; cleaned = true; pendingContinuations.delete(cancel); release() }
-      const cancel = () => { if (cleaned) return; ended = true; controller.abort(); if (!running) cleanup() }
-      pendingContinuations.add(cancel)
-      return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]),
-        update: samples => { if (!ended) for (const point of samples) if (point.pointerId === sample.pointerId) endpoint = point },
-        finish: reason => {
-          if (ended) return
-          if (reason !== 'up') { cancel(); return }
-          ended = true; running = true
-          void commit(endpoint, controller.signal).catch(error => {
-            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) services.error(error)
-          }).finally(cleanup)
-        },
-        cancel, discard: cancel }
-    },
+  const continuationTool = (sample: RealSample, plan: InkContinuation): Tool<unknown> => ({
+    id: 'continue-ink', begin: () => new InkContinuationGesture(sample, plan, {
+      session, handover, invalidate: () => view.wet.invalidate(), error: services.error,
+      registerPending(cancel) { pendingContinuations.add(cancel); return () => { pendingContinuations.delete(cancel) } },
+    }),
   })
   const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
@@ -308,6 +296,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (current() && router.activeOwner instanceof LiveInk) {
       if (pendingPrediction && router.activeOwner.allowsPrediction) router.activeOwner.publishPrediction(pendingPrediction)
       else router.activeOwner.publish()
+    } else if (current() && router.activeOwner instanceof InkContinuationGesture) {
+      const owner = router.activeOwner
+      try { owner.publish() }
+      catch (error) {
+        if (owner.pointerIds.has(-1)) cancelKeyboardGesture(); else pointer.interrupt('os-cancel')
+        services.error(error)
+      }
     }
     pendingPrediction = undefined
   })

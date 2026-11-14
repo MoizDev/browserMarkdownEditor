@@ -2,6 +2,7 @@ import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
 import type { PredictedPoint } from './prediction'
+import type { PaintClip } from '../render/paintStream'
 
 export interface InkIdentity {
   readonly nodeId: string
@@ -19,6 +20,9 @@ export interface InkPresentation {
   readonly width: number
   readonly fairTol: number
   readonly localToWorld: readonly [number, number, number, number, number, number]
+  /** Continuations inherit their existing node's opacity and ancestor frame clips. */
+  readonly opacity?: number
+  readonly clips?: readonly PaintClip[]
 }
 
 export interface LiveInkContext {

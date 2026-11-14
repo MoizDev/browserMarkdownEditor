@@ -32,7 +32,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
     return {
         continueInk: createInkContinuation({ session, samples, tools: runtime.tools, current: () => options.current(options.token),
             sheet: () => runtime.selection.getSnapshot().sheet, selection: () => runtime.selection.getSnapshot(),
-            declaredMaxScale: () => Math.max(8, camera.camera.z * 8) }),
+            declaredMaxScale: () => Math.max(8, camera.camera.z * 8), captureDeviceScale: () => camera.camera.z * camera.viewport.dpr }),
         ink(tool: 'pen' | 'highlighter', first: RealSample) {
             if (!options.current(options.token) || session.isReadOnly) throw new Error('Ink view is no longer editable');
             if (![first.x, first.y, camera.camera.z, camera.viewport.dpr].every(Number.isFinite)

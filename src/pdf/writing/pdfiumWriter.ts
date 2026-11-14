@@ -65,7 +65,7 @@ export class PdfiumWriter {
                 outer.assertEditable();
                 outerAttachments = await inventoryNativeAttachments(outer, () => context.slice());
             }
-            const path = preservationPath(pristineAttachments, outerAttachments, source.formatId, source.pristineFingerprint);
+            const path = preservationPath(pristineAttachments, outerAttachments, source.formatId, source.pristineFingerprint, source.outerFingerprint);
             const writerSession = crypto.randomUUID();
             if (this.disposed || context.cancelled) throw new PdfEngineError('AbortError', 'PDF writer preparation cancelled');
             this.sessions.set(writerSession, { source, path, pageCount: count });

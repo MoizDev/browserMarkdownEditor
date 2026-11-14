@@ -83,11 +83,11 @@ export class InkPath2dJob {
     private count = 0;
     readonly origin: PathOrigin2d;
 
-    constructor(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN) {
+    constructor(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN, maxCommands = 1048576) {
         if (!origin.every(Number.isFinite)) throw new RangeError('Ink path origin must be finite');
         this.origin = Object.freeze([origin[0], origin[1]] as const);
         const path = this.path!, localOrigin = this.origin;
-        this.outline = new InkOutlineJob(coverage, deviceScale, command => appendPath2d(path, command, localOrigin));
+        this.outline = new InkOutlineJob(coverage, deviceScale, command => appendPath2d(path, command, localOrigin), maxCommands);
     }
 
     get result(): Path2D | null { return this.state === 'complete' ? this.path : null; }
@@ -122,8 +122,8 @@ export class InkPath2dJob {
 /** Cache by geometryKey + scale band and fill ONCE with nonzero, never capsule source-over.
  * Synchronous callers use this convenience entry; Layer.prepare advances InkPath2dJob instead.
  */
-export function inkPath2d(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN): Path2D {
-    const job = new InkPath2dJob(coverage, deviceScale, origin);
+export function inkPath2d(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN, maxCommands = 1048576): Path2D {
+    const job = new InkPath2dJob(coverage, deviceScale, origin, maxCommands);
     while (job.step(4096) === 'pending') { /* Bounded callers deliberately finish synchronously. */ }
     const result = job.result;
     if (!result) throw new Error('Ink path construction was cancelled');

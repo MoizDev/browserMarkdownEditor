@@ -1,6 +1,6 @@
 import type { CachedClipboard } from '../clipboard/copy';
 import { makeClipboardNativeRecords } from '../clipboard/nativeRecords';
-import type { BoardPayload } from '../clipboard/snapshot';
+import type { BoardPayload, CopySnapshot } from '../clipboard/snapshot';
 import type { SampleStore } from '../ink/samples';
 import type { MediaId } from '../model/media';
 import type { RehydratedLoad } from '../model/loadTypes';
@@ -61,7 +61,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
     options.signal?.throwIfAborted();
     if (!validBoardIdentity(options.identity) || !options.decoded || typeof options.decoded.cacheOnly !== 'boolean'
         || !Array.isArray(options.decoded.inline) || options.decoded.inline.length > SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard acquisition');
-    const identity = Object.freeze({ ...options.identity }), marker = snapshot(options.decoded.payload);
+    const marker = snapshot(options.decoded.payload);
     let source = marker;
     if (options.decoded.cacheOnly) {
         if (marker.records.length || Object.keys(marker.media).length || options.decoded.inline.length) throw new TypeError('Invalid cache-only clipboard marker');
@@ -81,6 +81,37 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         inline.push(Object.freeze({ id: item.id, blob: new Blob([item.blob], { type: item.blob.type }) }));
     }
     Object.freeze(inline);
+    return acquireClipboardSource(source, inline, options);
+}
+
+export interface CopiedBoardClipboardOptions extends Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'> {
+    /** Exact copied source bytes retained by the caller, not destination-path lookups. */
+    readonly media?: ReadonlyMap<MediaId, Blob>;
+}
+/** In-session duplicate uses its real native source directly, including cache-only copies.
+ * It does not manufacture a decoder reply or round-trip through OS clipboard limits. */
+export async function acquireCopiedBoardClipboard(copy: CopySnapshot, options: CopiedBoardClipboardOptions): Promise<BoardClipboardAcquisition> {
+    options.signal?.throwIfAborted();
+    if (!validBoardIdentity(options.identity) || !copy || !Array.isArray(copy.media)) throw new TypeError('Invalid copied board source');
+    const source = snapshot(copy.payload), inline: { id: MediaId; blob: Blob }[] = [], seen = new Set<MediaId>();
+    const entries = new Map(copy.media.map(entry => [entry.id, entry]));
+    if (entries.size !== copy.media.length || entries.size > SECURITY_LIMITS.clipboardRecords) throw new TypeError('Invalid copied media metadata');
+    for (const [id, blob] of options.media ?? []) {
+        const entry = entries.get(id);
+        if (!entry || seen.has(id) || !(blob instanceof Blob) || blob.size !== entry.bytes || blob.size > SECURITY_LIMITS.mediaBytes) {
+            throw new TypeError('Copied media does not match its source metadata');
+        }
+        seen.add(id); inline.push(Object.freeze({ id, blob: new Blob([blob], { type: blob.type }) }));
+    }
+    // Each Blob still undergoes the same hash and actual downstream media inspection.
+    // The browser envelope's 32 MiB inline cap is not an in-session source-data cap.
+    return acquireClipboardSource(source, Object.freeze(inline), options);
+}
+
+async function acquireClipboardSource(source: BoardPayload, inline: readonly Readonly<{ id: MediaId; blob: Blob }>[],
+    options: Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'>): Promise<BoardClipboardAcquisition> {
+    if (!source.records.length) throw new Error('Clipboard contains no native records');
+    const identity = Object.freeze({ ...options.identity });
     const signal = options.signal ?? new AbortController().signal;
     const check = () => { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError'); };
     const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };

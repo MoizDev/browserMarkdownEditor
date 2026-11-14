@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "stream": "pdf",
+  "fixtures": [
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry-invalid-non-finite.pdf",
+      "file": "geometry-invalid-non-finite.pdf",
+      "sha256": "9246406c56e73850433bcd3fc639f4a56210a2a27de115276b673f579d608678",
+      "bytes": 218,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "validity": "invalid",
+      "knownFailures": [
+        "Intentionally invalid page box; not a renderability golden"
+      ],
+      "canonicalManifest": "verify/fixtures/platform/manifest.json"
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry-invalid-zero-width.pdf",
+      "file": "geometry-invalid-zero-width.pdf",
+      "sha256": "3b94a66fcde3e4adf129801bcbdc8f8779e9044bf483fb7192219c70510bf433",
+      "bytes": 216,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "validity": "invalid",
+      "knownFailures": [
+        "Intentionally invalid page box; not a renderability golden"
+      ],
+      "canonicalManifest": "verify/fixtures/platform/manifest.json"
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry.oracle.json",
+      "file": "geometry.oracle.json",
+      "sha256": "66d53917afbc9bd7b5cb07858892cfc8a3b67f25847eda75bf947e110cdea7ad",
+      "bytes": 51105,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "canonicalManifest": "verify/fixtures/platform/manifest.json"
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry.pdf",
+      "file": "geometry.pdf",
+      "sha256": "2d676f68019751e8479fd2da42096abcec3692ac8f913c6b31bc32ba290749f9",
+      "bytes": 25267,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "pages": 24,
+      "expected": "geometry.oracle.json",
+      "canonicalManifest": "verify/fixtures/platform/manifest.json"
+    }
+  ]
+}

@@ -152,14 +152,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             surfaceHost.select(cpu);
         },
         selectGpu: grant => {
-            if (!gpu || gpu.grant.generation !== grant.generation) throw new Error('GPU grant is no longer current');
+            if (!gpu || gpu.grant.generation !== grant.generation) return false;
+            const memoryGrant = runtime.governor.grant(options.paneId);
+            const memory = runtime.governor.readout().gpu;
+            if (!memoryGrant || gpu.backing.reservedBytes > memoryGrant.pixelGrant * RENDER_CONSTANTS.surfaceReserveBytesPerPixel ||
+                memory.chargedBytes > memory.targetBytes) {
+                lifecycle?.invalidate('budget');
+                return false;
+            }
             created.presenter.releaseSurface();
             if (!gpu.backing.promote()) {
                 const surface = lifecycle?.surface;
                 surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
-                throw new Error('GPU backing promotion was refused');
+                return false;
             }
             surfaceHost.select(gpu.bundle.compositor);
+            return true;
         },
         mirrorQuad: (entry, view) => options.mirrorQuad?.(entry, view) ?? null,
         mirrorCoverage: (view, entries) => options.mirrorCoverage?.(view, entries) ?? { complete: false, sharp: false },

@@ -200,7 +200,7 @@ export interface Compositor2DOptions<T extends object> {
     recordUpload(bytes: number, actualCallMs: number): void;
     /** Presenter selection delegates to the actor's existing backend selector; no second state machine. */
     select2D(compositor: PaneCompositor): void;
-    selectGpu(grant: GpuGrant): void;
+    selectGpu(grant: GpuGrant): boolean;
     mirrorQuad(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;
     mirrorCoverage(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
     readonly browserBuild?: string;

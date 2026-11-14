@@ -39,6 +39,8 @@ export interface IncrementalPdfPageSource {
   readonly source: PaintNodeSource
   readonly world: Readonly<Rect>
   readonly paper?: PageDisplayList
+  /** Additional logical sheets are emitted in order, without collecting a physical page. */
+  readonly additionalSources?: AsyncIterable<PaintNodeSource>
   /** Page-space scale; shape realization quality is supplied separately. */
   readonly outputScale?: number
 }
@@ -204,23 +206,31 @@ export async function writeIncrementalPdfPage(page: IncrementalPdfPageSource, in
   const clip: PathCommand[] = [['M', world.x, world.y], ['L', world.x + world.width, world.y],
     ['L', world.x + world.width, world.y + world.height], ['L', world.x, world.y + world.height], ['Z']]
   await sink.beginGroup({ transform: [outputScale, 0, 0, outputScale, -world.x * outputScale, -world.y * outputScale], clip: { d: clip } }, signal)
-  const chunk: PaintItem[] = [], job = new PaintStreamJob(source, item => { chunk.push(item) })
-  const text = createStreamingExportTextPieces(source, signal)
-  try {
-    let complete = false
-    while (!complete) {
-      guard(source, signal)
-      const status = job.step(64)
-      if (status === 'stale' || status === 'cancelled') throw new Error(`PDF paint capture ${status}`)
-      complete = status === 'complete'
-      for (const item of chunk) await writePaint(item, scale, image, sink, source, signal, text)
-      chunk.length = 0
-      if (!complete) await new Promise<void>(resolve => setTimeout(resolve, 0))
-    }
+  const identity = sourceIdentity(source)
+  const writeSource = async (sheet: PaintNodeSource) => {
     guard(source, signal)
-    await sink.endGroup(signal)
-    guard(source, signal)
-  } finally { job.cancel() }
+    if (!sameIdentity(identity, sheet)) throw new Error('PDF sheets must share one pinned revision')
+    const chunk: PaintItem[] = [], job = new PaintStreamJob(sheet, item => { chunk.push(item) })
+    const text = createStreamingExportTextPieces(sheet, signal)
+    try {
+      let complete = false
+      while (!complete) {
+        guard(source, signal); guard(sheet, signal)
+        const status = job.step(64)
+        if (status === 'stale' || status === 'cancelled') throw new Error(`PDF paint capture ${status}`)
+        complete = status === 'complete'
+        for (const item of chunk) await writePaint(item, scale, image, sink, sheet, signal, text)
+        chunk.length = 0
+        if (!complete) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
+      guard(sheet, signal)
+    } finally { job.cancel() }
+  }
+  await writeSource(source)
+  if (page.additionalSources) for await (const sheet of page.additionalSources) await writeSource(sheet)
+  guard(source, signal)
+  await sink.endGroup(signal)
+  guard(source, signal)
 }
 
 /** Writer, source and media are already pinned by the owning export job; no partial result escapes. */

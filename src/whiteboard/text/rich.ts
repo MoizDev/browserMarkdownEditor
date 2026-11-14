@@ -1,10 +1,15 @@
 import type { Block, Marks, RichFragment, RichSpliceResult, RichText } from './richText';
+import type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
+import type { TextAffinity } from './rangeMap';
+import type { PlainTextOptions } from './plainText';
 
 export type RichMark = 'b' | 'i' | 'u' | 's' | 'code' | 'hl';
 export interface RichSelection { readonly anchor: number; readonly focus: number }
 export interface RichEdit { readonly from: number; readonly to: number; readonly insert: RichFragment; readonly selection: RichSelection; readonly replaceBlocks?: true }
 export type { Block, BlockCarrier, Marks, RichFragment, RichSpliceResult, RichText, Run } from './richText';
-export { plain, fromPlain, marksAt, linkRangeAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
+export { plain, fromPlain, fromPlainCooperative, marksAt, linkRangeAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
+export { normalizePlainInsertion, normalizePlainInsertionCooperative } from './plainText';
+export type { PlainTextOptions } from './plainText';
 export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
 export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
 export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
@@ -19,8 +24,10 @@ export type { RichSpliceOperation, RichTransactionResult } from './richTransacti
 export interface RichTextOperations {
     plain(value: RichText): string;
     fromPlain(value: string): RichText;
+    fromPlainCooperative(value: string, options: PlainTextOptions): Promise<RichText>;
     normalize(value: RichText): RichText;
     splice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks?: boolean): RichSpliceResult;
+    transaction(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection, affinity?: TextAffinity): RichTransactionResult;
     marksAt(value: RichText, offset: number): Marks;
     insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment;
     toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment;

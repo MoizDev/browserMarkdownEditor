@@ -1,11 +1,11 @@
 import { textBoundaries } from './boundaries';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
-import { normalizePlainInsertion } from './plainText';
+import { normalizePlainInsertion, normalizePlainInsertionCooperative, type PlainTextOptions } from './plainText';
 import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
 import { carrierForTail, trackBlock, trackRun } from './carriers';
 import { runContaining, runIndex } from './runIndex';
-import { validateRichFragment } from './richTransaction';
+import { applyRichTransaction, validateRichFragment } from './richTransaction';
 
 const position = projectionPosition;
 const blockTextLength = (block: Block): number => runIndex(block).length;
@@ -37,6 +37,27 @@ export function plain(value: RichText): string {
 export function fromPlain(value: string): RichText {
     const lines = normalizePlainInsertion(value).split('\n');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
+}
+export async function fromPlainCooperative(value: string, options: PlainTextOptions): Promise<RichText> {
+    const normalized = await normalizePlainInsertionCooperative(value, options), blocks: Block[] = [];
+    const budget = options.sliceMilliseconds ?? 3;
+    let first = 0, started = performance.now();
+    for (let index = 0; index <= normalized.length; index++) {
+        if (index === normalized.length || normalized.charCodeAt(index) === 10) {
+            blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: normalized.slice(first, index), marks: {} }] });
+            first = index + 1;
+        }
+        if ((index & 4095) === 4095) {
+            options.signal?.throwIfAborted();
+            if (performance.now() - started >= budget) {
+                await options.cooperate();
+                options.signal?.throwIfAborted();
+                started = performance.now();
+            }
+        }
+    }
+    options.signal?.throwIfAborted();
+    return { blocks };
 }
 export function marksAt(value: RichText, offset: number): Marks {
     check(value, offset);
@@ -71,7 +92,9 @@ export function linkRangeAt(value: RichText, offset: number): { readonly from: n
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
     const { block } = position(value, from);
-    const marks = storedMarks ?? marksAt(value, from);
+    // Unknown marks belong to their original run; their semantics cannot be
+    // inferred for freshly typed characters, even through a stored-mark value.
+    const { x: _x, ...marks } = storedMarks ?? marksAt(value, from);
     const lines = normalizePlainInsertion(inserted).split('\n');
     return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
 }
@@ -140,5 +163,6 @@ function checkedSplice(value: RichText, from: number, to: number, insert: RichFr
     validateRichFragment(insert);
     return spliceRichText(value, from, to, insert, wholeBlocks);
 }
-export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: checkedSplice, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
+export const richTextOperations: RichTextOperations = { plain, fromPlain, fromPlainCooperative, normalize: normalizeRichText, splice: checkedSplice,
+    transaction: applyRichTransaction, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
 export function projectionLength(text: RichText): number { return indexedLength(text); }

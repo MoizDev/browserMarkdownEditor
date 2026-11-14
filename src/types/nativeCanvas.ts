@@ -20,6 +20,8 @@ export interface NativeCanvasMedia {
 
 export interface NativeCanvasHost {
     identity(documentId: string): NativeCanvasIdentity | undefined;
+    /** The current outer-file generation, even when a native session retains its source generation. */
+    outerIdentity(documentId: string): NativeCanvasIdentity | undefined;
     session(documentId: string): SessionAdapter | undefined;
     isCurrent(identity: NativeCanvasIdentity): boolean;
     acquireBytes(identity: NativeCanvasIdentity, signal: AbortSignal): Promise<Blob>;

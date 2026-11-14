@@ -1218,6 +1218,14 @@ export default function App() {
         return { documentId: id, session: entry.serial, bytesGeneration: retained ? policy.sourceGeneration : entry.bytesGeneration,
           vaultActivation: activation, kind, path: tab.file.path, name: tab.file.name };
       },
+      outerIdentity(id) {
+        const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
+        if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
+        const loaded = tab.representation.loadedKind;
+        if (loaded !== 'pdf' && loaded !== 'drawing' && loaded !== 'notebook') return undefined;
+        return { documentId: id, session: entry.serial, bytesGeneration: entry.bytesGeneration,
+          vaultActivation: getVaultActivation(), kind: loaded === 'pdf' ? 'pdfInk' : loaded, path: tab.file.path, name: tab.file.name };
+      },
       isCurrent: identity => !!current(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;

@@ -180,7 +180,15 @@ export function reorderBidiLine(paragraph: BidiParagraph, from: number, to: numb
     const chars = paragraph.characters;
     const order: number[] = [];
     const levels: number[] = [];
-    for (let i = 0; i < chars.length; i++) if (!chars[i].removed && chars[i].start >= from && chars[i].end <= to) { order.push(i); levels.push(chars[i].level); }
+    let lo = 0, hi = chars.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (chars[mid].start < from) lo = mid + 1;
+        else hi = mid;
+    }
+    for (let i = lo; i < chars.length && chars[i].start < to; i++) {
+        if (!chars[i].removed && chars[i].end <= to) { order.push(i); levels.push(chars[i].level); }
+    }
     const resettable = (t: string) => oneOf(t, 'WS', 'FSI', 'LRI', 'RLI', 'PDI');
     for (let i = 0; i < order.length; i++) if (oneOf(chars[order[i]].originalType, 'S', 'B')) {
         levels[i] = paragraph.level;

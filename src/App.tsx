@@ -3,7 +3,11 @@ import { createDocumentBuffers, type ContentSource } from './utils/documentBuffe
 import { createDocumentSessions } from './utils/documentSessions';
 import { installSessionIdentity } from './utils/sessionIdentity';
 import { watchForNewVersion } from './utils/versionPoll';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface } from './utils/documentReading';
+import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,classifyLoadedTabs,getReadingSurface,withNativeCanvasPolicy } from './utils/documentReading';
+import { getSessionIdentity } from './utils/sessionIdentity';
+import type { NativeCanvasReady } from './types/reading';
+import { conversionDigestFromText, registerConversionRestore } from './utils/conversionRestore';
+import { fingerprintSnapshot } from './utils/snapshotFingerprint';
 import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
 import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
 import { flushSync } from 'react-dom';
@@ -42,7 +46,7 @@ import { createRecoveryFunnel } from './utils/recoveryFunnel';
 import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
 import { reloadSpec } from './editor/externalReload';
 import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
+import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isDrawingFile, isNativeDrawingFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
 import {
   EMPTY_LAYOUT,
@@ -418,6 +422,8 @@ export default function App() {
     keepCopyInGarbage,
     listTrash,
     restoreFromTrash,
+    restoreConversionCopy,
+    copyTrashFile,
     deleteFromTrash,
     emptyTrash,
     moveFile,
@@ -1049,6 +1055,33 @@ export default function App() {
       }));
     }
   }, [tabs, layout, documentBuffers, documentSessions]);
+  const nativePoliciesRef = useRef(new Map<string, { session: number; generation: number; activation: number; emergencyReadOnly: boolean }>());
+  const onNativeCanvasReady = useCallback<NativeCanvasReady>(acquisition => {
+    const { owner, vaultActivation, bytesGeneration, kind } = acquisition;
+    const live = () => {
+      const identity = getSessionIdentity(owner.documentId);
+      return getVaultActivation() === vaultActivation && identity?.serial === owner.session && identity.bytesGeneration === bytesGeneration;
+    };
+    const tab = tabsRef.current.find(t => t.id === owner.documentId);
+    if (!live() || !tab || tab.readError || tab.representation.status !== 'ready') return null;
+    if (kind === 'pdfInk' ? tab.representation.loadedKind !== 'pdf'
+      : kind === 'notebook' ? !isNotebookFile(tab.file.name)
+        : !isCanvasFile(tab.file.name) || isNotebookFile(tab.file.name)) return null;
+    const prior = nativePoliciesRef.current.get(owner.documentId);
+    const emergencyReadOnly = prior && prior.session === owner.session && prior.generation === bytesGeneration && prior.activation === vaultActivation
+      ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
+    nativePoliciesRef.current.set(owner.documentId, { session: owner.session, generation: bytesGeneration, activation: vaultActivation, emergencyReadOnly });
+    const digest = acquisition.legacyOriginalSha256;
+    const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+    setTabs(previous => previous.map(current => current.id === owner.documentId && live()
+      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
+      : current));
+    return { emergencyReadOnly };
+  }, [getVaultActivation]);
+  useEffect(() => {
+    const open = new Set(tabs.map(tab => tab.id));
+    for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
+  }, [tabs]);
   useEffect(() => {
     layoutRef.current = layout;
     visiblePathsRef.current = visiblePaths(layout);
@@ -1986,6 +2019,58 @@ export default function App() {
   const notebookExportInFlightRef = useRef(false);
   const trashInFlightRef = useRef<boolean>(false);
 
+  const restoreBeforeConversion = useCallback(async (node: FileTreeNode) => {
+    if (trashInFlightRef.current || node.kind !== 'file' || !node.parentHandle || !rootHandle) return;
+    trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const controller = new AbortController();
+    const pdfTab = isPdfFile(node.name) ? tabsRef.current.find(t => t.file.path === node.path) : undefined;
+    const current = () => getVaultActivation() === activation && (!pdfTab || (pdfTab.representation.nativeCanvasKind === 'pdfInk'
+      && pdfTab.representation.nativeCanvasSession !== undefined && getSessionIdentity(pdfTab.id)?.serial === pdfTab.representation.nativeCanvasSession
+      && tabsRef.current.some(t => t.id === pdfTab.id && t.file.path === node.path && t.representation.generation === pdfTab.representation.generation && t.representation.legacyOriginalSha256 === pdfTab.representation.legacyOriginalSha256)));
+    try {
+      await reconcileQueueRef.current;
+      if (isPdfFile(node.name) && (!pdfTab || !current())) { notify('Open the converted PDF annotation view first to locate its pre-conversion copy.'); return; }
+      const source = pdfTab ? null : await readFileVersioned(node.handle);
+      const digest = pdfTab ? pdfTab.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
+      if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
+        notify('No pre-conversion copy is recorded for this file. For a converted PDF, open its annotation view first.');
+        return;
+      }
+      const items = await listTrash();
+      const queue = [...items];
+      let match: TrashItem | undefined;
+      let unreadable = false;
+      for (let i = 0; i < queue.length && current(); i++) {
+        const item = queue[i];
+        if (item.kind === 'directory') { if (item.children) queue.push(...item.children); continue; }
+        if (item.origin !== 'trashed') continue;
+        try {
+          const file = await handleIO.file(item.handle as FileSystemFileHandle);
+          if (await fingerprintSnapshot(file, controller.signal) === digest) { match = item; break; }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          unreadable = true;
+        }
+      }
+      if (!current()) return;
+      if (!match) { notify(unreadable ? 'Some Trash files could not be read; the pre-conversion copy could not be located.' : 'The pre-conversion copy is no longer available in Trash.'); return; }
+      if (source && (await readFileVersioned(node.handle)).version.hash !== source.version.hash) {
+        notify('The converted file changed; try restoring again.'); return;
+      }
+      const name = await restoreConversionCopy({ root: rootHandle, parent: node.parentHandle, owner: node.handle,
+        hash: digest, signal: controller.signal, isCurrent: current }, match);
+      if (current()) announce(`Restored a copy as "${name}". The converted file and Trash backup are unchanged.`);
+    } catch (error) {
+      console.error('Could not restore pre-conversion copy:', error);
+      if (current()) notify('Could not restore the pre-conversion copy. Nothing was replaced.');
+    } finally {
+      controller.abort();
+      trashInFlightRef.current = false;
+    }
+  }, [announce, getVaultActivation, handleIO, listTrash, notify, readFileVersioned, restoreConversionCopy, rootHandle]);
+  useEffect(() => registerConversionRestore(node => { void restoreBeforeConversion(node); }), [restoreBeforeConversion]);
+
   // Shared destination transaction for a staged notebook PDF. The source owner
   // is pinned before rendering; no worker receives a filesystem handle.
   const commitNotebookPdf = useCallback(async (file: ActiveFile, bytes: Uint8Array, sourceId: string, isCurrent: () => boolean): Promise<boolean> => {
@@ -2310,7 +2395,7 @@ export default function App() {
     // that '' would erase a note the app merely failed to read.
     const pendingRevision = pendingRevisionsRef.current.get(tab.id);
     const pending = !!pendingRevision && pendingRevision.revision > pendingRevision.saved;
-    if (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !(pending && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path)))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !pending && !force) return 'skipped';
     // A drain reports into the synchronous funnel before React commits its tab.
@@ -3821,15 +3906,20 @@ export default function App() {
     setSaveStatus('');
   }, []);
 
+  const createInFlightRef = useRef(false);
   const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
     if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
-    const where = parentPath || parentHandle?.name || 'this folder';
+    if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    const where = parentPath || parentHandle.name || 'this folder';
+    const root = rootHandleRef.current;
     try {
       // Nothing here overwrites a file by accident — the rule the rest of the
       // app keeps with freeEntryName, kept here with a refusal instead,
       // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
+      // is not what they asked for either. Native drawings use the unique-name
+      // creation path below instead.
+      if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -3840,16 +3930,28 @@ export default function App() {
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file straight into edit mode. Build the path
-      // to match buildFileTree's convention (vault-root-relative, no vault-name
-      // prefix) so the tab dedups / highlights / restores correctly.
+      // An empty native drawing is the format's defined new-board state. Use
+      // the import path's freeEntryName (files AND folders) rather than the
+      // truncating createFile primitive, and carry its actual name forward.
+      let createdName = name;
+      let newFileHandle: FileSystemFileHandle | null;
+      if (isNativeDrawingFile(name)) {
+        const created = await importFiles([new File([], name)], parentHandle);
+        if (!created.length || !root) throw new Error('Could not create the drawing.');
+        createdName = created[0];
+        ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
+      } else {
+        newFileHandle = await createFile(parentHandle, name);
+      }
+      // A vault switch during creation must not open the old folder's file in
+      // the new workspace, even if the path exists in both.
+      if (root !== rootHandleRef.current) return;
       if (newFileHandle) {
-        const newPath = joinVaultPath(parentPath, name);
+        const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
-          name,
+          name: createdName,
           handle: newFileHandle,
-          parentHandle: parentHandle!,
+          parentHandle,
           kind: 'file',
           path: newPath,
         };
@@ -3865,8 +3967,10 @@ export default function App() {
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
+    } finally {
+      createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, tell, nameTaken]);
+  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -4306,6 +4410,21 @@ export default function App() {
   }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
+  const handleTrashCopy = useCallback(async (item: TrashItem) => {
+    if (!rootHandle || trashInFlightRef.current) return;
+    trashInFlightRef.current = true;
+    const activation = getVaultActivation();
+    const current = () => getVaultActivation() === activation;
+    try {
+      await reconcileQueueRef.current;
+      const name = await copyTrashFile(item, rootHandle, current);
+      if (current()) announce(`Restored a copy as "${name}". The Trash original remains.`);
+    } catch (error) {
+      console.error('Could not copy from Trash:', error);
+      if (current()) notify('Could not restore the copy. Nothing was replaced.');
+    } finally { trashInFlightRef.current = false; }
+  }, [announce, copyTrashFile, getVaultActivation, notify, rootHandle]);
+
   const handleTrashDelete = useCallback(async (item: TrashItem) => {
     if (trashInFlightRef.current) return false;
     trashInFlightRef.current = true;
@@ -5744,6 +5863,7 @@ export default function App() {
             onPaneForward={paneForward}
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
+            onNativeCanvasReady={onNativeCanvasReady}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
             onFlushNow={flushTabNow}
@@ -5828,6 +5948,7 @@ export default function App() {
         <TrashPanel
           onClose={() => setShowTrash(false)}
           onCrawl={listTrash}
+          onCopy={handleTrashCopy}
           onRestore={handleTrashRestore}
           onDelete={handleTrashDelete}
           onEmpty={handleTrashEmpty}

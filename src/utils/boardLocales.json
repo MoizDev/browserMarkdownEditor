@@ -1,0 +1,296 @@
+[
+  {
+    "code": "id",
+    "name": "Bahasa Indonesia",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ms",
+    "name": "Bahasa Melayu",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ca",
+    "name": "Català",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "cs",
+    "name": "Čeština",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "da",
+    "name": "Danish",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "de",
+    "name": "Deutsch",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "en",
+    "name": "English",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "es",
+    "name": "Español",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "fil",
+    "name": "Filipino",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "fr",
+    "name": "Français",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "gl",
+    "name": "Galego",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "hr",
+    "name": "Hrvatski",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "it",
+    "name": "Italiano",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "hu",
+    "name": "Magyar",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "nl",
+    "name": "Nederlands",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "no",
+    "name": "Norwegian",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "pl",
+    "name": "Polski",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "pt-BR",
+    "name": "Português - Brasil",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "pt-PT",
+    "name": "Português - Europeu",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ro",
+    "name": "Română",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "sl",
+    "name": "Slovenščina",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "so",
+    "name": "Somali",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "fi",
+    "name": "Suomi",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "sv",
+    "name": "Svenska",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "vi",
+    "name": "Tiếng Việt",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "tr",
+    "name": "Türkçe",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "el",
+    "name": "Ελληνικά",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ru",
+    "name": "Русский",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "uk",
+    "name": "Українська",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "he",
+    "name": "עברית",
+    "dir": "rtl",
+    "ready": true
+  },
+  {
+    "code": "ur",
+    "name": "اردو",
+    "dir": "rtl",
+    "ready": true
+  },
+  {
+    "code": "ar",
+    "name": "عربي",
+    "dir": "rtl",
+    "ready": true
+  },
+  {
+    "code": "fa",
+    "name": "فارسی",
+    "dir": "rtl",
+    "ready": true
+  },
+  {
+    "code": "ne",
+    "name": "नेपाली",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "mr",
+    "name": "मराठी",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "hi",
+    "name": "हिन्दी",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "bn",
+    "name": "বাংলা",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "pa",
+    "name": "ਪੰਜਾਬੀ",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "gu",
+    "name": "ગુજરાતી",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ta",
+    "name": "தமிழ்",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "te",
+    "name": "తెలుగు",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "kn",
+    "name": "ಕನ್ನಡ",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ml",
+    "name": "മലയാളം",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "th",
+    "name": "ภาษาไทย",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "km",
+    "name": "ភាសាខ្មែរ",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ko",
+    "name": "한국어",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "ja",
+    "name": "日本語",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "zh-CN",
+    "name": "简体中文",
+    "dir": "ltr",
+    "ready": true
+  },
+  {
+    "code": "zh-TW",
+    "name": "繁體中文 (台灣)",
+    "dir": "ltr",
+    "ready": true
+  }
+]

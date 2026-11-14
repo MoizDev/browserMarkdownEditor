@@ -1,6 +1,7 @@
 import { isLocked } from '../change/commands';
 import { poseInParent, worldPose, worldToLocal, type ChangeGeometry } from '../change/coordinates';
-import type { NodeSetOp } from '../change/ops';
+import type { NodeSetOp, Op } from '../change/ops';
+import { prepareNotebookTransform } from './notebookTranslation';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
@@ -18,7 +19,7 @@ export interface ConnectorEndHandleOptions {
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     readonly snap: { readonly zoom: () => number; readonly alwaysSnap: () => boolean; readonly guides: (guides: readonly BoardSnapGuide[]) => void };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
@@ -90,11 +91,16 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             options.snap.guides(guides);
             if (commit) {
-                options.show(ops); await options.waitUntilReady(localRequest.signal); check();
-                options.armCommit();
-                try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops }); applied.release(); options.finishCommit(); }
-                catch (error) { options.cancelCommit(); throw error; }
-                ended = true; controller.abort(); cleanup();
+                const notebook = await prepareNotebookTransform({ runtime, ids: [node.id], preview: { doc: finalDoc, ops },
+                    signal: localRequest.signal, current: active, cooperate: options.cooperate });
+                try {
+                    const finalOps = notebook?.ops ?? ops;
+                    options.show(finalOps); await options.waitUntilReady(localRequest.signal); check();
+                    options.armCommit();
+                    try { const applied = session.apply({ origin: 'tool', label: 'Move connector endpoint', ops: finalOps }); applied.release(); options.finishCommit(); }
+                    catch (error) { options.cancelCommit(); throw error; }
+                    ended = true; controller.abort(); cleanup();
+                } finally { notebook?.release(); }
             } else options.show(ops);
         } catch (error) {
             if (!cleaned && !localRequest.signal.aborted && turn === generation) {

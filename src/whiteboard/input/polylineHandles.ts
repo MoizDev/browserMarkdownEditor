@@ -1,4 +1,5 @@
-import type { NodeSetOp } from '../change/ops';
+import type { Op } from '../change/ops';
+import { prepareNotebookTransform } from './notebookTranslation';
 import { preparePolylineControl, type PolylineControlPreview } from '../geom/polylineControls';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
@@ -16,7 +17,7 @@ export interface PolylineHandleOptions {
     readonly current: () => boolean;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
-    readonly show: (ops: readonly NodeSetOp[]) => void;
+    readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
     readonly armCommit: () => void;
     readonly finishCommit: () => void;
@@ -64,13 +65,20 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
             if (!current()) { cancel(); return; }
             options.snap?.guides(guides);
             if (commit) {
-                options.show(result.ops); await options.waitUntilReady(request.signal);
-                if (cleaned || request.signal.aborted || turn !== sequence) return;
-                if (!current()) { cancel(); return; }
-                options.armCommit();
-                try { result.commit(); result = undefined; options.finishCommit(); options.onCommit?.(); }
-                catch (error) { options.cancelCommit(); throw error; }
-                cleanup();
+                const notebook = result.ops.length ? await prepareNotebookTransform({ runtime, ids: [options.id], preview: result,
+                    signal: request.signal, current: active, cooperate: options.cooperate }) : null;
+                try {
+                    options.show(notebook?.ops ?? result.ops); await options.waitUntilReady(request.signal);
+                    if (cleaned || request.signal.aborted || turn !== sequence) return;
+                    if (!current()) { cancel(); return; }
+                    options.armCommit();
+                    try {
+                        if (notebook) { const applied = runtime.session.apply({ origin: 'tool', label: 'Edit polyline', ops: notebook.ops }); applied.release(); result.release(); }
+                        else result.commit();
+                        result = undefined; options.finishCommit(); options.onCommit?.();
+                    } catch (error) { options.cancelCommit(); throw error; }
+                    cleanup();
+                } finally { notebook?.release(); }
             } else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {
             if (!cleaned && !request.signal.aborted && turn === sequence) {

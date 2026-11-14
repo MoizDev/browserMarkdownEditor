@@ -232,6 +232,33 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                 };
             }, moved => moved);
         },
+        removeFrames(ids: readonly NodeId[], signal?: AbortSignal) {
+            return guarded(ids, 'Remove frame', signal, async roots => {
+                if (!roots.length || roots.some(node => node.kind !== 'frame')) throw new Error('Remove frame requires frames');
+                const contents = new Map<NodeId, readonly Node[]>();
+                for (const root of roots) contents.set(root.id, [...childrenOf(doc, root.id)]);
+                return builder => {
+                    const moved: NodeId[] = [];
+                    for (const original of roots) {
+                        const frame = doc.nodes.get(original.id);
+                        if (!frame || frame.kind !== 'frame') throw new Error('Frame disappeared');
+                        const siblings = childrenOf(doc, frame.parent), index = siblings.findIndex(node => node.id === frame.id);
+                        if (index < 0) throw new Error('Frame order changed');
+                        const direct = contents.get(frame.id)!;
+                        const keys = direct.length ? allocateOrderKeys(doc, builder, frame.parent, index > 0 ? siblings[index - 1].id : null,
+                            index + 1 < siblings.length ? siblings[index + 1].id : null, direct.length) : [];
+                        for (let i = 0; i < direct.length; i++) {
+                            const child = doc.nodes.get(direct[i].id); if (!child) throw new Error('Frame child disappeared');
+                            const opacity = child.opacity * frame.opacity;
+                            reparentNode(doc, builder, child, frame.parent, runtime.render.changeGeometry, keys[i]);
+                            setIfChanged(builder, doc.nodes.get(child.id)!, 'opacity', opacity); moved.push(child.id);
+                        }
+                        builder.push({ t: 'delete', id: frame.id });
+                    }
+                    return moved;
+                };
+            }, moved => moved);
+        },
         reorderSelection(ids: readonly NodeId[], direction: SelectionOrder, signal?: AbortSignal) {
             if (!['front', 'back', 'forward', 'backward'].includes(direction)) return Promise.reject(new RangeError('Invalid selection order'));
             return guarded(ids, 'Reorder', signal, async roots => builder => {
@@ -262,13 +289,11 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
             });
         },
         async toggleLocked(ids: readonly NodeId[], signal?: AbortSignal): Promise<void> {
-            const token = signal ?? new AbortController().signal, state = capture(), roots = rootsFor(ids, state, false);
-            for (const node of roots) {
-                if (node.kind === 'opaque') throw new Error('Opaque nodes cannot be unlocked');
-                const parent = doc.nodes.get(node.parent as NodeId); if (parent && isLocked(doc, parent)) throw new Error('Locked ancestor prevents changing the lock');
-            }
-            const next = roots.some(node => !node.locked);
-            commit(state, token, next ? 'Lock' : 'Unlock', builder => { for (const node of roots) setIfChanged(builder, node, 'locked', next); });
+            const token = signal ?? new AbortController().signal, state = capture();
+            const roots = [...new Set(ids)].flatMap(id => rootsFor([id], state, false));
+            for (const node of roots) if (node.kind === 'opaque') throw new Error('Opaque nodes cannot be unlocked');
+            const label = roots.every(node => node.locked) ? 'Unlock' : roots.every(node => !node.locked) ? 'Lock' : 'Toggle lock';
+            commit(state, token, label, builder => { for (const node of roots) setIfChanged(builder, node, 'locked', !node.locked); });
         },
         async unlockAll(signal?: AbortSignal): Promise<void> {
             const token = signal ?? new AbortController().signal, state = capture(), ids: NodeId[] = [];

@@ -17,7 +17,8 @@ export function registerNativeNotebookExporter(options: {
     board: ComposedBoardSession;
     host: NativeCanvasHost;
     identity: NativeCanvasIdentity;
-    writer: NativeNotebookDisplayWriter;
+    /** Legacy callers may still supply this; native export uses the incremental writer. */
+    writer?: NativeNotebookDisplayWriter;
     onError(error: unknown): void;
 }): void {
     const { board, host, identity } = options;

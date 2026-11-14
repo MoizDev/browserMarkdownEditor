@@ -54,8 +54,19 @@ export function createBoardMediaBridge(
         signal.throwIfAborted();
         if (!isCurrent()) throw new DOMException('Board session ended', 'AbortError');
     };
+    const resolveMedia = async (entry: BoardMediaDescriptor, signal: AbortSignal): Promise<{ name: string | null; blob: Blob } | null> => {
+        const access = request(entry, signal);
+        const found = pdf
+            ? await pdf.read(entry.id, access.signal).then(blob => blob ? { name: null, blob } : null)
+            : await io.readBoardAsset(access);
+        assertCurrent(access.signal);
+        if (found && await hashBytes(await found.blob.arrayBuffer()) !== access.hash) throw new Error('Board media hash mismatch');
+        assertCurrent(access.signal);
+        return found;
+    };
     return {
         isCurrent,
+        resolveMedia,
         async storeMedia(entry: BoardMediaDescriptor, blob: Blob, signal: AbortSignal): Promise<string | null> {
             const access = request(entry, signal);
             if (!pdf) return io.putBoardAsset({ ...access, blob, extension: EXTENSIONS[entry.mime] });
@@ -66,12 +77,7 @@ export function createBoardMediaBridge(
             return null;
         },
         async readMedia(entry: BoardMediaDescriptor, signal: AbortSignal): Promise<Blob | null> {
-            const access = request(entry, signal);
-            const blob = pdf ? await pdf.read(entry.id, access.signal) : (await io.readBoardAsset(access))?.blob ?? null;
-            assertCurrent(access.signal);
-            if (blob && await hashBytes(await blob.arrayBuffer()) !== access.hash) throw new Error('Board media hash mismatch');
-            assertCurrent(access.signal);
-            return blob;
+            return (await resolveMedia(entry, signal))?.blob ?? null;
         },
     };
 }

@@ -1,5 +1,5 @@
 import type { Op } from '../change/ops';
-import type { Node, PictureNode } from '../model/nodes';
+import type { FigureNode, Node, PictureNode } from '../model/nodes';
 import type { KindResizeContext, KindResizeFactors } from './resizeKinds.types';
 
 function extent(value: number): number { return Math.min(1_000_000, Math.max(1, value)); }
@@ -22,6 +22,20 @@ function pictureReflection(node: Readonly<PictureNode>, flipX: boolean, flipY: b
     }
     return ops;
 }
+export function figureResizeDimensions(node: Readonly<FigureNode>, factors: KindResizeFactors): { width: number; height: number } {
+    if (!Number.isFinite(factors.x) || !Number.isFinite(factors.y) || node.locked) throw new RangeError('Node cannot be resized');
+    return { width: extent(node.w * Math.abs(factors.x)), height: extent((node.h + node.growY) * Math.abs(factors.y)) };
+}
+export function resizeFigureKind(node: Readonly<FigureNode>, factors: KindResizeFactors,
+    layout: Readonly<{ h: number; growY: number }>): readonly Op[] {
+    const { width } = figureResizeDimensions(node, factors);
+    if (!Number.isFinite(layout.h) || !Number.isFinite(layout.growY) || layout.h < 1 || layout.h > 1_000_000 || layout.growY < 0) throw new RangeError('Invalid resized figure layout');
+    const ops: Op[] = [{ t: 'set', id: node.id, key: 'w', value: width }, { t: 'set', id: node.id, key: 'h', value: layout.h },
+        { t: 'set', id: node.id, key: 'growY', value: layout.growY }];
+    if (reflected(factors.x, factors.zeroSignX)) ops.push({ t: 'set', id: node.id, key: 'flipX', value: !node.flipX });
+    if (reflected(factors.y, factors.zeroSignY)) ops.push({ t: 'set', id: node.id, key: 'flipY', value: !node.flipY });
+    return ops;
+}
 // x/y placement and parent/page anchoring are supplied by the gesture plan;
 // these patches alter only the kind's representable geometry and never its paint width.
 export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext): readonly Op[] {
@@ -35,14 +49,8 @@ export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, con
                 { t: 'set', id: node.id, key: 'sy', value: signedNonzero(node.sy * y, (node.sy < 0) !== flipY ? -1 : 1) });
             return ops;
         case 'figure': {
-            const width = extent(node.w * ax), height = extent((node.h + node.growY) * ay);
-            const layout = context.layoutFigure(node, width, height);
-            if (!Number.isFinite(layout.h) || !Number.isFinite(layout.growY) || layout.h < 1 || layout.h > 1_000_000 || layout.growY < 0) throw new RangeError('Invalid resized figure layout');
-            ops.push({ t: 'set', id: node.id, key: 'w', value: width }, { t: 'set', id: node.id, key: 'h', value: layout.h },
-                { t: 'set', id: node.id, key: 'growY', value: layout.growY });
-            if (flipX) ops.push({ t: 'set', id: node.id, key: 'flipX', value: !node.flipX });
-            if (flipY) ops.push({ t: 'set', id: node.id, key: 'flipY', value: !node.flipY });
-            return ops;
+            const { width, height } = figureResizeDimensions(node, factors);
+            return resizeFigureKind(node, factors, context.layoutFigure(node, width, height));
         }
         case 'text':
             if (factors.handle === 'side') {

@@ -15,7 +15,7 @@ export interface NativePdfViewerSource {
         readonly source: { readonly source: { readonly token: Readonly<{ documentId: string; session: number; vaultEpoch: number; bytesGeneration: number }> }; isCurrent(): boolean; createBackdrop(options: {
             readOnly: boolean; isVisible(): boolean; isFocused(): boolean; emphasisEnabled(): boolean;
             onError(error: unknown): void; onUpdating?(updating: boolean): void; signal?: AbortSignal;
-        }): Promise<Omit<NativePdfBackdrop, 'assertCaptureCurrent'>> };
+        }): Promise<Omit<NativePdfBackdrop, 'assertCaptureCurrent' | 'sourceToken' | 'isCurrentSource'>> };
         readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
         readonly reason?: string;
     };

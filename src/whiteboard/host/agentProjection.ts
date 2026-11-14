@@ -67,10 +67,11 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
                 if (!sheet) throw new RangeError('Sheet does not exist');
                 const result = await listPinnedShapes(host.session.doc, [sheet], host.geometry, query, revision, false, () => {
                     authority.assertContext(context);
-                    if (!host.isCurrent() || host.session.doc.rev !== revision) throw new DOMException('Board changed during shape projection', 'AbortError');
+                    if (!host.isCurrent() || host.session.doc.rev !== revision || host.sheet() !== sheet.id)
+                        throw new DOMException('Board changed during shape projection', 'AbortError');
                 });
                 authority.assertContext(context);
-                if (!host.isCurrent() || host.session.doc.rev !== revision || result.revision !== revision) {
+                if (!host.isCurrent() || host.session.doc.rev !== revision || host.sheet() !== sheet.id || result.revision !== revision) {
                     throw new DOMException('Board changed during shape projection', 'AbortError');
                 }
                 return result;

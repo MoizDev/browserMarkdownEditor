@@ -125,7 +125,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
         });
     });
-    layerSet.replace(options.layers);
+    try { layerSet.replace(options.layers); }
+    catch (error) {
+        for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
+        throw error;
+    }
 
     let created: CreatedCompositor2D<T>;
     try { created = cpuFactory<T>({
@@ -404,14 +408,17 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
+            const previousCount = caches.length;
             try { layerSet.replace(definitions); }
-            finally {
-                const retained = new Set(layerSet.layers);
-                for (let i = caches.length - 1; i >= 0; i--) {
-                    const layer = caches[i].layer();
-                    if (!layer || !retained.has(layer)) {
-                        caches[i].cpu.close(); caches[i].gpu.close(); caches.splice(i, 1);
-                    }
+            catch (error) {
+                for (const cache of caches.splice(previousCount)) { cache.cpu.close(); cache.gpu.close(); }
+                throw error;
+            }
+            const retained = new Set(layerSet.layers);
+            for (let i = caches.length - 1; i >= 0; i--) {
+                const layer = caches[i].layer();
+                if (!layer || !retained.has(layer)) {
+                    caches[i].cpu.close(); caches[i].gpu.close(); caches.splice(i, 1);
                 }
             }
             lifecycle?.setLayers(layerSet.layers);

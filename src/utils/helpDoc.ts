@@ -428,6 +428,12 @@ to go to that page. The button next to it **inverts the pages** so they are easy
 eyes in the dark, while reading and while writing on them. It only changes how
 they look: the file, and any PDF made from it, keeps its real colours.
 
+The turn buttons (or \`[\` and \`]\`) rotate the PDF itself and save the new orientation;
+Option-click a button to turn just the current page. PDFs annotated in this app cannot be
+rotated because their ink was placed against the original pages. After a successful turn,
+a low-resolution picture may appear labelled **Loading rotated PDF…** while the new pages
+are read; it is only a temporary preview, not the finished page.
+
 **Copying PDF text.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\` to copy it.
 With a PDF page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks
 **the whole document** for copying. Follow with \`Cmd + C\` / \`Ctrl + C\` to gather every

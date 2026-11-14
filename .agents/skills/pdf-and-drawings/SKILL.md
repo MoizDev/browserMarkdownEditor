@@ -244,11 +244,12 @@ requires reading it.
 - Canvas **bitmaps are windowed**: only pages within `EVICT_BEYOND` (3) of the viewport hold one
   (~25-31MB each at Retina fit-width); scrolled-away canvases are freed and re-rendered on approach,
   and pages further than `CLEANUP_BEYOND` (12) release the viewer's page lease after text/link work
-  settles. `PdfDocumentSession` calls `page.cleanup()` only when the last consumer releases it, so a
-  thumbnail, Text view or agent read cannot lose a page it is still using — the canvas is only half
-  of what a page costs. That window
-  is deliberately much wider than the eviction one: re-rendering from a retained operator list is
-  cheap, re-parsing the page is a worker round-trip.
+  settles. Zero users makes a parsed page eligible for the shared bounded PDF cache, not immediate
+  cleanup; eviction never cleans under a thumbnail, Text, annotation or agent lease. The cache uses
+  conservative reservations, not claimed worker-heap measurements. A visible surface handoff keeps
+  the current page leased for at most five seconds; matching plain annotations reuse the reader's
+  session, while stamped/pristine bytes always use distinct sessions. Re-rendering from a retained
+  operator list avoids an expensive worker re-parse.
 - **The PDF's own links work** (`pdfLinks.ts` + the `.pdf-link-layer` per page). Hand-rolled over four
   stable public pdf.js calls (`getAnnotations`, `getDestination`, `getPageIndex`,
   `convertToViewportPoint`) rather than pdf.js's `AnnotationLayer`, which needs a `linkService` shim
@@ -396,10 +397,12 @@ there.** `PdfViewer` takes `isVisible` (not `isActive`, which is keyboard focus)
 - **stops committing resizes.** The slot is a percentage of its column, so every sidebar toggle and
   window resize re-fit and re-rastered the hidden panes too. The last width is applied on the way in.
 
-What is KEPT: the last visible page bitmaps, nearby/pinned pdf.js page leases and text layers,
-and the scroll position. Find completeness comes from the canonical index, not retained DOM. Coming back runs the normal window pass: compatible resume pixels
-stay, missing/incompatible bands render and the surrounding prefetch margin refills. A far-page
-release is a session lease release, never a direct cleanup by the viewer.
+What is KEPT: the last visible page bitmaps, nearby text layers and the scroll position. Find
+completeness comes from the canonical index, not retained DOM. Coming back runs the normal window
+pass: compatible resume pixels stay, missing/incompatible bands render and prefetch refills.
+P06 retains only on-screen DOM resume pixels under D1's policy: hide cancels visual work and
+releases hidden viewer leases, frees other canvases/URLs/refined JPEGs, evicts heavy parsed pages
+immediately and small idle parsed state within five seconds, but never cancels save/export work.
 
 ## Tldraw's assets are OURS
 
@@ -695,7 +698,8 @@ through `cameraFor`). A first open with no record behaves as before. Like the ot
 records it does not follow renames and is never pruned.
 
 
-Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis uses PdfReadingBinding.emphasisEnabled to paint original glyph ink in the retained Viewer/annotation backdrops; no Text transition. pdfNativeEmphasis is exactly pinned to pdf.js 6.1.200 glyph/font/paint contracts; re-audit on upgrade. Completed native renders compare a temporary counterpart pixel-by-pixel before publishing capability (clips/off-page/white/occlusion can hide successful calls). OFF output stays original; the discarded ON probe supplies visibility. High-zoom bands assess the whole page with a bounded probe. Annotation refresh chooses one visible/near stale backdrop at a time, rechecks the viewport after each await and cancels stale renders; distant cached emphasis is refreshed on approach. Only current-page results publish capability. Text is manual and emphasis-inactive; readerViewState presents unmarked legacy Text records as Original without rewriting storage, and stamps new explicit Text writes with textChoice:manual. Its PDF read wrapper retains stored schema/version; pdfTextRecords accepts schemas 1/2 and returns only camera/surface for future records. pdfTextAnchors shares find's projection and matcher, using context to resolve repeated quotes. PdfPane protects cross/future records until the Text or Original navigation counter advances; layout/hide/unmount cannot convert them. No source/annotation/history changes from preference painting.
+Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis paints original glyph ink in Viewer/pristine annotation backdrops; no Text transition. The display-list adapter and native glyph/font/paint hooks are pinned to pdf.js 6.1.200; re-audit on upgrade. A single independent, canonical white-background whole-page OFF/ON proof (≤2^20 pixels) checks final composition; it is not per-zoom verification. Off paints first without hooks, and cached verdicts survive page cleanup; immutable plans are bounded and invalidated at cleanup. Only current-page results publish capability; unknown stays inactive. Annotation refresh chooses one visible/near stale backdrop at a time and cancels stale raster work without cancelling another consumer's proof. Text is manual and emphasis-inactive; readerViewState presents unmarked legacy Text records as Original without rewriting storage and stamps new explicit Text writes with textChoice:manual. No source/annotation/history changes from preference painting.
+The PDF read wrapper retains stored schema/version; pdfTextRecords accepts schemas 1/2 and returns only camera/surface for future records. pdfTextAnchors shares find's projection and matcher, using context to resolve repeated quotes. PdfPane protects cross/future records until the Text or Original navigation counter advances; layout/hide/unmount cannot convert them.
 
 PDF Text native Copy, custom Copy and selected-text reporting share page-model selection extraction.
 Only page bodies contribute text; page controls/quality notices never enter that canonical slice.

@@ -4,6 +4,7 @@ import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfAnnotation';
 import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
+import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
@@ -100,6 +101,7 @@ export interface PdfPaneProps {
 interface PdfSource {
     entry: object;
     role: PdfRole;
+    session?: PdfDocumentSession;
     handle: FileSystemFileHandle;
     path: string;
 }
@@ -194,6 +196,15 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
     const displayedVersion = useRef<DiskVersion | undefined>(undefined);
+    const documentId = reading?.identity.documentId;
+    const [rotationPreview, setRotationPreview] = useState(() => documentId ? peekPdfRotation(documentId) : undefined);
+    const discardRotationPreview = useCallback(() => {
+        setRotationPreview(previous => {
+            if (documentId && previous) clearPdfRotationPicture(documentId, previous);
+            return undefined;
+        });
+    }, [documentId]);
+    useEffect(() => { if (!isVisible && rotationPreview) discardRotationPreview(); }, [isVisible, rotationPreview, discardRotationPreview]);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
@@ -218,6 +229,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     const readOnly = mode === 'edit' && (!!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [session, setSession] = useState<PdfDocumentSession | null>(null);
+    const sessionVersion = useRef<string | undefined>(undefined);
+    const pristineSession = useRef<{ version: string; session: PdfDocumentSession } | undefined>(undefined);
     const [idleHealth] = useState(createClassicPdfHealth);
     const [annotationRender, setAnnotationRender] = useState<{ original: Uint8Array; health: ClassicPdfHealth } | null>(null);
     const reportRenderHealth = useCallback((health: ClassicPdfHealth) => {
@@ -238,11 +251,21 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         if (!annotationMode && fatalRenderIssue && session) void session.dispose().catch(console.error);
     }, [annotationMode, fatalRenderIssue, session]);
     const generation = useRef(0);
+    useLayoutEffect(() => {
+        session?.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+        pristineSession.current?.session.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+    }, [session, isVisible, file.path, loadedSource]);
+    useEffect(() => () => { void pristineSession.current?.session.dispose().catch(console.error); }, []);
     const returnEpoch = useRef(0);
     useEffect(() => () => { ++returnEpoch.current; flushPdfTextViewState(); }, []);
     const [textReader, setTextReader] = useState<PdfTextReader | null>(null);
     useLayoutEffect(() => { textReader?.setVisible(isVisible); }, [textReader, isVisible]);
     const [textSurface, setTextSurface] = useState(false);
+    const previousMode = useRef(mode);
+    useLayoutEffect(() => {
+        if (previousMode.current !== mode && isVisible) session?.handoff(readPdfViewPos(file.path)?.page ?? 0);
+        previousMode.current = mode;
+    }, [mode, session, isVisible, file.path]);
     const lastReturnRevision = useRef<number | undefined>(undefined);
     const textAnchor = useRef<PdfTextAnchor | undefined>(undefined);
     const [initialTextAnchor, setInitialTextAnchor] = useState<PdfTextAnchor>();
@@ -332,6 +355,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         }
         if (returnEpoch.current !== epoch) return;
         if (readPdfNavigationRevision(file.path) !== revision) return;
+        session.handoff(checkpoint.page);
         textAnchor.current = next;
         setInitialTextAnchor(next);
         textSurfaceRef.current = true;
@@ -364,6 +388,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             } else setMappingNotice('Returned to the physical page.');
         }
         if (returnEpoch.current !== epoch) return;
+        session?.handoff(target.page);
         writePdfViewPos(file.path, target);
         lastReturnRevision.current = readPdfNavigationRevision(file.path);
         textSurfaceRef.current = false;
@@ -494,8 +519,29 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     b?.onReaderVersion(b.identity, current.version);
                 }
                 if (binding.current?.initialRecord?.record.rawFingerprint !== current.version.hash) protectedRestore.current = undefined;
+                let annotationSession: PdfDocumentSession | undefined;
+                if (isEditablePdfRole(role)) {
+                    if (role.kind === 'plain') {
+                        if (session && sessionVersion.current === current.version.hash && !viewStaleRef.current) annotationSession = session;
+                        else {
+                            annotationSession = createPdfDocumentSession(role.original, ++generation.current);
+                            sessionVersion.current = current.version.hash;
+                            viewStaleRef.current = false;
+                            setSession(annotationSession);
+                        }
+                    } else {
+                        const cached = pristineSession.current;
+                        if (cached?.version === current.version.hash) annotationSession = cached.session;
+                        else {
+                            if (cached) void cached.session.dispose().catch(console.error);
+                            annotationSession = createPdfDocumentSession(role.original, ++generation.current);
+                            pristineSession.current = { version: current.version.hash, session: annotationSession };
+                        }
+                    }
+                    annotationSession.setVisible(isVisible, readPdfViewPos(file.path)?.page ?? 0);
+                }
                 displayedVersion.current = current.version;
-                setSource({ role, handle, path: file.path, entry: annotateEntry });
+                setSource({ role, session: annotationSession, handle, path: file.path, entry: annotateEntry });
             } catch (err) {
                 if (inspected) revokePdfRole(inspected);
                 console.error('Could not open PDF:', err);
@@ -523,6 +569,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 const b = binding.current;
                 if (b?.initialRecord?.record.rawFingerprint !== version.hash) protectedRestore.current = undefined;
                 displayedVersion.current = version;
+                if (rotationPreview && rotationPreview.resultHash !== version.hash) discardRotationPreview();
                 // A read-only foreign view must not move the write baseline
                 // after App captured it for the keep-copy choice.
                 if (!writeState.current.isDirty && !writeState.current.disk) b?.onReaderVersion(b.identity, version);
@@ -555,6 +602,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                 }
                 viewStaleRef.current = false;
                 setViewError(null);   // a later read succeeded — clear ITS stale failure
+                sessionVersion.current = version.hash;
                 setSession(createPdfDocumentSession(bytes, ++generation.current));
             } catch (err) {
                 // Surfaced, not just logged: this is now the ONLY read a plain
@@ -569,7 +617,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
         })();
 
         return () => { cancelled = true; };
-    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch]);
+    }, [activated, mode, readOnly, flushing, isDirty, session, file.handle, file.path, readBytesVersioned, retryEpoch, rotationPreview, discardRotationPreview]);
 
     function focusReading() {
         root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
@@ -619,8 +667,15 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
     // Bound to this pane's path once: a fresh arrow per render would re-render
     // the memoized viewer on every keystroke anywhere in the app.
     const rotateThis = useCallback(
-        (delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex),
-        [onRotate, file.path]);
+        (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => {
+            const hash = displayedVersion.current?.hash;
+            if (documentId) stagePdfRotation(documentId, picture && hash ? { ...picture, sourceHash: hash } : undefined);
+            onRotate(file.path, delta, pageIndex);
+        }, [onRotate, file.path, documentId]);
+    const previewPainted = useCallback((page: number) => {
+        if (rotationPreview?.page === page) discardRotationPreview();
+    }, [rotationPreview, discardRotationPreview]);
+    const showRotationPreview = !!rotationPreview && !fatalRenderIssue && !error && mode === 'read' && !textSurface;
 
     let body: ReactNode = null;
     if (activated) {
@@ -653,7 +708,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                     </button>
                 </div>
             );
-        } else if (mode === 'edit' && editableSource) {
+        } else if (mode === 'edit' && editableSource && loadedSource?.session) {
             // The annotate canvas only exists while its document is on screen:
             // a hidden tldraw instance would pin megabytes of page bitmaps, and
             // unmounting it is what flushes pending strokes to disk.
@@ -664,6 +719,7 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         filePath={file.path}
                         documentId={reading?.identity.documentId}
                         original={editableSource.original}
+                        session={loadedSource.session}
                         onRenderHealth={reportRenderHealth}
                         emphasisEnabled={reading?.emphasisEnabled ?? false}
                         onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
@@ -696,8 +752,8 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
                         publishLocation(cause);
                     }} onTextQuality={setTextQuality} emphasisEnabled={false} typography={reading?.typography ?? DEFAULT_TEXT_TYPOGRAPHY}
                     onTypographyChange={reading?.onTypographyChange} />
-            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} previewIdentity={reading?.identity} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused} isVisible={isVisible} onRotate={rotateThis}
-                onLocation={() => publishLocation('layout', false)} emphasisEnabled={reading?.emphasisEnabled ?? false}
+            ) : textSurface ? <div className="pdf-pane-message">Opening extracted text…</div> : <><PdfViewer ref={viewerActions} filePath={file.path} session={session} previewIdentity={reading?.identity} reader={textReader ?? undefined} findMemory={findMemory} onNotify={reading?.onNotify} isActive={isFocused && !showRotationPreview} isVisible={isVisible} onRotate={rotateThis}
+                onLocation={() => publishLocation('layout', false)} onPageRendered={previewPainted} emphasisEnabled={reading?.emphasisEnabled ?? false}
                 onNativeEmphasisResult={(_page, result) => reportNative(setNativeReader, result)} onRetry={retryRendering}
                 retryDisabled={retryBusy || isDirty || flushing || !!disk} />
                 {mappingNotice && <div className="pdf-pane-mapping-notice" role="status">{mappingNotice}</div>}
@@ -742,12 +798,17 @@ function PdfPane({ reading, file, isVisible, isFocused, slotIndex, slotLeft, slo
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
-            <div className="pdf-pane-body">
+            <div className="pdf-pane-body" inert={showRotationPreview}>
                 {body}
                 {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
                     issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
                     retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
             </div>
+            {showRotationPreview && rotationPreview && <div className="pdf-rotation-preview" role="status"
+                onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
+                <img src={rotationPreview.dataUrl} alt="" draggable={false} />
+                <span>Loading rotated PDF…</span>
+            </div>}
         </div>
     );
 }

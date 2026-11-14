@@ -61,6 +61,29 @@ async function validReply(value: unknown, check: () => void): Promise<boolean> {
         if ((++visits & 255) === 0) { await yieldToHost(); check(); }
     }
     if (keys !== seen.size || (reply.cacheOnly && (p.records.length > 0 || seen.size > 0))) return false;
+    if (reply.externalBindings !== undefined) {
+        if (!Array.isArray(reply.externalBindings) || reply.externalBindings.length > SECURITY_LIMITS.clipboardNodes) return false;
+        const ids = new Set<string>();
+        const validAttachment = (value: unknown): boolean => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+            const item = value as Record<string, unknown>, anchor = item.anchor as Record<string, unknown> | null;
+            return typeof item.target === 'string' && item.target.length > 0 && item.target.length <= SECURITY_LIMITS.idCharacters
+                && !!anchor && typeof anchor === 'object' && !Array.isArray(anchor) && typeof anchor.x === 'number' && Number.isFinite(anchor.x)
+                && anchor.x >= 0 && anchor.x <= 1 && typeof anchor.y === 'number' && Number.isFinite(anchor.y) && anchor.y >= 0 && anchor.y <= 1
+                && typeof item.exact === 'boolean' && typeof item.precise === 'boolean'
+                && typeof item.snap === 'string' && ['none', 'center', 'edge-point', 'edge'].includes(item.snap);
+        };
+        for (const value of reply.externalBindings) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+            const entry = value as Record<string, unknown>;
+            if (typeof entry.id !== 'string' || !entry.id.length || entry.id.length > SECURITY_LIMITS.idCharacters || ids.has(entry.id)
+                || entry.start === undefined && entry.end === undefined || entry.start !== undefined && !validAttachment(entry.start)
+                || entry.end !== undefined && !validAttachment(entry.end)) return false;
+            ids.add(entry.id);
+            if ((++visits & 255) === 0) { await yieldToHost(); check(); }
+        }
+        if (reply.cacheOnly && ids.size) return false;
+    }
     return true;
 }
 /** Reserve before transport; release the returned lease only when all decoded data is unused. */

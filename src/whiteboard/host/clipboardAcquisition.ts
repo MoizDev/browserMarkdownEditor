@@ -68,11 +68,13 @@ function sameMarker(marker: BoardPayload, value: BoardPayload): boolean {
 export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOptions): Promise<BoardClipboardAcquisition> {
     options.signal?.throwIfAborted();
     if (!validBoardIdentity(options.identity) || !options.decoded || typeof options.decoded.cacheOnly !== 'boolean'
-        || !Array.isArray(options.decoded.inline) || options.decoded.inline.length > SECURITY_LIMITS.clipboardNodes) throw new TypeError('Invalid clipboard acquisition');
+        || !Array.isArray(options.decoded.inline) || options.decoded.inline.length > SECURITY_LIMITS.clipboardNodes
+        || options.decoded.externalBindings !== undefined && (!Array.isArray(options.decoded.externalBindings)
+            || options.decoded.externalBindings.length > SECURITY_LIMITS.clipboardNodes)) throw new TypeError('Invalid clipboard acquisition');
     const identity = Object.freeze({ ...options.identity }), marker = snapshot(options.decoded.payload);
     let source = marker;
     if (options.decoded.cacheOnly) {
-        if (marker.records.length || Object.keys(marker.media).length || options.decoded.inline.length) throw new TypeError('Invalid cache-only clipboard marker');
+        if (marker.records.length || Object.keys(marker.media).length || options.decoded.inline.length || options.decoded.externalBindings?.length) throw new TypeError('Invalid cache-only clipboard marker');
         const cache = options.cache;
         if (!cache || !cache.match.cacheOnly || cache.match.encoded !== cache.encoded || cache.match.plain !== cache.plain
             || !sameMarker(marker, cache.match.snapshot.payload)) throw new Error('This clipboard content requires its matching in-session copy cache');
@@ -80,6 +82,26 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
     }
     if (!source.records.length) throw new Error('Clipboard contains no native records');
     const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>(), cachedSamples = new Map<NodeId, SampleRef>();
+    let sidecars = 0;
+    for (const item of options.decoded.externalBindings ?? []) {
+        if (!item || typeof item.id !== 'string' || !item.id || externalBindings.has(item.id)) throw new TypeError('Invalid clipboard binding sidecar');
+        const copy = (value: Attachment | undefined) => {
+            if (!value) return undefined;
+            if (typeof value.target !== 'string' || !value.target || value.target.length > SECURITY_LIMITS.idCharacters
+                || !value.anchor || !Number.isFinite(value.anchor.x) || !Number.isFinite(value.anchor.y)
+                || value.anchor.x < 0 || value.anchor.x > 1 || value.anchor.y < 0 || value.anchor.y > 1
+                || typeof value.exact !== 'boolean' || typeof value.precise !== 'boolean'
+                || !['none', 'center', 'edge-point', 'edge'].includes(value.snap)) throw new TypeError('Invalid clipboard binding');
+            return Object.freeze({ ...value, anchor: Object.freeze({ ...value.anchor }) });
+        };
+        const start = copy(item.start), end = copy(item.end);
+        if (!start && !end) throw new TypeError('Empty clipboard binding sidecar');
+        externalBindings.set(item.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
+        if ((++sidecars & 255) === 0) {
+            options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
+        }
+    }
     const cacheMatch = options.cache;
     const cached = options.duplicateSnapshot ?? (cacheMatch && cacheMatch.match.encoded === cacheMatch.encoded
         && (!cacheMatch.match.cacheOnly || cacheMatch.match.plain === cacheMatch.plain) ? cacheMatch.match.snapshot : undefined);
@@ -104,7 +126,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
             const line = node as typeof node & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
             const start = external(node.kind === 'connector' ? node.start.attach : line.startAttach);
             const end = external(node.kind === 'connector' ? node.end.attach : line.endAttach);
-            if (start || end) externalBindings.set(node.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
+            if ((start || end) && !externalBindings.has(node.id)) externalBindings.set(node.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
         }
     }
     const inline: { id: MediaId; blob: Blob }[] = [], seen = new Set<string>();
@@ -134,8 +156,18 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
             identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision },
             signal, deadlineMs: importDeadline(result.bytes.size), cooperate });
         check();
-        if (acquisition.status !== 'editable' || !acquisition.report.complete || acquisition.report.format !== 'native') {
+        if (acquisition.status !== 'editable' || !acquisition.report.complete || acquisition.report.format !== 'native'
+            || !acquisition.report.repaired || acquisition.report.repaired.repairs.some(repair => repair.code !== 'detached-attachment'
+                || repair.count !== repair.nodeIds.length || repair.nodeIds.some(id => !externalBindings.has(id as NodeId)))) {
             throw new Error('Clipboard native records could not be admitted without loss');
+        }
+        let bindingCount = 0;
+        for (const [id, binding] of externalBindings) {
+            const node = acquisition.load.doc.nodes.get(id);
+            if (!node || node.kind !== 'connector' && node.kind !== 'polyline'
+                || binding.start && acquisition.load.doc.nodes.has(binding.start.target)
+                || binding.end && acquisition.load.doc.nodes.has(binding.end.target)) throw new TypeError('Invalid external clipboard binding');
+            if ((++bindingCount & 255) === 0) await cooperate();
         }
         const visual = await inspectPdfVisualModel(acquisition.load, { signal, cooperate }); check();
         if (visual.status !== 'known') throw new Error('Clipboard contains opaque or uninterpreted visual records');

@@ -8,6 +8,7 @@ export interface NotebookControlsProps {
     readonly readOnly: boolean;
     readonly inverted: boolean;
     readonly thumbnailsOpen: boolean;
+    readonly dir: 'ltr' | 'rtl';
     readonly t: (key: string, values?: Readonly<Record<string, string | number>>) => string;
     readonly changePaper: (paper: Readonly<NotebookPaper>) => void;
     readonly addPage: () => void;
@@ -18,7 +19,7 @@ export interface NotebookControlsProps {
 }
 
 /** This is physical paper; logical sheets have a separate menu in the header. */
-export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOpen, t, changePaper,
+export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOpen, dir, t, changePaper,
     addPage, deleteLastPage, jump, toggleInversion, toggleThumbnails }: NotebookControlsProps) {
     const [draft, setDraft] = useState<string | null>(null);
     const [initial, setInitial] = useState('');
@@ -31,7 +32,7 @@ export function NotebookControls({ paper, page, readOnly, inverted, thumbnailsOp
         cancelled.current = false;
         setDraft(null);
     };
-    return <div className="notebook-controls" role="toolbar" aria-label={t('paper.name')}>
+    return <div className="notebook-controls" role="toolbar" dir={dir} aria-label={t('paper.name')}>
         <label>{t('paper.size')} <select aria-label={t('paper.size')} disabled={readOnly} value={paper.size}
             onChange={event => changePaper({ ...paper, size: event.currentTarget.value as PaperSize })}>
             <option value="letter">{t('paper.letter')}</option><option value="a4">{t('paper.a4')}</option><option value="legal">{t('paper.legal')}</option>

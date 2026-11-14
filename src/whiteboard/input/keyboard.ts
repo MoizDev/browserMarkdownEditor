@@ -28,6 +28,10 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
+  { id: 'style.white', group: 'style', label: 'White', key: 't', alt: true },
+  { id: 'style.fill', group: 'style', label: 'Fill', key: 'f', alt: true },
+  { id: 'style.linedFill', group: 'style', label: 'Lined fill', key: 'f', alt: true, shift: true },
+  { id: 'style.sample', group: 'style', label: 'Sample style', key: 'q', shift: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
   { id: 'delete', group: 'edit', label: 'Delete', key: 'Delete' },
@@ -89,7 +93,8 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
-    const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1) : key
+    const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1)
+      : event.altKey && /^Key[TF]$/.test(event.code) ? event.code.slice(-1).toLowerCase() : key
     const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
     if (!binding || (event.repeat && !binding.repeat)) return
     if (actions.run(binding.id, event)) { event.preventDefault(); event.stopPropagation() }

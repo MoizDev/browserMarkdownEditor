@@ -31,6 +31,7 @@ import { flushPdfTextViewState } from '../utils/readerViewState';
 import { pdfNativeEmphasisAvailability } from '../utils/pdfNativeEmphasis';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
 import { choosePdfSessionRoute, readPdfSessionRoute, subscribePdfSessionRoute } from '../utils/pdfSessionRoute';
+import { assertPdfPrintAllowed, PDF_PRINT_UNKNOWN, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { requestVaultSearch } from '../utils/searchRequest';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
@@ -144,6 +145,8 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
     const currentTiledSource = tiledSource && appSession && tiledSource.session.token.vaultEpoch === reading?.identity.vaultEpoch &&
         tiledSource.session.token.documentId === documentId && tiledSource.session.token.session === appSession.serial &&
         tiledSource.session.token.bytesGeneration === appSession.bytesGeneration ? tiledSource : null;
+    const printOwner = useRef({ tiled, source: currentTiledSource, identity: reading?.identity });
+    printOwner.current = { tiled, source: currentTiledSource, identity: reading?.identity };
     const root = useRef<HTMLDivElement>(null), viewerActions = useRef<PdfViewerHandle>(null);
     const [print, setPrint] = useState<'closed' | 'confirm' | 'preparing' | 'ready'>('closed');
     const [printError, setPrintError] = useState('');
@@ -170,11 +173,27 @@ function PdfPane({ documentId, reading, file, isVisible, retainClosing = false, 
         printPending.current = epoch;
         setPrint('preparing'); setPrintError('');
         try {
+            const source = tiled ? currentTiledSource : null, identity = reading?.identity;
+            const checkPolicy = () => {
+                const live = printOwner.current;
+                if (live.tiled !== tiled) throw new Error('The PDF viewer changed. Prepare it again before printing.');
+                if (!tiled) return;
+                const current = live.identity;
+                if (!source || !identity || !live.tiled || live.source !== source || !current ||
+                    current.vaultId !== identity.vaultId || current.vaultEpoch !== identity.vaultEpoch ||
+                    current.documentId !== identity.documentId || current.byteGeneration !== identity.byteGeneration ||
+                    !source.session.isCurrent() || source.document.poolDocument.closed) throw new Error(PDF_PRINT_UNKNOWN);
+                assertPdfPrintAllowed(tiledPdfCapabilities(source.document.poolDocument.info));
+            };
+            checkPolicy();
             const result = await onPreparePrint(file.path);
             if (printEpoch.current !== epoch) return;
+            checkPolicy();
             if (!result.valid()) throw new Error('The document changed while preparing to print.');
             const url = URL.createObjectURL(new Blob([result.bytes.slice().buffer], { type: 'application/pdf' }));
-            printReady.current = { url, valid: result.valid, validate: result.validate };
+            printReady.current = { url,
+                valid: () => { try { checkPolicy(); return result.valid(); } catch { return false; } },
+                validate: async () => { try { checkPolicy(); const valid = await result.validate(); checkPolicy(); return valid; } catch { return false; } } };
             printExpiry.current = window.setTimeout(() => {
                 if (printReady.current?.url !== url) return;
                 ++printEpoch.current; printPopup.current?.close(); printPopup.current = null;

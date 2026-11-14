@@ -1,5 +1,7 @@
 import type { CameraController, Point } from '../../platform/render/camera'
 import type { BoardSession } from '../session/BoardSession'
+import { TOOLS } from '../model/styles'
+import type { Op } from '../change/ops'
 import { handTool, type HandContext } from './basicTools'
 import { ToolState, type ToolStateSnapshot } from './gesture'
 import { installKeyboard } from './keyboard'
@@ -56,12 +58,14 @@ export interface BoardInputServices {
   continueInk?(sample: RealSample): ((endpoint: RealSample) => boolean) | null
   bindPenMode?(exit: () => void): Detach
   penModeChanged?(enabled: boolean): void
+  persistToolLock?(locked: boolean): void
   clearLatches(): void
   cancelPendingGestures(): boolean
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
 const gestureOwner = new WeakMap<BoardSession, symbol>()
+const syncingSessions = new WeakSet<BoardSession>()
 const sessionPenMode = new WeakMap<BoardSession, { enabled: boolean; listeners: Set<(enabled: boolean) => void> }>()
 
 // View generations own listeners only. The session owns history, gesture queue and
@@ -265,7 +269,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (id === 'undo' && pointer.interrupt('undo')) return true
       if (id === 'undo' && editable()) { services.history.undo(); return true }
       if (id === 'redo' && editable()) { services.history.redo(); return true }
-      if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); services.commands.run('tool.lock', event); return true }
+      if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
       if (id === 'pan.hold') {
         spaceHeld = true
         if (!(router.activeOwner instanceof LiveInk)) return true
@@ -300,9 +304,33 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       services.cancelPendingGestures()
       pointer.interrupt('flush')
     }
+    if (current() && editable() && !syncingSessions.has(session)) {
+      const ops: Op[] = []
+      const tool = TOOLS.find(id => id === snapshot.active.id)
+      if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
+      const lockChanged = session.doc.view.toolLock !== snapshot.locked
+      if (lockChanged) ops.push({ t: 'board', key: 'view.toolLock', value: snapshot.locked })
+      try {
+        if (ops.length) session.apply({ origin: 'host', label: 'Tool state', ops }).release()
+        if (lockChanged) services.persistToolLock?.(snapshot.locked)
+      } catch (error) { services.error(error) }
+    }
     if (current()) view.a11y.toolState(snapshot)
   }
   const stopMirror = services.tools.subscribe(updateMirror)
+  const stopSession = session.subscribe(() => {
+    if (!current() || !editable()) return
+    const snapshot = services.tools.getSnapshot()
+    syncingSessions.add(session)
+    try {
+      if (snapshot.locked !== session.doc.view.toolLock) {
+        services.tools.setLocked(session.doc.view.toolLock)
+        services.persistToolLock?.(session.doc.view.toolLock)
+      }
+      const tool = session.doc.ui.tool
+      if (snapshot.active.id !== tool && services.tools.getRegistration(tool)) services.tools.setTool(tool)
+    } finally { syncingSessions.delete(session) }
+  })
   updateMirror()
   const detach = () => {
     if (!live) return
@@ -316,7 +344,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('pointercancel', up, true)
     view.surface.removeEventListener('lostpointercapture', up, true)
     sharedPenMode.listeners.delete(onPenMode)
-    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopMirror(); stopWet()
+    stopPenMode?.(); stopKeys(); stopWheel(); stopFrame(); stopSession(); stopMirror(); stopWet()
     if (attached.get(view.surface) === detach) attached.delete(view.surface)
     if (gestureOwner.get(session) === owner) gestureOwner.delete(session)
   }

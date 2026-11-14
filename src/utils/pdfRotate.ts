@@ -17,6 +17,8 @@
 import { PDFDocument, degrees } from 'pdf-lib';
 import { LOAD_WITHOUT_TICKS, SAVE_WITHOUT_TICKS } from './pdfBuild';
 import { asQuarter, turn } from './pdfRotation';
+import { inspectPdfRole } from './pdfAttachmentInventory';
+import { canRotatePdfRole } from './pdfRole';
 
 /**
  * Turn `delta` degrees: every page, or just `pageIndex` when one is named.
@@ -31,6 +33,10 @@ export async function rotatePdfPages(
     delta: number,
     pageIndex?: number,
 ): Promise<Uint8Array> {
+    if (!Number.isFinite(delta) || delta % 90 !== 0) throw new Error('PDF rotation requires a whole quarter turn.');
+    if (pageIndex !== undefined && (!Number.isInteger(pageIndex) || pageIndex < 0)) throw new Error('Invalid PDF page to rotate.');
+    const role = await inspectPdfRole(bytes, '');
+    if (!canRotatePdfRole(role)) throw new Error('This PDF cannot be safely rotated: its embedded annotations or attachments require recovery.');
     // No defensive copy: the worker owns these bytes outright (App TRANSFERS
     // them), and pdf-lib's load() only reads its input — see the ownership note
     // in pdfBuild.buildAnnotatedPdf. The copy this replaces was a whole extra
@@ -47,11 +53,12 @@ export async function rotatePdfPages(
     const pages = doc.getPages();
     if (!pages.length) throw new Error('This PDF has no pages to rotate.');
 
-    const chosen = pageIndex === undefined
-        ? pages
-        : [pages[Math.min(pages.length - 1, Math.max(0, pageIndex))]];
+    if (pageIndex !== undefined && pageIndex >= pages.length) throw new Error('The PDF page to rotate no longer exists.');
+    const chosen = pageIndex === undefined ? pages : [pages[pageIndex]];
     for (const page of chosen) {
-        page.setRotation(degrees(turn(asQuarter(page.getRotation().angle), delta)));
+        const angle = page.getRotation().angle;
+        if (!Number.isFinite(angle) || angle % 90 !== 0) throw new Error('This PDF has an unsupported page rotation. It has not been changed.');
+        page.setRotation(degrees(turn(asQuarter(angle), delta)));
     }
     // useObjectStreams defaults true and is what keeps a rewritten file from
     // bloating; nothing here needs the uncompressed form.

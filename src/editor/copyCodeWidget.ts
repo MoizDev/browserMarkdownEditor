@@ -1,4 +1,5 @@
-import { WidgetType } from '@codemirror/view';
+import { EditorView, WidgetType } from '@codemirror/view';
+import { syntaxTree } from '@codemirror/language';
 import { countEditorWidget } from './editorPerf';
 
 // Same lucide outline style as components/icons.tsx, but as plain strings —
@@ -19,17 +20,14 @@ const COPIED_FEEDBACK_MS = 1200;
  * top padding, so the button rides the top of the panel in every mode.
  */
 export class CopyCodeWidget extends WidgetType {
-    /** @param code The block's inner text, fences excluded — what Cmd+C would want. */
-    constructor(readonly code: string) {
+    constructor() {
         super();
         if (__BME_BENCH__) { countEditorWidget(); }
     }
 
-    override eq(other: CopyCodeWidget): boolean {
-        return other.code === this.code;
-    }
+    override eq(): boolean { return true; }
 
-    override toDOM(): HTMLElement {
+    override toDOM(view: EditorView): HTMLElement {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'cm-codeblock-copy';
@@ -47,7 +45,24 @@ export class CopyCodeWidget extends WidgetType {
         // A click must copy, not relocate the caret into the code block.
         btn.onmousedown = (e) => e.preventDefault();
         btn.onclick = () => {
-            navigator.clipboard.writeText(this.code).then(() => {
+            let pos: number;
+            try { pos = view.posAtDOM(btn); } catch { return; }
+            const state = view.state, line = state.doc.lineAt(pos);
+            let bounds: { from: number; to: number } | null = null;
+            syntaxTree(state).iterate({ from: line.from, to: line.to, enter(node) {
+                if (node.name !== 'FencedCode') return;
+                const opening = node.node.firstChild, last = node.node.lastChild;
+                if (opening?.name !== 'CodeMark' || state.doc.lineAt(opening.from).number !== line.number) return;
+                const closing = last?.name === 'CodeMark' && last.from > opening.to ? last : null;
+                const end = state.doc.lineAt(closing?.from ?? node.to);
+                const closed = closing !== null && end.number > line.number && closing.to <= end.to;
+                const first = line.number + 1, final = closed ? end.number - 1 : end.number;
+                bounds = first <= final ? { from: state.doc.line(first).from, to: state.doc.line(final).to } : { from: line.to, to: line.to };
+                return false;
+            } });
+            if (!bounds) return;
+            const { from, to } = bounds as { from: number; to: number };
+            navigator.clipboard.writeText(state.doc.sliceString(from, to)).then(() => {
                 btn.innerHTML = CHECK_ICON;
                 btn.classList.add('cm-codeblock-copy-done');
                 setTimeout(() => {

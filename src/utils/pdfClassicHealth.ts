@@ -12,7 +12,7 @@ export function pdfOpenFailure(error: unknown): { kind: PdfOpenFailure; message:
     return { kind: 'file-error', message: 'This PDF could not be opened. It may be damaged or unavailable.' };
 }
 
-export type ClassicPdfFailureCode = 'image-decode-failed' | 'asset-load-failed' | 'worker-startup-failed' | 'worker-failed' | 'message-contract-failed' | 'render-failed' | 'render-delayed';
+export type ClassicPdfFailureCode = 'image-decode-failed' | 'asset-load-failed' | 'worker-startup-failed' | 'worker-failed' | 'message-contract-failed' | 'invalid-page' | 'resource-limit' | 'render-failed' | 'render-delayed';
 export interface ClassicPdfDiagnostic {
     code: ClassicPdfFailureCode;
     pageIndex?: number;
@@ -146,5 +146,8 @@ export function isClassicPdfCancellation(error: unknown): boolean {
 }
 export function recordClassicRenderFailure(health: ClassicPdfHealth, error: unknown, pageIndex?: number): void {
     if (isClassicPdfCancellation(error)) return;
-    health.record(error instanceof ClassicPdfError ? error.diagnostic : { code: 'render-failed', pageIndex, incomplete: true });
+    const name = error instanceof Error ? error.name : '';
+    const code = name === 'ResourceLimit' || name === 'OutOfMemoryError' || name === 'RangeError' ? 'resource-limit'
+        : name === 'PageError' || name === 'InvalidPDFException' ? 'invalid-page' : 'render-failed';
+    health.record(error instanceof ClassicPdfError ? error.diagnostic : { code, pageIndex, incomplete: true });
 }

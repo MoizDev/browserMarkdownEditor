@@ -21,6 +21,8 @@ export interface PdfDemandInput {
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
+    /** Stable full page-geometry identity, including rotations and UserUnit (contracts C1.3). */
+    readonly geometryDigest: string;
     readonly stack: Readonly<PageStack>;
     readonly viewport: Readonly<Rect>;
     readonly rasterScale: number;

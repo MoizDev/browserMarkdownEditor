@@ -6,7 +6,7 @@ import type { Rect } from '../../platform/types';
 import { createExportImageResolver } from '../export/exportImage';
 import { createBoardCaptureSnapshot } from '../export/runtimeSnapshot';
 import { encodeTiledPngInWorker } from '../export/pngWorkerClient';
-import { checkPngSize } from '../export/png';
+import { checkPngSize, splicePngDensity } from '../export/png';
 import { exportFileName, resolveExportScope, type ExportRoute } from '../export/scope';
 import { streamRasterPng } from '../export/streamRaster';
 import { streamSvg } from '../export/streamSvg';
@@ -56,6 +56,8 @@ export interface NativeExportOptions {
 
 export interface NativeExportJob {
     png(signal: AbortSignal): Promise<Blob>;
+    /** Copy-as-PNG: the same frozen capture, once plain and once carrying our private pixel density. */
+    clipboardPng(signal: AbortSignal): Promise<Readonly<{ image: Blob; privateImage: Blob }>>;
     svg(signal: AbortSignal): Promise<Blob>;
     filename(extension: 'png' | 'svg'): string;
     release(): void;
@@ -399,13 +401,19 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         };
         signal.addEventListener('abort', release, { once: true });
         if (signal.aborted) { release(); throw stale(); }
+        const exportPng = (requestSignal: AbortSignal) => run(requestSignal, combined => {
+            if (route === 'copy' && pngScale < 2) options.notice('The copied PNG was scaled down to fit the clipboard size limit.');
+            return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
+                { background: background && colourCss(background), clipboard: route === 'copy' });
+        });
         return {
             bounds: Object.freeze({ ...scope.bounds }), topmostRoot,
-            png: requestSignal => run(requestSignal, combined => {
-                if (route === 'copy' && pngScale < 2) options.notice('The copied PNG was scaled down to fit the clipboard size limit.');
-                return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
-                    { background: background && colourCss(background), clipboard: route === 'copy' });
-            }),
+            png: exportPng,
+            clipboardPng: async requestSignal => {
+                const image = await exportPng(requestSignal);
+                // The private item is the same pixels with our density chunk; the public PNG stays untouched.
+                return Object.freeze({ image, privateImage: await splicePngDensity(image, scope.bounds, requestSignal) });
+            },
             svg: requestSignal => run(requestSignal, combined => pdfBackdrop ? pdfSvg(combined) :
                 streamSvg(source, scope.bounds, 1, createExportImageResolver(token, capturedImages, readImage, combined), combined, background)),
             filename: extension => exportFileName(boardName, sheetName, scope.kind, extension, timestamp),

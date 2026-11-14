@@ -170,13 +170,19 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const size = observer.current;
             const memory = layerSet.layers.map(layer => layer.memory());
             const requestedPixels = size ? size.physical.width * size.physical.height : 0;
+            const tilePixels = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2;
+            const bandPixels = Math.min(requestedPixels, tilePixels);
+            const isolated = layerSet.compositorLayers.filter(binding => binding.isolation).length;
+            const frameCopies = 2 + Number(!!options.session.mirrors) + isolated;
             return { paneId: options.paneId, visible, focused, requestedPixels,
-                // CPU's detached complete-frame buffer and a staged GPU backing can coexist.
-                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) + 2 * requestedPixels * RENDER_CONSTANTS.surfaceReserveBytesPerPixel,
-                // New panes need admission before their first raster exists; live bytes alone
-                // would grant zero CPU credit and prevent every first tile from arriving.
+                // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
+                // native bitmap residency and one bounded colour band do not raise either cap.
+                gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
+                    (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
+                // Bootstrap the first raster before live bytes exist, plus derivative bitmap crops
+                // and a readback core even for a purely procedural inverted document.
                 cpuNeedBytes: Math.max(memory.reduce((sum, value) => sum + value.cpuBytes, 0),
-                    requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel),
+                    requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) + (requestedPixels + bandPixels) * 4,
                 cpuPinned: lifecycle?.surface.snapshot().state === 'cpu-pinned' };
         },
         interacting: options.isInteracting,

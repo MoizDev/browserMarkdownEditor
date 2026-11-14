@@ -14,5 +14,8 @@ export { createMirrorVersionBridge } from './mirrorBridge';
 export { renderTokenKey, createTileGrid, intersectingTiles, makeTileKey, tileKeyString, exactScale, movingScale, lowCoveragePlan } from './tiles/geometry';
 export { tilePrefetchRegion } from './tiles/demand';
 export { pageStack, pageAt } from './pageStack';
+export { pagePresentation, cameraForPagedPosition, pagedPosition, fitWidthZ, pagedConstraint } from './camera';
+export type { PagePresentation } from './camera';
+export { projectPage } from './compositorProjection';
 export { attachPlatformPane } from './attachPlatformPane';
 export { reportWorkerMemory, releaseWorkerMemory } from './workerMemory';

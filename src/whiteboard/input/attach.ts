@@ -146,6 +146,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       activeSource = sample.source
       const choice = start.active
       completeTool = false
+      if (sample.source === 'pen' && (event.button === 5 || (event.buttons & 32) !== 0)) {
+        return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
+      }
       if (event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
       if (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey)) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
       if (event.button !== 0) return null
@@ -245,6 +248,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     else if (event.pointerType === 'touch') { touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId) }
   }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
+  const dragover = (event: DragEvent) => { event.preventDefault(); event.stopPropagation() }
+  const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (current() && editable()) services.drop?.(event) }
+  view.surface.addEventListener('dragover', dragover)
+  view.surface.addEventListener('drop', drop)
   view.surface.addEventListener('auxclick', auxclick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
@@ -302,6 +309,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     pointer.interrupt('flush')
   }
   const stopFlush = view.bindFlush?.(flush)
+  const pagehide = () => { if (current()) flush() }
+  window.addEventListener('pagehide', pagehide)
   const stopCursor = view.a11y.bindKeyboardCursor?.(() => {
     if (!current()) return
     const viewport = view.camera.viewport
@@ -394,9 +403,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const detach = () => {
     if (!live) return
     flush()
+    window.removeEventListener('pagehide', pagehide)
     stopFlush?.(); cursor.dispose(); stopCursor?.()
     pointer.dispose()
     live = false
+    view.surface.removeEventListener('dragover', dragover)
+    view.surface.removeEventListener('drop', drop)
     view.surface.removeEventListener('auxclick', auxclick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)

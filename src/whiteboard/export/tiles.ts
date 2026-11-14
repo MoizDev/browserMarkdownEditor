@@ -1,5 +1,5 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor'
-import { checkPngSize } from './png'
+import { checkPngSize, encodePng } from './png'
 
 export interface ExportTile {
   readonly x: number
@@ -56,4 +56,13 @@ export async function* exportRows(
       }
     } finally { if (lease) options.memory!.release(lease) }
   }
+}
+
+export function encodeTiledPng(
+  width: number,
+  height: number,
+  render: RenderExportTile,
+  options: TiledPngOptions = {},
+): Promise<Blob> {
+  return encodePng(width, height, exportRows(width, height, render, options), options)
 }

@@ -25,7 +25,7 @@ function mediaId(key: string): MediaId {
     return `sha256:${match[1] ?? match[2]}`;
 }
 
-/** Pins the canonical scene and media for one export or print, before any asynchronous work. */
+/** Factory for snapshotExport: pin the canonical scene and media before any asynchronous work. */
 export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): PinExportSnapshot {
     const request = { ...options.request, world: options.request.world && { ...options.request.world } };
     const requestedSelection = options.selectedNodeIds && [...options.selectedNodeIds];

@@ -1,0 +1,62 @@
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { availableBoardLocales, translateBoard, type BoardLanguageState } from '../../whiteboard/chrome/language';
+import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
+import { createBoardStyleControls } from '../../whiteboard/host/styleControls';
+import type { BoardRuntime } from '../../whiteboard/host/runtime';
+import { boardBindings, shortcutGroups } from '../../whiteboard/input/keyboard';
+import type { ViewerEngine } from '../../whiteboard/viewer/types';
+import { persistLastPenScale } from './chrome/penPanelStore';
+import { SessionBoardChrome, type SessionBoardChromeProps } from './chrome/SessionBoardChrome';
+
+type Supplied = Omit<SessionBoardChromeProps, 'kind' | 'locale' | 'direction' | 'translate' | 'languages' | 'selectLanguage'
+    | 'toolState' | 'toolShortcut' | 'shortcuts' | 'localPreferences' | 'penPanel'>;
+export interface NativeBoardChromeProps extends Supplied {
+    readonly runtime: BoardRuntime;
+    readonly engine: ViewerEngine;
+    readonly language: BoardLanguageState;
+    readonly preferences: BoardPreferenceState;
+    readonly currentOwner: () => boolean;
+    readonly mac: boolean;
+    readonly onReady: (ready: boolean) => void;
+    readonly onStyles: (styles: Styles | null) => void;
+}
+type Styles = ReturnType<typeof createBoardStyleControls>;
+
+/** Chrome observes the exact document-owned tool, selection, preferences and view. */
+export function NativeBoardChrome(props: NativeBoardChromeProps) {
+    const { runtime, engine, language, currentOwner, reportError, onStyles } = props;
+    if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');
+    const [owned, setOwned] = useState<{ runtime: BoardRuntime; engine: ViewerEngine; language: BoardLanguageState; styles: Styles } | null>(null);
+    useEffect(() => {
+        const styles = createBoardStyleControls({ runtime, tool: runtime.tools, language,
+            palette: () => engine.getSnapshot().palette, panelBackground: () => engine.getSnapshot().palette.background,
+            subscribeAppearance: listener => engine.subscribe(listener), currentOwner, persistScale: persistLastPenScale, onError: reportError });
+        setOwned({ runtime, engine, language, styles }); onStyles(styles);
+        return () => { onStyles(null); styles.dispose(); };
+    }, [runtime, engine, language, currentOwner, reportError, onStyles]);
+    if (!owned || owned.runtime !== runtime || owned.engine !== engine || owned.language !== language) return null;
+    return <AttachedNativeBoardChrome {...props} styles={owned.styles} />;
+}
+
+function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onReady, onStyles: _onStyles, styles, ...props }: NativeBoardChromeProps & { styles: Styles }) {
+    const lang = useSyncExternalStore(language.subscribe, language.getSnapshot, language.getSnapshot);
+    const local = useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
+    const panel = useSyncExternalStore(styles.subscribe, styles.getSnapshot, styles.getSnapshot);
+    useLayoutEffect(() => { if (!props.isVisible) { onReady(false); return; }
+        onReady(true); return () => onReady(false); }, [onReady, styles, props.isVisible]);
+    useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);
+    useEffect(() => { if (!props.isVisible) styles.finish(); }, [props.isVisible, styles]);
+    const tooltip = (id: string, figure?: string) => {
+        const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}` : `tool.${id}`;
+        const binding = boardBindings.find(item => item.id === key);
+        if (!binding) return undefined;
+        return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
+            binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
+            .filter(Boolean).join(mac ? '' : '+');
+    };
+    return <SessionBoardChrome {...props} kind={runtime.session.doc.kind} locale={lang.locale} direction={lang.table.dir}
+        translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
+        selectLanguage={locale => language.select(locale)} toolState={runtime.tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac)}
+        localPreferences={{ ...local, setView: (key, value) => preferences.setView(key, value),
+            setSession: (key, value) => preferences.setSession(key, value) }} penPanel={panel} />;
+}

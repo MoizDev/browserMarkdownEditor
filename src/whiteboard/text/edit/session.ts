@@ -1,5 +1,5 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
-import { sliceRichText, type RichFragment } from '../richText';
+import { sliceRichText, type Block, type RichFragment } from '../richText';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -28,6 +28,7 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     compositionFormat(event: Event): void;
     command(name: string, selection: EditSelection): void;
     inList(offset: number): boolean;
+    blocks(selection: EditSelection, kind: Block['kind'] | 'indent' | 'outdent'): { readonly transaction: import('../../change/ops').Transaction; readonly selection: EditSelection };
     changed(selection: EditSelection): void;
     requestChrome(): void;
     reducedMotion(): boolean;
@@ -241,6 +242,20 @@ export class TextEditSession {
                     catch (error) { this.services.reportError(error); }
                     this.resetBlink();
                     this.host.sync();
+                } else if (command.startsWith('heading-') || command === 'ordered-list' || command === 'bullet-list' || command === 'indent' || command === 'outdent') {
+                    const kind: Block['kind'] | 'indent' | 'outdent' = command === 'ordered-list' ? 'ol' : command === 'bullet-list' ? 'ul'
+                        : command === 'indent' || command === 'outdent' ? command : command === 'heading-0' ? 'p' : `h${command.slice(-1)}` as Block['kind'];
+                    this.typingHistory.close();
+                    this.services.history.open('Format text blocks');
+                    try {
+                        const result = this.services.blocks(this.selection, kind);
+                        this.services.apply(result.transaction);
+                        this.selection = result.selection;
+                        this.services.setSelection(result.selection);
+                        this.services.changed(result.selection);
+                        this.services.announce('Text block formatting changed');
+                    } catch (error) { this.services.reportError(error); }
+                    finally { this.services.history.close(); this.host.sync(); }
                 } else {
                     if (command === 'undo' || command === 'redo' || command === 'finish') this.typingHistory.close();
                     this.services.command(command, this.selection);

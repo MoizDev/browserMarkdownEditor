@@ -2,6 +2,7 @@ import type { WorkerContext } from '../../platform/workers';
 import { inkCoverage } from './inkCoverageHandler';
 import { reportGeometryMemory } from './geometryHandler';
 import { nestedInkLod } from './inkLodNested';
+import { nestedInkLodGroups } from './inkLodGroups';
 import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
 
 export async function inkLod(payload: unknown, context: WorkerContext): Promise<unknown> {
@@ -27,8 +28,9 @@ export async function inkLod(payload: unknown, context: WorkerContext): Promise<
         context.signal.throwIfAborted();
         let result: Awaited<ReturnType<typeof nestedInkLod>> = null;
         try {
-            result = await nestedInkLod(fine, request, chunkCount, context,
-                scratch => reportGeometryMemory(context, owner, bytes + scratch));
+            const memory = (scratch: number) => reportGeometryMemory(context, owner, bytes + scratch);
+            result = await nestedInkLod(fine, request, chunkCount, context, memory)
+                ?? await nestedInkLodGroups(fine, request, chunkCount, context, memory);
         } catch (error) {
             context.signal.throwIfAborted();
             if (error instanceof DOMException && error.name === 'AbortError') throw error;

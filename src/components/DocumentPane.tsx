@@ -67,7 +67,7 @@ import type { DocumentBufferStore } from '../utils/documentBuffers';
 import { bracketColourCompartment, codeExtensions, codeLanguageFor, loadCodeLanguage, type CodeLanguage } from '../editor/codeEditor';
 import { rainbowBrackets as rainbowBracketsExtension } from '../editor/rainbowBrackets';
 import { codeDarkTheme, codeLightTheme } from '../editor/codeHighlight';
-import { isCodeFile, isDrawingFile, isNotebookFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
+import { isCodeFile, isNotebookFile, isTexFile, noteDisplayName } from '../utils/fileTypes';
 import { ArrowLeft, ArrowRight, Edit2, Eye, MoreHorizontal, PenTool } from './icons';
 import DiskBar from './DiskBar';
 import { warmMath } from '../editor/mathWidget';
@@ -646,7 +646,7 @@ function DocumentPane({
     const path = file.path;
     const documentId = tab.id;
     const mode = tab.mode;
-    const isDrawing = !file.isHelp && isDrawingFile(file.name);
+    const isDrawing = !file.isHelp && tab.representation.loadedKind === 'drawing';
     const isNotebook = !file.isHelp && isNotebookFile(file.name);
     const isPdf = !file.isHelp && tab.representation.loadedKind === 'pdf';
     const isEpub = !file.isHelp && tab.representation.loadedKind === 'epub';

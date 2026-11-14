@@ -433,6 +433,7 @@ export default function App() {
     requestIndexPermission,
     moveToTrash,
     keepCopyInGarbage,
+    keepConversionBackup,
     listTrash,
     restoreFromTrash,
     restoreConversionCopy,
@@ -1208,6 +1209,22 @@ export default function App() {
           return bytes;
         } finally { snapshot.dispose(); }
       },
+      async keepConversionBackup(identity, original, digest, signal) {
+        const tab = current(identity);
+        if (!tab) throw new DOMException('Canvas session ended', 'AbortError');
+        const path = tab.file.path, handle = tab.file.handle;
+        const access = request(identity, { hash: digest }, signal);
+        const result = await keepConversionBackup({ ...access, blob: original, isCurrent: () => {
+          const latest = current(identity);
+          return !!latest && latest.file.path === path && latest.file.handle === handle && getBaseline(identity.documentId)?.hash === digest;
+        } });
+        signal.throwIfAborted();
+        if (!access.isCurrent() || getBaseline(identity.documentId)?.hash !== digest
+          || current(identity)?.file.path !== path || current(identity)?.file.handle !== handle) {
+          throw new DOMException('Canvas session ended', 'AbortError');
+        }
+        return result;
+      },
       async appendJournal(identity, source, capture) {
         if (!current(identity) || !writable(identity) || typeof source === 'string'
           || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
@@ -1243,7 +1260,7 @@ export default function App() {
         return name;
       },
     };
-  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, recoveryEvent, recoveryJournal]);
+  }, [documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal]);
   useEffect(() => {
     const open = new Set(tabs.map(tab => tab.id));
     for (const id of nativePoliciesRef.current.keys()) if (!open.has(id)) nativePoliciesRef.current.delete(id);
@@ -2614,6 +2631,8 @@ export default function App() {
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
+    const conversionDigest = nativeSource ? tab.representation.legacyOriginalSha256 : undefined;
+    const conversionIdentity = conversionDigest ? nativeCanvasHost.identity(tab.id) : undefined;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
     if (__BME_BENCH__) {
@@ -2700,6 +2719,32 @@ export default function App() {
         if (isPdf && (!pdfOriginal || !canRebuildAnnotatedPdf(pdfOriginal) || !closing && diskStateRef.current.has(id))) return 'skipped';
         if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall)) return 'skipped';
         if (pdfEntry && (!currentPdfOwner(pdfEntry.identity) || pdfRebuildRef.current.get(id) !== pdfEntry || getBaseline(id)?.hash !== pdfEntry.baseline.hash)) return 'skipped';
+        if (conversionDigest) {
+          if (!expected) throw new Error('The conversion baseline is unavailable.');
+          if (expected.hash === conversionDigest) {
+            if (!conversionIdentity || conversionIdentity.session !== sessionAtCall?.serial) throw new Error('The conversion session is unavailable.');
+            if (trashInFlightRef.current && !trashOwned) throw new Error('Trash is busy; retry the conversion save.');
+            if (!trashOwned) trashInFlightRef.current = true;
+            try {
+              await reconcileQueueRef.current;
+              const stillCurrent = () => {
+                if (!nativeCanvasHost.isCurrent(conversionIdentity) || rootHandleRef.current !== rootAtCall
+                  || documentSessions.get(id) !== sessionAtCall
+                  || !tabsRef.current.some(t => t.id === id && t.file.path === path && t.file.handle === handle)
+                  || getBaseline(id)?.hash !== expected.hash || diskStateRef.current.has(id)
+                  || documentBuffers.revisionForDocument(id)?.revision !== revision) return false;
+                const latest = sessionAtCall.adapter.checkpoint();
+                return !sourceIsNewer(latest, bufferedSource);
+              };
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              const signal = new AbortController().signal;
+              const original = await nativeCanvasHost.acquireBytes(conversionIdentity, signal);
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              await nativeCanvasHost.keepConversionBackup(conversionIdentity, original, conversionDigest, signal);
+              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+            } finally { if (!trashOwned) trashInFlightRef.current = false; }
+          }
+        }
         if (__BME_BENCH__) {
           try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
         }
@@ -2828,7 +2873,7 @@ export default function App() {
     }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);

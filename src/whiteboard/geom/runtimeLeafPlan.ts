@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from './selectedRootsAsync';
 import { worldPose } from '../change/coordinates';
 import { inverse } from './affine';
 import type { NodeSetOp, Transaction } from '../change/ops';
@@ -50,7 +51,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         if (!current()) throw new DOMException('Resize plan became stale', 'AbortError');
     };
     check();
-    const nodes = selectedRoots(doc, options.ids);
+    const nodes = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate: options.cooperate }); check();
     if (!nodes.length) throw new Error('Nothing selected for resize');
     for (const node of nodes) {
         if (node.kind === 'opaque' || isLocked(doc, node)

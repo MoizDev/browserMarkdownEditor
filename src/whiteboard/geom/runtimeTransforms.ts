@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from './selectedRootsAsync';
 import { pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
@@ -73,7 +74,7 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         if (!current()) throw new DOMException('Rotation plan became stale', 'AbortError');
     };
     check();
-    const chosen = selectedRoots(doc, options.ids);
+    const chosen = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate: options.cooperate }); check();
     if (!chosen.length) throw new Error('Nothing selected for rotation');
     for (const node of chosen) {
         if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)) throw new Error(`Node cannot be rotated: ${node.id}`);

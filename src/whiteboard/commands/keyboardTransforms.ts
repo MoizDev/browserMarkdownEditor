@@ -1,4 +1,4 @@
-import { selectedRoots } from '../change/commands';
+import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { acquireBoardGeometryScope } from './geometryScope';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
@@ -46,7 +46,7 @@ export function createBoardKeyboardTransforms(options: BoardKeyboardTransformOpt
                 const session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner, selection = runtime.selection.getSnapshot();
                 const stable = () => current() && session.doc === doc && doc.rev === revision && session.owner === owner
                     && runtime.selection.getSnapshot() === selection;
-                const roots = selectedRoots(doc, selected); if (!roots.length) return;
+                const roots = await selectedRootsAsync(doc, selected, { signal, current: stable, cooperate: options.cooperate }); if (!roots.length) return;
                 const scope = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current: stable, cooperate: options.cooperate });
                 let centre: Vec2;
                 try {

@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from './selectedRootsAsync';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
@@ -40,7 +41,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
         && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = (request?: AbortSignal) => { signal.throwIfAborted(); request?.throwIfAborted(); if (!current()) throw new DOMException('Translation source changed', 'AbortError'); };
     if (![options.down.x, options.down.y].every(Number.isFinite)) throw new RangeError('Invalid translation origin');
-    check(); const roots = selectedRoots(doc, options.ids);
+    check(); const roots = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate: options.cooperate }); check();
     if (!roots.length) throw new Error('Nothing selected to move');
     for (const node of roots) if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)
         || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Node cannot be moved: ${node.id}`);

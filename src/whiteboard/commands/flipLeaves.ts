@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { normalizedRotation, pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
 import type { NodeSetOp } from '../change/ops';
 import { acquireBoardGeometryScope } from './geometryScope';
@@ -44,7 +45,7 @@ export async function flipBoardLeaves(options: FlipLeavesOptions): Promise<void>
         && !session.isReadOnly && runtime.selection.getSnapshot() === selection && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Flip source changed', 'AbortError'); };
     if ((axis !== 'x' && axis !== 'y') || ![options.centre.x, options.centre.y].every(Number.isFinite)) throw new RangeError('Invalid flip axis');
-    check(); const roots = selectedRoots(doc, options.ids);
+    check(); const roots = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate }); check();
     if (!roots.length) return;
     for (const node of roots) if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)
         || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Node cannot be reflected: ${node.id}`);

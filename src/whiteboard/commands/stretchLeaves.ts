@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import type { NodeSetOp } from '../change/ops';
 import { acquireBoardGeometryScope } from './geometryScope';
 import { prepareBoardLeafResize } from '../geom/runtimeResizeKinds';
@@ -31,7 +32,7 @@ export async function stretchBoardLeaves(options: StretchLeavesOptions): Promise
         && !session.isReadOnly && runtime.selection.getSnapshot() === selection && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Stretch source changed', 'AbortError'); };
     if (axis !== 'x' && axis !== 'y') throw new RangeError('Invalid stretch axis');
-    check(); const roots = selectedRoots(doc, options.ids); if (!roots.length) return;
+    check(); const roots = await selectedRootsAsync(doc, options.ids, { signal, current, cooperate }); check(); if (!roots.length) return;
     for (const node of roots) if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)
         || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Node cannot be stretched: ${node.id}`);
     const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(); let visited = 0;

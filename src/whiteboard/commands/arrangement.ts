@@ -1,4 +1,5 @@
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked } from '../change/commands';
+import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
 import type { NodeSetOp } from '../change/ops';
 import type { ArrangementAction, ArrangementServices } from '../geom/arrangement.types';
@@ -32,7 +33,8 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
             }
         };
         check();
-        const roots = selectedRoots(doc, ids);
+        const roots = await selectedRootsAsync(doc, ids, { signal, current: () => { try { check(); return true; } catch { return false; } },
+            cooperate: options.cooperate }); check();
         for (const node of roots) {
             if (sheetOf(doc, node.id) !== sheet) throw new Error('Arrangement selection spans another sheet');
             let parent: ParentId = node.parent, inFocus = node.id === focus || parent === focus;

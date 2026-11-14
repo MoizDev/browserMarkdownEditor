@@ -492,8 +492,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                     const { index, scale } = candidate;
                     const controller = new AbortController(); activePaint = controller;
                     try {
-                        let native: PdfNativeEmphasisResult | undefined;
-                        const url = await source.renderPage(index, scale, emphasis, result => { native = result; }, controller.signal);
+                        const url = await source.renderPage(index, scale, emphasis, undefined, controller.signal);
                         if (closed || pageImagesRef.current !== images || controller.signal.aborted || emphasis !== emphasisRef.current) {
                             URL.revokeObjectURL(url); refineAgain = true; continue;
                         }
@@ -501,12 +500,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                         images[index] = { url, scale, emphasis };
                         refreshPageAsset(editor, index);
                         if (previous) URL.revokeObjectURL(previous.url);
-                        if (native) {
-                            nativePages.current.set(index, native);
-                            if (shownPageRef.current === index) {
-                                setNativeNotice(pdfNativeEmphasisNotice(native)); nativeResult.current?.(index, native);
-                            }
-                        }
+                        if (shownPageRef.current === index) watchShown(index);
                     } catch (err) {
                         if (!controller.signal.aborted) {
                             unrenderable.add(index);
@@ -517,6 +511,29 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 } while (refineAgain);
             } finally { refining = false; }
         };
+
+        let watchedPage = -1;
+        let releaseEmphasis: (() => void) | undefined;
+        function watchShown(index: number) {
+            if (closed || watchedPage === index) return;
+            releaseEmphasis?.();
+            watchedPage = index;
+            const source = sourceRef.current;
+            if (!source) return;
+            releaseEmphasis = source.watchEmphasis(index, result => {
+                if (closed || sourceRef.current !== source || shownPageRef.current !== index) return;
+                if (result) nativePages.current.set(index, result); else nativePages.current.delete(index);
+                setNativeNotice(pdfNativeEmphasisNotice(result));
+                nativeResult.current?.(index, result);
+                // An On-first backdrop was deliberately painted unmodified while
+                // the proof ran. Replace it without touching ink or history.
+                if (result?.supported && result.eligible && emphasisRef.current) {
+                    const image = pageImagesRef.current[index];
+                    if (image) image.emphasis = false;
+                    void refinePages(false);
+                }
+            });
+        }
 
         // Only remote backdrop assets change; ink, history and camera are retained.
         const refresh = () => { activePaint?.abort(); void refinePages(true); };
@@ -546,6 +563,10 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
                 nativeResult.current?.(shown, nativePages.current.get(shown));
                 controlsRef.current?.setPage(shown);
                 thumbsRef.current?.setCurrentPage(shown);
+                releaseEmphasis?.();
+                releaseEmphasis = undefined;
+                watchedPage = -1;
+                if (pageImagesRef.current[shown]) watchShown(shown);
             }
             writePdfViewPos(filePath, { page: top, offset, zoom: editor.getZoomLevel() / fitWidthZoom(editor, boxes) }, false);
             if (persistTimer) clearTimeout(persistTimer);
@@ -810,6 +831,7 @@ export default function PdfAnnotateCanvas({ filePath, original, snapshot, onCont
             disposePen();
             disposeInvert();
             closed = true;
+            releaseEmphasis?.();
             activePaint?.abort();
             if (refreshEmphasis.current === refresh) refreshEmphasis.current = undefined;
             stopViewWatch();

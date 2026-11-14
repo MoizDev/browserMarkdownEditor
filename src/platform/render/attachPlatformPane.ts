@@ -1,4 +1,5 @@
 import type { ViewState } from '../types';
+import type { DamageRecord } from './damage';
 import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../renderStatus';
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
@@ -120,9 +121,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
-            gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: () => surfaceHost.current,
+            gpuResources: () => gpu?.bundle.compositor.resources ?? null, compositor: drawCompositor,
             preparationCompositor: drawCompositor,
-            invalidate: reason => lifecycle?.invalidate(reason),
+            invalidate: (reason, damage) => lifecycle?.invalidate(reason, damage),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
         });
     });
@@ -266,9 +267,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const size = observer.readForFrame(frameId);
                         const grant = runtime.governor.grant(options.paneId);
                         if (!size || !grant) return null;
-                        const drawing = drawCompositor();
+                        let drawing = drawCompositor();
                         if (!drawing) return null;
-                        const planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        if (drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
+                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
+                            // Resizing a displayed GL canvas destroys its last complete pixels before
+                            // layers can prepare the new viewport. Build the normal CPU bridge detached,
+                            // then resize/rebuild this SAME kept GPU behind that complete picture.
+                            cpuPresented = false;
+                            drawing = compositor;
+                            planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        }
                         const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
                         if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
                         if (result?.kind !== 'failed') return result;
@@ -384,7 +394,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 };
                 frameLease = runtime.scheduler.register(pane);
                 const lease = frameLease;
-                return { invalidate: reason => lease.invalidate(reason), setFocused: value => lease.setFocused(value),
+                return { invalidate: (reason: string, damage?: DamageRecord) => lease.invalidate(reason, damage), setFocused: value => lease.setFocused(value),
                     dispose: () => { if (frameLease === lease) frameLease = null; lease.dispose(); } };
             },
             currentFrameToken: token, currentView: mirrorView, currentRevision: options.revision,
@@ -392,7 +402,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             recordUpload: (bytes, ms) => runtime.scheduler.recordUpload(bytes, ms), now: () => performance.now(),
         });
         removeCapture = registerCaptureGpu(options.paneId, () => {
-            if (disposed || !visible || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
+            if (disposed || !visible || !cpuPresented || !gpu || options.isInteracting() || surfaceHost.current !== gpu.bundle.compositor) return null;
             const snapshot = lifecycle?.surface.snapshot();
             if (snapshot?.state !== 'gpu-visible' || snapshot.gpuGeneration !== gpu.grant.generation) return null;
             return captureGpuOwner(gpu.bundle.owner, gpu.bundle.compositor as GpuCompositor);
@@ -453,10 +463,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpu?.bundle.compositor.setLayers(layerSet.compositorLayers);
             runtime.refresh();
         },
-        invalidate(reason) {
+        invalidate(reason, damage) {
             if (disposed) return;
             if (reason === 'input') { lastInputAt = performance.now(); pendingInputAt = lastInputAt; }
-            lifecycle?.invalidate(reason);
+            lifecycle?.invalidate(reason, damage);
         },
         captureRegion(worldRect, maxSidePx, captureOptions) {
             if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));

@@ -205,7 +205,7 @@ third-party code included (normally "none") · date.
 | `text/edit/pointer.ts` | w-i | F-TEXT-006 | text §5.6 | Design, pointer and timer APIs | none | 2026-11-13 |
 | `text/edit/selection.ts` | w-i | F-TEXT-006/018 | text §5.6 | Design and Intl.Segmenter | none | 2026-11-13 |
 | `text/edit/caret.ts` | w-i | F-TEXT-006/018 | text §§5.4–5.5, 9 | TX-3 public caret index and design | none | 2026-11-13 |
-| `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design and affine rectangle bounds | none | 2026-11-13 |
+| `text/edit/geometry.ts` | w-i | E-TXT-5 | text §5.3 | Design, platform Rect and affine rectangle bounds | none | 2026-11-13 |
 | `text/edit/rules.ts` | w-i | F-TEXT-011/012/015 | text §5.4 | Design and TX-2 rich splice types | none | 2026-11-13 |
 | `text/edit/tool.ts` | w-i | F-TEXT-001/002 | text §5.6; spec/text | Design and w-f public Tool interface | none | 2026-11-13 |
 | `text/spell/words.ts` | w-i | COV-34 | text §5.8 | Design and Intl.Segmenter | none | 2026-11-13 |

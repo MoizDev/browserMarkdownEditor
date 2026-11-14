@@ -794,6 +794,13 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
     const vaultActivationRef = useRef(0);
     const getVaultActivation = useCallback(() => vaultActivationRef.current, []);
+    const requestIndexPermission = useCallback(async (root: FileSystemDirectoryHandle, activation: number) => {
+        if (rootHandleRef.current !== root || vaultActivationRef.current !== activation) return false;
+        try {
+            const permission = await root.requestPermission({ mode: 'readwrite' });
+            return permission === 'granted' && rootHandleRef.current === root && vaultActivationRef.current === activation;
+        } catch { return false; }
+    }, []);
     const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
         // A→B→A is not the original activation, even if a handle is reused.
         if (rootHandleRef.current !== handle) vaultActivationRef.current++;
@@ -2671,6 +2678,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
        and PdfPane, both memoized precisely so they do not re-render while the
        reader types, re-rendered anyway. */
     const value: FileSystemContextValue = useMemo(() => ({
+        requestIndexPermission,
         handleIO,
         ensureVaultId,
         rootHandle,
@@ -2734,6 +2742,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         putBoardAsset,
     }), [
         rootHandle,
+        requestIndexPermission,
         getVaultActivation,
         registerBeforeRootChange,
         fileTree,

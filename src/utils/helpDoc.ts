@@ -40,6 +40,8 @@ Modern browsers require you to explicitly grant permission every time you open a
 ### The Sidebar
 Along the top of the sidebar sit two tabs — **Files** (the folder) shows the file tree and **Search** (the magnifying glass) searches the vault — with the button that hides the sidebar at the right-hand end (\`Cmd + \\\` / \`Ctrl + \\\` does the same; the button left behind on the thin strip brings it back).
 
+If the search index loses access to the vault, a notice appears above the workspace. Choose **Retry** to grant access again and refresh the index; your notes stay untouched.
+
 Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.

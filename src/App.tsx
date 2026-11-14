@@ -402,6 +402,7 @@ export default function App() {
     retireAsset,
     restoreAsset,
     restoreVault,
+    requestIndexPermission,
     moveToTrash,
     keepCopyInGarbage,
     listTrash,
@@ -487,13 +488,31 @@ export default function App() {
   const [mainView, setMainView] = useState<MainView>('editor');
 
   // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  const [graphState, setGraphState] = useState<{ activation: number; value: GraphData }>(() => ({ activation: searchActivation, value: EMPTY_GRAPH }));
+  const graph = graphState.activation === searchActivation ? graphState.value : EMPTY_GRAPH;
   const publishIndexGraph = useCallback((next: GraphData | null) => {
+    if (getVaultActivation() !== searchActivation) return;
     const value = next ?? EMPTY_GRAPH;
-    setGraph(previous => sameGraph(previous, value) ? previous : value);
-  }, []);
+    setGraphState(previous => previous.activation === searchActivation && sameGraph(previous.value, value)
+      ? previous : { activation: searchActivation, value });
+  }, [getVaultActivation, searchActivation]);
+  const [indexProblem, setIndexProblem] = useState<{ activation: number; kind: string } | null>(null);
+  const reportIndexProblem = useCallback((value: unknown) => {
+    const problem = value as { kind?: string } | null;
+    setIndexProblem({ activation: getVaultActivation(), kind: problem?.kind ?? 'unavailable' });
+  }, [getVaultActivation]);
   const indexGraphRef = useIndexGraph({ root: rootHandle, vaultId: currentVaultId, activation: searchActivation,
-    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile, publish: publishIndexGraph });
+    getActivation: getVaultActivation, tree: fileTree, resolve: resolveFileHandle, stat: statFile,
+    publish: publishIndexGraph, onProblem: reportIndexProblem });
+  const retryIndex = useCallback(async () => {
+    const owner = indexGraphRef.current;
+    if (!owner || !indexProblem || owner.activation !== indexProblem.activation || owner.activation !== getVaultActivation()) return;
+    if (indexProblem.kind === 'permission' && !await requestIndexPermission(owner.root, owner.activation)) return;
+    try {
+      await owner.regrant();
+      if (indexGraphRef.current === owner) setIndexProblem(null);
+    } catch { /* Keep Retry available. */ }
+  }, [indexGraphRef, indexProblem, getVaultActivation, requestIndexPermission]);
 
   // ── Per-document editor state ────────────────────────────────────────────
   // Each document's full EditorState (doc + undo history + selection + an open
@@ -1520,8 +1539,10 @@ export default function App() {
    * retire lands on top and the note is pointing at a file in `.Garbage`.
    * Ordering them makes B's restore the last word, which is what it is.
    *
-   * Same promise-queue shape as context/recentVaults.ts. reconcileAssets catches
-   * its own errors, so this chain never rejects.
+   * Serialization alone is not ownership: each job captures its vault
+   * activation before IO, and validates it and its reference proof before
+   * moving an asset. A queued job from another activation is skipped. Like
+   * context/recentVaults.ts, the chain cannot be poisoned by a failed pass.
    */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
   const queueReconcile = useCallback((job: ReconcileJob) => {
@@ -1553,9 +1574,13 @@ export default function App() {
   }, []);
   requeueAssetFolderRef.current = requeueAssetFolder;
   const requeueAssetsAffected = useCallback((path: string) => {
+    // Wakeups can arrive while a proof is still running and not blocked yet.
+    // Its revision check both invalidates that proof and preserves the wakeup.
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
   const requeueAllAssets = useCallback(() => {
+    assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.all()) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
 
@@ -3079,13 +3104,12 @@ export default function App() {
 
   // ── Vault switch ────────────────────────────────────────────────────────
   // A tab is only meaningful inside the vault it was opened from: its path
-  // indexes that vault's tree, its handle writes into that vault's folder, and
-  // EditorPane's cached editor states are keyed by path alone. Carrying the set
-  // across a switch leaves the previous vault's notes on screen — and still
-  // autosaving into it — behind the new vault's file tree, and a path the two
-  // vaults happen to share would serve the old vault's buffer for the new
-  // vault's file. So flush what's pending (those handles are still good) and
-  // hand the new vault an empty workspace.
+  // indexes that vault's tree and its handle writes into that vault's folder.
+  // App owns the EditorState cache, keyed by document id AND path; both fields
+  // distinguish a surviving document from another at the same path. Carrying
+  // tabs across a switch would still show and autosave the previous vault's
+  // notes behind the new tree. Flush the old handles and hand the new vault
+  // an empty workspace, even when both vaults have a matching path.
   //
   // Emptying the workspace does NOT lose the outgoing vault's session: the
   // persist effect above has already written it under that vault's id on every
@@ -5503,9 +5527,16 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
+        {indexProblem?.activation === searchActivation && (
+          <div className="disk-bar" role="alert">
+            <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
+            <div className="disk-bar-actions"><button className="disk-bar-btn is-primary" onClick={() => { void retryIndex(); }}>Retry</button></div>
+          </div>
+        )}
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
+            key={searchActivation}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}

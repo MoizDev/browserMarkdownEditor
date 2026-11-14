@@ -5,6 +5,7 @@ import { compose, inverse } from '../geom/affine';
 import type { PathPickOptions } from '../geom/pick';
 import { createSweptPathJob } from '../geom/sweptPathJob';
 import { createClippedSweptPathJob } from '../geom/clippedSweptPathJob';
+import { createClippedPolygonPathJob } from '../geom/clippedPolygonPathJob';
 import { createClippedFilledSweepJob } from '../geom/clippedFilledSweepJob';
 import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
@@ -237,7 +238,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     const partsCertified = partialFrame && worldQuery.kind === 'swept';
                     if (!containment && otherHit && (!partialFrame || partsCertified)) hit = true;
                     else {
-                        let body = false;
+                        let body = false, bodyExists = true;
                         if (node.dash !== 'none' && connector.body.length) {
                             if (worldQuery.kind === 'swept' && (frameClips.length || connector.bodyExclusions.length)) {
                                 const exclusions = connector.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToCss, clip.localToWorld) }));
@@ -250,11 +251,19 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                         body = value.status === 'hit'; break;
                                     }
                                 } finally { job.cancel(); }
-                            } else {
-                                body = await pathHit([connector.body], worldQuery, pathOptions);
-                                if (connector.bodyExclusions.length && (body || containment)) throw new BoardRegionUncertain('Connector body exclusions require clipped geometry');
-                            }
-                            parts.push(body);
+                            } else if (worldQuery.kind === 'polygon' && connector.bodyExclusions.length) {
+                                const exclusions = connector.bodyExclusions.map(clip => ({ outline: clip.outline, localToSurface: compose(worldToCss, clip.localToWorld) }));
+                                const job = createClippedPolygonPathJob([connector.body], worldQuery, { strokeRadiusLocal: node.width / 2, frames: frameClips, exclusions });
+                                try {
+                                    for (;;) {
+                                        check(); const value = job.step({ deadline: performance.now() + 3, maxWork: 128 });
+                                        if (value.status === 'pending') { await cooperate(); continue; }
+                                        if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                                        bodyExists = value.status !== 'empty'; body = value.status === 'hit'; break;
+                                    }
+                                } finally { job.cancel(); }
+                            } else body = await pathHit([connector.body], worldQuery, pathOptions);
+                            if (bodyExists) parts.push(body);
                         }
                         if (!containment && !body && otherHit && partialFrame && !partsCertified) throw new BoardRegionUncertain('Frame-clipped connector head requires a visible witness');
                         hit = containment ? parts.length > 0 && parts.every(Boolean) : body || ((!partialFrame || partsCertified) && otherHit);

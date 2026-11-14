@@ -19,20 +19,21 @@ export type AttachBoardInput<S extends BoardSessionPort, T extends object> = (
 export function createBoardViewLease<S extends BoardSessionPort, T extends object>(
     board: S, engine: BoardViewEngine<T>, platform: ViewerHostProps<T>['platform'],
     mode: BoardViewParameters['mode'], input: AttachBoardInput<S, T>,
+    viewExtras: Readonly<Record<string, unknown>> = {},
 ): BoardViewLease<T> {
     let prior: ReturnType<BoardViewEngine<T>['getSnapshot']> | undefined;
     let snapshot: BoardViewSnapshot<T> | undefined;
     const view: ViewerViewHandle = {
         accessibility: engine.accessibility,
         subscribe: listener => engine.subscribe(listener),
-        setView: parameters => engine.setView(parameters),
+        setView: parameters => engine.setView({ ...viewExtras, ...parameters }),
         attachInput: (interaction, overlay) => input(board, engine, mode, interaction, overlay),
     };
     return {
         view,
         getSnapshot() {
             const next = engine.getSnapshot();
-            if (next !== prior) {
+            if (!snapshot || next.layers !== prior?.layers || next.readOnlyReason !== prior?.readOnlyReason) {
                 prior = next;
                 snapshot = { layers: next.layers, platform, reason: next.readOnlyReason };
             }

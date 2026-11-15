@@ -2,6 +2,7 @@ import { surfaceToWorld, worldToSurface, type CameraController, type Point } fro
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
+import type { PaintSource } from '../render/paintStream';
 import type { ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
@@ -263,6 +264,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         }
     };
     return { services, writeOverlays, finishComposition: text.finishComposition, captureText: text.captureText,
+        // A committed preview holds a gesture until its revision is presented; without this the hold never
+        // ended and every later drag on the board was refused (seen: resize/rotate dead after one move).
+        presented: (revision: number, token: RenderToken, frame?: PaintSource) => preview.presented(revision, token, frame),
         restoreText: text.restoreText, beforeHistoryReplay: text.beforeHistoryReplay, cancelPending, dispose,
         sensitiveNodeIds: () => sensitive.ids(),
         actualsubcontrollers: { ink, point, region, preview, select, text, attachments } };

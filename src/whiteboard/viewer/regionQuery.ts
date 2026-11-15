@@ -55,8 +55,10 @@ function rectPath(x: number, y: number, w: number, h: number): readonly PathOp[]
     return [{ op: 'M', p: { x, y } }, { op: 'L', p: { x: x + w, y } },
         { op: 'L', p: { x: x + w, y: y + h } }, { op: 'L', p: { x, y: y + h } }, { op: 'Z' }];
 }
+// The mapping is what a query depends on. The view epoch also ticks for a motion flag with an unchanged
+// camera (seen when an Eraser drag ends), which made every erase sweep throw "stale".
 function stampView(a: ViewState, b: ViewState): boolean {
-    return a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
+    return a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
         && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
 }
 function stale(): DOMException { return new DOMException('Board region query became stale', 'AbortError'); }

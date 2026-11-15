@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "إظهار أو إخفاء الخريطة المصغرة",
     "chrome.debugMode": "وضع تصحيح الأخطاء",
     "chrome.sheet": "ورقة",
+    "chrome.annotationSheets": "أوراق التعليق",
     "chrome.newSheet": "ورقة جديدة",
     "chrome.renameSheet": "إعادة تسمية الورقة",
     "chrome.deleteSheet": "حذف الورقة",

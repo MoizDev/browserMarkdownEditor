@@ -101,7 +101,6 @@ interface EditorPaneProps {
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
-    closingDocumentIds: ReadonlySet<string>;
     /** The columns, each with its own tabs, and which column has focus. */
     layout: TabLayout;
     theme: Theme;
@@ -142,8 +141,6 @@ interface EditorPaneProps {
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
-    /** Buffer content and write it immediately, skipping the save debounce. */
-    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy: NonNullable<React.ComponentProps<PdfPaneComponent>['onUnsignedPdfCopy']>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
@@ -293,7 +290,7 @@ interface PaneResize {
  * PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, closingDocumentIds, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onFlushNow, onPreparePdfPrint, onUnsignedPdfCopy, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onPreparePdfPrint, onUnsignedPdfCopy, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -574,13 +571,12 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const countable = !!activeFile && !isCanvas && !unreadable && !isCode;
     const statusShown = backlinksAvailable || countable || !!saveStatus;
     /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
-       a PDF or a notebook there draws its page/zoom pills in that same corner.
-       Lifted above them rather than hidden: it may be carrying counts for a
-       markdown pane to the left, or a message. A drawing draws nothing there
-       (tldraw's help button is off in this build), so it is not lifted. */
+       a PDF, a notebook or a whiteboard there draws its page, zoom and minimap
+       controls in that same corner. Lifted above them rather than hidden: it
+       may be carrying counts for a markdown pane to the left, or a message. */
     const cornerTab = paneTabs.length ? paneTabs[paneTabs.length - 1] : null;
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
-        && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
+        && (isPdfFile(cornerTab.file.name) || isCanvasFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
     const wordCountRef = useRef<HTMLSpanElement>(null);
     const charCountRef = useRef<HTMLSpanElement>(null);
@@ -1036,9 +1032,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 // means "this document is some column's showing tab".
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
-                const data = documentBuffers.snapshotForDocument(tab.id)?.data;
-                const content = typeof data === 'string' ? data : tab.representation.nativeCanvasKind ? '' : undefined;
-                if (content === undefined) return null;
                 return (
                     <React.Fragment
                         // Same key as a pane (see paneKey): matched by path
@@ -1063,23 +1056,22 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             nativeCanvasHost={nativeCanvasHost}
                             onToggleMode={onToggleMode}
                             isVisible={visible}
-                            retainClosing={closingDocumentIds.has(tab.id)}
                             isFocused={tab.file.path === focusedPath}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             mode={tab.mode}
-                            content={content}
-                            onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
                             attachCanvasSession={attachCanvasSession}
-                            onFlushNow={onFlushNow}
                             onPreparePrint={onPreparePdfPrint}
                             onUnsignedPdfCopy={onUnsignedPdfCopy}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
-                            isDirty={tab.dirty}
+                            // Unsaved bytes only: tab.dirty also counts native session journalling and
+                            // rebind work, which held Original behind "Applying annotations…" forever
+                            // after a completed save (t5zy/t606). The header keeps the combined flag.
+                            isDirty={documentBuffers.isDirty(tab.id)}
                             disk={tab.disk}
                             pdfRebuild={tab.pdfRebuild}
                             pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
@@ -1101,9 +1093,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 && (t.representation.loadedKind === 'drawing' || t.representation.loadedKind === 'notebook')).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
-                const data = documentBuffers.snapshotForDocument(tab.id)?.data;
-                const content = typeof data === 'string' ? data : tab.representation.nativeCanvasKind ? '' : undefined;
-                if (content === undefined) return null;
                 const fallbackStyle = visible
                     ? {
                         left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
@@ -1138,11 +1127,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             registerKeyboardTarget={registerKeyboardTarget}
-                            content={content}
-                            onContentChange={onContentChange}
                             onNativeCanvasReady={onNativeCanvasReady}
                             attachCanvasSession={attachCanvasSession}
-                            onConfirm={onConfirm}
                             theme={theme}
                             disk={tab.disk}
                             onDiskAction={onDiskAction}

@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Alternar minimapa",
     "chrome.debugMode": "Modo de depuración",
     "chrome.sheet": "Hoja",
+    "chrome.annotationSheets": "Hojas de anotación",
     "chrome.newSheet": "Nueva hoja",
     "chrome.renameSheet": "Cambiar nombre de hoja",
     "chrome.deleteSheet": "Eliminar hoja",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
 import type { BoardCommand, BoardCommandSource, CommandState } from './boardCommands';
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
@@ -40,6 +40,8 @@ export interface SessionBoardChromeProps {
     readonly minimapVisible: boolean;
     readonly penPanel?: ConnectedPenPanelProps;
     readonly debug?: DebugOverlayProps;
+    /** The paged host's paper controls, rendered inside the chrome column under the header. */
+    readonly pageControls?: ReactNode;
 }
 
 export function SessionBoardChrome(props: SessionBoardChromeProps) {
@@ -99,7 +101,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
             menuLabel={labels.text('menu')} menuEntries={anchor => mainMenuEntries({ ...menu, runAction: id => {
                 if (id === 'keyboardShortcuts') { setReturnFocus(anchor); setShortcutsOpen(true); }
                 else return runAction(id);
-            } })} sheetName={props.sheetName}
+            } })} sheetName={props.kind === 'pdf-ink' ? labels.text('annotationSheets') : props.sheetName}
             openSheets={props.openSheets} actionsLabel={labels.text('actions')}
             toolLabel={labels.toolLabel} toolShortcut={props.toolShortcut} toolsLabel={labels.text('tools')}
             moreLabel={labels.text('more')} readOnly={props.readOnly} readOnlyReason={props.readOnlyReason}
@@ -108,7 +110,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
                 return state.enabled ? undefined : state.reason;
             }} focusMode={props.localPreferences.view.focusMode}
             penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
-            debug={props.debug}
+            debug={props.debug} pageControls={props.pageControls}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,
                 zoomLabel: labels.text('zoom'), minimapLabel: labels.text('minimap'),
                 minimapVisible: props.minimapVisible, commands: actions }} />

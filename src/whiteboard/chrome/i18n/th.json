@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "สลับแผนที่ย่อ",
     "chrome.debugMode": "โหมดแก้ไขข้อบกพร่อง",
     "chrome.sheet": "แผ่นงาน",
+    "chrome.annotationSheets": "แผ่นคำอธิบาย",
     "chrome.newSheet": "แผ่นใหม่",
     "chrome.renameSheet": "เปลี่ยนชื่อแผ่นงาน",
     "chrome.deleteSheet": "ลบแผ่นงาน",

@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Přepnout minimapu",
     "chrome.debugMode": "Režim ladění",
     "chrome.sheet": "List",
+    "chrome.annotationSheets": "Listy anotací",
     "chrome.newSheet": "Nový list",
     "chrome.renameSheet": "Přejmenovat list",
     "chrome.deleteSheet": "Smazat list",

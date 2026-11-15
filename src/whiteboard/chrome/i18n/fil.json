@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "I-toggle ang minimap",
     "chrome.debugMode": "Diagnostic mode",
     "chrome.sheet": "Drawing sheet",
+    "chrome.annotationSheets": "Mga sheet ng anotasyon",
     "chrome.newSheet": "Bagong sheet",
     "chrome.renameSheet": "Palitan ang pangalan ng sheet",
     "chrome.deleteSheet": "Tanggalin ang sheet",

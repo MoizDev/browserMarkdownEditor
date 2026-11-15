@@ -5,18 +5,22 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
-import { isSafeMediaFile, type MediaEntry } from '../model/media';
+import type { MediaEntry } from '../model/media';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { inspectMedia } from './inspect';
+import { resolveMediaStorage } from './storage';
+import type { StoreMedia } from './storage.types';
 
 // Provenance: media MD-1, replace-picture centre/long-side rule and C4/C5
 // session authority; independent transaction composition, no upstream source.
+// The stored bytes go through the same proof-carrying receipt as ingest: one
+// apply commits the picture's media and geometry, and only then the receipt.
 export function replacePicture(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly id: NodeId;
     readonly bytes: Blob; readonly name: string; readonly signal?: AbortSignal;
     current(): boolean;
-    storeMedia(entry: MediaEntry, blob: Blob, signal: AbortSignal): Promise<string | null>;
+    readonly storeMedia: StoreMedia;
 }): Promise<void> {
     if (!(options.bytes instanceof Blob) || typeof options.name !== 'string' || options.name.length > 10_000) return Promise.reject(new TypeError('Invalid replacement image'));
     const bytes = new Blob([options.bytes], { type: options.bytes.type }), { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
@@ -29,6 +33,7 @@ export function replacePicture(options: {
             && session.doc === doc && doc.rev === revision && doc.nodes.get(options.id) === node && !session.isReadOnly && !isLocked(doc, node);
         const check = () => { context.assertCurrent(); if (!current(identity)) throw new DOMException('Replacement target became stale', 'AbortError'); };
         let lease: { release(): void } | undefined, scope: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
+        let storage: ReturnType<typeof resolveMediaStorage> | undefined;
         try {
             check();
             const info = await inspectMedia(bytes, { memory: options.memory, identity, isCurrent: current, signal: context.signal }); check();
@@ -40,8 +45,13 @@ export function replacePicture(options: {
                 duration: null, animated: info.animated, name: options.name, file: null, ext: null };
             const location = existing ? runtime.media.currentFile(info.id) : undefined;
             const oldFile = existing ? location === undefined ? existing.file : location : null;
-            const file = await options.storeMedia({ ...entry, file: oldFile }, bytes, context.signal); check();
-            if (!isSafeMediaFile(file)) throw new Error('Invalid stored image name');
+            const stored: MediaEntry = { ...entry, file: oldFile }, proof = { runtime, context, inspection: info };
+            const result = await options.storeMedia(stored, bytes, context.signal, proof);
+            // Resolved before any other check, so an issued receipt is always owned and released by the finally below.
+            // A receipt is the only embedded authority; resolveMediaStorage rejects null and unsafe names. Until commit, releasing it rolls back.
+            storage = resolveMediaStorage(result, { ...proof, entry: stored, blob: bytes });
+            check();
+            const file = storage.file;
             if (existing && file !== existing.file && (existing.ext?.raw.size || existing.ext?.fields.size || (doc.preservedMediaRefs.get(info.id) ?? 0) > 0)) {
                 throw new Error('Cannot remap preserved image metadata');
             }
@@ -66,9 +76,9 @@ export function replacePicture(options: {
                 check(); session.history.open('Replace picture');
                 try {
                     const applied = session.apply({ origin: 'host', label: 'Replace picture', ops });
-                    try { runtime.media.setFile(info.id, file); } finally { applied.release(); }
+                    try { runtime.media.setFile(info.id, file); storage?.receipt?.committed(); } finally { applied.release(); }
                 } finally { session.history.close(); }
             });
-        } finally { scope?.release(); lease?.release(); }
+        } finally { storage?.receipt?.release(); scope?.release(); lease?.release(); }
     }, { signal: options.signal, deadlineMs: 120_000 });
 }

@@ -141,6 +141,12 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         if (!source || !current()) throw new Error('The PDF ink source is unavailable');
         return source;
     };
+    // A PDF page's exports and print carry the document's own PDF backdrop, retained for the one capture.
+    const retainPdfSource = identity.kind !== 'pdfInk' ? undefined : () => {
+        const source = pdfSource();
+        if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+        return source.retainSource();
+    };
     const readMedia = async (entry: MediaEntry, signal: AbortSignal) => {
         signal.throwIfAborted();
         if (identity.kind !== 'pdfInk') return (await ports.read(entry, signal))?.blob ?? null;
@@ -159,19 +165,15 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const storeMedia: StoreMedia = identity.kind === 'pdfInk'
         ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
         : restoreMedia;
-    // A PDF annotation page's pictures live in the PDF, so replacing one needs that page's own storage port, which is not built yet.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current,
-        ...(identity.kind === 'pdfInk' ? {} : { restore: restoreMedia }) });
+    // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
+    // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
         boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
         transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-        ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
-            const source = pdfSource();
-            if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
-            return source.retainSource();
-        } } : {}) });
+        ...(retainPdfSource ? { retainPdfSource } : {}) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,

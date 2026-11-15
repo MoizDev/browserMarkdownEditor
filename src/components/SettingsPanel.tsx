@@ -10,7 +10,7 @@ import {
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
 import { StorageDurabilitySetting } from './StorageDurabilitySetting';
-import { AVAILABLE_CANVAS_ENGINES, AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, PLATFORM_LAYER_AVAILABLE, developerEnabled, emergencyKey, engineKey, incrementalEditorEnabled, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
+import { AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, developerEnabled, emergencyKey, incrementalEditorEnabled, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -513,19 +513,18 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
 
                     <h4 className="settings-section">About</h4>
                     <div className="setting-row">
-                        <div className="setting-info"><div className="setting-name">Show developer settings</div><div className="settings-hint">Experimental engine controls, applied the next time a pane opens.</div></div>
+                        <div className="setting-info"><div className="setting-name">Show developer settings</div><div className="settings-hint">Native editor diagnostics and safety controls, applied when a pane opens.</div></div>
                         <div className="setting-control"><button type="button" role="switch" aria-label="Show developer settings" aria-checked={developer} className={`settings-toggle${developer ? ' on' : ''}`} onClick={() => { const next = !developer; if (setDeveloperSetting('bme.developer', next)) setDeveloper(next); }}><span className="settings-toggle-knob" /></button></div>
                     </div>
                     <div className="setting-row"><a className="settings-notices-link" href={`${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES`} target="_blank" rel="noreferrer">Third-party notices</a></div>
                     {developer && <>
                         <h4 className="settings-section">Developer</h4>
                         <div className="setting-row"><div className="setting-info"><div className="setting-name">Incremental live preview</div><div className="settings-hint">Turn off to render the whole note on each change.</div></div><div className="setting-control"><button type="button" role="switch" aria-label="Incremental live preview" aria-checked={incrementalEditorEnabled()} className={`settings-toggle${incrementalEditorEnabled() ? ' on' : ''}`} onClick={() => updateDeveloper('bme.editor.incremental', !incrementalEditorEnabled())}><span className="settings-toggle-knob" /></button></div></div>
-                        {CANVAS_KINDS.map(kind => <React.Fragment key={kind}>
-                            <div className="setting-row"><label className="setting-info" htmlFor={`engine-${kind}`}>{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} engine</label><div className="setting-control"><select id={`engine-${kind}`} value={routes.canvas[kind].engine} onChange={e => updateDeveloper(engineKey(kind), e.target.value)}>{AVAILABLE_CANVAS_ENGINES.map(engine => <option key={engine} value={engine}>{engine}</option>)}</select></div></div>
-                            <div className="setting-row"><div className="setting-info">{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} emergency read-only</div><div className="setting-control"><button type="button" role="switch" aria-label={`${kind} emergency read-only`} aria-checked={routes.canvas[kind].emergencyReadOnly} className={`settings-toggle${routes.canvas[kind].emergencyReadOnly ? ' on' : ''}`} onClick={() => updateDeveloper(emergencyKey(kind), !routes.canvas[kind].emergencyReadOnly)}><span className="settings-toggle-knob" /></button></div></div>
-                        </React.Fragment>)}
-                        <div className="setting-row"><label className="setting-info" htmlFor="pdf-viewer-engine">PDF viewer</label><div className="setting-control"><select id="pdf-viewer-engine" value={routes.pdfViewer} onChange={e => updateDeveloper('bme.pdf.viewer', e.target.value)}>{AVAILABLE_PDF_VIEWERS.map(viewer => <option key={viewer} value={viewer}>{viewer}</option>)}</select></div></div>
-                        <div className="setting-row"><div className="setting-info">PDF platform layer</div><div className="setting-control"><button type="button" role="switch" aria-label="PDF platform layer" disabled={!PLATFORM_LAYER_AVAILABLE} aria-checked={routes.platformLayer} className={`settings-toggle${routes.platformLayer ? ' on' : ''}`} onClick={() => updateDeveloper('bme.pdf.platformLayer', !routes.platformLayer)}><span className="settings-toggle-knob" /></button></div></div>
+                        {CANVAS_KINDS.map(kind => <div className="setting-row" key={kind}>
+                            <div className="setting-info">{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} emergency read-only</div>
+                            <div className="setting-control"><button type="button" role="switch" aria-label={`${kind} emergency read-only`} aria-checked={routes.canvas[kind].emergencyReadOnly} className={`settings-toggle${routes.canvas[kind].emergencyReadOnly ? ' on' : ''}`} onClick={() => updateDeveloper(emergencyKey(kind), !routes.canvas[kind].emergencyReadOnly)}><span className="settings-toggle-knob" /></button></div>
+                        </div>)}
+                        {!AVAILABLE_PDF_VIEWERS.length && <div className="settings-hint">The native PDF engine is unavailable in this build.</div>}
                     </>}
 
                     <div className="settings-footer">

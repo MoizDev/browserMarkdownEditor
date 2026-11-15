@@ -13,20 +13,29 @@ export interface PngSize {
   height: number
 }
 
+// Every export streams bounded bands from a worker and never allocates a whole-image canvas, so a download is limited
+// only by PNG's own format and a sanity cap on what a viewer opens and the render time it costs (side 65535, 2^32 pixels).
+// The clipboard holds its image whole, so a copy keeps the smaller limits.
+const DOWNLOAD_SIDE = 65535, DOWNLOAD_PIXELS = 2 ** 32
+const CLIPBOARD_SIDE = 8192, CLIPBOARD_PIXELS = 2 ** 28
+function limitsFor(clipboard: boolean): { side: number; pixels: number } {
+  return clipboard ? { side: CLIPBOARD_SIDE, pixels: CLIPBOARD_PIXELS } : { side: DOWNLOAD_SIDE, pixels: DOWNLOAD_PIXELS }
+}
+
 export function checkPngSize(width: number, height: number, clipboard = false): PngSize {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
     throw new RangeError('PNG dimensions must be positive integers')
   }
-  const side = clipboard ? 8192 : 16384
-  const scale = Math.min(1, side / width, side / height, Math.sqrt(2 ** 28 / width / height))
+  const { side, pixels } = limitsFor(clipboard)
+  const scale = Math.min(1, side / width, side / height, Math.sqrt(pixels / width / height))
   if (scale < 1) throw new ExportTooLarge(scale)
   return { width, height }
 }
 
 /** The largest scale at which checkPngSize accepts these world bounds, shaved a hair for the rounding up to whole pixels. */
 export function pngScaleLimit(world: Readonly<{ width: number; height: number }>, clipboard = false): number {
-  const side = clipboard ? 8192 : 16384
-  return Math.min(side / world.width, side / world.height, Math.sqrt(2 ** 28 / world.width / world.height)) * (1 - 1e-9)
+  const { side, pixels } = limitsFor(clipboard)
+  return Math.min(side / world.width, side / world.height, Math.sqrt(pixels / world.width / world.height)) * (1 - 1e-9)
 }
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {

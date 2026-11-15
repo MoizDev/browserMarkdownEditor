@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Εναλλαγή μίνι χάρτη",
     "chrome.debugMode": "Λειτουργία εντοπισμού σφαλμάτων",
     "chrome.sheet": "Φύλλο",
+    "chrome.annotationSheets": "Φύλλα σχολιασμού",
     "chrome.newSheet": "Νέο φύλλο",
     "chrome.renameSheet": "Μετονομασία φύλλου",
     "chrome.deleteSheet": "Διαγραφή φύλλου",

@@ -316,16 +316,16 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 Three kinds of file open on a canvas instead of in the text editor. The existing
 editable canvases offer pen, highlighter, shapes and text, and save themselves a
-second after you stop. The native drawing and notebook viewer described below is
-currently read-only.
+second after you stop. Native drawings and notebooks open on the native board described
+below, and are editable whenever their file can be written.
 
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with **New Notebook**, in
 the pencil button's menu at the top of the sidebar. The paper and editing controls
-below describe editable legacy notebooks; native notebooks use the read-only
-viewer described under *Drawings*.
+below describe editable legacy notebooks; native notebooks use the native
+board described under *Drawings*.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -355,7 +355,7 @@ Choose **⋯ → Export to PDF** in the notebook pane (or use its download butto
 write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open. Native notebooks can
-also export from their read-only viewer: every logical sheet is included on the
+also export from their native board: every logical sheet is included on the
 physical pages, in order. If preserved content cannot be rendered faithfully,
 the export stops rather than silently leaving that artwork out.
 
@@ -396,7 +396,7 @@ direction, for diagrams and thinking rather than for a page you intend to hand
 in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
 otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
-Native drawings and notebooks currently open in a **read-only viewer**: you can
+Native drawings and notebooks open on the native board: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
 jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
 opens a notebook's page strip; click a preview to jump to that page. A drawing's
@@ -405,6 +405,13 @@ navigate; with the minimap focused, arrow keys move a quarter viewport (a full
 viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
 An empty board has no invented overview.
 
+A native board is editable when its file can be written and the emergency
+read-only switch is off. Then the toolbar's pen, highlighter, eraser, shapes,
+text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+C**
+copies and **Cmd/Ctrl+V** pastes the selection, and strokes are saved to the file
+and are there when you reopen it. Otherwise the board opens read-only, with a
+notice that says why.
+
 With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
 copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
 exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
@@ -412,20 +419,23 @@ artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
 nothing is selected. With exactly one picture selected, the same menu offers
-**Replace picture…**, **Crop picture** with six presets, and **Invert picture**.
-With one link card selected it offers **Fetch link preview**, which contacts
-that site only when you ask. Disabled rows explain why they cannot run.
+**Replace picture…** (the new image keeps the old one's centre and longer side; on a PDF annotation
+page it is embedded in that PDF), **Crop picture** with six presets,
+and **Invert picture**. With one link card selected it offers **Fetch link
+preview**, which contacts the link's site only when you ask. A row that cannot
+run now stays on the menu and says why, such as a locked picture or a read-only
+canvas.
 
 The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
 
-Writable native documents have the drawing tools, Cut and Paste; readonly
-sources keep navigation, Copy and export without changing the original.
+Navigation, selection, copy and export never edit the file; only the editing
+described above does.
 
 The agent's **canvas tools** use the document session rather than its viewer.
 They can change an eligible native drawing or notebook while its pane is hidden
 or unmounted; a batch is one undo step and follows the normal save path. A disk
 conflict, emergency read-only setting or unsupported native document still
-refuses changes. This does not enable the viewer's unfinished drawing tools.
+refuses changes.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you
@@ -434,8 +444,9 @@ switch tabs, close the file or reload the app.
 A drawing or notebook this version cannot read safely — an unreadable file, one
 written in a newer format, or one that is not the kind its name says — **opens
 read-only**: neither drawing on it nor Save can overwrite the original file. An
-empty file is still a valid new board. Supported legacy canvases remain editable;
-the native viewer does not write board edits.
+empty file is still a valid new board. A supported legacy canvas must pass
+conversion and native admission before it can be edited; a refusal preserves
+the original file rather than replacing its contents.
 
 ### Inverting a Picture You Brought Over
 Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
@@ -475,17 +486,19 @@ In the tiled PDF reader, **Contents** in the bottom controls opens the PDF's boo
 
 In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.
 
-When switching PDF engines, saved Text passages are matched by their words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
+When restoring a Text passage saved by an older PDF engine, it is matched by its words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
 
 **Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
 
 If the PDF reader's code cannot load, its column offers **Retry**. This retries
 the reader, not your files. If the browser retains the loading failure, reload
-the app to try again. The tiled reader offers **Open in Classic** as an explicit alternative; it never switches PDF engines by itself. A password-protected PDF asks for its password in the tiled reader; cancelling leaves the file unchanged, and Retry lets you enter it again. The password is kept only in that open source session, never saved. Classic may instead report that a password is required. Editing and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
+the app to try again. PDFs use the contained native reader; a missing engine is reported, never replaced with another parser. A password-protected PDF asks for its password; cancelling leaves the file unchanged, and Retry lets you enter it again. The password is kept only in that open source session, never saved. Editing and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
 
-Signed or certified PDFs—and PDFs whose write safety cannot be established—are read-only for in-place annotation and rotation in **both Classic and tiled readers**. The outer PDF and any embedded pristine original must both pass the safety check before an editor can open or a save can write. Keeping a foreign write mark does not override this protection. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims that its signatures cover the new copy. Unsupported copies are refused without changing the original.
+Signed or certified PDFs—and PDFs whose write safety cannot be established—are read-only for in-place annotation and rotation in the native reader. The outer PDF and any embedded pristine original must both pass the safety check before an editor can open or a save can write. Keeping a foreign write mark does not override this protection. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims that its signatures cover the new copy. Unsupported copies are refused without changing the original.
 
-In the tiled reader, Annotate on an eligible unannotated PDF currently opens a **read-only native ink view**; it does not yet enable drawing or change the PDF. When the tiled reader encounters eligible annotations in the Classic format, Annotate offers **Convert legacy annotations…** and **Open in Classic**. Conversion is your choice: it checks the source, asks for confirmation, warns about an unverifiable foreign write mark, and keeps the original in the folder's Trash before conversion. The converted native annotation view is currently **read-only**; opening it does not save over the PDF. Cancelling or a refused conversion returns to the original PDF. Choose **Open in Classic** explicitly to use the Classic route instead.
+**Annotate** opens eligible PDFs with the native drawing tools. Choose **Draw**, drag on a page, and save with **Cmd + S / Ctrl + S** (or let autosave finish). The document briefly covers its view while rebinding the verified saved file; its camera and undo history remain with the document. Reopening Annotate restores editable marks. **Menu → Export → PNG** captures the pristine pages and current ink together, without view inversion.
+
+For annotations in the older Classic format, Annotate offers **Convert legacy annotations…**. Conversion is explicit: it checks the source, asks for confirmation, warns about an unverifiable foreign write mark, and keeps the exact original in the folder's **Trash** before enabling native editing. Draw and save to migrate the file; subsequent opens use native annotations. Cancelling or a refused conversion leaves the original unchanged.
 
 In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
 - In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.
@@ -521,7 +534,7 @@ whose page is unknown appears above the document. Its thumbnail says
 **Try again** reopens the PDF; it does not repair or change the original file.
 In Annotate, switch to View to retry without disturbing your ink.
 
-**PDF limitations.** The current reader has page thumbnails but no outline/bookmark panel. Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
+**PDF navigation.** Original PDF has page thumbnails and a **Contents** panel for the document’s outline. Use arrow keys to navigate Contents and Escape to close it and return focus. **PDF limitations.** Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
 
 If rendering makes no progress for a while, **This PDF is taking longer than usual**
 lets you keep waiting or choose **Try again** to restart the renderer. Slow scans

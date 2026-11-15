@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Mini haritayı değiştir",
     "chrome.debugMode": "Hata ayıklama modu",
     "chrome.sheet": "Sayfa",
+    "chrome.annotationSheets": "Ek açıklama sayfaları",
     "chrome.newSheet": "Yeni sayfa",
     "chrome.renameSheet": "Sayfayı yeniden adlandır",
     "chrome.deleteSheet": "Sayfayı sil",

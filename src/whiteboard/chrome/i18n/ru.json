@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Переключить миникарту",
     "chrome.debugMode": "Режим отладки",
     "chrome.sheet": "Лист",
+    "chrome.annotationSheets": "Листы аннотаций",
     "chrome.newSheet": "Новый лист",
     "chrome.renameSheet": "Переименовать лист",
     "chrome.deleteSheet": "Удалить лист",

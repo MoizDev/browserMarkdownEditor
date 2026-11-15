@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { BoardHeader, type BoardHeaderProps } from './BoardHeader';
 import { ToolStrip, type ToolChoice } from './ToolStrip';
 import { toolChoices, type ToolLabel } from './toolChoices';
@@ -23,17 +24,22 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly zoomControls: ZoomControlsProps;
     readonly penPanel?: ConnectedPenPanelProps;
     readonly debug?: DebugOverlayProps;
+    /** Paper controls of a paged host; they sit under the header, never over it. */
+    readonly pageControls?: ReactNode;
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, ...header }: BoardChromeProps) {
+    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     return <>
         {debug && <DebugOverlay {...debug} />}
         {!focusMode && <div className="board-chrome-overlay" lang={locale} dir={direction}>
-        <BoardHeader {...header} locale={locale} direction={direction} />
-        {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
+        <div className="board-chrome-top">
+            <BoardHeader {...header} locale={locale} direction={direction} />
+            {pageControls}
+            {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
+        </div>
         <div className="board-chrome-bottom">
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool}
                 toolsLabel={toolsLabel} moreLabel={moreLabel}

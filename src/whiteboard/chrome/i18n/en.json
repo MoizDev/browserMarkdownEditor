@@ -159,6 +159,7 @@
     "chrome.debugVisibleNodes": "Visible nodes",
     "chrome.debugBackend": "Rendering backend",
     "chrome.sheet": "Sheet",
+    "chrome.annotationSheets": "Annotation sheets",
     "chrome.newSheet": "New sheet",
     "chrome.renameSheet": "Rename sheet",
     "chrome.deleteSheet": "Delete sheet",

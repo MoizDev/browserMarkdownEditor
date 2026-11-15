@@ -528,6 +528,50 @@ export function createBoardRenderServices(options: {
         let held = true;
         return { release() { if (held) { held = false; releaseHolder(); } } };
     };
+    const localEnvelope = (node: Readonly<Node>): LocalGeometryBounds | undefined => {
+        check();
+        const hit = bounds.local(node);
+        if (hit) return hit;
+        if (node.kind === 'group' || node.kind === 'opaque') return undefined;
+        if (node.kind === 'connector') return conservativeConnectorBounds(node, options.doc, text, worldEnvelope);
+        if (node.kind === 'stroke') {
+            const box = new Float64Array(4), quality = localBounds(node, bounds, box);
+            return quality === BoundsQuality.Pending || quality === BoundsQuality.ColdLayout ? undefined : { ink: [box[0], box[1], box[2], box[3]] };
+        }
+        const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
+        const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
+        const box = geometrySceneBounds(vector), value = { ink: box.ink, hit: box.hit };
+        if (vector.text.length) textIds.add(node.id);
+        cached.set(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
+        trimCached();
+        return value;
+    };
+    // A connector's conservative envelope may name an attach target the connector hint cannot box alone (a stroke,
+    // a polyline or a group). Such a target's own genuine geometry, carried by its pose, is the only source; a group
+    // is the union of its children's boxes. Depth is bounded so a cyclic attachment refuses instead of recursing.
+    let envelopeDepth = 0;
+    const worldEnvelope = (node: Readonly<Node>): Box | undefined => {
+        if (envelopeDepth >= 8) return undefined;
+        envelopeDepth++;
+        try {
+            if (node.kind === 'group') {
+                let box: Box | undefined;
+                for (const child of options.doc.children.get(node.id) ?? []) {
+                    const part = worldEnvelope(child);
+                    if (!part) return undefined;
+                    box = box
+                        ? [Math.min(box[0], part[0]), Math.min(box[1], part[1]), Math.max(box[2], part[2]), Math.max(box[3], part[3])]
+                        : [part[0], part[1], part[2], part[3]];
+                }
+                return box;
+            }
+            const local = localEnvelope(node);
+            if (!local) return undefined;
+            const pose = worldPose(options.doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), out = new Float64Array(4);
+            transformBox(out, 0, local.ink, 0, [c, s, -s, c, pose.x, pose.y]);
+            return [out[0], out[1], out[2], out[3]];
+        } finally { envelopeDepth--; }
+    };
     return {
         text, bounds, changeGeometry, retainRenderer,
         /** Actual source admission belongs to the App owner. This captures publication identity
@@ -607,24 +651,7 @@ export function createBoardRenderServices(options: {
         /** Conservative native b hint only. Current-font TX3 layout is real
          * geometry, but a conservative connector/ink envelope is NOT a Scene
          * exact-bound or page-placement capability. */
-        encoderLocal(node: Readonly<Node>): LocalGeometryBounds | undefined {
-            check();
-            const hit = bounds.local(node);
-            if (hit) return hit;
-            if (node.kind === 'group' || node.kind === 'opaque') return undefined;
-            if (node.kind === 'connector') return conservativeConnectorBounds(node, options.doc, text);
-            if (node.kind === 'stroke') {
-                const box = new Float64Array(4), quality = localBounds(node, bounds, box);
-                return quality === BoundsQuality.Pending || quality === BoundsQuality.ColdLayout ? undefined : { ink: [box[0], box[1], box[2], box[3]] };
-            }
-            const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
-            const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
-            const box = geometrySceneBounds(vector), value = { ink: box.ink, hit: box.hit };
-            if (vector.text.length) textIds.add(node.id);
-            cached.set(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
-            trimCached();
-            return value;
-        },
+        encoderLocal: localEnvelope,
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
         preparePaint: paint, preparePaintStream: paintStream,

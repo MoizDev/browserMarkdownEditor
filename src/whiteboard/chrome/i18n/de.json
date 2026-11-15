@@ -214,6 +214,7 @@
     "chrome.toggleMinimap": "Minikarte umschalten",
     "chrome.debugMode": "Debug-Modus",
     "chrome.sheet": "Blatt",
+    "chrome.annotationSheets": "Annotationsblätter",
     "chrome.newSheet": "Neues Blatt",
     "chrome.renameSheet": "Blatt umbenennen",
     "chrome.deleteSheet": "Blatt löschen",

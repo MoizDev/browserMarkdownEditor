@@ -11,7 +11,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
-import { zoomStepTarget } from '../../whiteboard/host/zoomSteps';
+import { resetZoomTarget, zoomStepTarget } from '../../whiteboard/host/zoomSteps';
 import { recordNativeAgentViewport, snapshotNativeAgentView, type NativeAgentViewInput } from '../../whiteboard/host/nativeAgentView';
 import { captureLiveAgentProjection, describeLiveAgentView } from '../../whiteboard/host/agentProjection';
 import { registerView, type LiveJob, type NativeLiveView, type ViewReporter } from '../../utils/viewRegistry';
@@ -97,6 +97,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
     zoomAt(point: { x: number; y: number }, factor: number): void;
     /** One rung of the zoom ladder in `direction`, anchored at `anchor` (the view centre when absent). */
     zoomStep(direction: 1 | -1, anchor?: { x: number; y: number }): void;
+    /** Zoom to 100%: on a paged host this toggles between natural 1 and fit-width (camera.md F-CAM-008). */
+    resetZoom(): void;
     reveal(rect: Rect): void;
     captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
@@ -525,6 +527,13 @@ export function createNativeViewLease(options: {
             if (!(base > 0)) return;
             const point = anchor ?? { x: camera.viewport.width / 2, y: camera.viewport.height / 2 };
             lease.zoomAt(point, zoomStepTarget(camera.camera.z, direction, base) / camera.camera.z);
+        },
+        resetZoom() {
+            const stack = boardPageStack(board.doc.host);
+            const base = stack ? fitWidthZ(camera.viewport, stack, insets) : 1;
+            if (!(base > 0)) return;
+            const point = { x: camera.viewport.width / 2, y: camera.viewport.height / 2 };
+            lease.zoomAt(point, resetZoomTarget(camera.camera.z, base) / camera.camera.z);
         },
         view: {
             sourceToken: token,

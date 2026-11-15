@@ -13,3 +13,11 @@ export function zoomStepTarget(zoom: number, direction: 1 | -1, base = 1): numbe
     // The ends clamp: zooming in at the largest rung, or out at the smallest, leaves the zoom where it is.
     return ZOOM_RUNGS[Math.min(ZOOM_RUNGS.length - 1, Math.max(0, nearest + direction))] * base;
 }
+
+/** Zoom to 100% on a paged host alternates between natural 1 and fit-width `base` (camera.md F-CAM-008): from the
+ * fit-width zoom it returns to 1, and from anywhere else, including the minimum, it goes to fit-width. A whiteboard
+ * has base 1, so it always returns to 1. */
+export function resetZoomTarget(zoom: number, base = 1): number {
+    if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(base) || base <= 0) throw new RangeError('Invalid zoom reset');
+    return Math.abs(zoom - base) <= 1e-9 * base ? 1 : base;
+}

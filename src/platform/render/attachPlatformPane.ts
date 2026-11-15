@@ -117,6 +117,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         demandQueued = true;
         queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
     };
+    // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
+    const heldBytes = (cache: MemoryCacheHandle | undefined): number => { try { return cache?.readout().reservedBytes ?? 0; } catch { return 0; } };
     const layerSet = new PaneLayerSet((id, current) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -224,7 +226,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
                 // artificial 0×0 floor can deny it before ResizeObserver has published its size.
                 const demand = requestedPixels > 0 ? layerSet.definition(layer)?.cpuWorkingSet?.(layer, size!.physical) : undefined;
-                mandatory += Math.max(layer.memory().cpuBytes, demand?.mandatoryBytes ?? 0);
+                // Leases charged to the layer's cache beyond what the layer itself reports (session rasters, tile runs, frame
+                // blocks) are still this pane's: left out, a dense board declared 2.7 MB over a 0.5 MB self-count while its
+                // cache held 6-9 MB, the grant sat at the pane floor and every next 1 MB tile was refused after a return.
+                const own = layer.memory().cpuBytes, held = heldBytes(caches.find(cache => cache.layer() === layer)?.cpu);
+                mandatory += Math.max(own, demand?.mandatoryBytes ?? 0) + Math.max(0, held - own);
                 prefetch += demand?.prefetchBytes ?? 0;
             }
             const cpuMandatoryBytes = requestedPixels ? Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +

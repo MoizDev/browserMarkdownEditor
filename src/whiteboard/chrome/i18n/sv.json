@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Växla minikarta",
     "chrome.debugMode": "Felsökningsläge",
     "chrome.sheet": "Ark",
+    "chrome.annotationSheets": "Annoteringsblad",
     "chrome.newSheet": "Nytt blad",
     "chrome.renameSheet": "Byt namn på arket",
     "chrome.deleteSheet": "Ta bort ark",

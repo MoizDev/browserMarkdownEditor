@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "మినిమ్యాప్‌ను టోగుల్ చేయండి",
     "chrome.debugMode": "డీబగ్ మోడ్",
     "chrome.sheet": "షీట్",
+    "chrome.annotationSheets": "ఉల్లేఖన షీట్లు",
     "chrome.newSheet": "కొత్త షీట్",
     "chrome.renameSheet": "షీట్ పేరు మార్చండి",
     "chrome.deleteSheet": "షీట్‌ను తొలగించండి",

@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Перемкнути міні-карту",
     "chrome.debugMode": "Режим налагодження",
     "chrome.sheet": "Аркуш",
+    "chrome.annotationSheets": "Аркуші анотацій",
     "chrome.newSheet": "Новий аркуш",
     "chrome.renameSheet": "Перейменувати аркуш",
     "chrome.deleteSheet": "Видалити аркуш",

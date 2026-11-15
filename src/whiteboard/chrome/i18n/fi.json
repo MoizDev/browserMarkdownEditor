@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Vaihda minikartta",
     "chrome.debugMode": "Virheenkorjaustila",
     "chrome.sheet": "Arkki",
+    "chrome.annotationSheets": "Merkintäarkit",
     "chrome.newSheet": "Uusi arkki",
     "chrome.renameSheet": "Nimeä taulukko uudelleen",
     "chrome.deleteSheet": "Poista taulukko",

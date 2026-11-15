@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "切換小地圖",
     "chrome.debugMode": "偵錯模式",
     "chrome.sheet": "板材",
+    "chrome.annotationSheets": "註解表",
     "chrome.newSheet": "新表",
     "chrome.renameSheet": "重新命名工作表",
     "chrome.deleteSheet": "刪除工作表",

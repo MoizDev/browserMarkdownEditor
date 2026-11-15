@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Skift minikort",
     "chrome.debugMode": "Fejlretningstilstand",
     "chrome.sheet": "Ark",
+    "chrome.annotationSheets": "Annotationsark",
     "chrome.newSheet": "Nyt ark",
     "chrome.renameSheet": "Omdøb arket",
     "chrome.deleteSheet": "Slet ark",

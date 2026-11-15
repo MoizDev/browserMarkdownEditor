@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Minimap átváltása",
     "chrome.debugMode": "Hibakeresési mód",
     "chrome.sheet": "Lap",
+    "chrome.annotationSheets": "Jegyzetlapok",
     "chrome.newSheet": "Új lap",
     "chrome.renameSheet": "Lap átnevezése",
     "chrome.deleteSheet": "Lap törlése",

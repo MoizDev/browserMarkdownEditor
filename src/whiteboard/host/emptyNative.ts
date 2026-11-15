@@ -31,7 +31,7 @@ export function createEmptyNativeBytes(kind: BoardKind, options: EmptyNativeOpti
         : options.pdfHost ?? (() => { throw new Error('Empty PDF ink requires its real PDF host'); })();
     const id = newSheetId({ nodes: new Map(), sheets: new Map() });
     const ui = options.ui ?? UI_DEFAULTS;
-    const doc = createBoardDoc({ kind, host, sheets: [{ id, name: options.sheetName ?? 'Page 1', order: keyBetween(null, null), ext: null }],
+    const doc = createBoardDoc({ kind, host, sheets: [{ id, name: options.sheetName ?? 'Sheet 1', order: keyBetween(null, null), ext: null }],
         ui: { ...ui, next: { ...ui.next } }, view: { ...options.view ?? VIEW_DEFAULTS },
         preserved: { version: NATIVE_VERSION, fields: new Map(), records: [], end: null }, preservedMediaRefs: new Map() });
     const validation = validateLoadedRoot(doc);

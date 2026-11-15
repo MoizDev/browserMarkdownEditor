@@ -21,7 +21,7 @@ export function useNativeSheetControls(options: {
 }) {
     const { runtime, lease, current, canWrite, confirm, onError } = options;
     const controls = useMemo(() => createStructureControls({ runtime, current, canWrite, confirm, onError,
-        newSheetName: () => `Page ${runtime.session.doc.sheetOrder.length + 1}`, readPage: () => lease.getNavigationSnapshot().page, jump: page => lease.jump(page) }),
+        newSheetName: () => 'Untitled sheet', readPage: () => lease.getNavigationSnapshot().page, jump: page => lease.jump(page) }),
     [runtime, lease, current, canWrite, confirm, onError]);
     const subscribe = useCallback((listener: () => void) => {
         const a = runtime.session.subscribe(listener), b = runtime.selection.subscribe(listener);

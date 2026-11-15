@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "மினிமேப்பை நிலைமாற்று",
     "chrome.debugMode": "பிழைத்திருத்த முறை",
     "chrome.sheet": "தாள்",
+    "chrome.annotationSheets": "குறிப்பு தாள்கள்",
     "chrome.newSheet": "புதிய தாள்",
     "chrome.renameSheet": "தாளை மறுபெயரிடவும்",
     "chrome.deleteSheet": "தாளை நீக்கு",

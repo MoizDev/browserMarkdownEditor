@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "미니맵 전환",
     "chrome.debugMode": "디버그 모드",
     "chrome.sheet": "시트",
+    "chrome.annotationSheets": "주석 시트",
     "chrome.newSheet": "새 시트",
     "chrome.renameSheet": "시트 이름 바꾸기",
     "chrome.deleteSheet": "시트 삭제",

@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Minimap aan- of uitzetten",
     "chrome.debugMode": "Debug-modus",
     "chrome.sheet": "Blad",
+    "chrome.annotationSheets": "Annotatiebladen",
     "chrome.newSheet": "Nieuw blad",
     "chrome.renameSheet": "Naam blad wijzigen",
     "chrome.deleteSheet": "Blad verwijderen",

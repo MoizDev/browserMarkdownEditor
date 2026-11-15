@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Alternar minimapa",
     "chrome.debugMode": "Modo de depuração",
     "chrome.sheet": "Folha",
+    "chrome.annotationSheets": "Folhas de anotação",
     "chrome.newSheet": "Nova folha de cálculo",
     "chrome.renameSheet": "Renomear folha de cálculo",
     "chrome.deleteSheet": "Apagar planilha",

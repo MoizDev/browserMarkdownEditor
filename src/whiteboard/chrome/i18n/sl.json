@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Preklop mini zemljevida",
     "chrome.debugMode": "Način odpravljanja napak",
     "chrome.sheet": "List",
+    "chrome.annotationSheets": "Listi z opombami",
     "chrome.newSheet": "Nov list",
     "chrome.renameSheet": "Preimenuj list",
     "chrome.deleteSheet": "Izbriši list",

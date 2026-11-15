@@ -101,7 +101,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
             menuLabel={labels.text('menu')} menuEntries={anchor => mainMenuEntries({ ...menu, runAction: id => {
                 if (id === 'keyboardShortcuts') { setReturnFocus(anchor); setShortcutsOpen(true); }
                 else return runAction(id);
-            } })} sheetName={props.sheetName}
+            } })} sheetName={props.kind === 'pdf-ink' ? labels.text('annotationSheets') : props.sheetName}
             openSheets={props.openSheets} actionsLabel={labels.text('actions')}
             toolLabel={labels.toolLabel} toolShortcut={props.toolShortcut} toolsLabel={labels.text('tools')}
             moreLabel={labels.text('more')} readOnly={props.readOnly} readOnlyReason={props.readOnlyReason}

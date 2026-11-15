@@ -38,6 +38,9 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     needsFrame(): boolean;
     /** True while a staged frame waits for memory; a real capacity change wakes it, so the owner never polls. */
     blocked?(): boolean;
+    /** True while a newer frame is staged: the picture still on screen is then not the one requested, even while the
+     * staged stream's read is in flight (`needsFrame` is false then, since awaiting the stream is not executable work). */
+    replacing?(): boolean;
     /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
     presented(frame: PaintSource): void;
     /** Retains this exact frame's source/metadata through asynchronous presentation-fact work.

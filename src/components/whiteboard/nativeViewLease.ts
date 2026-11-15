@@ -323,13 +323,13 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
-            () => parameters.mode === 'edit' && edit.canMutate()),
+            () => inputPermitted && parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
-            editable: () => parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
+            editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
@@ -432,7 +432,8 @@ export function createNativeViewLease(options: {
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
-            setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
+            setInputEnabled: enabled => navigation.setInputEnabled(enabled && inputPermitted && sourceCurrent() && parameters.visible),
+            cancelViewWork: reason => navigation.cancelViewWork(reason),
             writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
                 camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); },
             onPresentation: presentation => {
@@ -441,7 +442,7 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                viewer.presentationAccepted(presentation);
+                viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
@@ -458,7 +459,8 @@ export function createNativeViewLease(options: {
     };
     function recordViewport() {
         if (!parameters.visible || !current() || !platformPane) return;
-        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
+            inverted: parameters.inverted });
     }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });

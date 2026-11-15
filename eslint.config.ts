@@ -203,8 +203,6 @@ export default defineConfig([
             'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
             'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
             'src/components/whiteboard/nativeEditingCapabilityFactory.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
-            // The board's Print action and Mod-P: the editing shell is the switch that pins a print source.
-            'src/components/whiteboard/nativePrint.ts',
             // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
             // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
             'src/components/whiteboard/preparePdfInkAttempt.ts',

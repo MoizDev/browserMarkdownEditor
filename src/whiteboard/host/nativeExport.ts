@@ -62,7 +62,7 @@ export interface NativeExportJob {
     /** Copy-as-PNG: the same frozen capture, once plain and once carrying our private pixel density. */
     clipboardPng(signal: AbortSignal): Promise<Readonly<{ image: Blob; privateImage: Blob }>>;
     svg(signal: AbortSignal): Promise<Blob>;
-    filename(extension: 'png' | 'svg'): string;
+    filename(extension: 'png' | 'svg' | 'pdf'): string;
     release(): void;
 }
 

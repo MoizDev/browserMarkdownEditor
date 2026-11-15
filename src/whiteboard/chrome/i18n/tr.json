@@ -390,7 +390,6 @@
     "paper.cancel": "İptal",
     "paper.keepProtected": "Kilitli içerik saklanacaktır.",
     "chrome.readOnly": "Bu pano salt okunurdur.",
-    "shortcuts.file.print": "Yazdır",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

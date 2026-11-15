@@ -47,14 +47,15 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
-    useEffect(() => { if (!props.isVisible) setShortcutsOpen(false); }, [props.isVisible]);
+    const { isVisible, registerShortcuts } = props;
+    useEffect(() => { if (!isVisible) setShortcutsOpen(false); }, [isVisible]);
     useEffect(() => {
-        if (!props.isVisible) return;
-        return props.registerShortcuts?.(() => {
+        if (!isVisible) return;
+        return registerShortcuts?.(() => {
             setReturnFocus(document.activeElement instanceof HTMLElement ? document.activeElement : null);
             setShortcutsOpen(true);
         });
-    }, [props.registerShortcuts, props.isVisible]);
+    }, [registerShortcuts, isVisible]);
     const labels = localizeBoardChrome(props.translate);
     const canRead = (id: BoardCommand) => id === 'copy' || id === 'selectAll' || id === 'copyAsPng'
         || id === 'copyAsSvg' || id === 'copyAsJson' || id === 'exportPng' || id === 'exportSvg' || id === 'exportJson';

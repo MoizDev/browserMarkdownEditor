@@ -119,9 +119,11 @@ export function useIndexGraph(options: {
             return starting;
         };
         startRef.current = start;
+        // The ref is never reassigned, so this is the same Map the cleanup should clear.
+        const moves = pendingMoves.current;
         return () => {
             live = false;
-            pendingMoves.current.clear();
+            moves.clear();
             unsubscribeMedia?.();
             if (refreshMedia.current === refresh) refreshMedia.current = null;
             if (startRef.current === start) startRef.current = null;
@@ -163,7 +165,7 @@ export function useIndexGraph(options: {
             if (active.current !== owner || owner.activation !== getActivation() || latestTree.current !== tree) return;
             await refreshMedia.current?.(owner, tree);
         }).catch(() => {});
-    }, [tree, root, activation]);
+    }, [tree, root, activation, getActivation]);
     return Object.assign(active, {
         whenReady: () => active.current ? Promise.resolve(active.current)
             : startRef.current ? startRef.current() : Promise.reject(new DOMException('Vault index unavailable', 'AbortError')),

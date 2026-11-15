@@ -428,6 +428,13 @@ the cost tracked PAGE COUNT rather than anything on screen: switching back to a 
 
 So: no inline ref callbacks in the page list, and nothing that rebuilds `pageEls` per render.
 
+## Board print and export: one pin, three consumers
+A native board's print, PDF export and Mod-P all pin the open board once, then hand that pin to a single consumer:
+- `whiteboard/export/whiteboardPrint.ts` (`pinNativeWhiteboardPrint`) prints a drawing's sheet ink; `notebookPrint.ts` (`pinNativeNotebookPrint`) prints a notebook's pages; `pagedPrintSnapshot.ts` (`pinPagedPrintSource`) prints every page of a PDF-backed board with its real backdrop.
+- `components/whiteboard/useNativeClipboard.ts` owns the focused pin (`pinFocusedBoard`), the single-flight `print()`/`exportPdf()` on the clipboard service, and the Mod-P handler in the view's keydown. Its `printFocusedBoard` hands the PDF to `components/whiteboard/printBoard.ts` (`printBoard`, the only print surface).
+- Exporting JSON goes through `whiteboard/clipboard/copyJson.ts` (`buildBoardJson`), the same chunked producer copy uses; copy writes it to the clipboard, export saves it under `exportFileName`.
+Print, PDF and PNG/SVG save through `downloadBoardExport` (`components/whiteboard/exportDelivery.ts`), and the menu rows call the service rather than a second pin. Do not add a second print path: the menu and Mod-P must keep reaching the same pin.
+
 ## A PDF's fingerprint is computed only if a write needs it
 
 `seedPdfBaseline` records the HANDLE; `pdfSeedFor` does the read, at the one moment the answer is

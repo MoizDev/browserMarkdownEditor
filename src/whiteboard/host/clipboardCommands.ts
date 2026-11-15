@@ -7,7 +7,7 @@ import type { CommandBuilder, Op } from '../change/ops';
 import { ClipboardCopy } from '../clipboard/copy';
 import { createBoardCopySnapshotNow, type BoardCopySnapshotNowResult } from '../clipboard/runtimeSnapshotNow';
 import { createBoardCopySnapshot } from '../clipboard/runtimeSnapshot';
-import { copyBoardJsonFresh } from '../clipboard/copyJson';
+import { buildBoardJson, copyBoardJsonFresh } from '../clipboard/copyJson';
 import type { CopySnapshot } from '../clipboard/snapshot';
 import { deletionContents } from '../commands/pagesAndSheets';
 import type { NativeExportJob } from './nativeExport';
@@ -210,28 +210,28 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             signal.throwIfAborted(); options.download(blob, job.filename(extension));
         } finally { job.release(); }
     };
-    /** The records of the selected roots, or of the whole current sheet when nothing is selected. */
-    const jsonRecords = (selected: readonly NodeId[]) => {
-        const state = runtime.selection.getSnapshot();
-        const selection = selected.length ? [...selected] : [...(board.doc.bySheet.get(state.sheet) ?? [])];
-        return ownMedia(createBoardCopySnapshotNow({ runtime, memory: options.memory, current, selection })).snapshot;
-    };
-    /** The file export of records takes the same snapshot as copy: a selection on a context route, else the sheet. */
-    const exportJson = async (route: 'context' | 'menu', signal: AbortSignal) => {
-        guard();
-        const state = runtime.selection.getSnapshot(), roots = route === 'context' ? [...state.selected] : [];
-        const snapshot = jsonRecords(roots);
-        try {
-            signal.throwIfAborted();
-            const sheet = board.doc.sheetOrder.length > 1 ? board.doc.sheets.get(state.sheet)?.name ?? null : null;
-            const blob = new Blob([JSON.stringify(snapshot.payload.records)], { type: 'application/json' });
-            options.download(blob, exportFileName(options.boardName(), sheet, roots.length ? 'selection' : 'sheet', 'json', new Date()));
-            if (snapshot.media.length) options.notice(JSON_MEDIA_NOTICE);
-        } finally { for (const lease of snapshot.leases) lease.release(); }
-    };
     // One export or copy of this view at a time: a new one supersedes the one still running, so the older capture stops
     // instead of finishing into a clipboard or download the user has already replaced.
     let latest: AbortController | undefined;
+    /** File export of the records: the same chunked producer as copy, saved under the board's name. A selection on a
+     * context route, otherwise the whole sheet. */
+    const exportJson = async (route: 'context' | 'menu', signal: AbortSignal) => {
+        guard();
+        const state = runtime.selection.getSnapshot(), roots = route === 'context' ? [...state.selected] : [];
+        const selection = roots.length ? roots : [...(board.doc.bySheet.get(state.sheet) ?? [])];
+        let media = 0;
+        const built = await buildBoardJson({ runtime, memory: options.memory, signal, current, capture: async captureSignal => {
+            const snapshot = await createBoardCopySnapshot({ runtime, memory: options.memory, current, selection, signal: captureSignal });
+            media = snapshot.media.length;
+            return snapshot;
+        } });
+        try {
+            signal.throwIfAborted();
+            const sheet = board.doc.sheetOrder.length > 1 ? board.doc.sheets.get(state.sheet)?.name ?? null : null;
+            options.download(built.blob, exportFileName(options.boardName(), sheet, roots.length ? 'selection' : 'sheet', 'json', new Date()));
+            if (media) options.notice(JSON_MEDIA_NOTICE);
+        } finally { built.release(); }
+    };
     const withController = async (work: (signal: AbortSignal) => Promise<void>) => {
         latest?.abort(new DOMException('Export superseded', 'AbortError'));
         const owned = new AbortController(); active.add(owned); latest = owned;
@@ -273,7 +273,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
                 media = snapshot.media.length;
                 return snapshot;
             } });
-            if (media) options.notice('Media are referenced by hash; this JSON is not a portable asset bundle');
+            if (media) options.notice(JSON_MEDIA_NOTICE);
         }),
         exportJson: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => exportJson(route, signal))),
         exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),

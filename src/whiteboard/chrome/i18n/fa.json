@@ -390,7 +390,6 @@
     "paper.cancel": "لغو کنید",
     "paper.keepProtected": "محتوای قفل شده حفظ خواهد شد.",
     "chrome.readOnly": "این تابلو فقط خواندنی است.",
-    "shortcuts.file.print": "چاپ",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

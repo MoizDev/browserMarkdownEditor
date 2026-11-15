@@ -1,6 +1,7 @@
-import type { Affine } from '../../../platform/types';
+import type { Affine, Rect } from '../../../platform/types';
 import { colourCss } from '../colour';
 import type { PaintItem } from '../paintStream';
+import { IMAGE_SAMPLING_PROFILE, isGutterQuadDraw, texturedQuad, TILE_CROP, TILE_SIZE } from '../imageSampling';
 import type { PathOrigin2d } from './coverage2d';
 
 /** These resources are pinned by the published frame, never built while drawing. */
@@ -12,6 +13,8 @@ export interface PaintResources2d {
     path(item: PaintItem): PreparedPath2d;
     clip(key: string): PreparedPath2d;
     image(key: string): CanvasImageSource;
+    /** A standin's crop of its bitmap: such a draw has no quad, so its facts are not classified. Absent otherwise. */
+    imageCrop?(key: string): Readonly<Rect> | null;
 }
 
 export type PaintContext2d = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -43,7 +46,13 @@ export function paintItem2d(ctx: PaintContext2d, item: PaintItem, resources: Pai
             ctx.globalAlpha = item.opacity;
             ctx.filter = item.inverted ? 'invert(1) hue-rotate(180deg)' : 'none';
             const image = resources.image(item.imageKey), dst = item.rect, src = item.sourceRect;
-            if (src) ctx.drawImage(image, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
+            // The declared sampling profile (imageSampling.ts): bilinear, no mips, on the same texels the GPU reads.
+            ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = IMAGE_SAMPLING_PROFILE.quality;
+            if (isGutterQuadDraw(item, image)) {
+                // The GPU's own quad: the whole texture on its gutter-grown square (texturedQuad is unit-free).
+                const quad = texturedQuad(dst, TILE_SIZE, TILE_CROP);
+                ctx.drawImage(image, 0, 0, TILE_SIZE, TILE_SIZE, quad.x0, quad.y0, quad.x1 - quad.x0, quad.y1 - quad.y0);
+            } else if (src) ctx.drawImage(image, src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
             else ctx.drawImage(image, dst.x, dst.y, dst.width, dst.height);
         } else if (item.kind === 'text') {
             applyLocal(ctx, base, item.localToWorld);

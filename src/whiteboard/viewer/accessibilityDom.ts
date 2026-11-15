@@ -147,7 +147,9 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const refresh = () => {
         if (disposed) return;
         if (!active()) { scheduled?.(); scheduled = undefined; repeated?.(); repeated = undefined; announcementVersion++; sync(); return; }
-        if (!scheduled) scheduled = options.schedule(sync);
+        // Input pauses may cancel their queued frame callbacks. Replace the
+        // old request so reconnecting cannot leave this mirror permanently empty.
+        scheduled?.(); scheduled = options.schedule(sync);
     };
     const unsubscribe = options.engine.accessibility.subscribe(refresh);
     const unsubscribePenMode = options.runtime.tools.subscribePenMode(enabled => {

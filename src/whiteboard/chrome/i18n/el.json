@@ -390,7 +390,6 @@
     "paper.cancel": "Ακύρωση",
     "paper.keepProtected": "Το κλειδωμένο περιεχόμενο θα διατηρηθεί.",
     "chrome.readOnly": "Αυτός ο πίνακας είναι μόνο για ανάγνωση.",
-    "shortcuts.file.print": "Εκτύπωση",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

@@ -390,7 +390,6 @@
     "paper.cancel": "取消",
     "paper.keepProtected": "鎖定的內容將會保留。",
     "chrome.readOnly": "該板是唯讀的。",
-    "shortcuts.file.print": "列印",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

@@ -10,7 +10,7 @@ import type { Rect } from '../../platform/types';
 import { prepareNativeExport, type NativeExportOptions } from './nativeExport';
 import { readNativeAgentViewport } from './nativeAgentView';
 import { boardPageStack } from '../model/pages';
-import type { DrawingViewInfo, NotebookViewInfo } from '../../utils/viewRegistry';
+import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils/viewRegistry';
 
 function requestSignal(job: JobOptions): AbortSignal {
     if (!Number.isFinite(job.deadlineMs) || job.deadlineMs <= 0) throw new RangeError('Invalid agent read deadline');
@@ -73,13 +73,20 @@ export function createNativeAgentReader(options: {
         try { return { ...prepared.bounds }; } finally { prepared.release(); }
     };
     return {
-        async capture(region: Readonly<Rect>, maxSide: number, job: JobOptions): Promise<Blob> {
+        /** One page's rectangle on a paged board (notebook or PDF ink), in the board's own canvas coordinates. */
+        pageRect(page: number): Rect | null {
+            const stack = boardPageStack(runtime.session.doc.host);
+            const rect = stack?.rects[page - 1];
+            return rect && page >= 1 ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+        },
+        /** A capture of `region`, or of the whole sheet when none is given: the same canonical producer either way. */
+        async capture(region: Readonly<Rect> | undefined, maxSide: number, job: JobOptions): Promise<Blob> {
             if (!Number.isSafeInteger(maxSide) || maxSide < 1 || maxSide > 1568) throw new RangeError('Invalid agent capture maximum side');
             const signal = requestSignal(job);
             // The export producer captures its Scene/PDF/media before awaiting;
             // this is the real capture path, not a viewport DOM screenshot.
             const capture = await prepareNativeExport({ runtime, route: 'menu', boardName: 'Capture', theme: 'light', transparent: false,
-                region, maxSide, signal, current: options.isCurrent, notice: options.notice, onError: options.onError,
+                ...(region ? { region } : {}), maxSide, signal, current: options.isCurrent, notice: options.notice, onError: options.onError,
                 readMedia: options.readMedia, retainPdfSource: options.retainPdfSource });
             try { return await capture.png(signal); } finally { capture.release(); }
         },
@@ -89,36 +96,42 @@ export function createNativeAgentReader(options: {
                 reader.geometry, captured, revision, false, guard, undefined, reader.prepare));
         },
         /** The agent's view of the board without any mounted view. The last real viewport the App recorded
-         * (camera, insets, focus) is used when it exists; a never-viewed board reports its whole sheet. */
-        async describe(job: JobOptions): Promise<DrawingViewInfo | NotebookViewInfo> {
+         * (camera, insets, focus) is used when it exists; a never-viewed board reports its whole sheet, and a
+         * never-viewed PDF ink board shows its stored page (or the first). `storedPage` is that page, 1-based. */
+        async describe(job: JobOptions, storedPage?: number): Promise<DrawingViewInfo | NotebookViewInfo | PdfViewInfo> {
             const recorded = readNativeAgentViewport(runtime);
             const kind = runtime.session.doc.kind;
             // A drawing that was never viewed has no camera: its whole canonical paint is the view.
             const whole = !recorded && kind === 'whiteboard' ? await wholeSheetBounds(job) : undefined;
             return read(job, async (doc, sheet, revision, reader, guard) => {
-                const view: AgentViewSnapshot = recorded ? recorded.view : fallbackView(doc, sheet, whole);
-                if ((view.kind === 'drawing' && doc.kind !== 'whiteboard') || (view.kind === 'notebook' && doc.kind !== 'notebook')) {
+                const view: AgentViewSnapshot = recorded ? recorded.view : fallbackView(doc, sheet, whole, storedPage);
+                if ((view.kind === 'drawing' && doc.kind !== 'whiteboard') || (view.kind === 'notebook' && doc.kind !== 'notebook')
+                    || (view.kind === 'pdf-annotate' && doc.kind !== 'pdf-ink')) {
                     throw new Error('Agent view kind differs from its source');
                 }
                 // A recorded viewport lists what it shows; a never-viewed board lists its whole sheet.
                 const visible = recorded ? (node: Node, page: number | undefined) => {
-                    if (view.kind !== 'drawing') return page !== undefined && view.kind === 'notebook' && view.visiblePages.includes(page);
-                    const a = reader.geometry.bounds(node), b = view.viewport;
-                    return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y;
+                    if (view.kind === 'drawing') {
+                        const a = reader.geometry.bounds(node), b = view.viewport;
+                        return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y;
+                    }
+                    return page !== undefined && view.visiblePages.includes(page);
                 } : undefined;
                 const page = await listPinnedShapes(doc, [doc.sheets.get(sheet)!], reader.geometry, {}, revision,
                     false, guard, visible, reader.prepare);
                 guard();
                 if (view.kind === 'drawing') return { ...view, shapes: page.shapes, shapesTotal: page.total };
                 if (view.kind === 'notebook') return { ...view, shapes: page.shapes, shapesTotal: page.total };
-                throw new Error('Native agent view is not a drawing or notebook');
+                if (view.kind === 'pdf-annotate') return { ...view, shapes: page.shapes, shapesTotal: page.total };
+                throw new Error('Native agent view is not a drawing, notebook or PDF ink board');
             });
         },
     };
 }
 
-/** The never-viewed view: a drawing shows its whole canonical paint; a notebook shows its first page. */
-function fallbackView(doc: BoardDoc, sheet: SheetId, whole: Rect | undefined): AgentViewSnapshot {
+/** The never-viewed view: a drawing shows its whole canonical paint; a notebook shows its first page; a PDF ink
+ * board shows its stored page, else the first. */
+function fallbackView(doc: BoardDoc, sheet: SheetId, whole: Rect | undefined, storedPage?: number): AgentViewSnapshot {
     const current = doc.sheets.get(sheet)!, pageIndex = doc.sheetOrder.findIndex(value => value.id === sheet) + 1;
     if (doc.kind === 'whiteboard') {
         if (!whole) throw new Error('A drawing view needs its whole paint bounds');
@@ -130,5 +143,11 @@ function fallbackView(doc: BoardDoc, sheet: SheetId, whole: Rect | undefined): A
         return { kind: 'notebook', pageCount: stack?.rects.length ?? 1, page: 1, offset: 0, zoom: 1, visiblePages: [1],
             paper: `${paper.ruling} · ${paper.size} · ${paper.orientation}`, selectedShapeIds: [] };
     }
-    throw new Error('Native agent view is not a drawing or notebook');
+    if (doc.kind === 'pdf-ink' && doc.host.kind === 'pdf-ink') {
+        const stack = boardPageStack(doc.host), pageCount = doc.host.pages.length;
+        const page = storedPage !== undefined && Number.isSafeInteger(storedPage) && storedPage >= 1 && storedPage <= pageCount ? storedPage : 1;
+        return { kind: 'pdf-annotate', surface: 'annotation', pageCount: stack?.rects.length ?? pageCount, page, offset: 0, zoom: 1,
+            visiblePages: [page], selectedText: null, inverted: false, selectedShapeIds: [] };
+    }
+    throw new Error('Native agent view is not a drawing, notebook or PDF ink board');
 }

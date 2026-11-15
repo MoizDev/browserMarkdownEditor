@@ -9,7 +9,6 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { createEmbedPresentationPort } from '../../platform/render/embedPresentation';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import { createNativeEmbedController, type NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
-import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../../whiteboard/host/embedPresentationFacts';
 import type { PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import type { RenderToken } from '../../platform/render/types';
 import type { PaintFrame } from '../../whiteboard/render/paintStream';
@@ -28,7 +27,10 @@ const spelling: BoardToolServicesOptions['spelling'] = {
     },
 };
 
-export interface NativeEmbedInfrastructure { readonly port: EmbedPresentationPort; readonly controller: NativeEmbedController }
+export interface NativeEmbedInfrastructure {
+    readonly port: EmbedPresentationPort;
+    readonly controller: NativeEmbedController;
+}
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
     readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
@@ -56,15 +58,12 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     let importer: ReturnType<typeof createNativeImportAdapter> | null = null;
     let accessible: ReturnType<typeof createBoardAccessibilityDom> | null = null;
     let embed: NativeEmbedInfrastructure | null = null;
-    // Exists exactly while `embed` does: the two-phase presentation producer that feeds the port.
-    let producer: NativeEmbedPresentationProducer | null = null;
     let toolSurface: HTMLElement | null = null, toolOverlay: HTMLElement | null = null;
     const closeSpelling = () => { if (spellingMenu && getContextMenu() === spellingMenu) closeContextMenu(); spellingMenu = null; };
     const closeTextMenu = () => { if (textMenu && getContextMenu() === textMenu) closeContextMenu(); textMenu = null; };
     const disposeEmbeds = () => {
-        const previous = embed, previousProducer = producer;
-        embed = null; producer = null;
-        previousProducer?.dispose();
+        const previous = embed;
+        embed = null;
         if (previous) {
             options.onEmbedInfrastructure(null);
             options.engine.connectEmbeds(null);
@@ -76,15 +75,12 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible;
         textClipboard = null; tools = null; binding = null; importer = null; accessible = null;
         toolSurface = null; toolOverlay = null;
-        // Layer changes briefly seal pointer input. Retiring the surface-owned embed
-        // layer here changes the layers again and seals forever before the first frame.
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
         } }
     };
     const input = createBoardInputHost({ ...options, mode: 'edit',
         presented(revision, renderToken: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) {
-            producer?.presented(revision, renderToken, frame, context);
             options.presented?.(revision, renderToken, frame, context);
         },
         a11y: {
@@ -99,23 +95,24 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             // Layer attachment briefly pauses platform input. Recreating the embed
             // layer on that pause caused an attach/remove/render loop in the real app.
             // These services belong to the DOM view, not each enable/disable pulse.
-            if (tools && toolSurface === surface && toolOverlay === overlay) return tools.services;
+            if (tools && toolSurface === surface && toolOverlay === overlay) {
+                accessible?.refresh();
+                return tools.services;
+            }
             disposeTools();
             toolSurface = surface; toolOverlay = overlay;
             binding = options.bindClipboard(surface);
             try {
                 if (!embed) {
-                const port = createEmbedPresentationPort({ overlay, onError: options.onError });
-                let next: NativeEmbedPresentationProducer | null = null;
+                // A real request (acquire or its release) changes which embeds are live barriers: repaint the board for it.
+                const port = createEmbedPresentationPort({ overlay, onError: options.onError, invalidate: () => options.engine.embedsChanged() });
                 try {
-                    next = createNativeEmbedPresentationProducer({ port, images: options.toolOptions.images,
-                        memory: options.clipboard.memory, onError: options.onError });
                     const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
                         manifest: options.host.embeds.manifest, containment: options.host.embeds.create, environment: { appOrigin: location.origin },
                         current: () => options.current(options.token), visible: options.visible, onError: options.onError });
                     // Published only now: the shell learns of the port after the producer that feeds it exists.
-                    producer = next; embed = { port, controller }; options.engine.connectEmbeds(port); options.onEmbedInfrastructure(embed);
-                } catch (error) { next?.dispose(); void port.dispose().catch(options.onError); throw error; }
+                    embed = { port, controller }; options.engine.connectEmbeds(port); options.onEmbedInfrastructure(embed);
+                } catch (error) { void port.dispose().catch(options.onError); throw error; }
                 }
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
@@ -205,10 +202,9 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     });
     return {
         ...input,
-        // Only a complete, sharp, live presentation reaches the producer; anything else releases its pending frame.
+        // The viewer owns the single facts producer; this branch only updates input mapping.
         onPresentation(value: PlatformPresentation | null) {
             input.onPresentation(value);
-            producer?.onPresentation(value && options.certifyPresentation(value) ? value : null);
         },
         getTools: () => tools,
         getBinding: () => binding,
@@ -216,18 +212,20 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         getImporter: () => importer,
         announce: (message: string) => accessible?.announce(message) ?? false,
         repeatAnnouncement: () => accessible?.repeat() ?? false,
-        setInputEnabled(enabled: boolean) { input.setInputEnabled(enabled); },
+        setInputEnabled(enabled: boolean) {
+            input.setInputEnabled(enabled);
+            if (!options.visible()) { disposeTools(); disposeEmbeds(); }
+        },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            // A layer-topology seal cancels input, not its connected DOM services. Removing
-            // the embed/preview layers here changes that topology again and loops synchronously.
+            // A topology seal cancels contacts, not its connected DOM services. Real
+            // detach retires them below; hide or source loss revokes providers here.
             if (!options.visible() || !options.current(options.token)) { disposeTools(); disposeEmbeds(); }
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {
             const detach = input.attachInput(surface, overlay);
-            if (!input.isAttached()) disposeTools();
-            return () => { try { detach(); } finally { try { disposeTools(); } finally { disposeEmbeds(); } } };
+            if (!input.isAttached()) { disposeTools(); disposeEmbeds(); }
+            return () => { try { detach(); } finally { disposeTools(); disposeEmbeds(); } };
         },
-        dispose() { try { input.dispose(); } finally { disposeEmbeds(); } },
     };
 }

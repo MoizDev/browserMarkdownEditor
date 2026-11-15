@@ -42,7 +42,6 @@ export function createNativeMediaRestore(
         },
         updateFiles(changes, revision) {
             const board = current(revision);
-            // Every name is checked as a stored media name first, as the single-entry update checks it: a bad name refuses the whole batch.
             if (!board || board.isReadOnly || !host.canWrite(identity)
                 || changes.some(change => !isSafeMediaFile(change.next) || board.doc.media.get(change.id)?.file !== change.expected)) return false;
             const ops: Op[] = changes.map(change => ({ t: 'media', op: 'set-file', id: change.id, file: change.next }));

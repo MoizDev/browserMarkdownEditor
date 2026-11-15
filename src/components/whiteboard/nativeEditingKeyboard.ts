@@ -13,8 +13,6 @@ export function createNativeEditingKeyboard(options: {
     readonly camera: ReturnType<typeof createNativeCameraOperations>;
     readonly preferences: BoardPreferenceState;
     readonly openShortcuts: () => boolean;
-    /** Mod-P: the same single print authority the menu uses. */
-    readonly print: () => boolean;
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly report: (error: unknown) => void;
@@ -48,7 +46,6 @@ export function createNativeEditingKeyboard(options: {
             case 'camera.zoomInCursor': return options.camera.zoomAtCursor(1.2);
             case 'camera.zoomOutCursor': return options.camera.zoomAtCursor(1 / 1.2);
             case 'media.insert': return runAction('uploadMedia');
-            case 'file.print': return options.print();
             case 'help.shortcuts': return options.openShortcuts();
             case 'accessibility.repeat': return options.lease.editing?.repeatAnnouncement() ?? false;
             case 'preferences.theme': {

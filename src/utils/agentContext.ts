@@ -392,13 +392,14 @@ export async function buildAgentContext(
     await Promise.all(workspace.tabs.map(async tab => {
         const view = getView(tab.path);
         if (!view) {
-            // An open drawing with no mounted pane is read from its own session, bounded like a view.
-            // A failure or a refusal is named on its tab line, never silently skipped.
-            if (tab.kind !== 'drawing') return;
-            if (!workspace.nativeView) { unreadable.set(tab.path, 'its board is not available to read'); return; }
+            // An open native canvas with no mounted pane (a drawing, notebook or PDF ink board) is read from its own
+            // session, bounded like a view. A failure or a refusal is named on its tab line, never silently skipped.
+            // A PDF or notebook that is not native has no session here and keeps its remembered position.
+            if (tab.kind !== 'drawing' && tab.kind !== 'notebook' && tab.kind !== 'pdf') return;
+            if (!workspace.nativeView) { if (tab.kind === 'drawing') unreadable.set(tab.path, 'its board is not available to read'); return; }
             try {
                 const read = await workspace.nativeView(tab.path, AbortSignal.timeout(DESCRIBE_TIMEOUT_MS));
-                if (!read) { unreadable.set(tab.path, 'it is not open as a native board'); return; }
+                if (!read) { if (tab.kind === 'drawing') unreadable.set(tab.path, 'it is not open as a native board'); return; }
                 infos.set(tab.path, read.info);
                 if (read.wholeSheet) wholeSheet.add(tab.path);
             } catch (error) {

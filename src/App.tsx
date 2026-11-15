@@ -3815,6 +3815,9 @@ export default function App() {
         await drain(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         const result = await flushTab(path);
+        // A board's acknowledged write still finishes its after-write step as tracked work; checking before
+        // it settles misreads a clean board as pending (seen closing a written drawing beside a PDF pane).
+        if (result === 'written') await drain(tab.id);
         const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {

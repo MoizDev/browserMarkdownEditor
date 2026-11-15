@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Chuyển đổi bản đồ nhỏ",
     "chrome.debugMode": "Chế độ gỡ lỗi",
     "chrome.sheet": "tờ",
+    "chrome.annotationSheets": "Trang chú thích",
     "chrome.newSheet": "Trang tính mới",
     "chrome.renameSheet": "Đổi tên trang tính",
     "chrome.deleteSheet": "Xóa trang tính",

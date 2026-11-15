@@ -1,6 +1,9 @@
 import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
 import { sliceRichText, type Block, type RichFragment, type RichText } from '../richText';
-import { mapRichTextChanges } from '../rangeMap';
+import { mapRichTextChangesCooperative } from '../rangeMap';
+import { yieldToHost } from '../cooperative';
+import { richTextOperations } from '../richOperations';
+import type { FragmentSnapshotOptions } from '../fragmentSnapshot';
 import { moveCaret } from './caret';
 import { TextEditController, type EditTransactions } from './controller';
 import { clientBounds, type TextTransform } from './geometry';
@@ -72,6 +75,8 @@ export class TextEditSession {
     private closed = false;
     /** The last rich value this session saw: external changes are diffed on these immutable values, never a flattened copy. */
     private lastRich: RichText;
+    /** Bumped by every user or own-edit action, so a pending external mapping that lost the race is discarded. */
+    private mapping = 0;
 
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
         private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
@@ -164,6 +169,7 @@ export class TextEditSession {
 
     private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): boolean {
         this.resetBlink();
+        this.mapping++;
         try { this.selection = this.controller.replace(change, kind, this.selection); this.lastRich = this.services.readText(); }
         catch (error) { this.services.reportError(error); return false; }
         this.affinity = undefined;
@@ -175,6 +181,7 @@ export class TextEditSession {
     private select(next: EditSelection, moving = false): void {
         if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
         this.resetBlink();
+        this.mapping++;
         this.typingHistory.invalidateRule();
         this.selection = next;
         if (!moving) { this.affinity = undefined; this.goalX = undefined; }
@@ -353,17 +360,26 @@ export class TextEditSession {
         this.typingHistory.close();
         this.controller.setStoredMarks(null);
         const before = this.lastRich, after = this.services.readText();
-        if (before !== after) {
-            // Rich-aware and bounded: each separated edit is mapped in turn, and the caret or range is normalized
-            // to grapheme stops of the new value, so a caret never lands inside a cluster or a CR+separator pair.
-            const length = projectionLength(before);
-            const current = { anchor: Math.min(this.selection.anchor, length), focus: Math.min(this.selection.focus, length) };
-            this.selection = mapRichTextChanges(before, after, current).selection;
-            this.services.setSelection(this.selection);
-            this.services.changed(this.selection);
-        }
         this.lastRich = after;
+        if (before !== after) {
+            // The caret is clamped to both values at once, so it never names an offset past the new text. The bounded,
+            // rich-aware mapping then refines it in host-yielding slices; a result that lost a race with the user is dropped.
+            const serial = ++this.mapping, bound = Math.min(projectionLength(before), projectionLength(after));
+            const clamped = { anchor: Math.min(this.selection.anchor, bound), focus: Math.min(this.selection.focus, bound) };
+            this.setExternalSelection(clamped);
+            mapRichTextChangesCooperative(before, after, clamped, { cooperate: yieldToHost })
+                .then(mapped => {
+                    if (serial !== this.mapping || this.closed) return;
+                    this.setExternalSelection(mapped.selection);
+                    this.sync();
+                }, error => this.services.reportError(error));
+        }
         this.sync();
+    }
+    private setExternalSelection(next: EditSelection): void {
+        this.selection = next;
+        this.services.setSelection(next);
+        this.services.changed(next);
     }
     getSelection(): EditSelection { return this.selection; }
     /** Local boxes share the same caret index as selection and IME geometry. */
@@ -419,6 +435,29 @@ export class TextEditSession {
             this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
             this.lastRich = this.services.readText();
             this.select(next);
+            return true;
+        } catch (error) { this.services.reportError(error); return false; }
+        finally { this.services.history.close(); }
+    }
+
+    /** A paste is one canonical C2 `set` of the whole value. The new value and selection are prepared in host-yielding
+     * slices from the captured immutable value; the commit is synchronous and taken only if the value, the selection and
+     * the caller's owner still match. Small replacements (spelling) keep the synchronous splice path. */
+    async pasteCooperative(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<boolean> {
+        if (!this.canEdit()) return false;
+        const text = this.services.readText(), before = { anchor: this.selection.anchor, focus: this.selection.focus };
+        const from = Math.min(before.anchor, before.focus), to = Math.max(before.anchor, before.focus);
+        const unchanged = () => this.canEdit() && this.services.readText() === text && this.selection.anchor === before.anchor
+            && this.selection.focus === before.focus && (options.current?.() ?? true);
+        const prepared = await richTextOperations.transactionCooperative(text, [{ from, to, insert: fragment }], before,
+            { ...options, current: unchanged });
+        if (!unchanged()) throw new DOMException('Text paste source changed', 'AbortError');
+        this.typingHistory.close();
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'set', id: this.id, key: this.key, value: prepared.text }] });
+            this.lastRich = this.services.readText();
+            this.select(prepared.selection);
             return true;
         } catch (error) { this.services.reportError(error); return false; }
         finally { this.services.history.close(); }

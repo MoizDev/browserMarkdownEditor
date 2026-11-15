@@ -11,9 +11,14 @@ function sameGeometry(a: PageGeometry, b: PageGeometry): boolean {
         && a.toUserSpace.every((value, i) => Number.isFinite(value) && value === b.toUserSpace[i]);
 }
 
+export interface PinnedPdfInkAssembly extends PinnedPdfAssembly {
+    /** The same pinned writer sequence without the board's attachments: the current PDF with its ink, for printing. */
+    printable(signal: AbortSignal): Promise<Uint8Array>;
+}
+
 /** Stage every physical page from pristine bytes, preserving the outer attachment inventory.
  * The PDF writer returns bytes only; App alone authorizes and performs the versioned write. */
-export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: OpenPdfInkWriter): PinnedPdfAssembly {
+export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: OpenPdfInkWriter): PinnedPdfInkAssembly {
     if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0 || !/^[0-9a-f]{32}$/u.test(snapshot.writeId)
         || snapshot.source.formatId !== NATIVE_FORMAT_ID || !/^[0-9a-f]{64}$/u.test(snapshot.source.pristineFingerprint)
         || !/^[0-9a-f]{64}$/u.test(snapshot.source.outerFingerprint)
@@ -26,41 +31,45 @@ export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: Op
         signal.throwIfAborted();
         if (released || !snapshot.isCurrent()) throw new DOMException('PDF board session ended', 'AbortError');
     };
-    return {
-        async assemble(board, signal) {
+    // A null board prints: the same pinned PDF and ink, with no board file embedded in it.
+    const annotate = async (board: Uint8Array | Blob | null, signal: AbortSignal): Promise<Uint8Array> => {
+        check(signal);
+        const writer = await openWriter(signal);
+        try {
             check(signal);
-            const writer = await openWriter(signal);
-            try {
-                check(signal);
-                const request = { priority: 0 as const, signal };
-                const prepared = await writer.request('writer.prepareSource', { source: snapshot.source }, request);
-                check(signal);
-                const geometries = [...snapshot.ink.pages];
-                if (prepared.sourceFingerprint !== snapshot.source.pristineFingerprint || prepared.inspection.encrypted || prepared.inspection.signed
-                    || prepared.inspection.pageCount !== geometries.length || prepared.inspection.geometries.length !== geometries.length
-                    || geometries.some((page, i) => !sameGeometry(page, prepared.inspection.geometries[i]))) {
-                    throw new Error('PDF source or page geometry changed');
-                }
-                const ink = await emitStreamingPdfInk(snapshot.ink, snapshot.revision, signal);
-                check(signal);
-                const stage = await writer.request('writer.stageAnnotated', { writerSession: prepared.writerSession,
-                    revision: snapshot.revision, ink, geometries, reservedNames: pdfInkReservedNames(snapshot.media) }, request);
-                check(signal);
-                if (stage.sourceFingerprint !== snapshot.source.pristineFingerprint) throw new Error('PDF writer staged a different source');
-                const bytes = board instanceof Blob ? new Uint8Array(await board.arrayBuffer()) : board;
-                check(signal);
-                const attachments = await pdfBoardAttachments(bytes, snapshot.media, id => snapshot.mediaBlob(id), signal);
-                check(signal);
-                const result = await writer.request('writer.finishAnnotated', { stageId: stage.stageId, revision: snapshot.revision,
-                    attachments, writeId: snapshot.writeId }, request);
-                check(signal);
-                if (result.revision !== snapshot.revision || result.writeId !== snapshot.writeId
-                    || result.sourceFingerprint !== snapshot.source.pristineFingerprint || result.verification.writeMark !== 'verified') {
-                    throw new Error('PDF writer returned a different revision or source');
-                }
-                return new Uint8Array(result.bytes);
-            } finally { await writer.close(); }
-        },
+            const request = { priority: 0 as const, signal };
+            const prepared = await writer.request('writer.prepareSource', { source: snapshot.source }, request);
+            check(signal);
+            const geometries = [...snapshot.ink.pages];
+            if (prepared.sourceFingerprint !== snapshot.source.pristineFingerprint || prepared.inspection.encrypted || prepared.inspection.signed
+                || prepared.inspection.pageCount !== geometries.length || prepared.inspection.geometries.length !== geometries.length
+                || geometries.some((page, i) => !sameGeometry(page, prepared.inspection.geometries[i]))) {
+                throw new Error('PDF source or page geometry changed');
+            }
+            const ink = await emitStreamingPdfInk(snapshot.ink, snapshot.revision, signal);
+            check(signal);
+            const stage = await writer.request('writer.stageAnnotated', { writerSession: prepared.writerSession,
+                revision: snapshot.revision, ink, geometries, reservedNames: pdfInkReservedNames(snapshot.media) }, request);
+            check(signal);
+            if (stage.sourceFingerprint !== snapshot.source.pristineFingerprint) throw new Error('PDF writer staged a different source');
+            const readable = board instanceof Blob ? new Uint8Array(await board.arrayBuffer()) : board;
+            check(signal);
+            const attachments = readable === null ? []
+                : await pdfBoardAttachments(readable, snapshot.media, id => snapshot.mediaBlob(id), signal);
+            check(signal);
+            const result = await writer.request('writer.finishAnnotated', { stageId: stage.stageId, revision: snapshot.revision,
+                attachments, writeId: snapshot.writeId }, request);
+            check(signal);
+            if (result.revision !== snapshot.revision || result.writeId !== snapshot.writeId
+                || result.sourceFingerprint !== snapshot.source.pristineFingerprint || result.verification.writeMark !== 'verified') {
+                throw new Error('PDF writer returned a different revision or source');
+            }
+            return new Uint8Array(result.bytes);
+        } finally { await writer.close(); }
+    };
+    return {
+        assemble: (board, signal) => annotate(board, signal),
+        printable: signal => annotate(null, signal),
         release() { if (!released) { released = true; snapshot.release(); } },
     };
 }

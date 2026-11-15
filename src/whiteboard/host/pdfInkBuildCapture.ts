@@ -37,7 +37,8 @@ export function createPdfInkBuildCapture(options: {
     return {
         captureBuild(revision: number): BoardBuildCapture {
             const runtime = options.runtime(), doc = runtime.session.doc;
-            if (!options.currentOwner() || doc.kind !== 'pdf-ink' || doc.host.kind !== 'pdf-ink' || doc.rev !== revision) {
+            // Save capture pins the content revision; non-dirtying commits (pen, tool, UI) move doc.rev without changing content.
+            if (!options.currentOwner() || doc.kind !== 'pdf-ink' || doc.host.kind !== 'pdf-ink' || runtime.session.contentRevision !== revision) {
                 throw new Error('A current PDF ink revision is required');
             }
             const lease = options.sources.retain();
@@ -53,7 +54,7 @@ export function createPdfInkBuildCapture(options: {
         },
         pinPdf(revision: number, value: unknown) {
             const context = contextFor(value, revision), runtime = options.runtime(), doc = runtime.session.doc;
-            if (!options.currentOwner() || doc.rev !== revision || doc.kind !== 'pdf-ink' || !runtime.scene) {
+            if (!options.currentOwner() || runtime.session.contentRevision !== revision || doc.kind !== 'pdf-ink' || !runtime.scene) {
                 throw new Error('PDF ink scene is not ready for this revision');
             }
             const sourceLease = options.sources.retain();

@@ -49,9 +49,19 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
                 }
             };
             check();
+            // The Scene can trail the document by one board-only transaction, and the hit reads its spatial index. Drive
+            // its bounded steps first, as the preview does, rather than failing an arrow commit as stale; a document
+            // change still stops the query through check().
+            const scene = runtime.scene ?? await runtime.ready;
+            while (!scene.ready) {
+                check();
+                scene.step(64, performance.now() + 3);
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+            }
+            check();
             const hit = await options.point.hitTarget(point, input, signal);
             check();
-            if (!runtime.scene?.ready || runtime.scene.revision !== revision) throw new DOMException('Attachment scene became stale', 'AbortError');
+            if (runtime.scene !== scene || !scene.ready || scene.revision !== revision) throw new DOMException('Attachment scene became stale', 'AbortError');
             if (!hit) return null;
             const target = doc.nodes.get(hit.id);
             if (!target || target.kind === 'connector' || target.kind === 'group' || target.kind === 'opaque') {

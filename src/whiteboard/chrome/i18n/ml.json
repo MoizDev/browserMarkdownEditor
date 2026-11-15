@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "മിനിമാപ്പ് ടോഗിൾ ചെയ്യുക",
     "chrome.debugMode": "ഡീബഗ് മോഡ്",
     "chrome.sheet": "ഷീറ്റ്",
+    "chrome.annotationSheets": "അനോട്ടേഷൻ ഷീറ്റുകൾ",
     "chrome.newSheet": "പുതിയ ഷീറ്റ്",
     "chrome.renameSheet": "ഷീറ്റിൻ്റെ പേര് മാറ്റുക",
     "chrome.deleteSheet": "ഷീറ്റ് ഇല്ലാതാക്കുക",

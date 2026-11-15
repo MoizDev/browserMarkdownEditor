@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Attiva/disattiva la minimappa",
     "chrome.debugMode": "Modalità di debug",
     "chrome.sheet": "Foglio",
+    "chrome.annotationSheets": "Fogli di annotazione",
     "chrome.newSheet": "Nuovo foglio",
     "chrome.renameSheet": "Rinomina foglio",
     "chrome.deleteSheet": "Elimina foglio",

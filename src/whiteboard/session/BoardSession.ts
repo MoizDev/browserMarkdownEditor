@@ -50,6 +50,9 @@ export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGes
     readonly samples: SampleStoreReader;
     readonly history: BoardHistory;
     readonly isReadOnly: boolean; // Admission safety OR apply's D-10 seal; save must honor it too.
+    /** The revision of the last dirtying content change. Non-dirtying commits (tool, UI state) advance `doc.rev` but not
+     * this, so a build pinned to content stays valid across them; fences compare against this, never raw `doc.rev`. */
+    readonly contentRevision: number;
     apply(transaction: Transaction): Applied;
     preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };
     begin(origin: TransactionOrigin, label: string): TxBuilder;

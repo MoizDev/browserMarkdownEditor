@@ -9,7 +9,7 @@ import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import { useNativeSheetControls } from './useNativeSheetControls';
 import './boardHost.css';
 
-export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps, 'sheetName' | 'openSheets'> {
+export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps, 'sheetName' | 'openSheets' | 'pageControls'> {
     readonly lease: NativeViewLease;
     readonly confirm: (question: BoardQuestion) => Promise<boolean>;
     readonly canWrite: () => boolean;
@@ -38,18 +38,20 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...p
     const stack = useMemo(() => boardPageStack(host), [host]);
     if (host.kind === 'notebook' && (!notebook || !stack)) throw new Error('Notebook controls need the actual page view');
     const t = (key: string, values?: Readonly<Record<string, string | number>>) => translateBoard(lang.table, key, values);
-    return <><NativeBoardChrome {...props} currentOwner={styleOwner} sheetName={sheets.sheetName} openSheets={sheets.openSheets} />
-        {host.kind === 'notebook' && notebook && stack && <div className="board-page-controls">
-            <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
-                thumbnailsOpen={notebook.thumbnailsOpen} dir={lang.table.dir} t={t} changePaper={sheets.controls.changePaper}
-                addPage={sheets.controls.addPage} deleteLastPage={() => { void sheets.controls.deleteLastPage(); }} jump={jump}
-                toggleInversion={() => notebook.setInverted(!notebook.inverted)}
-                toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
-            <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
-                current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
-                open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
-                reorder={props.readOnly ? undefined : (from, to) => {
-                    try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }
-                }} />
-        </div>}{sheets.menu}</>;
+    // The paper bar belongs to the chrome column under the header, so it cannot cover the header's commands.
+    const paper = host.kind === 'notebook' && notebook && stack ? <div className="board-paper-slot"><div className="board-paper-bar">
+        <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
+            thumbnailsOpen={notebook.thumbnailsOpen} dir={lang.table.dir} t={t} changePaper={sheets.controls.changePaper}
+            addPage={sheets.controls.addPage} deleteLastPage={() => { void sheets.controls.deleteLastPage(); }} jump={jump}
+            toggleInversion={() => notebook.setInverted(!notebook.inverted)}
+            toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
+        <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
+            current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
+            open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
+            reorder={props.readOnly ? undefined : (from, to) => {
+                try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }
+            }} />
+    </div></div> : undefined;
+    return <><NativeBoardChrome {...props} currentOwner={styleOwner} sheetName={sheets.sheetName} openSheets={sheets.openSheets}
+        pageControls={paper} />{sheets.menu}</>;
 }

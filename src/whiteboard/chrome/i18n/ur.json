@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "منی میپ کو ٹوگل کریں۔",
     "chrome.debugMode": "ڈیبگ موڈ",
     "chrome.sheet": "چادر",
+    "chrome.annotationSheets": "تشریحی شیٹس",
     "chrome.newSheet": "نئی شیٹ",
     "chrome.renameSheet": "شیٹ کا نام تبدیل کریں۔",
     "chrome.deleteSheet": "شیٹ کو حذف کریں۔",

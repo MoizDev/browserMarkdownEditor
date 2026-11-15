@@ -14,3 +14,61 @@
 .notebook-controls button, .notebook-controls select, .notebook-page-number input { color: inherit; }
 .notebook-page-number { white-space: nowrap; }
 .notebook-page-number input { width: 3.5em; text-align: center; }
+
+/* The paper bar, in the chrome column under the header (see BoardChrome). Its row, buttons and
+   selects are the chrome's own (chrome.css); this only lays them out. The slot is centred and
+   wraps the bar, and the thumbnails panel hangs from the bar's own box, not from the window. */
+.board-paper-slot {
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+    pointer-events: auto;
+}
+
+.board-paper-bar {
+    position: relative;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.board-paper-controls {
+    flex-wrap: wrap;
+    align-items: center;
+    max-width: 100%;
+    box-sizing: border-box;
+    color: var(--text-normal);
+}
+
+.board-paper-field {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px;
+    white-space: nowrap;
+}
+
+.board-paper-controls .notebook-page-number {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px;
+}
+
+.board-paper-controls .notebook-page-number input { width: 3.5em; text-align: center; }
+
+/* A page preview in the thumbnails panel: a button around the picture, marked on the current page. */
+.board-thumb-button {
+    padding: 4px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.board-thumb-button:hover { background: var(--background-modifier-hover); }
+.board-thumb-button[aria-current='page'] { border-color: var(--interactive-accent); }
+.board-thumb-button:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}

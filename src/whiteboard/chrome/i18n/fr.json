@@ -275,6 +275,7 @@
     "chrome.toggleMinimap": "Afficher ou masquer la minicarte",
     "chrome.debugMode": "Mode débogage",
     "chrome.sheet": "Feuille",
+    "chrome.annotationSheets": "Feuilles d'annotation",
     "chrome.newSheet": "Nouvelle feuille",
     "chrome.renameSheet": "Renommer la feuille",
     "chrome.deleteSheet": "Supprimer la feuille",

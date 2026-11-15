@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Comutați minimapa",
     "chrome.debugMode": "Modul de depanare",
     "chrome.sheet": "foaie",
+    "chrome.annotationSheets": "Foi de adnotări",
     "chrome.newSheet": "Foaie nouă",
     "chrome.renameSheet": "Redenumiți foaia",
     "chrome.deleteSheet": "Șterge foaia",

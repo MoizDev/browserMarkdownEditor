@@ -15,23 +15,13 @@ export interface DotMetric {
 }
 export interface InkDot { readonly x: number; readonly y: number; readonly radius: number; }
 
-// Lead ruling for W-E2: a tap must paint while M-INK-DOT is open. These are provisional PRODUCT
-// choices using DOT-M1 z1/DPR1 coverage-equivalent diameters, NOT recovered continuous radii or a
-// parity claim. The other zoom/DPR raster rows must not make saved geometry camera-dependent.
-const DOT_KNOTS = Object.freeze([
-    Object.freeze({ width: 0.36, diameter: 1.459307 }),
-    Object.freeze({ width: 3, diameter: 3.907379 }),
-    Object.freeze({ width: 10.5, diameter: 11.360917 }),
-]);
+// A tap's dot is the stroke's own round cap: same centre, same radius. The provisional larger dot
+// (DOT-M1 knots) was replaced when the pen moved on by the smaller start cap, so laid ink vanished
+// (measured: 23 px removed at the start of a PDF stroke); the owner's rule is that laid ink never moves.
 export const DOT_METRIC_PROVISIONAL: DotMetric = Object.freeze({
-    id: 'dot-provisional-v1',
-    status: 'continuous radius and paper hosts unmeasured (M-INK-DOT)',
-    radius(actualWidth: number, modelRadius: number, model: WidthModel): number {
-        if (model.id === 'pressure-linear-v1') return modelRadius;
-        const a = actualWidth <= DOT_KNOTS[1].width ? DOT_KNOTS[0] : DOT_KNOTS[1];
-        const b = actualWidth <= DOT_KNOTS[1].width ? DOT_KNOTS[1] : DOT_KNOTS[2];
-        return (a.diameter + (actualWidth - a.width) * (b.diameter - a.diameter) / (b.width - a.width)) / 2;
-    },
+    id: 'dot-cap-v1',
+    status: 'the dot equals the stroke cap',
+    radius(_actualWidth: number, modelRadius: number): number { return modelRadius; },
 });
 
 export function validateInkWidth(style: InkWidth): void {

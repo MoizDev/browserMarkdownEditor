@@ -721,14 +721,17 @@ export class MemoryGovernor {
         const weight = (pane: PaneMemoryDemand) => pane.focused ? POLICY.focusedPaneWeight : POLICY.unfocusedPaneWeight;
         const minimum = this.minimumProgressBytes();
         const overhead = this.kindBytes('context') + this.kindBytes('program');
-        let remaining = Math.max(0, this.target.gpu - overhead);
+        // Grants fit under the trim target: the scheduler trims the pool past memorySoftPressureRatio, so a pane granted the
+        // whole pool was evicted for using its own grant, released all its GPU work, rebuilt it and was evicted again (measured:
+        // a notebook granted 51 MB of a 64 MB pool reached 61 MB and never presented on the GPU).
+        let remaining = Math.max(0, Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio) - overhead);
         const supported: PaneMemoryDemand[] = [];
         for (const pane of [...visible].sort((a, b) => weight(b) - weight(a) || stableId(a.paneId, b.paneId))) {
             if (remaining < minimum) continue;
             supported.push(pane);
             remaining -= minimum;
         }
-        const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.surfaceMaxGpuGrantFraction), remaining);
+        const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio * POLICY.surfaceMaxGpuGrantFraction), remaining);
         // Denying GL must not deny a 2D drawing buffer (§6.3:641); both paths share this cap.
         const pixels = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.floor(pane.requestedPixels * this.qualityLimit * this.qualityLimit) })),

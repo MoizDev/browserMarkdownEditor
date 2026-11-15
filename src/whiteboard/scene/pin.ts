@@ -157,6 +157,9 @@ export function createSceneSnapshot(options: {
         }
         return false;
     };
+    const mayPaint = (index: SceneCellIndex, world: Readonly<Rect>): boolean => {
+        try { return index.countCandidates(world) > 0; } catch { return true; }
+    };
     const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined, index: SceneCellIndex): ScenePaintNodeStream => {
         let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
         const close = (): Promise<void> => {
@@ -180,6 +183,7 @@ export function createSceneSnapshot(options: {
             token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
             sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
             sensitiveMayMeet: (world, nodes) => sensitiveMayMeet(index, world, nodes),
+            mayPaint: world => mayPaint(index, world),
             isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),
             async next() {
                 if (closePromise) throw cancelled();

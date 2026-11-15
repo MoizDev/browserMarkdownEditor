@@ -20,6 +20,8 @@ const NO_LIVE: ReadonlySet<string> = new Set();
 interface TileBitmap {
     readonly bitmap: ImageBitmap;
     readonly rect: Readonly<Rect>;
+    /** A standin draws this crop of a coarser tile's bitmap into `rect`; absent for a tile's own pixels. */
+    readonly crop?: Readonly<Rect>;
     readonly memoryBytes: number;
     release(): void;
 }
@@ -31,6 +33,8 @@ type Plan = {
     job: StreamingDenseTileJob | null;
     cache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
     entries: Record<PaintBand, Entry[]>;
+    /** Tiles drawn from a coarser cached tile because their own raster was denied memory. */
+    standins: number;
     owned: TileBitmap[];
     bitmaps: Map<string, TileBitmap>;
     bitmapBytes: number;
@@ -88,7 +92,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         try {
             const p: Plan = { source: frame, view: projection(view), scale, sharp: scale >= demand, live,
                 phase: 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
-                job: null, cache: null, entries: { underlay: [], content: [] }, owned: [], bitmaps: new Map(), bitmapBytes: 0,
+                job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0,
                 directAdapter: null, directLease: null, directEstimate: 0, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
                 pending: 0, lease, retired: false, blocked: false, prepared: null, resources };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
@@ -106,6 +110,19 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         return { bitmap: part.bitmap, rect: part.rect, memoryBytes: part.bytesLease.bytes, release() {
             if (!held) return; held = false; releaseDenseTilePart(part);
         } };
+    };
+    /** A cached coarser tile drawn cropped to `child`. It owns the borrow on success, and releases it otherwise. */
+    const standinOf = (borrow: DenseRasterBorrow, child: Readonly<Rect>): TileBitmap | null => {
+        const parent = borrow.rect, k = EDGE / parent.width, eps = 1e-6 * parent.width;
+        const inside = child.x >= parent.x - eps && child.y >= parent.y - eps
+            && child.x + child.width <= parent.x + parent.width + eps && child.y + child.height <= parent.y + parent.height + eps;
+        if (!borrow.bitmap || !inside || !(k > 0)) { borrow.release(); return null; }
+        // The bitmap's EDGE interior sits inside a 2 px apron, as the sourceRect of a tile's own draw says.
+        const crop: Readonly<Rect> = Object.freeze({ x: 2 + (child.x - parent.x) * k, y: 2 + (child.y - parent.y) * k,
+            width: child.width * k, height: child.height * k });
+        let held = true;
+        return { bitmap: borrow.bitmap, rect: Object.freeze({ ...child }), crop, memoryBytes: 0,
+            release() { if (held) { held = false; borrow.release(); } } };
     };
     const borrowBitmap = (borrow: DenseRasterBorrow): TileBitmap | null => {
         if (!borrow.bitmap) { borrow.release(); return null; }
@@ -127,15 +144,15 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     /** One tile of the current band. A cached tile is used only without live items: then its band
      * content is one part and no barrier can split it. Otherwise the tile is streamed and split. */
     const raster = (p: Plan, view: ViewState, budget: FrameBudget): void => {
-        const band = p.band, side = EDGE / p.scale;
+        const band = p.band, side = EDGE / p.scale, bleed = 2 / p.scale;
         const rect: Rect = { x: p.tileX * side, y: p.tileY * side, width: side, height: side };
+        const apron: Rect = { x: rect.x - bleed, y: rect.y - bleed, width: side + 2 * bleed, height: side + 2 * bleed };
+        // Sparse: no node of the pinned sheet can paint in the apron, so the tile is empty and needs nothing.
+        if (!p.job && !p.cache && p.source.mayPaint?.(apron) === false) { advanceTile(p); return; }
         const tileScale = chooseTileScale(p.scale);
         const address: TileAddress = { pyramid: tileScale.pyramid, level: tileScale.level, x: p.tileX, y: p.tileY };
         const cache = p.source.sessionRasters, variant = p.source.rasterVariant;
-        // A sensitive node (selection, edit, embed) paints at precision, so a tile holding one is not
-        // a pure function of the document; only sensitive-free tiles are cached and reused.
-        // The tile's pixels are the document's own while no sensitive node may paint in its apron (2 px, as the job).
-        const bleed = 2 / p.scale, apron: Rect = { x: rect.x - bleed, y: rect.y - bleed, width: side + 2 * bleed, height: side + 2 * bleed };
+        // The tile's pixels are the document's own while no sensitive or live node may paint in its apron.
         const reaches = (nodes: ReadonlySet<string>) => p.source.sensitiveMayMeet?.(apron, nodes) !== false;
         const cacheable = !!cache && !!variant && tileScale.scale === p.scale
             && p.source.sensitiveNodes !== undefined && !reaches(p.source.sensitiveNodes) && !(p.live && reaches(p.live));
@@ -152,10 +169,15 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         if (bitmap) put(p, band, null, 'normal', bitmap);
                         advanceTile(p); return;
                     }
-                    found.release();
                 }
                 const ticket = cache.begin(interval, address, p.source.sceneRevision);
-                if (!ticket) { p.blocked = true; return; }
+                if (!ticket) {
+                    // Memory denied this tile's raster: a cached coarser tile stands in, so the plan can still complete.
+                    const standin = found ? standinOf(found, rect) : null;
+                    if (standin) { p.standins++; put(p, band, null, 'normal', standin); advanceTile(p); return; }
+                    p.blocked = true; return;
+                }
+                found?.release();
                 p.cache = { cache, ticket };
             }
         }
@@ -246,7 +268,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const underlay = bandItems(p, 'underlay'), content = bandItems(p, 'content');
         const frame: PaintFrame = { ...p.source, underlay: Object.freeze(underlay), content: Object.freeze(content),
             inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
-        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp, resources: {
+        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp && p.standins === 0, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
         } };
@@ -321,12 +343,13 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 const x1 = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(right - .5));
                 const y1 = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(bottom - .5));
                 if (x1 <= x || y1 <= y) continue;
-                const gutter = 2 * scale / sourceScale;
+                const gutter = 2 * scale / sourceScale, crop = bitmap.crop;
                 ctx.save();
                 try {
                     ctx.resetTransform(); ctx.beginPath(); ctx.rect(x, y, x1 - x, y1 - y); ctx.clip();
                     ctx.globalAlpha = 1; ctx.globalCompositeOperation = item.blend === 'multiply' ? 'multiply' : 'source-over'; ctx.filter = 'none';
-                    ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
+                    if (crop) ctx.drawImage(bitmap.bitmap, crop.x, crop.y, crop.width, crop.height, left, top, right - left, bottom - top);
+                    else ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
                 } finally { ctx.restore(); }
             }
         },
@@ -345,7 +368,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {
             if (disposed || denied || staged?.blocked) return false;
-            if (!staged) return !!ready && !ready.sharp;
+            // A plan drawn with standins because memory was denied waits for the next invalidation instead of spinning.
+            if (!staged) return !!ready && !ready.sharp && ready.standins === 0;
             if (staged.job) return staged.job.needsFrame();
             if (staged.directAdapter) return staged.directAdapter.needsFrame();
             return true;

@@ -93,6 +93,7 @@ export interface PaintFrame {
     readonly regionChangesSince?: (from: number) => RegionChanges;
     /** False only when provably no node of `nodes` paints inside `world`; unknown is true. */
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
+    readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     /** True for a dense frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. */

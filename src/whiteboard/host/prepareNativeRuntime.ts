@@ -162,6 +162,10 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         const render = services;
         // Post-layout admission (document-model §9.2): an elbow connector with no valid route opens the board
         // read-only, on the real layout, before any editable transfer. A layout gap throws and fails closed.
+        // Routing measures connector targets' text, so their faces must be loaded first; without
+        // this every received board with an elbow connector and text failed to open.
+        const elbows = [...doc.nodes.values()].filter(node => node.kind === 'connector' && node.route === 'elbow').map(node => node.id);
+        if (elbows.length) { await render.prepareChangeGeometry(elbows, signal); signal.throwIfAborted(); }
         const admissionRefusal = elbowAdmissionRefusal(doc, render.changeGeometry);
         const bounds = await createBoardEncoderBounds({ doc, sources: load.sources, local: render.encoderLocal,
             realize: render.realize, geometryEpoch: () => render.text.fonts.epoch });

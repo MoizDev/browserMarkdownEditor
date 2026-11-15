@@ -120,7 +120,8 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
     const rotation = op.rotation === undefined ? node.rotation : normalize((op.rotation % 360) * Math.PI / 180 - parent.angle);
     if (op.rotation !== undefined) ops.push({ t: 'set', id: node.id, key: 'rotation', value: rotation });
     const raw = { x: op.x ?? oldX, y: op.y ?? oldY };
-    const desired = op.x !== undefined || op.y !== undefined || op.page !== undefined ? target.clamp(raw) : raw;
+    // Clamp the whole laid-out box, not its corner, so a moved shape cannot hang off its page.
+    const desired = op.x !== undefined || op.y !== undefined || op.page !== undefined ? target.clamp(raw, newBox) : raw;
     const changeX = op.x !== undefined || op.page !== undefined, changeY = op.y !== undefined || op.page !== undefined;
     if ((!changeX || desired.x === raw.x) && (!changeY || desired.y === raw.y)) target.notes.length = 0;
     const x = changeX ? desired.x : oldX;

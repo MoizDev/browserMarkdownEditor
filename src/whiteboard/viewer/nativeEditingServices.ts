@@ -47,7 +47,8 @@ export function createNativeEditingInput(options: NativeEditingOptions) {
     const host = createBoardInputHost({ session: options.session, runtime, engine: options.engine, token: options.token,
         inputToken: options.inputToken, camera: options.camera, viewport: options.viewport, current: options.current,
         visible: options.visible, focused: options.focused, mode: options.mode, a11y: options.a11y, paged: options.paged,
-        invalidate: options.invalidate, onError: options.onError, presented: options.presented,
+        invalidate: options.invalidate, onError: options.onError,
+        presented(revision, token, frame, context) { options.presented?.(revision, token, frame, context); active?.presented(revision, token, frame); },
         services(surface, overlay, _wet, ports) {
             release();
             const tools = createBoardToolServices({ runtime, engine: options.engine, spelling: options.spelling, images: options.images,

@@ -33,7 +33,7 @@ export class InputRouter<Context> {
 
   begin(token: InputToken, tool: Tool<Context>, sample: RealSample, modifiers: Modifiers, context: Context): boolean {
     if (!this.isCurrent(token) || this.owner) return false
-    const release = this.holdGesture()
+    const release = tool.holdsNoGesture ? () => {} : this.holdGesture()
     try {
       const owner = tool.begin(sample, modifiers, context)
       if (!owner) { release(); return false }

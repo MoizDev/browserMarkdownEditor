@@ -37,7 +37,11 @@ async function boundedSummary(node: Node, geometry: AgentGeometry, page: number 
     }
     const lean = node.kind === 'text' || node.kind === 'sticky' ? { ...node, text: EMPTY_RICH_TEXT }
         : node.kind === 'figure' || node.kind === 'connector' ? { ...node, label: EMPTY_RICH_TEXT } : node;
-    const summary = summarizeAgentNode(lean, geometry, page), plain = pieces.join('');
+    // Geometry is identity-checked against the pinned doc: give it the real node, not the text-less copy
+    // (the copy failed every canvas_shapes on a board with text, a sticky or a labelled shape).
+    const own = (value: Node) => value === lean ? node : value;
+    const summary = summarizeAgentNode(lean, { bounds: value => geometry.bounds(own(value)), page: value => geometry.page(own(value)),
+        rotation: value => geometry.rotation(own(value)) }, page), plain = pieces.join('');
     summary.text = plain.length > 2000 ? `${plain.slice(0, 2000)}…` : plain;
     return summary;
 }

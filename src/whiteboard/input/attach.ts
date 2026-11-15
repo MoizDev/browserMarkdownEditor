@@ -125,7 +125,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
   const secondaryPan: Tool<unknown> = {
-    id: 'secondary-pan',
+    id: 'secondary-pan', holdsNoGesture: true,
     begin(sample, modifiers) {
       const origin = physicalSurface(sample)
       const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })

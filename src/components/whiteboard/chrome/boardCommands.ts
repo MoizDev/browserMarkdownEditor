@@ -32,7 +32,7 @@ export const actionCommands: readonly BoardCommand[] = [
     'alignLeft', 'alignHorizontal', 'alignRight', 'alignTop', 'alignVertical', 'alignBottom',
     'stretchHorizontal', 'stretchVertical', 'distributeHorizontal', 'distributeVertical',
     'stackHorizontal', 'stackVertical', 'sendBack', 'sendBackward', 'bringForward', 'bringFront',
-    'rotateCounterclockwise', 'rotateClockwise', 'editLink', 'group', 'ungroup',
+    'rotateCounterclockwise', 'rotateClockwise', 'editLink', 'group',
 ];
 
 export type ContextSection = 'edit' | 'arrange' | 'reorder' | 'moveToPage' | 'copyAs' | 'exportAs';

@@ -67,39 +67,121 @@
     max-width: 100%;
 }
 
+/* The top bar sits flush in the pane's corner. The overlay is inset 8px for its floating bars, so the header
+   takes that inset back; the page controls and the pen panel still start from the overlay's edge. */
 .board-chrome-header {
     display: flex;
-    justify-content: space-between;
-    gap: 8px;
+    align-self: flex-start;
     min-width: 0;
+    margin: -8px 0 0 -8px;
 }
 
 .board-chrome-header > * {
     min-width: 0;
 }
 
-.board-chrome-header .board-chrome-tool-row {
-    overflow-x: auto;
-}
-
-.board-chrome-action-popup {
-    position: absolute;
-    z-index: 1;
-    inset-inline-end: 0;
-    top: calc(100% + 6px);
-    width: min(400px, 90vw);
-    max-height: min(50vh, 400px);
-    overflow: auto;
+/* One grey strip; its bottom-right corner is the only rounded one. Its popups are absolutely placed, so the strip
+   must not clip (no overflow): a long sheet name truncates instead. */
+.board-chrome-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
     padding: 4px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    background: var(--background-primary);
+    border-radius: 0 0 12px 0;
+    background: color-mix(in srgb, var(--background-primary) 92%, var(--text-normal));
     color: var(--text-normal);
 }
 
-.board-chrome-action-popup [role='toolbar'] {
-    display: flex;
-    flex-wrap: wrap;
+.board-chrome-strip-button {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.board-chrome-strip-button:not(:disabled):hover,
+.board-chrome-strip-button[aria-expanded='true'],
+.board-chrome-sheet:hover {
+    background: color-mix(in srgb, var(--text-normal) 12%, transparent);
+}
+
+.board-chrome-strip-button:disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+.board-chrome-sheet {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 32px;
+    padding: 0 4px 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.board-chrome-sheet > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A white card centred under the Actions button (as drawn), four 36px cells to a row, five rows. */
+.board-chrome-action-popup {
+    position: absolute;
+    z-index: 1;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 2px;
+    border-radius: 12px;
+    background: var(--background-primary);
+    color: var(--text-muted);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%);
+}
+
+.board-chrome-action-popup > [role='toolbar'] {
+    display: grid;
+    grid-template-columns: repeat(4, 36px);
+    grid-auto-rows: 36px;
+}
+
+.board-chrome-action {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.board-chrome-action:not(:disabled):hover {
+    background: color-mix(in srgb, var(--text-normal) 10%, transparent);
+}
+
+.board-chrome-action:disabled {
+    color: var(--text-faint);
+    cursor: default;
 }
 
 .board-chrome-tool-row,

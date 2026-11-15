@@ -1,6 +1,7 @@
 import type { Rgba } from '../../platform/types';
 import { figureLabelRequest, frameTitleRequest } from '../geom/providers';
-import type { Node } from '../model/nodes';
+import { urlPoster } from '../media/urlPoster';
+import type { EmbedNode, LinkcardNode, Node } from '../model/nodes';
 import { editableTextRequest } from '../text/edit/request';
 import { BoardFonts } from '../text/fonts';
 import { BoardTextLayout } from '../text/layout';
@@ -32,6 +33,28 @@ export interface BoardTextGeometry {
     prepare(node: Readonly<Node>, options: BoardTextGeometryOptions, signal: AbortSignal): Promise<PreparedBoardText | null>;
     dispose(): void;
 }
+/** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
+function cardPosterPad(zoom: number): number { return 12 / zoom; }
+/**
+ * A card's poster while it is not loaded (an embed) or has no fetched preview (a link card): the title (a preview's title,
+ * else the provider or domain), a preview's description, the address the link names, and how to get more. It sits at the
+ * card's foot in the card's own width, and as many lines as the card's on-screen height holds are kept (the rest end in an ellipsis).
+ */
+function cardPosterRequest(node: Readonly<EmbedNode | LinkcardNode>, revision: string, fontEpoch: number, zoom: number): TextLayoutRequest {
+    const { title, address } = urlPoster(node.url), pad = cardPosterPad(zoom);
+    const preview = node.kind === 'linkcard' ? node.preview : null;
+    const lines = [preview?.title || title, ...(preview?.description ? [preview.description] : []), address,
+        node.kind === 'embed' ? 'Not loaded: right-click and choose Load embed'
+            : preview ? '' : 'Not fetched: right-click and choose Fetch link preview'].filter(line => line !== '');
+    const paragraph = (text: string) => ({ kind: 'p' as const, level: 0 as const, dir: 'auto' as const, runs: [{ text, marks: {} }] });
+    const size = 14 / zoom, lineHeight = size * 1.3;
+    // Screen height is the world height times zoom; the line count is what that holds at this size, never less than one.
+    const linesThatFit = Math.max(1, Math.floor((node.h - 2 * pad) / lineHeight));
+    return { text: { blocks: lines.map(paragraph) },
+        revision, fontEpoch, width: Math.max(1, node.w - 2 * pad),
+        style: { font: 'sans', size, ink: { swatch: 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow', maxLines: linesThatFit, ellipsis: true } };
+}
 export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpoch?: (epoch: number) => void;
     cooperate?: () => Promise<void> } = {}): BoardTextGeometry {
     let fonts = options.fonts, layout: BoardTextLayout | undefined, measurer: ReferenceMeasurer | undefined;
@@ -57,6 +80,7 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
         return layout;
     };
     const makeRequest = (node: Readonly<Node>, requestOptions: BoardTextGeometryOptions): TextLayoutRequest | null => {
+        if (node.kind === 'embed' || node.kind === 'linkcard') return cardPosterRequest(node, requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1);
         let text: RichText;
         if (node.kind === 'text' || node.kind === 'sticky') text = node.text;
         else if (node.kind === 'figure' || node.kind === 'connector') {
@@ -82,6 +106,11 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             x = placement.x; y = placement.y;
         } else if (node.kind === 'sticky' || node.kind === 'text') scale = node.scale;
         else if (node.kind === 'frame') y = -paint.box.h;
+        else if (node.kind === 'embed' || node.kind === 'linkcard') {
+            // The poster's text sits at the card's bottom-left, inside the same pad the layout width leaves.
+            const pad = cardPosterPad(requestOptions.zoom ?? 1);
+            x = pad; y = node.h - paint.box.h - pad;
+        }
         else if (node.kind === 'connector') {
             x = requestOptions.anchor!.x - paint.box.w / 2;
             y = requestOptions.anchor!.y - paint.box.h / 2;

@@ -1,39 +1,133 @@
 import { isEmbedContainmentApproved } from '../../platform/embedContainment';
+import { EMBED_PROVIDER_ORIGINS } from '../../platform/embedPolicy';
 import type { EmbedContainment, EmbedContainmentFactory, EmbedFrameManifest } from '../../platform/embedContainment.types';
 import { checkContentUrl, type UrlEnvironment } from '../security/urlPolicy';
 import { validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
 
 // Provenance: SEC-6 exact-provider consent; the platform alone owns the opaque bootstrap and its private capability.
-const ORIGINS = Object.freeze(['https://www.youtube-nocookie.com', 'https://player.vimeo.com'] as const);
+// Each provider maps a link a person can paste to that provider's own embeddable page. Each rule matches its path with
+// identifier-only segments, so a link cannot smuggle a second address into the frame.
+const ORIGINS: readonly string[] = EMBED_PROVIDER_ORIGINS;
+const YOUTUBE_ORIGIN = 'https://www.youtube-nocookie.com', VIMEO_ORIGIN = 'https://player.vimeo.com';
 export type EmbedManifest = EmbedFrameManifest;
-export interface EmbedCandidate { readonly provider: 'youtube' | 'vimeo'; readonly url: string }
+export type EmbedProvider = 'youtube' | 'vimeo' | 'figma' | 'canva' | 'google-maps' | 'val-town' | 'codesandbox' | 'codepen'
+    | 'scratch' | 'google-calendar' | 'google-slides' | 'replit' | 'felt' | 'spotify' | 'observable' | 'desmos' | 'tldraw';
+export interface EmbedCandidate { readonly provider: EmbedProvider; readonly url: string }
 function enabledOrigins(manifest: EmbedManifest | undefined): readonly string[] | null {
     if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.origins) || !manifest.origins.length
         || manifest.origins.length > ORIGINS.length || new Set(manifest.origins).size !== manifest.origins.length
         || manifest.origins.some(origin => !ORIGINS.some(allowed => allowed === origin))) return null;
     return Object.freeze([...manifest.origins]);
 }
+/** One rule per provider: the hosts a link may come from, and the embeddable address its path names. */
+interface ProviderRule { readonly provider: EmbedProvider; readonly hosts: readonly string[]; readonly embed: (source: URL) => string | null }
+const PROVIDERS: readonly ProviderRule[] = [
+    { provider: 'figma', hosts: ['www.figma.com', 'figma.com'], embed: source => {
+        const match = /^\/(?:file|design|proto)\/([A-Za-z0-9]{1,128})(?:\/[^/]{0,200})?\/?$/.exec(source.pathname);
+        if (!match) return null;
+        return `https://www.figma.com/embed?embed_host=share&url=${encodeURIComponent(`https://www.figma.com${source.pathname}`)}`;
+    } },
+    { provider: 'canva', hosts: ['www.canva.com'], embed: source => {
+        const match = /^\/design\/([A-Za-z0-9_-]{1,128})(?:\/([A-Za-z0-9_-]{1,128}))?\/view\/?$/.exec(source.pathname);
+        if (!match) return null;
+        return `https://www.canva.com/design/${match[1]}${match[2] ? `/${match[2]}` : ''}/view?embed`;
+    } },
+    { provider: 'google-maps', hosts: ['www.google.com', 'maps.google.com'], embed: source => {
+        if (!source.pathname.startsWith('/maps')) return null;
+        let query = source.searchParams.get('q');
+        if (!query) {
+            const place = /^\/maps\/place\/([^/]{1,300})/.exec(source.pathname);
+            if (place) { try { query = decodeURIComponent(place[1]); } catch { return null; } }
+        }
+        if (!query || query.length > 300) return null;
+        return `https://www.google.com/maps?output=embed&q=${encodeURIComponent(query)}`;
+    } },
+    { provider: 'val-town', hosts: ['www.val.town'], embed: source => {
+        const match = /^\/v\/([A-Za-z0-9_-]{1,64})\/([A-Za-z0-9_-]{1,64})\/?$/.exec(source.pathname);
+        return match ? `https://www.val.town/embed/${match[1]}/${match[2]}` : null;
+    } },
+    { provider: 'codesandbox', hosts: ['codesandbox.io'], embed: source => {
+        const id = /^\/(?:s|p\/sandbox)\/([A-Za-z0-9_-]{1,128})\/?$/.exec(source.pathname)?.[1];
+        return id ? `https://codesandbox.io/embed/${id}` : null;
+    } },
+    { provider: 'codepen', hosts: ['codepen.io'], embed: source => {
+        const match = /^\/([A-Za-z0-9_-]{1,64})\/pen\/([A-Za-z0-9_-]{1,64})\/?$/.exec(source.pathname);
+        return match ? `https://codepen.io/${match[1]}/embed/${match[2]}?default-tab=result` : null;
+    } },
+    { provider: 'scratch', hosts: ['scratch.mit.edu'], embed: source => {
+        const id = /^\/projects\/([0-9]{1,20})\/?$/.exec(source.pathname)?.[1];
+        return id ? `https://scratch.mit.edu/projects/${id}/embed` : null;
+    } },
+    { provider: 'google-calendar', hosts: ['calendar.google.com'], embed: source =>
+        /^\/calendar\/(?:u\/[0-9]{1,3}\/)?embed\/?$/.test(source.pathname) ? `https://calendar.google.com${source.pathname}${source.search}` : null },
+    { provider: 'google-slides', hosts: ['docs.google.com'], embed: source => {
+        const id = /^\/presentation\/d\/([A-Za-z0-9_-]{1,128})(?:\/(?:edit|embed|pub))?\/?$/.exec(source.pathname)?.[1];
+        return id ? `https://docs.google.com/presentation/d/${id}/embed` : null;
+    } },
+    { provider: 'replit', hosts: ['replit.com'], embed: source => {
+        const match = /^\/@([A-Za-z0-9_.-]{1,64})\/([A-Za-z0-9_.-]{1,64})\/?$/.exec(source.pathname);
+        return match ? `https://replit.com/@${match[1]}/${match[2]}?embed=true` : null;
+    } },
+    { provider: 'felt', hosts: ['felt.com'], embed: source => {
+        const slug = /^\/map\/([A-Za-z0-9_.-]{1,200})\/?$/.exec(source.pathname)?.[1];
+        return slug ? `https://felt.com/embed/map/${slug}` : null;
+    } },
+    { provider: 'spotify', hosts: ['open.spotify.com'], embed: source => {
+        const match = /^\/(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]{1,64})\/?$/.exec(source.pathname);
+        return match ? `https://open.spotify.com/embed/${match[1]}/${match[2]}` : null;
+    } },
+    { provider: 'observable', hosts: ['observablehq.com'], embed: source => {
+        const match = /^\/@([A-Za-z0-9_-]{1,64})\/([A-Za-z0-9_-]{1,128})\/?$/.exec(source.pathname);
+        return match ? `https://observablehq.com/embed/@${match[1]}/${match[2]}` : null;
+    } },
+    { provider: 'desmos', hosts: ['www.desmos.com'], embed: source => {
+        const id = /^\/calculator\/([A-Za-z0-9_-]{1,64})\/?$/.exec(source.pathname)?.[1];
+        return id ? `https://www.desmos.com/calculator/${id}?embed` : null;
+    } },
+    { provider: 'tldraw', hosts: ['www.tldraw.com'], embed: source => {
+        const id = /^\/r\/([A-Za-z0-9_-]{1,128})\/?$/.exec(source.pathname)?.[1];
+        return id ? `https://www.tldraw.com/r/${id}?embed=true` : null;
+    } },
+];
 export function resolveEmbedCandidate(input: string, environment: UrlEnvironment, manifest?: EmbedManifest): EmbedCandidate | null {
     const origins = enabledOrigins(manifest); if (!origins) return null;
     const allowed = checkContentUrl(input, 'embed', environment); if (!allowed.ok) return null;
-    const source = new URL(allowed.url); let provider: EmbedCandidate['provider'], resource: string | null = null;
+    const source = new URL(allowed.url); let provider: EmbedProvider, url: string;
     if (source.origin === 'https://www.youtube.com' || source.origin === 'https://youtube.com') {
         provider = 'youtube';
+        let resource: string | null = null;
         if (source.pathname === '/watch') resource = source.searchParams.get('v');
-        else { const match = /^\/embed\/([A-Za-z0-9_-]{11})$/.exec(source.pathname); resource = match?.[1] ?? null; }
+        else resource = /^\/embed\/([A-Za-z0-9_-]{11})$/.exec(source.pathname)?.[1] ?? null;
+        if (!resource || !/^[A-Za-z0-9_-]{11}$/.test(resource)) return null;
+        url = `${YOUTUBE_ORIGIN}/embed/${resource}`;
     } else if (source.origin === 'https://youtu.be') {
-        provider = 'youtube'; resource = /^\/([A-Za-z0-9_-]{11})$/.exec(source.pathname)?.[1] ?? null;
-    } else if (source.origin === ORIGINS[0] && !source.search && !source.hash) {
-        provider = 'youtube'; resource = /^\/embed\/([A-Za-z0-9_-]{11})$/.exec(source.pathname)?.[1] ?? null;
+        provider = 'youtube';
+        const resource = /^\/([A-Za-z0-9_-]{11})$/.exec(source.pathname)?.[1];
+        if (!resource) return null;
+        url = `${YOUTUBE_ORIGIN}/embed/${resource}`;
+    } else if (source.origin === YOUTUBE_ORIGIN && !source.search && !source.hash) {
+        provider = 'youtube';
+        const resource = /^\/embed\/([A-Za-z0-9_-]{11})$/.exec(source.pathname)?.[1];
+        if (!resource) return null;
+        url = `${YOUTUBE_ORIGIN}/embed/${resource}`;
     } else if (source.origin === 'https://vimeo.com' || source.origin === 'https://www.vimeo.com') {
-        provider = 'vimeo'; resource = /^\/([0-9]{1,20})$/.exec(source.pathname)?.[1] ?? null;
-    } else if (source.origin === ORIGINS[1] && !source.search && !source.hash) {
-        provider = 'vimeo'; resource = /^\/video\/([0-9]{1,20})$/.exec(source.pathname)?.[1] ?? null;
-    } else return null;
-    if (!resource || (provider === 'youtube' && !/^[A-Za-z0-9_-]{11}$/.test(resource))) return null;
-    const origin = provider === 'youtube' ? ORIGINS[0] : ORIGINS[1];
-    if (!origins.includes(origin)) return null;
-    const url = provider === 'youtube' ? `${origin}/embed/${resource}` : `${origin}/video/${resource}`;
+        provider = 'vimeo';
+        const resource = /^\/([0-9]{1,20})$/.exec(source.pathname)?.[1];
+        if (!resource) return null;
+        url = `${VIMEO_ORIGIN}/video/${resource}`;
+    } else if (source.origin === VIMEO_ORIGIN && !source.search && !source.hash) {
+        provider = 'vimeo';
+        const resource = /^\/video\/([0-9]{1,20})$/.exec(source.pathname)?.[1];
+        if (!resource) return null;
+        url = `${VIMEO_ORIGIN}/video/${resource}`;
+    } else {
+        const rule = PROVIDERS.find(candidate => candidate.hosts.includes(source.hostname));
+        const embedded = rule ? rule.embed(source) : null;
+        if (!rule || !embedded) return null;
+        provider = rule.provider; url = embedded;
+    }
+    // The address the frame loads must sit on an origin this manifest enables, or the provider is not offered.
+    if (!origins.includes(new URL(url).origin)) return null;
     return Object.freeze({ provider, url });
 }
 export interface EmbedLease {

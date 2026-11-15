@@ -14,6 +14,8 @@ export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps,
     readonly lease: NativeViewLease;
     readonly confirm: (question: BoardQuestion) => Promise<boolean>;
     readonly canWrite: () => boolean;
+    /** One page's preview from the document's all-sheet print source (the notebook thumbnails). */
+    readonly capturePage: (index: number, maxSide: number, signal: AbortSignal) => Promise<Blob>;
     readonly notebook?: {
         readonly inverted: boolean;
         readonly setInverted: (value: boolean) => void;
@@ -23,7 +25,7 @@ export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps,
 }
 
 /** Logical sheet operations share the same session and owner-scoped confirmation as the chrome. */
-export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...props }: NativeBoardChromeHostProps) {
+export function NativeBoardChromeHost({ lease, confirm, canWrite, capturePage, notebook, ...props }: NativeBoardChromeHostProps) {
     const lang = useSyncExternalStore(props.language.subscribe, props.language.getSnapshot, props.language.getSnapshot);
     const { currentOwner } = props;
     const styleOwner = useCallback(() => currentOwner() && canWrite(), [currentOwner, canWrite]);
@@ -32,8 +34,6 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...p
         translate: (key, values) => translateBoard(lang.table, key, values), confirm, onError: props.reportError });
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const getRevision = useCallback(() => props.runtime.session.doc.rev, [props.runtime]);
-    const capturePng = useCallback((rect: Parameters<NativeViewLease['captureBlob']>[0], side: number, signal: AbortSignal) =>
-        lease.captureBlob(rect, side, signal), [lease]);
     const jump = useCallback((page: number) => lease.jump(page), [lease]);
     const host = props.runtime.session.doc.host;
     const stack = useMemo(() => boardPageStack(host), [host]);
@@ -54,7 +54,7 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...p
                     toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
             </div>}
         <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
-            current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
+            current={props.currentOwner} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={props.reportError}
             open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
             reorder={props.readOnly || host.kind !== 'notebook' ? undefined : (from, to) => {
                 try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }

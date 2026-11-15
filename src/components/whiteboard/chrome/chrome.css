@@ -6,6 +6,8 @@
     flex-direction: column;
     justify-content: space-between;
     pointer-events: none;
+    /* Cmd/Ctrl+A with a toolbar button focused painted every chrome label in selection blue. */
+    user-select: none;
 }
 
 .board-chrome-header > *,

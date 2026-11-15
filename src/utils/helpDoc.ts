@@ -434,7 +434,7 @@ nothing is selected. With exactly one picture selected, the same menu offers
 page it is embedded in that PDF), **Crop picture** with six presets,
 and **Invert picture**. A link card shows its address and, once fetched, its
 title and description; its **Fetch preview** chip contacts the link's site only
-when you ask, and **Open link** (or ⌘-click on the card) opens the address in a
+when you ask (its title, description, and the picture and icon the page declares, which are then kept in the board's pictures folder), and **Open link** (or ⌘-click on the card) opens the address in a
 new tab. With one link card selected the menu offers **Fetch link
 preview** too. A row that cannot
 run now stays on the menu and says why, such as a locked picture or a read-only

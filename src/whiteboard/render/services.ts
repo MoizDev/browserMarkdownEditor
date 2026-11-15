@@ -28,7 +28,7 @@ import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
 import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
 import { InkLodLadder } from './inkLodLadder';
-import { paintStrokeNode, paintVectorNode, paintVectorNodeNow } from './nodePaint';
+import { paintStrokeNode, paintVectorNode, paintVectorNodeNow, type PreviewMedia } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
 import { retainPaintNodeResources } from './resourceLeases';
@@ -38,6 +38,13 @@ import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
+/** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
+function previewMediaOf(doc: Pick<BoardDoc, 'media'>, node: Readonly<Node>): PreviewMedia | undefined {
+    if (node.kind !== 'linkcard' || !node.preview) return undefined;
+    return { image: node.preview.image ? doc.media.get(node.preview.image) : undefined,
+        favicon: node.preview.favicon ? doc.media.get(node.preview.favicon) : undefined };
+}
+
 
 interface Prepared {
     readonly key: string;
@@ -336,7 +343,7 @@ export function createBoardRenderServices(options: {
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
                         { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
-                            tiles: { deviceScale: request.deviceScale, world: request.world } });
+                            preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: request.world } });
                 return withAllocation(paint, geometry, context);
             },
         };
@@ -377,7 +384,8 @@ export function createBoardRenderServices(options: {
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : paintVectorNodeNow(node, geometry.vector!, context, palette, text.faces,
-                        { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                        { signal: itemSignal, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
+                            preview: previewMediaOf(doc, node) });
                 return withAllocation(paint, geometry, context);
             },
         }, signal);

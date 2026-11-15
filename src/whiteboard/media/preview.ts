@@ -5,7 +5,8 @@ import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: SEC-7 and media §11 explicit preview consent; independent bounded
 // CORS fetch and opaque metadata projection, no upstream engine source.
-export interface LinkPreviewResult { readonly title: string; readonly description: string }
+/** The page's own text, and the image and icon addresses it declares (not yet fetched); `page` is the URL the request was made to. */
+export interface LinkPreviewResult { readonly title: string; readonly description: string; readonly image: string; readonly icon: string; readonly page: string }
 /** Call only in response to the user's explicit Fetch preview action. */
 export async function fetchLinkPreview(options: {
     readonly url: string;
@@ -43,7 +44,7 @@ export async function fetchLinkPreview(options: {
         }
         chunks.push(decoder.decode());
         const metadata = await options.frame.metadata(chunks.join(''), signal); check();
-        return Object.freeze({ title: metadata.title, description: metadata.description });
+        return Object.freeze({ title: metadata.title, description: metadata.description, image: metadata.image, icon: metadata.icon, page: decision.url });
     } finally {
         if (reader) { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
         options.memory.release(lease);

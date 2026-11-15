@@ -7,6 +7,8 @@ import { createEmbed, createLinkcard } from '../model/nodes';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { fetchLinkPreview } from './preview';
+import { attachPreviewMedia, previewAddress, PREVIEW_ICON_BYTES, PREVIEW_IMAGE_BYTES, type PreviewRole } from './previewMedia';
+import type { StoreMedia } from './storage.types';
 import { resolveEmbedCandidate, type EmbedManifest } from './embed';
 
 // Provenance: media §10a/§11 card conversion and explicit preview consent;
@@ -41,6 +43,8 @@ export function convertMediaCard(options: {
 export function fetchCardPreview(options: {
     readonly runtime: BoardRuntime; readonly id: NodeId; readonly memory: MemoryAllocator;
     readonly environment: UrlEnvironment; readonly signal?: AbortSignal; current(): boolean;
+    /** The document's storage port for preview pictures; without it the card keeps its text and stores no picture. */
+    readonly storeMedia?: StoreMedia;
 }): Promise<void> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner;
     const node = doc.nodes.get(options.id);
@@ -68,10 +72,29 @@ export function fetchCardPreview(options: {
             check(); session.history.open('Fetch preview');
             try {
                 const applied = session.apply({ origin: 'host', label: 'Fetch preview', ops: [{ t: 'set', id: options.id, key: 'preview',
-                    value: { title: metadata.title ?? node.preview?.title ?? null, description: metadata.description ?? node.preview?.description ?? null,
+                    value: { title: metadata.title, description: metadata.description,
                         image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
                 applied.release();
             } finally { session.history.close(); }
         });
+        // The picture requests this explicit job may make: the declared preview image, then the icon (declared, else the
+        // site's /favicon.ico). Each is its own commit, so a failure keeps the title, description and whatever succeeded.
+        // Source: t21 ruling (A), which amends security.md §8.2 step 4 and E-SEC-6; only this explicit Fetch preview makes them.
+        const storage = options.storeMedia;
+        if (!storage) return;
+        const failures: string[] = [];
+        const picture = async (role: PreviewRole, address: string | null, limit: number) => {
+            if (!address) return;
+            try { await attachPreviewMedia({ runtime, memory: options.memory, storeMedia: storage, context, id: options.id, url: address, role, limit, current: options.current }); }
+            catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') throw error;
+                failures.push(`${role === 'image' ? 'The preview picture' : 'The icon'} was not saved: ${error instanceof Error ? error.message : 'unavailable'}.`);
+            }
+        };
+        const image = previewAddress(metadata.image, metadata.page, options.environment);
+        const icon = previewAddress(metadata.icon, metadata.page, options.environment, '/favicon.ico');
+        await picture('image', image, PREVIEW_IMAGE_BYTES);
+        await picture('favicon', icon, PREVIEW_ICON_BYTES);
+        if (failures.length) throw new Error(`Preview kept. ${failures.join(' ')}`);
     }, { signal: options.signal, deadlineMs: 5000 });
 }

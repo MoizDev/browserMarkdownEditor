@@ -113,7 +113,8 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
         if ((visited & 255) === 0 || performance.now() - sliceStart > 4) { await pause(); sliceStart = performance.now(); }
     };
     if (mode === 'metadata') {
-        let title = '', description = '', count = 0;
+        // The declared image and icon are only addresses here: the preview job resolves and fetches them, never this parser.
+        let title = '', description = '', ogImage = '', twitterImage = '', icon = '', count = 0;
         for (let child = doc.head.firstElementChild; child; child = child.nextElementSibling) {
             if (++count > SECURITY_LIMITS.htmlElements) throw new RangeError('Preview metadata is too complex');
             const tag = child.localName.toLowerCase();
@@ -121,9 +122,18 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
             if (!description && tag === 'meta' && (child.getAttribute('name') ?? '').toLowerCase() === 'description') {
                 description = (child.getAttribute('content') ?? '').trim().slice(0, 2000);
             }
+            if (tag === 'meta') {
+                const key = (child.getAttribute('property') ?? child.getAttribute('name') ?? '').trim().toLowerCase();
+                const content = (child.getAttribute('content') ?? '').trim().slice(0, 2048);
+                if (!ogImage && key === 'og:image' && content) ogImage = content;
+                if (!twitterImage && key === 'twitter:image' && content) twitterImage = content;
+            }
+            if (!icon && tag === 'link' && (child.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('icon')) {
+                icon = (child.getAttribute('href') ?? '').trim().slice(0, 2048);
+            }
             if ((count & 255) === 0) await pause();
         }
-        return { title, description };
+        return { title, description, image: ogImage || twitterImage, icon };
     }
     if (mode === 'markers') {
         let hasPrivate = false, payload: string | null = null, legacy: string | null = null;

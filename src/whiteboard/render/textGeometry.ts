@@ -35,6 +35,16 @@ export interface BoardTextGeometry {
 }
 /** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
 function cardPosterPad(zoom: number): number { return 12 / zoom; }
+/** A stored preview's favicon sits on the title's line, its own size and gap left of the text. */
+export const POSTER_FAVICON = 16, POSTER_FAVICON_GAP = 6, POSTER_FAVICON_INSET = POSTER_FAVICON + POSTER_FAVICON_GAP;
+/** The picture band at a card's top when a preview picture is stored: the top 55% of the card; the poster sits below it. */
+export const POSTER_IMAGE_SHARE = 0.55;
+export function posterImageHeight(node: Readonly<EmbedNode | LinkcardNode>): number {
+    return node.kind === 'linkcard' && node.preview?.image ? node.h * POSTER_IMAGE_SHARE : 0;
+}
+export function posterFaviconInset(node: Readonly<EmbedNode | LinkcardNode>): number {
+    return node.kind === 'linkcard' && node.preview?.favicon ? POSTER_FAVICON_INSET : 0;
+}
 /**
  * A card's poster: the title (a preview's title, else the provider or domain), a preview's description, and the address the
  * link names; an embed also says its content is not in the picture. The actions (Load, Stop, Fetch preview, Open link) are
@@ -47,11 +57,11 @@ function cardPosterRequest(node: Readonly<EmbedNode | LinkcardNode>, revision: s
     const lines = [preview?.title || title, ...(preview?.description ? [preview.description] : []), address,
         ...(node.kind === 'embed' ? ['Embedded content not included'] : [])];
     const paragraph = (text: string) => ({ kind: 'p' as const, level: 0 as const, dir: 'auto' as const, runs: [{ text, marks: {} }] });
-    const size = 14 / zoom, lineHeight = size * 1.3;
+    const size = 14 / zoom, lineHeight = size * 1.3, inset = posterFaviconInset(node);
     // Screen height is the world height times zoom; the line count is what that holds at this size, never less than one.
-    const linesThatFit = Math.max(1, Math.floor((node.h - 2 * pad) / lineHeight));
+    const linesThatFit = Math.max(1, Math.floor((node.h - posterImageHeight(node) - 2 * pad) / lineHeight));
     return { text: { blocks: lines.map(paragraph) },
-        revision, fontEpoch, width: Math.max(1, node.w - 2 * pad),
+        revision, fontEpoch, width: Math.max(1, node.w - 2 * pad - inset),
         style: { font: 'sans', size, ink: { swatch: 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
             padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow', maxLines: linesThatFit, ellipsis: true } };
 }
@@ -109,7 +119,7 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
         else if (node.kind === 'embed' || node.kind === 'linkcard') {
             // The poster's text sits at the card's bottom-left, inside the same pad the layout width leaves.
             const pad = cardPosterPad(requestOptions.zoom ?? 1);
-            x = pad; y = node.h - paint.box.h - pad;
+            x = pad + posterFaviconInset(node); y = node.h - paint.box.h - pad;
         }
         else if (node.kind === 'connector') {
             x = requestOptions.anchor!.x - paint.box.w / 2;

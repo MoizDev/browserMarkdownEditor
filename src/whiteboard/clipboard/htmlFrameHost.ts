@@ -29,7 +29,7 @@ export interface ClipboardHtmlFrameHost {
     markers(html: string, signal: AbortSignal): Promise<HtmlClipboardMarkers>;
     richHTML(html: string, signal: AbortSignal): Promise<RichFragment>;
     projectHTML(html: string, signal: AbortSignal): Promise<ClipboardHtmlProjection>;
-    metadata(html: string, signal: AbortSignal): Promise<Readonly<{ title: string; description: string }>>;
+    metadata(html: string, signal: AbortSignal): Promise<Readonly<{ title: string; description: string; image: string; icon: string }>>;
 }
 function markers(value: unknown, limit: number): HtmlClipboardMarkers {
     if (!value || typeof value !== 'object') throw new Error('Invalid clipboard marker response');
@@ -182,10 +182,13 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
             try {
                 signal.throwIfAborted();
                 if (!options.isCurrent(identity)) throw new DOMException('Preview became stale', 'AbortError');
-                const value = result.value as { title?: unknown; description?: unknown } | null;
-                if (!value || Object.keys(value).sort().join(',') !== 'description,title' || typeof value.title !== 'string' || value.title.length > 500
-                    || typeof value.description !== 'string' || value.description.length > 2000) throw new TypeError('Invalid preview metadata');
-                return Object.freeze({ title: value.title, description: value.description });
+                const value = result.value as { title?: unknown; description?: unknown; image?: unknown; icon?: unknown } | null;
+                if (!value || Object.keys(value).sort().join(',') !== 'description,icon,image,title' || typeof value.title !== 'string' || value.title.length > 500
+                    || typeof value.description !== 'string' || value.description.length > 2000
+                    || typeof value.image !== 'string' || value.image.length > 2048 || typeof value.icon !== 'string' || value.icon.length > 2048) {
+                    throw new TypeError('Invalid preview metadata');
+                }
+                return Object.freeze({ title: value.title, description: value.description, image: value.image, icon: value.icon });
             } finally { result.release(); }
         },
         async richHTML(html, signal) { const result = await projectHTML(html, signal);

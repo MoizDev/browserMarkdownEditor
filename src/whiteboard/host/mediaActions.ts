@@ -108,6 +108,6 @@ export function createMediaActions(options: MediaActionOptions): MediaActions {
         },
         setAlt(id, text) { commands.setAlt(id, text); },
         downloadOriginal(id) { commands.downloadOriginal(id); },
-        cardPreview(id) { return fetchCardPreview({ runtime, id, memory, environment, current }); },
+        cardPreview(id) { return fetchCardPreview({ runtime, id, memory, environment, current, ...(options.storeMedia ? { storeMedia: options.storeMedia } : {}) }); },
     };
 }

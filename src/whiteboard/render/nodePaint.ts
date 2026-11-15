@@ -9,12 +9,18 @@ import { resolveSwatch, type PaintPalette } from './colour';
 import { highlighterMaterials, inkMaterial, pathMaterial } from './material';
 import type { PaintClip, PaintImageItem, PaintItem, PaintNode, PaintPathItem, PaintTextItem } from './paintStream';
 import type { SceneResolveContext } from './sceneSource';
-import { textPaintMaterial } from './textGeometry';
+import { POSTER_FAVICON, POSTER_FAVICON_INSET, posterImageHeight, textPaintMaterial } from './textGeometry';
 import type { BoardVectorGeometry } from './vectorGeometry';
 
 function translated(matrix: Affine, x: number, y: number, scale = 1): Affine {
     return [matrix[0] * scale, matrix[1] * scale, matrix[2] * scale, matrix[3] * scale,
         matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+}
+/** A decoded picture's own size, scaled to fit a box and centred in it; the box's origin offsets the result. */
+export interface PreviewMedia { readonly image?: MediaEntry; readonly favicon?: MediaEntry }
+function fitted(entry: MediaEntry, w: number, h: number, origin = { x: 0, y: 0 }): { x: number; y: number; width: number; height: number } {
+    const scale = Math.min(w / entry.w, h / entry.h), width = entry.w * scale, height = entry.h * scale;
+    return { x: origin.x + (w - width) / 2, y: origin.y + (h - height) / 2, width, height };
 }
 function rectangle(w: number, h: number): readonly PathCommand[] {
     return [['M', 0, 0], ['L', w, 0], ['L', w, h], ['L', 0, h], ['Z']];
@@ -46,6 +52,8 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
         readonly signal: AbortSignal;
         /** The request's scale and view: a picture at a reduced mip draws its visible tiles; absent, it draws its whole image. */
         readonly tiles?: PictureTileRequest;
+        /** A link card's stored preview picture and favicon, when their media are present. */
+        readonly preview?: PreviewMedia;
     }): Generator<void, PaintNode> {
     const content: PaintItem[] = [], color = 'color' in node && node.color !== null ? node.color : 'grey';
     const base = { nodeId: node.id, geometryKey: geometry.key, localToWorld: context.world, clips: context.clips };
@@ -112,6 +120,19 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
             content.push(path(rectangle(node.w, node.h), 1, palette.background, 'grey'));
         }
     }
+    if (node.kind === 'linkcard' && options.preview) {
+        // A stored preview picture fills the card's top band, fitted and centred; its favicon sits on the title's line, left of the text.
+        const band = posterImageHeight(node), image = options.preview.image, favicon = options.preview.favicon, title = geometry.text[0];
+        if (image && band > 0) {
+            content.push({ ...base, kind: 'image', key: `${node.id}:preview:image:${image.id}`, imageKey: image.id, localToWorld: context.world,
+                clips: context.clips, rect: fitted(image, node.w, band), opacity: context.opacity, blend: 'normal', inverted: false });
+        }
+        if (favicon && node.preview?.favicon && title) {
+            content.push({ ...base, kind: 'image', key: `${node.id}:preview:favicon:${favicon.id}`, imageKey: favicon.id, localToWorld: context.world,
+                clips: context.clips, rect: fitted(favicon, POSTER_FAVICON, POSTER_FAVICON, { x: title.x - POSTER_FAVICON_INSET, y: title.y }),
+                opacity: context.opacity, blend: 'normal', inverted: false });
+        }
+    }
     for (let i = 0; i < geometry.text.length; i++) content.push(textItem(node, geometry.key, geometry.text[i], i, context, palette, faces));
     options.signal.throwIfAborted();
     return { content };
@@ -122,7 +143,7 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
 export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
-        readonly tiles?: PictureTileRequest;
+        readonly tiles?: PictureTileRequest; readonly preview?: PreviewMedia;
     }): Promise<PaintNode> {
     const job = vectorNodePaint(node, geometry, context, palette, faces, options);
     try {
@@ -136,7 +157,7 @@ export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVecto
 
 export function paintVectorNodeNow(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
-        readonly media?: MediaEntry; readonly signal: AbortSignal;
+        readonly media?: MediaEntry; readonly signal: AbortSignal; readonly preview?: PreviewMedia;
     }): PaintNode {
     const job = vectorNodePaint(node, geometry, context, palette, faces, options);
     try {

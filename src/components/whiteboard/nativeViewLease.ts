@@ -1,4 +1,5 @@
-import { getBoardPreferences } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { recordBoardPresentation } from './debugStats';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, fitWidthZ, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -346,7 +347,7 @@ export function createNativeViewLease(options: {
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
-        mac: /Mac|iPhone|iPad/.test(navigator.platform) });
+        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
     const paneId = `native-${identity.documentId}-${viewLease}`;
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
@@ -451,6 +452,7 @@ export function createNativeViewLease(options: {
                 navigation.onPresentation(presentation);
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
+                if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.

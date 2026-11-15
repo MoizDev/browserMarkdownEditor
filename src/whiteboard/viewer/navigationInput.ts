@@ -21,6 +21,8 @@ export interface BoardNavigationOptions {
     linkAt?(point: Point): (() => void) | null;
     contextMenu?(event: MouseEvent): void;
     readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean };
+    /** Preferences: whether the mouse wheel's zoom turn is inverted. */
+    readonly invertMouseZoom?: () => boolean;
 }
 interface Drag {
     id: number; origin: Point; last: Point; moved: boolean; secondary: boolean;
@@ -137,7 +139,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     surface.addEventListener('pointerdown', down); surface.addEventListener('pointermove', move);
     surface.addEventListener('pointerup', up); surface.addEventListener('pointercancel', cancel); surface.addEventListener('lostpointercapture', cancel);
     surface.addEventListener('contextmenu', menu); surface.addEventListener('dblclick', doubleClick); surface.addEventListener('auxclick', aux);
-    const stopWheel = installWheel(surface, { camera, paged: false, toSurface: point,
+    const stopWheel = installWheel(surface, { camera, paged: false, toSurface: point, invertZoom: () => options.invertMouseZoom?.() ?? false,
         owns: () => { if (!active()) return false; options.viewport(); cancelMotion(); return true; }, changed: () => { if (active()) options.changed(); } });
     const stopKeyboard = installKeyboard(surface, {
         visible: active, enabled: () => false, modalOpen: () => !!document.querySelector('[aria-modal="true"]') || !!options.keyboard?.modalOpen?.(),

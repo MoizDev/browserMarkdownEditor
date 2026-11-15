@@ -62,6 +62,12 @@ export function getBoardPreferences(): BoardPreferences {
     writeJSON(KEY, current);
     return current;
 }
+/** The inverted mouse-wheel zoom applies only while the Mouse input device is chosen: the Preferences row is disabled
+ * in Auto and Trackpad, where a wheel turn is not a mouse zoom gesture. */
+export function mouseZoomInverted(): boolean {
+    const preferences = getBoardPreferences();
+    return preferences.inputMode === 'mouse' && preferences.isZoomDirectionInverted;
+}
 export function updateBoardPreferences(patch: Partial<BoardPreferences>): BoardPreferences {
     const next = clamp({ ...getBoardPreferences(), ...patch });
     if (JSON.stringify(next) !== JSON.stringify(current)) {

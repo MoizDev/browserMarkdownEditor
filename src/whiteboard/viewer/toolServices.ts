@@ -60,6 +60,9 @@ export interface BoardToolServicesOptions {
         modalOpen(): boolean;
         isDirectPen(event: PointerEvent): boolean;
         ownsWheel(event: WheelEvent): boolean;
+        /** Preferences: the local Edge scrolling flag, and whether the mouse wheel's zoom turn is inverted. */
+        edgeScrolling(): boolean;
+        invertMouseZoom(): boolean;
         error(error: unknown): void;
         /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
         notice?(message: string): void;
@@ -167,6 +170,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             options.interaction.cameraChanged(); options.platform().animateZoom(target, centre);
         },
         zoomAt(anchor, factor) { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(camera.camera.z * factor), anchor); },
+        view: () => ({ camera: camera.camera, viewport: options.viewport() }),
+        setCamera(next) { options.platform().cancelMotion(); camera.setCamera(next); options.interaction.cameraChanged(); },
+        clampZoom: z => camera.clampZoom(z),
     };
     const textContext = {
         createText(x: number, y: number, width: number | null) { if (editable()) text.manager.create(x, y, width); },
@@ -214,6 +220,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     options.surface.addEventListener('paste', paste);
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
+        edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
         handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {

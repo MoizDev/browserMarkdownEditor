@@ -279,7 +279,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                             frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration);
                         }
                     } };
-                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision });
+                    // Readiness is this layer's own draw of the current generation. The main view's coverage poll
+                    // runs only when the main layers draw, which a gesture need not cause, so it cannot be the signal.
+                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
+                        onDrawn(_revision, drawn) { if (frameGenerations.get(drawn as PaintSource) === generation) settle(); } });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {

@@ -20,6 +20,7 @@ import { predictedTail, type PredictedPoint, type PredictionMapping } from './pr
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
+import { QuickOverview } from './quickOverview'
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
@@ -104,6 +105,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let completeTool = false
   let spaceHeld = false
   let zoomHeld = false
+  // F-TOOL-009: the quick overview is Shift pressed while Z is held. Shift pressed first is the direct zoom route, not this.
+  let shiftHeld = false
+  const overview = new QuickOverview(() => services.zoomBrush())
+  const trackShift = (held: boolean) => {
+    if (held === shiftHeld) return
+    shiftHeld = held
+    if (!zoomHeld) return
+    if (held) { if (!router.activeOwner) overview.enter() } else overview.leave()
+  }
   let temporaryPan = false
   let pendingPrediction: readonly PredictedPoint[] | undefined
   let suppressMenu = false
@@ -187,6 +197,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (event.type === 'pointerdown' && event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
+        // The overview's press lands the destination and returns to Draw while Z is still held: no gesture follows.
+        if (overview.active) { overview.leave(); zoomHeld = false; return null }
         const source = services.zoomBrush()
         const context = { ...source, toSurface: (point: RealSample) => sampleSurface(point, source.toSurface) }
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
@@ -290,7 +302,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const rememberPointer = (event: PointerEvent) => {
     if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) pointerClient = { x: event.clientX, y: event.clientY }
   }
-  const forgetPointer = () => { pointerClient = null }
+  const forgetPointer = () => { pointerClient = null; overview.track(null) }
   const doubleTap = new TouchDoubleTap({ doc: session.doc, camera: view.camera,
     eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
     changed: services.cameraChanged })
@@ -320,6 +332,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const move = (event: PointerEvent) => {
     rememberPointer(event)
+    if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) overview.track(view.clientToSurface(event.clientX, event.clientY))
     services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
@@ -452,8 +465,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     modalOpen: services.modalOpen, editing: services.editing,
     cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
-    modifierChanged: modifiers => pointer.modifiersChanged(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
+    modifierChanged: modifiers => { trackShift(modifiers.shift); pointer.modifiersChanged(modifiers) },
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
       if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
@@ -466,6 +479,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
       }
       if (id === 'escape') {
+        if (overview.active) { overview.escape(); zoomHeld = false; return true }
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
         if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
       }
@@ -510,7 +524,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return true
       }
       if (id === 'zoom.hold') { zoomHeld = true; return true }
-      if (id === 'zoom.release') { zoomHeld = false; return true }
+      if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
       if (id.startsWith('tool.') && editable()) {
         cancelContinuations(); services.cancelPendingGestures()
         const tool = id.slice(5)

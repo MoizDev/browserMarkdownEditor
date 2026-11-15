@@ -163,6 +163,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             options.interaction.cameraChanged(); options.platform().animateZoom(target, centre);
         },
         zoomAt(anchor, factor) { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(camera.camera.z * factor), anchor); },
+        view: () => ({ camera: camera.camera, viewport: options.viewport() }),
+        setCamera(next) { options.platform().cancelMotion(); camera.setCamera(next); options.interaction.cameraChanged(); },
+        clampZoom: z => camera.clampZoom(z),
     };
     const textContext = {
         createText(x: number, y: number, width: number | null) { if (editable()) text.manager.create(x, y, width); },

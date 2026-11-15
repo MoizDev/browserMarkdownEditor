@@ -1,4 +1,5 @@
 import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
+import { createBoardSelectionCommands } from '../../whiteboard/commands/selection';
 import { createPageMoveBackend } from '../../whiteboard/commands/moveSelectionPage';
 import { ungroupEligibility } from '../../whiteboard/commands/selection';
 import type { BoardLanguageState } from '../../whiteboard/chrome/language';
@@ -6,7 +7,9 @@ import { translateBoard } from '../../whiteboard/chrome/language';
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import type { NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
+import type { NodeId } from '../../whiteboard/model/ids';
 import type { KeyboardContextRequest } from '../../whiteboard/viewer/keyboardContext';
+import type { BoardContextMenuRequest } from '../../whiteboard/viewer/toolServices';
 import { contextEntries, type BoardCommand, type BoardCommandSource } from './chrome/boardCommands';
 import { localizeBoardChrome } from './chrome/localize';
 
@@ -20,9 +23,11 @@ export function createNativeBoardContextMenu(options: {
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly notice: (message: string) => void;
+    readonly zoom: () => number;
 }) {
     const { runtime } = options, session = runtime.session, backend = createPageMoveBackend(runtime);
-    const openAt = (point: { x: number; y: number }, opener: HTMLElement, expected?: KeyboardContextRequest['selection']) => {
+    const locks = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
+    const openAt = (point: { x: number; y: number }, opener: HTMLElement, expected?: KeyboardContextRequest['selection'], locked: NodeId | null = null) => {
         if (!options.current()) return;
         const selection = runtime.selection.getSnapshot(), revision = session.doc.rev;
         if (expected && expected !== selection) return;
@@ -45,6 +50,14 @@ export function createNativeBoardContextMenu(options: {
                     void pending.catch(error => options.notice(error instanceof Error ? error.message : String(error)));
                 } });
         }
+        // A locked node is never in the selection, so a secondary click targets it here (F-CTX-006): the row acts on that
+        // node alone and leaves the selection as it is, and opening the menu changes nothing.
+        const lockedId = locked !== null && session.doc.nodes.get(locked)?.locked ? locked : null;
+        if (lockedId !== null) extra.push({ kind: 'command', id: 'toggle-locked-target', label: labels.commandLabel('toggleLocked'),
+            disabled: !options.canWrite(), ...(!options.canWrite() ? { reason: 'Board view is read-only' } : {}), run() {
+                if (!options.current() || session.doc.rev !== revision || !options.canWrite()) { options.notice('The board changed; open the menu again.'); return; }
+                void locks.toggleLocked([lockedId]).catch(error => options.notice(error instanceof Error ? error.message : String(error)));
+            } });
         const pages = backend.targets().map(page => ({ id: page.id, label: page.label,
             enabled: page.enabled && options.canWrite(), ...(!page.enabled || !options.canWrite() ? { reason: page.reason ?? 'Board view is read-only' } : {}) }));
         const source = { ...options.commands, run: safeRun, sectionLabel: labels.contextSectionLabel,
@@ -64,11 +77,7 @@ export function createNativeBoardContextMenu(options: {
             lang: lang.locale, dir: lang.table.dir, entries: contextEntries(source) });
     };
     return {
-        pointer(event: MouseEvent) {
-            event.preventDefault();
-            const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
-            if (opener instanceof HTMLElement) openAt({ x: event.clientX, y: event.clientY }, opener);
-        },
+        pointer(request: BoardContextMenuRequest) { openAt(request.point, request.opener, undefined, request.locked); },
         keyboard(request: KeyboardContextRequest) { openAt(request.client, request.opener, request.selection); },
     };
 }

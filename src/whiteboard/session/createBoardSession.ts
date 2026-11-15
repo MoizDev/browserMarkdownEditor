@@ -248,7 +248,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             // Capturing committed content is not an edit: native acquisition needs
             // its R0 checkpoint while the temporary admission seal is still set.
             // Read-only capture must not try to finish an uncommitted user gesture.
-            try { if (!readonlyReason()) scheduler.flushNow(); return capture(); }
+            // An autosave checkpoint can land mid-drag: finishing the gesture here cancelled every live
+            // Select/Eraser drag (seen in the app). Hide, close and unmount finish gestures on their own path.
+            try { if (!readonlyReason()) scheduler.flushCommitted(); return capture(); }
             finally { notifyPending(); }
         },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {

@@ -11,6 +11,7 @@ import type { SessionDenseRasters } from './sessionDenseRasters';
  * at the moment of publication, so a font epoch that moved mid-stream withdraws the raster variant. */
 export interface ScenePaintNodeStream {
     readonly token: RenderToken;
+    readonly theme: 'light' | 'dark';
     readonly sceneRevision: number;
     readonly sourceDoc: BoardDoc;
     readonly sensitiveNodes: ReadonlySet<NodeId>;

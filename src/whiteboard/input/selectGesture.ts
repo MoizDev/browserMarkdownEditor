@@ -62,8 +62,10 @@ class BoardSelectGesture implements GestureOwner {
     }
 
     private valid(): boolean {
+        // The fence guards the hit/marquee decision. A running transform republishes the selection
+        // snapshot as it moves; it owns its own validity, and the fence cancelled every drag-move.
         return !this.cleaned && !this.controller.signal.aborted && this.context.isCurrent()
-            && this.context.selection.getSnapshot() === this.selectionFence;
+            && (this.transform !== null || this.context.selection.getSnapshot() === this.selectionFence);
     }
     private cleanup(): void {
         if (this.cleaned) return;

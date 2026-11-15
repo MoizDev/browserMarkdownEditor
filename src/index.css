@@ -2118,7 +2118,7 @@ body.is-resizing-panes * {
    a reader's .pdf-viewer-controls, top 49px up (16px + 33px), and a board's
    bottom row (zoom and minimap toggles), top 54px up (8px inset + 46px). 62px
    clears the higher of the two by 8px. A visible whiteboard minimap stands
-   above that row, 16px up and 142px tall (140px + its border), so the notice
+   above that row, 62px up and 142px tall (140px + its border), so the notice
    goes above it too, with the same 8px gap. Only the minimap-open case needs
    :has(): it is the one board pill whose height varies. It turns up there only
    for a transient message ("Saved", a trash notice) or while a markdown pane
@@ -2129,7 +2129,7 @@ body.is-resizing-panes * {
 }
 
 .editor-pane:has(.native-minimap) .status-bar.is-lifted {
-  bottom: 166px;
+  bottom: 212px;
 }
 
 .status-bar-item {

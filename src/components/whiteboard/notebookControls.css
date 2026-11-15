@@ -32,6 +32,7 @@
 }
 
 .board-paper-controls {
+    font: -webkit-small-control;
     flex-wrap: wrap;
     align-items: center;
     max-width: 100%;

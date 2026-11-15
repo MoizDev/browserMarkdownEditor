@@ -73,6 +73,7 @@ export interface PaintNode {
 export interface PaintNodeSource {
     /** The actual immutable source document, never the session's newer live model. */
     readonly sourceDoc?: BoardDoc;
+    readonly theme?: 'light' | 'dark';
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     /** All contributors inside this region are present; absent means the whole sheet. */
@@ -88,6 +89,9 @@ import type { PaintWindow } from './paintWindows';
 
 /** Identity, revision and metadata that every paint source carries, whatever its item representation. */
 export interface PaintFrameRoot {
+    /** The theme a view's frame was painted for: a frame of the other theme is a different picture at the same
+     * revision. Absent for frames no view request produced (export, paper, wet ink), which no view presents. */
+    readonly theme?: 'light' | 'dark';
     readonly sourceDoc?: BoardDoc;
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;

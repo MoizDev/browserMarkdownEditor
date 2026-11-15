@@ -26,6 +26,7 @@ interface Block { readonly owner: MemoryAllocator; readonly lease: ByteLease }
  * release, and whether the scene behind it is still current. */
 interface Owner {
     readonly token: RenderToken;
+    readonly theme?: 'light' | 'dark';
     readonly sceneRevision: number;
     readonly sourceDoc?: BoardDoc;
     readonly sensitiveNodes?: ReadonlySet<string>;
@@ -74,6 +75,7 @@ interface Published {
 function syncOwner(pin: PinnedPaintSource): Owner {
     return {
         get token() { return pin.source.token; },
+        get theme() { return pin.source.theme; },
         get sceneRevision() { return pin.source.sceneRevision; },
         get sourceDoc() { return pin.source.sourceDoc; },
         get sensitiveNodes() { return pin.source.sensitiveNodes; },
@@ -88,6 +90,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
     const stream = pin.stream;
     return {
         get token() { return stream.token; },
+        get theme() { return stream.theme; },
         get sceneRevision() { return stream.sceneRevision; },
         get sourceDoc() { return stream.sourceDoc; },
         get sensitiveNodes() { return stream.sensitiveNodes; },
@@ -240,7 +243,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const publish = (work: Staging) => {
         const o = work.owner, staged = work.items;
         const root = { token: o.token, sceneRevision: o.sceneRevision,
-            sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
+            theme: o.theme, sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
             regionChangesSince: o.regionChangesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
             inkNodeIds: work.inkNodeIds };

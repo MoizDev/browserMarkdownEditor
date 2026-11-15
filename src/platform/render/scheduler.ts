@@ -622,8 +622,12 @@ export class FrameScheduler {
             // Prepare always keeps a floor. Presentation of an uncached board is what prepared tiles make cheap, so a
             // slice derived from the last presentation alone fell to zero and stayed there: measured on ~3,600 strokes,
             // presentation took the whole 4 ms target, prepare never ran and the board showed "Updating..." for good.
-            const prepareMs = Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
-                targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
+            // A pane building its first picture has nothing presented to encode, so that share is its preparation's: a
+            // dense first picture was paced at about 1 ms of preparation per frame and took seconds to appear.
+            const urgent = work.some(item => this.call(item.entry, () => item.entry.layers.some(layer => layer.prepareUrgent?.() === true)) === true);
+            const prepareMs = urgent ? Math.max(targetMs * PREPARE_FLOOR_FRACTION, targetMs - elapsedInput - this.maintenanceMs)
+                : Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
+                    targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
             const prepareDeadline = performance.now() + prepareMs;
             meter.deadline = performance.now() + meter.sliceMs;
             const criticalOrder = this.rotate(work, this.criticalCursor++);

@@ -170,8 +170,24 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     // A refused run backs off, and first marks the pane demand dirty: the next retry, after the window, sees the re-declared grant.
     const refuse = (): void => { gate.refused(); host.demandChanged?.(); };
     let lastFrame = -1;
-    // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
-    let failedFrame: PaintSource | null = null;
+    // A tile job that fails is retried on its frame after a back-off (250, 500 ms), MAX_TILE_FAILURES tries in all. After
+    // the last one the frame draws direct (`gaveUp`) and waits 2 s before a fresh cycle. A new frame starts over.
+    const MAX_TILE_FAILURES = 3;
+    let failureFrame: PaintSource | null = null, failures = 0, retryAt = 0, retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearRetry = (): void => { if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; } };
+    const inBackoff = (): boolean => failureFrame !== null && performance.now() < retryAt;
+    const tileFailed = (p: Plan): void => {
+        if (failureFrame === p.source) failures++;
+        else { failureFrame = p.source; failures = 1; }
+        retire(p); staged = null;
+        clearRetry();
+        // After the last try the frame waits longer, then starts a fresh cycle: direct may be refused for memory, so
+        // dense must keep retrying rather than leave the board without a picture.
+        const exhausted = failures >= MAX_TILE_FAILURES;
+        const wait = exhausted ? 2000 : 250 * 2 ** (failures - 1);
+        retryAt = performance.now() + wait;
+        retryTimer = setTimeout(() => { retryTimer = null; if (exhausted) failures = 0; if (!disposed) resources.invalidate(); }, wait);
+    };
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased + (p.windowLease?.bytes ?? 0);
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
@@ -376,7 +392,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             }
             p.job.prepare(view, budget);
             if (p.job.blocked) refuse();
-            if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
+            if (p.job.failed) { tileFailed(p); return; }
             if (p.job.stopped) { retire(p); staged = null; return; }
             if (!p.job.isComplete && !p.job.isEmpty) return;
             const job = p.job, pending = p.summaryCache!, target = p.summaries[p.summaryIndex];
@@ -436,12 +452,13 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             }
         }
         p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal, p.resolved),
-            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
+            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, eager: () => ready === null, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
-            host, onError: report });
+            // A failed tile is retried by tileFailed; reporting it would turn one transient open into a fatal canvas error.
+            host, onError: error => { if (!p.job?.failed) report(error); } });
         p.job.prepare(view, budget);
         if (p.job.blocked) refuse();
-        if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
+        if (p.job.failed) { tileFailed(p); return; }
         if (p.job.stopped) { retire(p); staged = null; return; }
         if (!p.job.isComplete && !p.job.isEmpty) return;
         const job = p.job, pending = p.cache;
@@ -543,6 +560,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         /** On return from a hidden pane: drops the bitmaps the view cannot draw before any plan is made. False when
          * the frame has no session to drop from yet, so the caller asks again on a later prepare. */
         dropUnused(view: ViewState): boolean;
+        /** True once this frame's tile jobs failed the bounded number of times: the layer draws that frame direct. */
+        gaveUp(frame: PaintSource): boolean;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {
             if (disposed || lastFrame === budget.frameId) return;
@@ -551,8 +570,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (gate.closed()) { denied = true; return; }
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) { retire(staged); staged = null; return; }
-            if (frame !== failedFrame) failedFrame = null;
-            else { retire(staged); staged = null; return; }
+            if (frame !== failureFrame) { failureFrame = null; failures = 0; }
+            else if (failures >= MAX_TILE_FAILURES || performance.now() < retryAt) { retire(staged); staged = null; return; }
             const key = projection(view);
             if (staged && (staged.source !== frame || staged.view !== key || !supportsLive(staged, liveNodes))) { retire(staged); staged = null; }
             const matches = ready?.source === frame && ready.view === key && supportsLive(ready, liveNodes);
@@ -677,7 +696,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {
-            if (disposed || denied || staged?.blocked) return false;
+            if (disposed || denied || staged?.blocked || inBackoff()) return false;
             // A plan drawn with standins because memory was denied waits for the next invalidation instead of spinning.
             if (!staged) return !!ready && !ready.sharp && ready.standins === 0;
             if (staged.job) return staged.job.needsFrame();
@@ -687,7 +706,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         release(reason: GpuReleaseReason) {
             if (reason === 'context-lost') return;
-            drop(staged); drop(ready); staged = ready = null; lastFrame = -1; denied = false;
+            clearRetry(); drop(staged); drop(ready); staged = ready = null; lastFrame = -1; denied = false;
         },
         reclaim(bytes) {
             const view = lastView, session = !disposed && view ? sessionOf() : null;
@@ -701,7 +720,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), Number.MAX_SAFE_INTEGER) > 0) host.demandChanged?.();
             return true;
         },
-        dispose() { if (!disposed) { disposed = true; drop(staged); drop(ready); staged = ready = null; } },
+        gaveUp(frame: PaintSource): boolean { return !disposed && failureFrame === frame && failures >= MAX_TILE_FAILURES; },
+        dispose() { if (!disposed) { disposed = true; clearRetry(); drop(staged); drop(ready); staged = ready = null; } },
     };
     return adapter;
 }

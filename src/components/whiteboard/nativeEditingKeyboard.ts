@@ -75,7 +75,8 @@ export function createNativeEditingKeyboard(options: {
             case 'accessibility.repeat': return options.lease.editing?.repeatAnnouncement() ?? false;
             case 'preferences.theme': {
                 const theme = getBoardPreferences().colorScheme;
-                const dark = theme === 'system' ? matchMedia('(prefers-color-scheme: dark)').matches : theme === 'dark';
+                // System follows the app theme (absent data-theme = dark), the same resolution the pane draws with.
+                const dark = theme === 'system' ? document.documentElement.getAttribute('data-theme') !== 'light' : theme === 'dark';
                 updateBoardPreferences({ colorScheme: dark ? 'light' : 'dark' }); return true;
             }
             case 'preferences.focus': case 'preferences.grid': {

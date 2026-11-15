@@ -167,8 +167,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const live = new LiveNodeUnion(frame.sensitiveNodes, omit, wet);
         liveSets.set(frame, { omit, wet, live }); return live;
     };
+    /** Segment count at which a direct cache was refused; null while direct drawing fits. */
+    let deniedDirectSegments: number | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
-    let missingKey: string | null = null;
+    const replacementAsked = new WeakSet<PaintSource>();
     let presented: PaintSource | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
@@ -329,7 +331,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
+        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
@@ -389,19 +391,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
             if (!!frame.liveOnly !== useDense && frame.openTile) return;
             if (useDense && frame.liveOnly) {
-                const live = liveFor(frame), missing: string[] = [];
-                if (live) for (const id of live) if (!frame.sensitiveNodes?.has(id)) missing.push(id);
-                if (missing.length) {
-                    // Requested once per distinct missing set; a request is never repeated per prepare.
-                    const key = missing.join('\n');
-                    if (key !== missingKey) { missingKey = key; options.requestFrame?.(); }
-                    return;
-                }
-                missingKey = null;
+                const live = liveFor(frame);
+                let missing = false;
+                if (live) for (const id of live) if (!frame.sensitiveNodes?.has(id)) { missing = true; break; }
+                // A frame missing live nodes asks for its replacement ONCE per frame and still draws: returning
+                // here and re-asking on every changed missing set restarted the build each frame and froze a
+                // 3,500-item board on its last picture. The missing nodes appear with the replacement frame.
+                if (missing && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
             }
             startEstimate(frame);
             while (!estimate!.done && !budget.shouldYield()) estimateStep(estimate!);
-            if (!estimate!.done) return;
+            // An estimate split across frames must ask for the next one: nothing else wakes a still view
+            // (seen: a 3,500-item board froze in 'building' after switching to dense).
+            if (!estimate!.done) { allocatorHost!.invalidate('board-estimate-continue'); return; }
             // Initial operation-count defaults; the owner defers binding calibration, not the hierarchy.
             // Dense tiles are streamed from the frame's own pin; a frame that cannot reopen its stream stays direct.
             // The index count is the same for a dense and a direct frame, so the mode cannot oscillate
@@ -411,7 +413,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const observed = density.observe({ frameId: budget.frameId, now: performance.now(),
                 candidateSegments: segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
                 estimatedGpuMs: segments * .00004 + items * .0001 });
-            const mode = frame.openTile ? observed : 'direct';
+            // A direct cache the memory grant refused cannot draw at all: the dense path streams bounded tiles
+            // instead (seen: 160+ strokes stayed 'waiting for memory' forever, frozen picture, no redraw).
+            // It returns to direct once the scene's estimate is well under what was refused.
+            // Measured on the index count, which a live-only dense frame shares with a direct one (its own estimate is tiny).
+            if (deniedDirectSegments !== null && !frame.liveOnly && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
+            // A live-only frame is the kind dense mode itself requests; it carries no tile stream of its own.
+            const mode = useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
+                : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
                 if (useDense) {
@@ -433,7 +442,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 const bytes = estimate!.bytes;
                 if (bytes) {
                     const lease = allocatorHost!.allocator.cpu.reserve(bytes);
-                    if (!lease) { denied = true; return; }
+                    if (!lease) {
+                        denied = true;
+                        if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
+                        return;
+                    }
                     reservations.set(frame, [lease]); reserved += lease.bytes;
                 } else reservations.set(frame, []);
             }

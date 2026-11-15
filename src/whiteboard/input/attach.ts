@@ -107,6 +107,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let temporaryPan = false
   let pendingPrediction: readonly PredictedPoint[] | undefined
   let suppressMenu = false
+  // macOS Chrome fires contextmenu on the right-button PRESS, before a drag can show it was a pan
+  // (seen: right-drag opened the menu and never panned). While that press is live the menu waits and
+  // opens on release only if the press never became a drag (F-INPUT-012).
+  let secondaryLive = false
+  let deferredMenu: MouseEvent | null = null
   const touchAdmission = new Map<number, boolean>()
   const pendingContinuations = new Set<() => void>()
   const cancelContinuations = (): boolean => {
@@ -140,8 +145,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
             if (dragging) pan.update([point], nextModifiers)
           }
         },
-        finish: reason => pan.finish(reason), cancel: reason => pan.cancel(reason),
+        finish: reason => {
+          secondaryLive = false
+          const menu = deferredMenu; deferredMenu = null
+          try { pan.finish(reason) } finally { if (menu && reason === 'up' && !dragging) services.contextMenu?.(menu) }
+        },
+        cancel: reason => { secondaryLive = false; deferredMenu = null; pan.cancel(reason) },
       }
+      secondaryLive = true; deferredMenu = null
       return owner
     },
   }
@@ -249,7 +260,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
-    contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
+    contextMenu: event => { if (suppressMenu) suppressMenu = false; else if (secondaryLive) deferredMenu = event; else services.contextMenu?.(event) },
     error: services.error,
   })
   let cancelKeyboardGesture = () => false

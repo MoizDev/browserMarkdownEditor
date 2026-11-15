@@ -86,7 +86,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             // Layer attachment briefly pauses platform input. Recreating the embed
             // layer on that pause caused an attach/remove/render loop in the real app.
             // These services belong to the DOM view, not each enable/disable pulse.
-            if (tools && toolSurface === surface && toolOverlay === overlay) return tools.services;
+            if (tools && toolSurface === surface && toolOverlay === overlay) {
+                accessible?.refresh();
+                return tools.services;
+            }
             disposeTools();
             toolSurface = surface; toolOverlay = overlay;
             binding = options.bindClipboard(surface);

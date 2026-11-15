@@ -38,8 +38,14 @@ export function createBoardViewCamera(options: {
     const initialCamera = drawing && sheet ? { x: drawing.x, y: drawing.y, z: drawing.z } : { x: 0, y: 0, z: 1 };
     const camera = new CameraController(initialCamera, options.initialViewport,
         stack ? pagedConstraint(stack, limits, insets) : freeConstraint(limits));
+    let pendingDrawing = drawing && sheet ? initialCamera : undefined;
     let timer: ReturnType<typeof setTimeout> | undefined, dirty = false, disposed = false;
     const restore = () => {
+        // The first 0→measured resize preserves the old viewport's centre.
+        // Reapply the stored top-left afterwards, or reopening shifts by half a pane.
+        if (pendingDrawing && camera.viewport.width > 0 && camera.viewport.height > 0) {
+            camera.setCamera(pendingDrawing); pendingDrawing = undefined;
+        }
         if (!pending || !stack) return;
         const next = cameraForPagedPosition(pending, camera.viewport, stack, insets, limits);
         if (!next) return;
@@ -60,7 +66,7 @@ export function createBoardViewCamera(options: {
         if (disposed) return;
         try {
             const currentPath = ports?.currentPath();
-            if (currentPath && !pending) {
+            if (currentPath && !pending && !pendingDrawing) {
                 if (doc.kind === 'whiteboard') {
                     const selected = runtime.selection.getSnapshot().sheet;
                     if (doc.sheets.has(selected)) writeNativeDrawingViewPos(currentPath,

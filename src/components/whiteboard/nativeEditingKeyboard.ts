@@ -64,8 +64,8 @@ export function createNativeEditingKeyboard(options: {
             case 'camera.reset': return runAction('zoomTo100');
             case 'camera.fit': return runAction('zoomToFit');
             case 'camera.selection': return runAction('zoomToSelection');
-            case 'camera.zoomInCursor': return options.camera.zoomAtCursor(1.2);
-            case 'camera.zoomOutCursor': return options.camera.zoomAtCursor(1 / 1.2);
+            case 'camera.zoomInCursor': return options.camera.zoomAtCursor(1);
+            case 'camera.zoomOutCursor': return options.camera.zoomAtCursor(-1);
             case 'media.insert': return runAction('uploadMedia');
             case 'help.shortcuts': return options.openShortcuts();
             case 'accessibility.repeat': return options.lease.editing?.repeatAnnouncement() ?? false;

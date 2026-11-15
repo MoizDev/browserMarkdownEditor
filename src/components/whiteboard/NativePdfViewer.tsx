@@ -209,9 +209,9 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
                     const page = event.currentTarget.valueAsNumber;
                     if (Number.isFinite(page) && pages) lease.jump(Math.max(0, Math.min(pages - 1, Math.floor(page) - 1)));
                 }} /> / {pages}</label>
-                <button type="button" onClick={() => lease.zoomBy(1 / 1.2)} aria-label="Zoom out">−</button>
+                <button type="button" onClick={() => lease.zoomStep(-1)} aria-label="Zoom out">−</button>
                 <span>{Math.round(navigation.zoom * 100)}%</span>
-                <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
+                <button type="button" onClick={() => lease.zoomStep(1)} aria-label="Zoom in">+</button>
                 <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
             </div>}</>} />}
         {cover && <div className="native-pdf-updating" role={reason ? 'alert' : 'status'} style={{ position: 'absolute', inset: 0,

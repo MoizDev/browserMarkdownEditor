@@ -61,6 +61,9 @@ export default defineConfig({
     // after mount changed React's shared-chunk URL; NativePdfEntry then used
     // a second dispatcher while React DOM still held the original module.
     // Pre-optimization does not fetch these lazy workers in the browser.
-    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell'],
+    // harfbuzzjs is reached only by board PNG/SVG export; found late, Vite
+    // reloaded the page mid-export and the PDF reopened in Original (cold dev
+    // server, 3 of 3 first runs; 0 of 15 once optimized).
+    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell', 'harfbuzzjs'],
   },
 })

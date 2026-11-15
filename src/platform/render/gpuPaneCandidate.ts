@@ -95,9 +95,11 @@ export class GpuPaneCandidate {
                 },
                 invalidate: this.options.invalidate,
                 onError: error => defer(() => {
-                    try { this.options.onError(error); }
+                    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+                    // Budget and allocation refusals are handled by falling back below; raising them to the pane's owner
+                    // replaced a whole board with 'Could not open canvas: out-of-budget' instead of drawing it in 2D.
+                    try { if (code !== 'out-of-budget' && code !== 'allocation') this.options.onError(error); }
                     finally {
-                        const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
                         this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
                             code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
                     }

@@ -133,7 +133,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu',
                 kind: definition.liveInput ? 'live-input' : 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
-                evict: queueTrim });
+                evict: () => {
+                    // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back.
+                    const layer = current();
+                    if (!layer || disposed || !visible) { queueTrim(); return; }
+                    queueMicrotask(() => {
+                        if (disposed || !visible || current() !== layer) return;
+                        lifecycle?.releaseLayerGpu(layer, 'pressure');
+                        lifecycle?.invalidate('budget');
+                    });
+                } });
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({

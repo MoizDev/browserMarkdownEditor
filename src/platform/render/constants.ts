@@ -71,6 +71,8 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     decodedRgbaBytesPerPixel: 4,
     memorySoftPressureRatio: 0.9,
     memoryTrimTargetRatio: 0.8,
+    /** Most of the GPU pool a live gesture's working set (wet ink) may hold; it is never trimmed while held. */
+    liveInputGpuFraction: 0.25,
     qualityReductionFactor: 0.8,
     minInteractiveQualityScale: 0.5,
     memoryRecoveryRatio: 0.6,

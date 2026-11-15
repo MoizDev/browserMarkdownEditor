@@ -563,7 +563,9 @@ export class MemoryGovernor {
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
         if (pool === 'gpu' && !grant?.pixelGrant) return false;
-        if (kind === 'live-input') return true;
+        // Bounded by the pool, not the pane grant, but never more than a quarter of it: one stroke's 46 MB of wet tiles held
+        // the pool over target and trimmed every other cache each frame.
+        if (kind === 'live-input') return this.kindBytes('live-input') + bytes <= this.target[pool] * POLICY.liveInputGpuFraction;
         if (pool === 'cpu' && (cache.activity.hiddenAt !== null || !pane?.visible)) return true;
         if (!grant) return false;
         const limit = kind === 'surface' ? grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel :
@@ -693,7 +695,7 @@ export class MemoryGovernor {
         const evictionClass = (cache: CacheRecord): MemoryClass => cache.registration.kind === 'mirror' && cache.activity.hiddenAt !== null ?
             'hidden-mirror' : cache.registration.class;
         const candidates = [...this.caches.values()].filter(cache => cache.registration.pool === pool &&
-            evictionClass(cache) !== 'critical' && cache.bytes > 0 &&
+            evictionClass(cache) !== 'critical' && cache.bytes > 0 && cache.registration.kind !== 'live-input' &&
             (evictionClass(cache) !== 'hidden-mirror' || cache.activity.hiddenAt !== null) &&
             (cache.registration.kind !== 'context' || cache.registration.paneId === undefined || cache.activity.hiddenAt !== null))
             .sort((a, b) => order.indexOf(evictionClass(a)) - order.indexOf(evictionClass(b)) ||

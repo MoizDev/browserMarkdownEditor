@@ -77,8 +77,8 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         if (!target.pointer) throw new RangeError('Drop placement requires its captured world point');
         centre = target.pointer;
     } else if (intent === 'duplicate') {
-        const offset = 16 / cameraZoom;
-        centre = { x: sourceCentre.x + offset, y: sourceCentre.y + offset };
+        // Duplicate steps right by the selection's width plus a 10-unit gap, in world units (spec F-ARR-005: 190 then 280).
+        centre = { x: sourceCentre.x + bounds.w + 10, y: sourceCentre.y };
     } else if (cursor) centre = target.pointer ?? viewportCentre;
     // Plain paste lands in the view, never over its source: in place is the inverted (⌥) paste's own result.
     else if (inverted && same && inside) { centre = sourceCentre; preserve = true; }

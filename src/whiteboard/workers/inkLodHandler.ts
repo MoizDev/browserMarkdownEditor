@@ -2,7 +2,7 @@ import type { WorkerContext } from '../../platform/workers';
 import { inkCoverage } from './inkCoverageHandler';
 import { reportBoardMemory } from './boardMemory';
 import { nestedInkLod } from './inkLodNested';
-import { nestedInkLodGroups } from './inkLodGroups';
+import { nestedInkLodGroups, type DerivedLod } from './inkLodGroups';
 import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
 
 export async function inkLod(payload: unknown, context: WorkerContext): Promise<unknown> {
@@ -26,11 +26,13 @@ export async function inkLod(payload: unknown, context: WorkerContext): Promise<
         for (const buffer of input) bytes += buffer.byteLength;
         reportBoardMemory(context, owner, bytes);
         context.signal.throwIfAborted();
-        let result: Awaited<ReturnType<typeof nestedInkLod>> = null;
+        let result: DerivedLod | null = null;
         try {
             const memory = (scratch: number) => reportBoardMemory(context, owner, bytes + scratch);
-            result = await nestedInkLod(fine, request, chunkCount, context, memory)
-                ?? await nestedInkLodGroups(fine, request, chunkCount, context, memory);
+            const uniform = await nestedInkLod(fine, request, chunkCount, context, memory);
+            result = uniform ? { segments: uniform.coverage.segments, centreErrorWorld: uniform.coverage.centreErrorWorld,
+                certificate: uniform.certificate }
+                : await nestedInkLodGroups(fine, request.options.deviceScale, chunkCount, context, memory);
         } catch (error) {
             context.signal.throwIfAborted();
             if (error instanceof DOMException && error.name === 'AbortError') throw error;
@@ -40,7 +42,8 @@ export async function inkLod(payload: unknown, context: WorkerContext): Promise<
             context.transfer(...buffers);
             return { coverage: fine, level: 'fine', certificate: null };
         }
-        context.transfer(...buffers.filter(buffer => buffer !== fine.segments.buffer), result.coverage.segments.buffer as ArrayBuffer);
-        return { coverage: result.coverage, level: 'coarse', certificate: result.certificate };
+        context.transfer(...buffers.filter(buffer => buffer !== fine.segments.buffer), result.segments.buffer as ArrayBuffer);
+        return { coverage: { ...fine, segments: result.segments, centreErrorWorld: result.centreErrorWorld },
+            level: 'coarse', certificate: result.certificate };
     } finally { reportBoardMemory(context, owner, null); }
 }

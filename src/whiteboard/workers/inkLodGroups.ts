@@ -1,6 +1,12 @@
 import type { WorkerContext } from '../../platform/workers';
-import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
-import type { NestedLodResult } from './inkLodNested';
+
+/** A certified chain to derive from: the fine samples, or an earlier derived level of the same stroke. */
+export interface DerivableLod { readonly segments: Float64Array; readonly centreErrorWorld: number; readonly radiusErrorWorld: number }
+export interface DerivedLod {
+    readonly segments: Float64Array;
+    readonly centreErrorWorld: number;
+    readonly certificate: Readonly<{ areaBoundWorld: number; referenceLowerWorld: number }>;
+}
 
 /** General nested LOD for ANY continuous run of endpoint-disc hulls: pressure (varying radius),
  * curves (flattened), dashes (runs split at gaps), constant-radius runs. A block of consecutive rows
@@ -92,9 +98,9 @@ function certifyBlock(s: Float64Array, first: number, end: number, E: number): B
     return { accepted: Number.isFinite(area), area, work };
 }
 
-export async function nestedInkLodGroups(fine: InkCoverageReply, request: InkCoverageRequest, chunkCount: number,
-    context: WorkerContext, scratch: (bytes: number) => void): Promise<NestedLodResult | null> {
-    const s = fine.segments, rows = s.length / 6, scale = request.options.deviceScale;
+export async function nestedInkLodGroups(fine: DerivableLod, scale: number, chunkCount: number,
+    context: WorkerContext, scratch: (bytes: number) => void): Promise<DerivedLod | null> {
+    const s = fine.segments, rows = s.length / 6;
     if (!Number.isSafeInteger(rows) || rows < 2 || !Number.isSafeInteger(chunkCount) || chunkCount < 1 ||
         !Number.isFinite(scale) || scale <= 0 || !Number.isFinite(fine.centreErrorWorld) || fine.centreErrorWorld < 0 ||
         !Number.isFinite(fine.radiusErrorWorld) || fine.radiusErrorWorld < 0) return null;
@@ -142,9 +148,8 @@ export async function nestedInkLodGroups(fine: InkCoverageReply, request: InkCov
         await cooperate();
     }
     if (!accepted) return null;
-    const segments = out.slice(0, written);
-    const coverage = { ...fine, segments, centreErrorWorld: fine.centreErrorWorld + budget };
-    return { coverage, certificate: Object.freeze({ areaBoundWorld: total, referenceLowerWorld: lower }) };
+    return { segments: out.slice(0, written), centreErrorWorld: fine.centreErrorWorld + budget,
+        certificate: Object.freeze({ areaBoundWorld: total, referenceLowerWorld: lower }) };
 }
 
 function nextDownSafe(value: number): number {

@@ -363,7 +363,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async applyTextChanges(path, expected, changes): Promise<HostResult> {
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
-            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are read-only in this build; they cannot be changed as text or with canvas tools.' };
+            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are changed with canvas_apply, not as text.' };
             // A canvas is JSON on disk but a live tldraw store on screen, which
             // would re-serialize over any text edit at its next change.
             if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {

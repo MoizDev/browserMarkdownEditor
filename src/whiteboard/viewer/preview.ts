@@ -28,7 +28,8 @@ export interface BoardPreviewOptions {
 }
 export interface BoardPreview {
     show(nodes: readonly Node[]): void;
-    showOps(ops: readonly Op[]): void;
+    /** `live`: a pointer move of a transform (the picture is moved, not rebuilt); absent, the picture is built for the ops. */
+    showOps(ops: readonly Op[], live?: boolean): void;
     waitUntilReady(signal: AbortSignal): Promise<void>;
     waitUntilIdle(signal: AbortSignal): Promise<void>;
     armCommit(): void;
@@ -124,6 +125,19 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let deferred: StartArgs | null = null, driving = false, resuming = false;
     // One overlay is in flight at a time: a newer request is held (latest wins) until the layer presents the last one.
     let inFlight = false, inFlightSeq = -1, queued: StartArgs | null = null;
+    // A translation's picture is built once, at its committed place, and moved at draw time. A build's `baked` offset is
+    // what its picture already includes; a frame is drawn at its build's `offset - baked`. Each build keeps its own offset,
+    // so a superseded picture stays where it was last shown until its replacement presents.
+    type Shift = { x: number; y: number };
+    interface TranslationMeta { baked: Shift; offset: Shift }
+    let translation: { key: string; meta: TranslationMeta; ops: readonly Op[] } | null = null;
+    const metaBySeq = new Map<number, TranslationMeta>();
+    let offsetVersion = 0;
+    const NO_SHIFT: Shift = Object.freeze({ x: 0, y: 0 });
+    const drawOffset = (frame: PaintSource): Shift => {
+        const seq = frameGenerations.get(frame), meta = seq === undefined ? undefined : metaBySeq.get(seq);
+        return meta ? { x: meta.offset.x - meta.baked.x, y: meta.offset.y - meta.baked.y } : NO_SHIFT;
+    };
     const driveScene = async () => {
         if (driving) return;
         driving = true;
@@ -143,7 +157,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         } catch (error) { deferred = null; report(error); } finally { driving = false; }
     };
     const clearNow = () => {
-        deferred = null; queued = null; inFlight = false; inFlightSeq = -1;
+        deferred = null; queued = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
         generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
         const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
@@ -172,7 +186,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         try { start(...next); } catch (error) { clear(); report(error); }
     };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
-        paper?: Readonly<import('../../utils/paper').NotebookPaper>) => {
+        paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {
         if (disposed) throw new Error('Preview is disposed');
         if (!changes.size) { clear(); return; }
         if (commitRevision !== null) throw new Error('A committed preview is awaiting presentation');
@@ -183,10 +197,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             if (existing && existing.kind !== node.kind) throw new Error('Preview cannot replace a node kind');
         }
         if (!scene) throw new Error('Preview scene is not available');
-        if (!scene.ready || scene.revision !== live.rev) { deferred = [changes, textOverlay, paper]; void driveScene(); return; }
+        if (!scene.ready || scene.revision !== live.rev) { deferred = [changes, textOverlay, paper, meta]; void driveScene(); return; }
         deferred = null;
         // One overlay is built and presented at a time: a request made meanwhile is held (latest wins).
-        if (inFlight) { queued = [changes, textOverlay, paper]; return; }
+        if (inFlight) { queued = [changes, textOverlay, paper, meta]; return; }
         if (pin && pin.revision !== live.rev) clear();
         if (!pin) { pin = scene.pin(); document = pin.readDocument(); }
         // Captured before any await: this job's overlay uses the paint binding of its own start,
@@ -195,6 +209,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const view = engine.getView(), selection = runtime.selection.getSnapshot();
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
+        if (meta) metaBySeq.set(seq, meta);
         if (!resuming) settle(interrupted()); if (!controllerHandedOff) controller?.abort(); pendingRelease?.(); pendingRelease = null;
         controller = job; controllerHandedOff = false; inFlight = true; inFlightSeq = seq;
         const leases: { release(): void }[] = [];
@@ -337,7 +352,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay,
                         // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
                         // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
-                        onPrepared: () => queueMicrotask(presentedOverlay) });
+                        onPrepared: () => queueMicrotask(presentedOverlay),
+                        drawOffset, drawVersion: () => offsetVersion,
+                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation) });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
@@ -368,6 +385,69 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             }
         })();
     };
+    // The uniform offset of a plain x/y translation of existing nodes, or null for anything else (a rotate, a resize, an
+    // opacity change, a node that is missing, or nodes that do not move together).
+    function translationOf(ops: readonly Op[]): Shift | null {
+        if (!ops.length) return null;
+        const doc = runtime.session.doc;
+        const moved = new Map<NodeId, Shift>();
+        for (const op of ops) {
+            if (op.t !== 'set' || (op.key !== 'x' && op.key !== 'y') || typeof op.value !== 'number') return null;
+            const node = doc.nodes.get(op.id); if (!node) return null;
+            const delta = moved.get(op.id) ?? { x: 0, y: 0 };
+            if (op.key === 'x') delta.x = op.value - node.x; else delta.y = op.value - node.y;
+            moved.set(op.id, delta);
+        }
+        let shift: Shift | null = null;
+        for (const delta of moved.values()) {
+            if (!shift) { shift = delta; continue; }
+            if (Math.abs(delta.x - shift.x) > 1e-6 || Math.abs(delta.y - shift.y) > 1e-6) return null;
+        }
+        return shift;
+    }
+    // A translation is drawn from the committed picture only when no overlay of it depends on where it lands: no node is a
+    // connector and nothing attaches to the moved nodes or their children (their routes would not move as a whole).
+    function translatable(ops: readonly Op[]): boolean {
+        const doc = runtime.session.doc;
+        const stack = ops.map(op => op.t === 'set' ? op.id : null).filter((id): id is NodeId => id !== null), seen = new Set<NodeId>();
+        while (stack.length) {
+            const id = stack.pop()!;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            const node = doc.nodes.get(id);
+            if (!node || node.kind === 'connector' || (doc.attachedTo.get(id)?.size ?? 0) > 0) return false;
+            if (node.kind === 'group' || node.kind === 'frame') for (const child of doc.children.get(id) ?? []) stack.push(child.id);
+        }
+        return true;
+    }
+    function translationKey(ops: readonly Op[]): string {
+        return [...new Set(ops.map(op => op.t === 'set' ? String(op.id) : ''))].sort().join(',');
+    }
+    // A live move of the translation in hand moves the built picture; the first move of a translation builds it at rest.
+    function moveTranslation(ops: readonly Op[], shift: Shift): void {
+        const key = translationKey(ops);
+        if (translation && translation.key === key) {
+            translation.meta.offset = shift; translation.ops = ops;
+        } else {
+            const doc = runtime.session.doc;
+            const changes = new Map<NodeId, Node>();
+            for (const op of ops) if (op.t === 'set' && !changes.has(op.id)) changes.set(op.id, copyNode(doc.nodes.get(op.id)!));
+            const meta: TranslationMeta = { baked: { x: 0, y: 0 }, offset: shift };
+            translation = { key, meta, ops };
+            start(changes, undefined, undefined, meta);
+        }
+        offsetVersion++;
+        pair?.invalidate('preview-offset');
+    }
+    // A dense frame cannot be drawn at an offset: the translation's picture is built again at its place instead.
+    function rebuildTranslation(): void {
+        if (disposed || !translation) return;
+        const current = translation; translation = null;
+        try {
+            const projected = operationNodes(runtime.session.doc, current.ops);
+            start(projected.changes, undefined, projected.paper, { baked: current.meta.offset, offset: current.meta.offset });
+        } catch (error) { clear(); report(error); }
+    }
     return {
         show(nodes) {
             try {
@@ -376,7 +456,16 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 start(changes);
             } catch (error) { clear(); report(error); }
         },
-        showOps(ops) { try { const projected = operationNodes(runtime.session.doc, ops); start(projected.changes, undefined, projected.paper); } catch (error) { clear(); report(error); } },
+        showOps(ops, live = false) {
+            try {
+                const shift = translationOf(ops);
+                if (shift && live && translatable(ops)) { moveTranslation(ops, shift); return; }
+                // Anything else is built for its ops; a translation's commit is built at its moved place, shown unshifted.
+                translation = null;
+                const projected = operationNodes(runtime.session.doc, ops);
+                start(projected.changes, undefined, projected.paper, shift ? { baked: shift, offset: shift } : null);
+            } catch (error) { clear(); report(error); }
+        },
         waitUntilReady(signal) {
             if (disposed || signal.aborted || ((!pin || !controller) && !deferred && !queued)) return Promise.reject(interrupted());
             if (handedOffGeneration === generation && frames && !queued) return Promise.resolve();

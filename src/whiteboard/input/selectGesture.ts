@@ -9,6 +9,8 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     beginHandle(sample: RealSample, modifiers: Modifiers): GestureOwner | null;
     /** The press lies inside the drawn selection frame (world point at the frame presented at its time). */
     insideSelection(sample: RealSample): boolean;
+    /** The press lands on the selection: its picture may be built at rest before the drag that may follow. */
+    prewarm?(): void;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -61,6 +63,7 @@ class BoardSelectGesture implements GestureOwner {
                 this.hit = id;
                 this.body = id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
                     && context.insideSelection(down);
+                if (this.body || (id !== null && this.initial.includes(id))) context.prewarm?.();
                 if (id !== null && this.sweep) { this.sweep.cancel(); this.sweep = null; this.points.length = 1; }
                 if (this.dragging) this.activateDrag();
                 if (this.ended) this.complete();

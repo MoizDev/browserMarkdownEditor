@@ -143,6 +143,11 @@ export class StreamingDenseTileJob {
     get cpuWorkingSet(): number {
         return this.memoryBytes + (this.state === 'start' ? 2 * BITMAP_BYTES : this.state === 'estimate' && !this.pathLease ? this.estimate : 0);
     }
+    /** A denied reservation waits for a real capacity change: the owner is woken once, never polled. */
+    private waitForMemory(): void {
+        this.blockedValue = true;
+        this.options.host.allocator.cpu.whenAvailable?.(() => this.options.host.invalidate('dense-memory'));
+    }
     needsFrame(): boolean {
         if (this.blockedValue || this.opening || this.pumping) return false;
         if (this.state === 'item') return !!this.adapter?.needsFrame();
@@ -196,9 +201,9 @@ export class StreamingDenseTileJob {
     }
     private openRun(blend: Blend): boolean {
         const scratch = this.reserve(BITMAP_BYTES);
-        if (!scratch) { this.blockedValue = true; return false; }
+        if (!scratch) { this.waitForMemory(); return false; }
         const bitmapLease = this.reserve(BITMAP_BYTES);
-        if (!bitmapLease) { this.options.host.allocator.cpu.release(scratch); this.blockedValue = true; return false; }
+        if (!bitmapLease) { this.options.host.allocator.cpu.release(scratch); this.waitForMemory(); return false; }
         const canvas = new OffscreenCanvas(SIDE, SIDE), ctx = canvas.getContext('2d');
         if (!ctx) {
             this.options.host.allocator.cpu.release(scratch); this.options.host.allocator.cpu.release(bitmapLease);
@@ -385,7 +390,7 @@ export class StreamingDenseTileJob {
                 if (this.state === 'estimate') {
                     if (!this.estimated) { if (!this.estimateStep(this.item!)) continue; this.estimated = true; }
                     this.pathLease = this.reserve(this.estimate);
-                    if (!this.pathLease) { this.blockedValue = true; return; }
+                    if (!this.pathLease) { this.waitForMemory(); return; }
                     this.prepareItem(this.item!); this.state = 'item'; continue;
                 }
                 if (this.state === 'item') {

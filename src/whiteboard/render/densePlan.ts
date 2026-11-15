@@ -386,7 +386,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 } else own?.release();
                 const ticket = cache.begin(interval, address, p.source.sceneRevision);
                 // Memory denied this tile and nothing coarser exists: the plan waits for memory.
-                if (!ticket) { p.blocked = true; return; }
+                if (!ticket) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
                 p.cache = { cache, ticket };
             }
         }
@@ -524,7 +524,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         // an up-front estimate of every item.
                         while (adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased) {
                             const lease = host.allocator.cpu.reserve(DIRECT_CHUNK);
-                            if (!lease) { p.blocked = true; return; }
+                            if (!lease) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
                             p.directLeases.push(lease); p.directLeased += lease.bytes;
                         }
                         // Stops at the covered boundary; the next frame reserves the following chunk before it resumes.

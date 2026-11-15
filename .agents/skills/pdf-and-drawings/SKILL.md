@@ -1,6 +1,6 @@
 ---
 name: pdf-and-drawings
-description: The canvas documents — the annotated-PDF read/write pipeline, the pdf.js viewer's rendering/windowing/memory strategy, notebooks (ruled pages + PDF export), and tldraw drawings. Load before touching any pdf* module, paper.ts, notebook*, PdfPane/PdfViewer/PdfAnnotateCanvas/DrawingPane/NotebookPane, or adding an import to any of them (the module split is load-bearing for bundle size).
+description: The canvas documents — the native PDFium PDF pipeline and in-house PDF ink, the remaining Classic pdf.js viewer route, and native boards (drawings, notebooks, print/export, agent access). Load before touching any pdf* module, paper.ts, notebook*, PdfPane/PdfViewer/CanvasPane, components/whiteboard or src/whiteboard, or adding an import to any of them (the module split is load-bearing for bundle size).
 ---
 
 # Native PDFium and in-house PDF ink
@@ -47,9 +47,13 @@ Do not enable NativePdfPane merely because its acquisition API exists: its actua
   `onUpdating` requires an opaque cover, and only an actual current frame commit calls `notePresentation`.
   Captures bind actual requested-page emphasis, permission, source and font identity through PNG encoding.
 
-The remaining sections describe the retained **Classic/pdf.js/tldraw** route unless explicitly noted.
+The sections below describe the remaining **Classic (pdf.js/pdf-lib) PDF** route, retired by the PDF owner; the board sections are native.
 
 # Classic PDF annotation pipeline (the subtlest subsystem)
+
+> The tldraw annotate canvas is gone: a Classic annotated PDF (`tldraw-snapshot.json` role) is now a
+> LEGACY input, converted to native PDF ink through `acquireLegacyPdfInkCandidate` above. The format
+> notes below stay true for reading such files and for the remaining Classic writer.
 
 Files: `pdfAnnotation.ts` (read + rasterize, pdf.js), `pdfBuild.ts` (write, pdf-lib),
 `pdfBuild.worker.ts` + `pdfBuildClient.ts` (off-main-thread), `pdfFormat.ts` (shared attachment
@@ -229,10 +233,8 @@ discipline**, so a single new import undoes it silently:
 - Reader (pdf.js) and writer (pdf-lib) **never import each other** — they share names via `pdfFormat`.
 - The writer runs in a **DOM-less Web Worker**, so `pdfBuild.ts` must never reach for the DOM.
 - `PdfPane` uses the demand/idle-shared resolved-component cache in `pdfPaneModule`; `CanvasPane`
-  remains `React.lazy` in `EditorPane`. `PdfAnnotateCanvas` is `React.lazy` in `PdfPane`, and
-  `DrawingPane`/`NotebookPane` are `React.lazy` in `CanvasPane` — viewing a PDF never pulls in tldraw.
-- `components/canvasAgentOps.ts` (the AI agent's hands on a canvas) imports tldraw: ONLY the three
-  canvas panes may import it. `utils/pdfText.ts` (closed-PDF text/render for the agent) imports pdf.js
+  remains `React.lazy` in `EditorPane` and is the only way into the native board runtime — viewing a
+  PDF never pulls in the board editor. `utils/pdfText.ts` (closed-PDF text/render for the agent) imports pdf.js
   and is reached only through `import('./pdfText')`. `utils/canvasViewState.ts`, like
   `pdfViewState.ts`, imports nothing heavy.
 
@@ -357,61 +359,10 @@ requires reading it.
   on screen and both modes flip together). `invert(1) hue-rotate(180deg)`: paper goes black, text white,
   and colours keep roughly their hue. A partial invert (0.88) shipped first and read as washed-out
   grey rather than inverted; keep it full. The reader filters the page `<canvas>` elements only,
-  never the page box, so text selection and links keep their colours. Annotating filters tldraw's
-  `.tl-shapes` layer, pages AND ink together, because inverting only the pages leaves default black
-  ink invisible; the background, selection overlays and tldraw's UI are other layers. **Notebooks use
-  the same toggle, the same store and the same `.tl-shapes` filter**, so ruling and writing flip
-  together. Nothing is re-rendered on a toggle, and exports render shapes themselves, so a saved PDF
+  never the page box, so text selection and links keep their colours. Native annotation and
+  notebooks invert pages AND ink together through the board renderer (inverting only the pages leaves
+  default black ink invisible), with the same toggle and store. Nothing is re-rendered on a toggle, and exports render shapes themselves, so a saved PDF
   never sees it: a notebook exported while dark is still printed on white paper.
-
-## `i` inverts a selected picture — `components/invertibleImageShape.tsx`
-
-The second fork in `CANVAS_SHAPE_UTILS` (same `type: 'image'`, so it substitutes as the draw one
-does). A screenshot taken out of a dark app is a black rectangle on ruled paper; `i` flips it.
-
-- **The flag is `shape.meta.inverted`**, not an asset edit and not a CSS rule. Meta rides along in
-  the document snapshot every canvas file already writes, so it survives a reload, undoes with ⌘Z,
-  and leaves the image asset alone — the same picture can be inverted in one place and not another.
-- **Two methods, both delegating**: `component` wraps tldraw's own output in a `filter`ed div (GPU
-  composited, so an inverted picture costs no more to pan than any other), and `toSvg` wraps it in a
-  filtered `<g>` — which is what makes a notebook's PDF export print what the screen showed.
-- **The key is bound per editor on its container in the CAPTURE phase** (`bindImageInvertKey`, called
-  beside `applyPenDefaults` in all three canvases), never on the window: a second canvas in the next
-  column must not answer for this one's selection. It is cancelled only when an image was actually
-  inverted, so with nothing selected `i` stays whatever tldraw makes of it, and it stands down while
-  a text shape is being edited.
-
-## The pen is a forked draw shape — `components/tightDrawShape.tsx`
-
-All three canvases pass `shapeUtils={CANVAS_SHAPE_UTILS}`, which substitutes tldraw's draw shape (same
-`type: 'draw'`, so `mergeArraysAndReplaceDefaults` swaps rather than adds). It exists for ONE number.
-
-- **`streamline` is the only thing that decides how far ink trails the pen**, and tldraw does not
-  expose it: `getFreehandOptions` is module-private in `lib/shapes/draw/getPath.js`, called from
-  DrawShapeUtil's own methods, taking nothing from the editor. There is no hook. Re-rendering the
-  shape is the only route.
-- **Measure it on the CENTRELINE, never the rendered outline.** `getStrokePoints` gives the smoothed
-  centreline before any width is applied; comparing its last point to the last raw input point is the
-  honest number. Measuring the outline's leading edge instead conflates tracking with stroke
-  thickness — a fatter stroke reaches nearer the nib while tracking no better, which is exactly how an
-  earlier attempt "proved" a 2x win that was not there. Width has *zero* effect on tracking: identical
-  lag at 3, 4.6, 6 and 10px.
-- Measured at 12px between input points: streamline 0.64 → 7.79px behind the pen, 0.62 → 7.05px,
-  0.40 → 2.10px, **0.01 (ours) → 0.00px**.
-- **`dash` stays `'solid'`** (pinned in `canvasPen.ts`) because it is what keeps stroke width even.
-  tldraw only consults `isPen` when dash is `'draw'`, so a stylus never reaches `realPressureSettings`
-  here — that branch buys 0.74px and costs pressure-varying width.
-- **Four methods are overridden and every one of them matters**: `component` (the ink), `getGeometry`
-  (or clicking a stroke misses it by ~5px), `getIndicatorPath` (or the selection outline floats beside
-  the ink), and `toSvg` (or the notebook's PDF export quietly uses tldraw's smoothing and differs from
-  the screen). Each delegates to `super` unless `dash === 'solid'`, so what is owned across upgrades is
-  one branch, not a renderer.
-- **`components/PenDevPanel.tsx` is how this number gets chosen** — dev-only, portalled to `<body>`,
-  slider plus presets, applying to the NEXT stroke so a canvas can hold strokes at several settings
-  side by side. It is gated on `import.meta.env.DEV` and carries its own CSS in a `<style>` tag rather
-  than `index.css`, so markup, logic and styles all leave the production build together (verified by
-  grepping `dist`). **Reach for it before touching `PEN_STREAMLINE`**: the arithmetic predicted 0.35-0.45
-  would be the floor and drawing on a real tablet disproved it.
 
 ## The page list is built once, and its refs never move
 
@@ -467,24 +418,6 @@ P06 retains only on-screen DOM resume pixels under D1's policy: hide cancels vis
 releases hidden viewer leases, frees other canvases/URLs/refined JPEGs, evicts heavy parsed pages
 immediately and small idle parsed state within five seconds, but never cancels save/export work.
 
-## Tldraw's assets are OURS
-
-`assetUrls={CANVAS_ASSET_URLS}` on every `<Tldraw>` (`canvasPen.ts`), from `@tldraw/assets` pinned
-to the same version. By default tldraw fetches fonts, icons and translations from `cdn.tldraw.com`:
-measured, **37 off-origin requests to open one whiteboard**. A local-first app holding the vault's
-directory handle does not need a third party to be up in order to draw a line. `maxFontsToLoadBeforeRender: 0`
-too — tldraw waits for every font before it paints anything, and ink needs no font.
-`@tldraw/assets` stays in `optimizeDeps.exclude` (`vite.config.ts`): pre-bundled, its `?url` imports
-all come out `undefined` and every canvas throws on open under `npm run dev` — never in a build.
-
-**`colorScheme` is frozen at mount.** It is in `<Tldraw>`'s editor-creation dependency list
-(@tldraw/editor 5.2.4, `TldrawEditor.mjs:279`), so changing it DESTROYS the editor and builds a new
-one — on every mounted board at once, hidden ones included, losing each one's undo history. The app
-theme is global, so a toggle hit all of them: measured, **18 `AtomMap: key not found` page errors per
-toggle**. The theme moves through `editor.user.updateUserPreferences` instead, which re-themes in
-place. The same applies to `options`, `assetUrls`, `shapeUtils` and `components`: all module
-constants, and they must stay that way.
-
 ## Panes
 
 - **Every canvas floats over its column, one pane per open tab**: `PdfPane` for PDFs and `CanvasPane`
@@ -500,12 +433,12 @@ constants, and they must stay that way.
   App's — undo, selection and search panel survive); every open PDF and board rebuilds. Existing
   behaviour, not a designed one.
 - Panes lazy-activate on first being shown — `useActivated` in `floatingSlot.ts` — so a restored
-  session with five canvases in the background touches neither disk, nor pdf.js, nor the tldraw chunk
+  session with five canvases in the background touches neither disk, nor pdf.js, nor the board chunk
   for the four nobody is looking at. Only the annotate canvas is torn down when its tab is
-  backgrounded: unmounting tldraw is what flushes pending strokes.
+  backgrounded.
 - **A float has to be handed the keyboard explicitly.** It outlives the tab switch, so nothing
   re-focuses it the way a remount used to: `CanvasPane` registers a `registerKeyboardTarget` that
-  focuses tldraw's own container, and without it a board returned to from the tab bar took no
+  focuses the board's own view, and without it a board returned to from the tab bar took no
   shortcut, ⌘Z included, until it was clicked. The view re-read is driven by **this tab's `dirty` falling edge**,
   not a global `saveEpoch` (which reloaded the view — and its scroll position — whenever *any* file
   autosaved).
@@ -534,237 +467,55 @@ constants, and they must stay that way.
     are the same decision from both ends: a hidden pane that kept reading the variables would be
     dragged around behind whichever tab replaced it.
 
-## Annotate mode
+# Native boards: drawings, notebooks and PDF ink (`src/whiteboard/`)
 
-A tldraw canvas over rasterized pages that are **locked backdrop image shapes, excluded from the
-exported overlay** (tracked by id). Two modes rather than one because a rasterized page has no
-selectable text.
+There is ONE canvas engine, the in-house board (`CanvasEngine = 'board'`). tldraw, the old drawing/
+notebook/annotate panes and their packages are gone; never reintroduce them or read their sources.
+A legacy `.tldraw` file is converted on open (exact-original backup + consent before the first
+overwrite; refusal leaves the original untouched); new drawings are always `.drawing`.
 
-**The backdrop re-renders to match the zoom.** pdf.js dropped its SVG backend in v4, so a page can
-only ever be a bitmap; at 400% a 2x raster is mush under a pen whose ink is vector and stays crisp.
-A debounced pass re-rasterizes the pages **inside the viewport** at `zoom x devicePixelRatio`,
-stepped and capped at `MAX_PAGE_SCALE` (6x — a Letter page is then ~70MB decoded), and drops pages
-you have left back to `PAGE_RENDER_SCALE`. The swap goes through `refreshPageAsset`'s
-`mergeRemoteChanges` so it never marks the file dirty. The pass is serialized behind an in-flight flag —
-overlapping runs would render one page at two scales and leak the loser's object URL.
-
-**Pages are rasterized only as they come near the view**, nearest the middle first, re-deciding after
-each page (so jumping to page 300 renders page 300). It used to render EVERY page in order before the
-first was needed, and `zoomToFit()` on a first open — on a long PDF, every page at once, unreadably
-small. Now the camera opens on the reader's page at the reader's fit-width size (`cameraFor`), always,
-overriding the snapshot's camera, which knows nothing of where the reader has been since.
-
-**The camera is held to the document** (`lockCameraToPages` in `components/pagedCanvas.ts`, shared with
-notebooks). `setCameraOptions` constraints with `behavior: 'contain'`,
-bounds = the whole page stack, `baseZoom: 'fit-x'` and **no horizontal padding**: below fit-width the
-page is pinned centred, above it the camera clamps to the real page edges, so fit-width is edge to edge
-and zooming further simply goes further in. **Swipes are vertical-only**: a capture-phase `wheel`
-listener on `.paged-canvas` (an ancestor of tldraw's own) swallows every non-ctrl wheel and
-applies only `deltaY`; pinches arrive as ctrl+wheel and pass through to tldraw's zoom. Because the
-bottom is clamped, the page box shows the last visible page once the view is held against the end of
-the document — the reader's rule, or typing the last page reads back an earlier one.
-
-View tracking (`watchPageView`: page box, strip, position record, missing-page and sharpen passes) runs off a
-tldraw **`react()` on `getViewportPageBounds()`** — it fires when the view moves, not on every pointer
-move while drawing, which is what the session-scope store listener it replaced fired on.
-
-The serialize debounce is 1500ms — far longer than a drawing's 400ms — because a PDF export
-rebuilds the whole document on the main thread. `flush()` buckets shapes by page **once** (not a
-per-page re-filter, which was O(pages × shapes)) and caches each page's exported `PageOverlay` by a
-JSON signature of that page's shapes, so an untouched page is not re-exported. On unmount with
-unsaved work it calls `onFlushStart()` synchronously (beating the viewer's re-read) and then flushes
-immediately.
-
-# Notebooks (`.notebook`)
-
-Files: `paper.ts` (page stacking + the ruled-paper model, **imports nothing**),
-`notebookFile.ts` (the on-disk shape), `notebookRenderCache.ts` (canvas→export handoff),
-`NotebookPane.tsx`, `pdfBuild.buildNotebookPdf`.
-
-A notebook is **a drawing on generated pages**: the same tldraw canvas as the PDF annotator, over
-locked backdrop image shapes, but the pages come from a `paper` block instead of a document.
-
-- **`paper` is the authority; the pages are reconciled to it BY SHAPE ID on every open**
-  (`layOutPages`). Never re-create them — `createShapes` appends to the top of the z-order, so a
-  rebuild lays blank pages OVER the writing. Same trap as PdfAnnotateCanvas's backdrops.
-- **The page backdrop is a real SVG data URI**, resolved through the asset store from a stable
-  `asset:notebook-paper` reference. This is the one backdrop in the app that is genuinely
-  resolution-independent — pdf.js has no SVG backend, but `paperSvg` is ours — so a notebook needs
-  no zoom-refinement pass and no per-zoom memory. Every page is identical, so ONE asset serves all.
-- **`updateAssets` validates the WHOLE record.** Passing only the changed props fails on the ones
-  left out (`props.name: expected string, got undefined`), and spreading the existing props hits
-  TLAsset being a union. `layOutPages` therefore states every field and picks create-vs-update.
-- **A `TLEditorSnapshot` is `{document, session}`** — the store is one level down, inside `document`.
-  `parseNotebookFile` tests for `document`; testing for `store` is always false and the failure is
-  silent and total (paper restores, every stroke vanishes, file on disk still holds them).
-- ⚠️ **The pages are LOCKED, and `updateShape`/`deleteShapes` SILENTLY SKIP locked shapes.** Every
-  page mutation therefore runs inside `editor.run(..., { ignoreShapeLock: true })`. Without it the
-  paper SVG regenerated at the new size while every page box kept the old one — which is what
-  "landscape doesn't rotate the pages" turned out to be.
-- **Deleting a page takes the writing on it**, so it asks first through App's own confirm (threaded
-  down as `onConfirm` beside `onNotify`). Only the LAST page, and only ever removed — pages are a
-  stack, and an "empty" page may be one deliberately left blank.
-- **Pages grow as you write** (`growIfNeeded`, run just before each serialize): ink within 20% of the
-  last page's bottom appends however many pages the overflow needs. Pages are only ever ADDED —
-  removing an "empty" one would discard a page left blank on purpose.
-- **It scrolls like a PDF and has the annotator's page strip and page box** (`pagedCanvas.ts`,
-  `PageControls`, `PdfThumbnails`). `layOutPages` is the one place the page stack changes, so it is
-  where `lockRef.setPages` re-bounds the camera. A thumbnail is the page's region through
-  `editor.toImage` with `bounds`, composited in sheet order as in the PDF export. A document-scope store listener
-  collects the pages each changed shape touches (live bounds, plus the record's `y`, which is all a
-  removed shape leaves) and calls the strip's `invalidate` 700ms after the pen pauses; the old image
-  stays up until its replacement lands. The strip is keyed on the paper's LOOK, not its page count:
-  an appended page leaves every existing thumbnail valid. A first open starts at page 1, full width;
-  a reopen keeps the snapshot's camera, re-applied so the lock clamps it. The page box is judged just
-  under the gutter, not at the view's top edge: a notebook's gutter (56px, to clear its toolbar) is
-  wider than the gap between pages, so the edge sits in the page above and "jump to 3" read back 2.
-  **The paper toolbar is tldraw's `TopPanel`** (a stable component fed by context), not an overlay
-  centred with CSS: that one slid under tldraw's top-left menu the moment the strip narrowed the
-  canvas, hiding the ruling picker.
-- **Re-papering reaches the store as a `mergeRemoteChanges`**, so the save listener does NOT see it;
-  `changePaper` calls `persist()` itself. One `persist` writes paper + snapshot + pickers together,
-  because they share a file.
-- **Export stages the PDF before touching its sibling target.** `App.commitNotebookPdf` binds consent
-  to vault, source document, full path and disk version; a changed target asks again. It refuses an
-  open target, serializes with Trash and preserves the exact replaced bytes in the folder's Trash.
-  `writeNotebookExport` rechecks the baseline after the copy and uses versioned IO. The legacy ruling
-  still mirrors `paperSvg`; the new display-list writer takes the same paper lists the screen uses.
-- Colours in `pdfBuild`'s ruling constants and `paper.ts`'s SVG are **two copies of one palette** —
-  change both.
-- **An exported PDF carries a pointer back** (`NOTEBOOK_SOURCE_ATTACHMENT`), and `App.handleAnnotatePdf`
-  follows it: pressing the pen on a notebook's export opens
-  the NOTEBOOK. Without that it fell into the ordinary PDF flow and forked a third file whose strokes
-  the notebook could neither see nor overwrite. Resolution is the stored path first, then a notebook
-  beside the PDF answering to its name (which covers renaming either); when neither resolves it says
-  so rather than silently forking. Told by CONTENT, never filename — the format's standing rule.
-
-# The pen panel, and chrome vs paper
-
-`CanvasStylePanel.tsx` (the component) + `canvasPen.ts` (`CANVAS_COMPONENTS`,
-`applyPenDefaults`) + `utils/penStyle.ts` (the store) replace tldraw's `StylePanel` in **all three**
-canvases. Split across two files because `react-refresh/only-export-components` is relaxed for
-`src/context/**` only, so a component and a helper cannot share a file.
-
-- **Shared user preferences are app-owned** (`utils/boardPreferences.ts`, registered/mirrored as
-  `bme.whiteboard.preferences`); `boardLegacyUser.ts` bridges the public current-user signal for all
-  three legacy panes. Paper projects the scheme to light without writing that projection back.
-- **The pen is PER FILE, and per open editor.** `penStyle` keys on the live `Editor` in a WeakMap,
-  not one app-wide value, because a split shows two canvases at once and each answers to its own
-  file. `canvasPen`'s `CanvasUiState` (`toolId` + `stylesForNextShape` + `penScale`) is the one shape
-  all three canvases write into their file's `ui` key — tldraw's own snapshots carry NO styles
-  (`TLSessionStateSnapshot` is camera and selection only), which is why an annotated PDF used to
-  reopen with the default pen while drawings and notebooks did not. `applyCanvasUi` must run BEFORE
-  `applyPenDefaults` (whose shape handler reads the seeded width) and before the save listeners
-  attach, or restoring a file marks it dirty. An unseeded file inherits the last width used anywhere
-  (localStorage) rather than snapping to the default.
-- **Width changes touch no tldraw store**, so the panes also `subscribePenScale` — the session
-  listener alone never sees them, and the width was only remembered if you happened to draw after.
-  `PdfAnnotateCanvas` deliberately does NOT: its save rebuilds the whole document (~150ms/page), so
-  the pen rides the next stroke's flush instead of stalling under a colour click.
-- **Width is `props.scale`, NOT the `size` style.** tldraw's thinnest, `s`, is `(2*1 + 1) = 3px`;
-  handwriting on ruled paper needs less. `size` is pinned to `s`, `dash` to `solid`, and a
-  `registerBeforeCreateHandler` stamps `scale` on every new shape that HAS that prop — `scale` is an
-  ordinary prop, not a StyleProp, so `stylesForNextShape` cannot carry it. The slider is logarithmic
-  (half its travel is below the default) and `penStyle.ts` is an external store, not per-pane state,
-  because a split can show two canvases at once.
-- **Swatch colours come from `editor.getCurrentTheme().colors[editor.getColorMode()]`**, never a
-  hard-coded list: the same `'black'` is `#1d1d1d` on a pinned-light page canvas and `#f2f2f2` on a
-  dark whiteboard, and a swatch has to show the ink you will actually get. (`--tl-color-<name>` does
-  not exist; tldraw's CSS vars are semantic — panel, text, low, divider…)
-- **CHROME FOLLOWS THE THEME; PAPER NEVER DOES.** The canvases stay `colorScheme="light"` for ink
-  correctness, and `index.css` themes everything around the page by remapping tldraw's own
-  `--tl-color-*` on `.notebook-pane`/`.pdf-annotate-pane .tl-container` (plus the
-  `--canvas-chrome-*` variables). Restyle the variables, not the widgets. A `.tldraw` whiteboard is
-  excluded from the *chrome* theming on purpose: no pages, so its whole surface is the drawing
-  surface — and that surface takes exactly one remap of its own,
-  `--tl-color-background: var(--background-primary)` on
-  `.drawing-pane:not(.notebook-pane):not(.pdf-annotate-pane) .tl-container`, because the whiteboard
-  IS the page under the active tab and must be the tab's colour. The `:not()`s are load-bearing:
-  notebooks and PDF-annotate panes also wear `.drawing-pane`, so **without** them this rule and the
-  `--canvas-surround` one below would tie at (0,2,0) on the same element and source order would
-  decide. With them the two are disjoint, (0,4,0) against (0,2,0), and order stops mattering.
-- **One `tlui-` selector exists, and it is the exception that proves the rule above**:
-  `.drawing-pane .tlui-layout__top__left { padding-top }`, because tldraw notches the menu zone into
-  the top-left corner with no margin and it butted the tab strip. Padding the layout *column* rather
-  than the widget keeps the zone's bottom-right-only radius correct and leaves `__top__right` (the
-  style panel, which sets its own margin) and `__top__center` (the notebook toolbar) alone;
-  `CenteredTopPanelContainer` measures only `offsetWidth`, so a `padding-top` moves nothing it reads.
-
-# Drawings (`DrawingPane.tsx`, tldraw)
-
-Mounted inside `CanvasPane`, the float that keeps it alive across tab switches (see **Panes**), so a
-`DrawingPane` unmount now means the tab closed, the file reloaded from disk, or the graph view opened
-— not merely that the reader looked at something else.
-
-A `.tldraw` file is a tldraw snapshot **plus an extra `ui` block** (current tool +
-`stylesForNextShape`, which tldraw's own snapshots omit). Parsed **once per file, keyed on
-`filePath` alone**, not per render (`content` churns on save round-trips but tldraw owns the doc after
-mount; re-parsing would clobber in-progress edits — the `exhaustive-deps` disable there is
-deliberate). Serialize debounce 400ms → the app's 1s save, but see `serializeDelay` below.
-
-**All three canvases pass `CANVAS_OPTIONS` (`canvasPen.ts`) to `<Tldraw>`, and must.** tldraw stops
-creating shapes at `maxShapesPerPage` (default **4,000**) and does it *silently* — the refusal is a
-`max-shapes` event nothing listens to, so a full board just stops taking ink. Measured: at 4,200
-shapes, 8 drawn strokes produced 0 new ones. It is 1,000,000 here, finite because the render pass
-builds z-indices out of it.
-
-**Saving a canvas is O(document), not O(stroke)** — the whole store is stringified, hashed and
-written per change burst (~1.7MB at 4,000 shapes). `serializeDelay(editor, base)` therefore scales
-the debounce with the shape count (to 2s), and the drawing/notebook timers re-arm instead of firing
-while `editor.inputs.isPointing` — serializing underneath a moving pen is what the lag was. Measured
-on a 3,900-shape board, one ~6s stroke: 665ms blocked / longest stall 136ms → 435ms / 75ms. Anything
-that lengthens that debounce owes a matching flush: unmount, `flushPending` **and `pagehide`**.
-
-Drawing/notebook `store.listen` is scoped `{source:'user', scope:'document'}`; PDF annotation uses
-synchronous user-only shape/asset/binding side effects, because a deferred listener missed immediate
-flushes. All three require the owning `OpenTab.id` for the pending-work coordinator; never derive it
-from a path or an optional reader binding. A PDF drain repeats if ink arrived during overlay export.
-PDF exports serialize and snapshot before awaiting overlays; App awaits pending export before
-leaving annotation. FontManager cleanup waits for in-flight document fonts, avoiding late updates to
-its disposed map. Programmatic loads and camera moves don't dirty the file; a separate session-scope listener only reschedules a save when the UI-state
-slice actually changed. Unmounting mid-debounce flushes synchronously. `getEfficientZoomLevel` is
-patched to defeat tldraw's below-50%-zoom thin-line LOD under `FULL_INK_SHAPE_LIMIT` shapes.
-
-**Env:** `VITE_TLDRAW_LICENSE_KEY` — required in production only. Without it, tldraw (drawings + PDF
-annotate) replaces the canvas with an empty gate 5s after load on any non-localhost HTTPS origin.
-Localhost counts as development, so a missing key never shows up in `npm run dev`.
+- **App owns the canonical runtime** — session, buffer, history, selection, samples, media, tools,
+  jobs, camera and clipboard live in `whiteboard/host/runtime` + `utils/documentBuffers`/
+  `documentSessions`. Views (`components/whiteboard/NativeCanvasEntry`, `NativePdfViewer`) never
+  dispose document services; hide/dispose releases view work only (`nativeViewLease`,
+  `nativeEditingLease`, `nativePdfEditingLease`).
+- **Services/controller/embed layers are per DOM view**, never re-created on platform input pulses
+  (that looped React to max update depth). Pausing seals `cancelViewWork`; only teardown disposes.
+  A reused connection must call `accessible.refresh()`, and a refresh replaces its queued sync.
+- **`inputPermitted` + source currentness + visibility dominate** resume, tool and clipboard
+  editability: covered/stale PDF input never unlocks when layers resume. Actual lease/admission checks
+  are authoritative; the editing shell never depends on a transient `canWriteSource` at mount, and its
+  stable `onUnavailable` reads the latest notice through a ref.
+- **Save skips clean ledger checkpoints** (`!documentBuffers.isDirty(tab.id)` → `'skipped'`); a pending
+  rebind is not new content. A PDF source adoption gets a fresh immutable paint binding; old pins keep
+  the old source. Same-owner strictly newer `rebinding` transfers the SAME CameraOwner.
+- Stroke page default is **-1**, not 0 (0 caused nested-node rejection). The drawing camera re-applies
+  its stored top-left after the 0→measured resize and blocks premature position persistence.
+- **Notebooks** are boards on generated paper (`whiteboard/host/notebookPaper*`, `utils/paper.ts`, which
+  imports nothing). Ruled paper exists twice — keep `paper.ts` and the PDF writer in step. Export is
+  `pdf/writing/notebookClient.buildNativeNotebookPdf`; sibling export keeps consent, collision/root/
+  baseline rechecks and Trash preservation. Native creation encodes a real R0 before IO; an error
+  never authorizes a blank or truncating replacement.
+- **Print/export**: see "Board print and export" below; the canonical producer is
+  `prepareNativeExport` (`whiteboard/host/nativeExport`), one job authority, no nested capture jobs.
+- **The AI agent** reads and edits boards only through native sessions (`utils/nativeCanvasAgentRead`,
+  `nativeCanvasAgentMutation`, `whiteboard/host/nativeAgentView`). A mounted view's `ViewReporter`
+  supplies real camera/pages/selection and withdraws on dispose; hidden or closed files use the
+  last-real/whole-sheet fallback, never invented readiness. Agent edits commit through the same
+  history/save path as a pen stroke. A closed legacy `.tldraw` reached only by the agent still goes
+  through canonical `ensureNativeAgentRuntime` consent/backup — no null return or fallback on refusal.
+- **Lazy imports are bundle discipline**: native runtimes, worker clients and rendering services stay
+  behind `CanvasPane`/`pdfPaneModule` lazy hosts and `prefetchPanes` idle warmers; markdown-only
+  sessions fetch none. Check the chunk before adding an import.
+- Positions: `utils/canvasViewState.ts` (`canvasViewPositions`, per-vault `scopedKey`, never pruned,
+  does not follow renames).
 
 # File-type routing (`utils/fileTypes.ts`)
 
-`.tldraw` → `DrawingPane`, `.notebook` → `NotebookPane`, `.pdf` → `PdfPane`, everything else textual
-→ CodeMirror. Note the deliberate split between two predicates: **`isTextFile` (vaultSearch)** =
-shown/indexed as text; **`isCanvasFile`/`isPdfFile` (fileTypes)** = which pane. A drawing and a
-notebook *are* text on disk (JSON snapshots) so they flow through `readFile`/`writeFile`/autosave,
-but they must **not** be shown or content-indexed as text — `isCanvasFile` is the predicate that
-covers both, and every site that used to say `isDrawingFile` for that purpose now says it.
-
-## The AI agent on a canvas (`components/canvasAgentOps.ts`)
-
-- Each canvas pane (drawing, notebook, PDF annotate) registers a view reporter with `canvas` ops
-  (`shapes`/`apply`/`currentPage`) plus `capture(maxSide)` (a viewport PNG via `editor.toImage`, paper
-  and PDF pages included, `darkMode: false`); the reader registers `pdfText`/`renderPage`/`capture`
-  (visible page canvases stitched, uninverted). Page-relative coordinates for notebooks and PDFs come
-  from the same `PageBox`es; a live shape belongs to the page under its vertical centre (a closed file's
-  summary, `canvasFileSummary.ts`, uses its top-left).
-- **Agent edits must save exactly like a pen stroke** — and do: they go through the editor API inside
-  one `markHistoryStoppingPoint` + `editor.run` (one ⌘Z), which `@tldraw/store` records as
-  `source: 'user'` (only `mergeRemoteChanges` is `'remote'`), so every pane's existing
-  user/document change handler serializes them; a PDF still rebuilds from the pristine
-  original. NEVER apply agent ops headless or as a remote merge.
-- Page backdrops (ruled paper, PDF page images) are never listed; locked shapes are listed but never
-  targetable. Agent shapes get every style set explicitly and `scale` reset to 1 — `applyPenDefaults`
-  would otherwise stamp the user's pen onto them.
-- `pageText` exists in both `PdfViewer` and `PdfAnnotateCanvas` (and a third in
-  `utils/pdfText.ts`): change them together.
-
-## Canvas positions (`utils/canvasViewState.ts`)
-
-Drawings and notebooks now reopen where they were left, like PDFs: localStorage record
-`canvasViewPositions` under `scopedKey` — a drawing's `{pageId, x, y, z}` (watched with a tldraw
-`react()` on the camera, NOT a session-store listener that fires per pointer move; 400 ms debounce,
-flushed on unmount and `pagehide`), a notebook's `{page, offset, zoom}` (from `watchPageView`, restored
-through `cameraFor`). A first open with no record behaves as before. Like the other path-keyed
-records it does not follow renames and is never pruned.
+`.drawing`/`.tldraw` (converted) and `.notebook` → `CanvasPane` (native board), `.pdf` → `PdfPane`,
+everything else textual → CodeMirror. **`isTextFile` (vaultSearch)** = shown/indexed as text;
+**`isCanvasFile`/`isPdfFile` (fileTypes)** = which pane. Board files are JSON on disk and flow through
+the versioned write path, but must not be shown or content-indexed as text.
 
 
 Original and extracted Text share PdfDocumentSession with document/page leases; release, never direct page.cleanup while another consumer can use it. pdf-page-v1 replaces three old trim/collapse reporters with exact returned strings/order/EOL. PdfPane consumes the central PdfReadingBinding: displayed version, full-token surface controller, shared preferences and validated synchronous Text records. Original camera memory updates precede header actions; Text→annotation maps through Original before mounting the canvas. The actual Text reporter has no image-capture fallback. Word emphasis paints original glyph ink in Viewer/pristine annotation backdrops; no Text transition. The display-list adapter and native glyph/font/paint hooks are pinned to pdf.js 6.1.200; re-audit on upgrade. A single independent, canonical white-background whole-page OFF/ON proof (≤2^20 pixels) checks final composition; it is not per-zoom verification. Off paints first without hooks, and cached verdicts survive page cleanup; immutable plans are bounded and invalidated at cleanup. Only current-page results publish capability; unknown stays inactive. Annotation refresh chooses one visible/near stale backdrop at a time and cancels stale raster work without cancelling another consumer's proof. Text is manual and emphasis-inactive; readerViewState presents unmarked legacy Text records as Original without rewriting storage and stamps new explicit Text writes with textChoice:manual. No source/annotation/history changes from preference painting.

@@ -412,6 +412,10 @@ copies and **Cmd/Ctrl+V** pastes the selection, and strokes are saved to the fil
 and are there when you reopen it. Otherwise the board opens read-only, with a
 notice that says why.
 
+Elbow connectors from earlier versions keep their ends, their attachments, their arrowheads
+and their label. This app draws their bends itself, so an elbow may bend in a different place
+than it did before; it still joins the same shapes by the same sides.
+
 With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
 copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
 exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured

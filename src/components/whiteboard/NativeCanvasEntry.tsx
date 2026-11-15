@@ -156,7 +156,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     const viewer = useNativeClipboard(lease, props.nativeCanvasHost, identity, readTheme, setNotice);
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-        view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
+        view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
         readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} externalAccessibility={!!editingChrome}
         readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">

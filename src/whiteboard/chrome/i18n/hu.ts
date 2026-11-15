@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Toll szélessége",
         "chrome.transparent": "Átlátszó",
         "chrome.keyboardShortcuts": "Billentyűparancsok",
+        "chrome.keyboardShortcutsMenu": "Billentyűparancsok…",
         "chrome.close": "Bezárás",
         "chrome.theme": "téma",
         "chrome.dark": "Sötét",

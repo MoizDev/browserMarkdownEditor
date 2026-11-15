@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "ความกว้างของปากกา",
         "chrome.transparent": "โปร่งใส",
         "chrome.keyboardShortcuts": "แป้นพิมพ์ลัด",
+        "chrome.keyboardShortcutsMenu": "แป้นพิมพ์ลัด…",
         "chrome.close": "ปิด",
         "chrome.theme": "ธีม",
         "chrome.dark": "มืด",

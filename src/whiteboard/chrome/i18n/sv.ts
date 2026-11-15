@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Pennans bredd",
         "chrome.transparent": "Transparent bakgrund",
         "chrome.keyboardShortcuts": "Kortkommandon",
+        "chrome.keyboardShortcutsMenu": "Kortkommandon...",
         "chrome.close": "Stäng",
         "chrome.theme": "Tema",
         "chrome.dark": "Mörkt",

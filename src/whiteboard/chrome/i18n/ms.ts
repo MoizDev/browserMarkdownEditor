@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Lebar pen",
         "chrome.transparent": "Telus",
         "chrome.keyboardShortcuts": "Pintasan papan kekunci",
+        "chrome.keyboardShortcutsMenu": "Pintasan papan kekunci…",
         "chrome.close": "tutup",
         "chrome.theme": "Tema",
         "chrome.dark": "Gelap",

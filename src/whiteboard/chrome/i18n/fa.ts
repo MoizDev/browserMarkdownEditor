@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "عرض قلم",
         "chrome.transparent": "شفاف",
         "chrome.keyboardShortcuts": "میانبرهای صفحه کلید",
+        "chrome.keyboardShortcutsMenu": "میانبرهای صفحه کلید…",
         "chrome.close": "بستن",
         "chrome.theme": "موضوع",
         "chrome.dark": "تاریک",

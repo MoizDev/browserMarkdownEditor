@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Lapad ng panulat",
         "chrome.transparent": "Transparent na background",
         "chrome.keyboardShortcuts": "Mga keyboard shortcut",
+        "chrome.keyboardShortcutsMenu": "Mga keyboard shortcut...",
         "chrome.close": "Isara",
         "chrome.theme": "Tema",
         "chrome.dark": "Madilim",

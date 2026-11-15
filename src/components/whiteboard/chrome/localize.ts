@@ -13,7 +13,9 @@ export function localizeBoardChrome(t: BoardTranslate) {
         contextSectionLabel: (key: ContextSection) => t(`sections.${key}`),
         mainSectionLabel: (key: MainSection) => t(`sections.${key}`),
         preferenceLabel: (key: PreferenceLabel) => t(`preferences.${key}`),
-        actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' || key === 'exportPdf' || key === 'exportJson' ? `commands.${key}` : `chrome.${key}`),
+        // The menu's row is an opener with an ellipsis; the dialog's title shares the key without one.
+        actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' || key === 'exportPdf' || key === 'exportJson' ? `commands.${key}`
+            : key === 'keyboardShortcuts' ? 'chrome.keyboardShortcutsMenu' : `chrome.${key}`),
         text: (key: string) => t(`chrome.${key}`),
     };
 }

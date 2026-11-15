@@ -188,6 +188,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Épaisseur du stylo",
         "chrome.transparent": "Transparent",
         "chrome.keyboardShortcuts": "Raccourcis clavier",
+        "chrome.keyboardShortcutsMenu": "Raccourcis clavier…",
         "chrome.close": "Fermer",
         "chrome.theme": "Thème",
         "chrome.dark": "Sombre",

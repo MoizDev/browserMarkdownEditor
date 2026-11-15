@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Širina olovke",
         "chrome.transparent": "Prozirno",
         "chrome.keyboardShortcuts": "Tipkovnički prečaci",
+        "chrome.keyboardShortcutsMenu": "Tipkovnički prečaci…",
         "chrome.close": "Zatvori",
         "chrome.theme": "Tema",
         "chrome.dark": "tamno",

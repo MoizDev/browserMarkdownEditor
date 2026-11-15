@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Lățimea stiloului",
         "chrome.transparent": "Fundal transparent",
         "chrome.keyboardShortcuts": "Comenzi rapide de la tastatură",
+        "chrome.keyboardShortcutsMenu": "Comenzi rapide de la tastatură...",
         "chrome.close": "Închide",
         "chrome.theme": "Temă",
         "chrome.dark": "Întuneric",

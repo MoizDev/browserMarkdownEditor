@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Šířka pera",
         "chrome.transparent": "Transparentní",
         "chrome.keyboardShortcuts": "Klávesové zkratky",
+        "chrome.keyboardShortcutsMenu": "Klávesové zkratky…",
         "chrome.close": "Zavřít",
         "chrome.theme": "téma",
         "chrome.dark": "Tmavý",

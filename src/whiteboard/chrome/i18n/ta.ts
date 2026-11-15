@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "பேனா அகலம்",
         "chrome.transparent": "வெளிப்படையானது",
         "chrome.keyboardShortcuts": "விசைப்பலகை குறுக்குவழிகள்",
+        "chrome.keyboardShortcutsMenu": "விசைப்பலகை குறுக்குவழிகள்…",
         "chrome.close": "மூடு",
         "chrome.theme": "தீம்",
         "chrome.dark": "இருள்",

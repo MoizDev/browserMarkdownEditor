@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Πλάτος στυλό",
         "chrome.transparent": "Διαφανές",
         "chrome.keyboardShortcuts": "Συντομεύσεις πληκτρολογίου",
+        "chrome.keyboardShortcutsMenu": "Συντομεύσεις πληκτρολογίου…",
         "chrome.close": "Κλείσιμο",
         "chrome.theme": "Θέμα",
         "chrome.dark": "Σκοτεινό",

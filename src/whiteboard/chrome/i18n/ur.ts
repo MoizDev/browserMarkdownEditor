@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "قلم کی چوڑائی",
         "chrome.transparent": "شفاف",
         "chrome.keyboardShortcuts": "کی بورڈ شارٹ کٹس",
+        "chrome.keyboardShortcutsMenu": "کی بورڈ شارٹ کٹس…",
         "chrome.close": "بند",
         "chrome.theme": "تھیم",
         "chrome.dark": "اندھیرا",

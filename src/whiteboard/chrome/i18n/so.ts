@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Ballaca qalinka",
         "chrome.transparent": "Hufan",
         "chrome.keyboardShortcuts": "Gaabyada kiiboodhka",
+        "chrome.keyboardShortcutsMenu": "Gaabyada kiiboodhka…",
         "chrome.close": "Xir",
         "chrome.theme": "Dulucda",
         "chrome.dark": "Madow",

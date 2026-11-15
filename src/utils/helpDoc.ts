@@ -432,14 +432,17 @@ bundle. Context-menu image exports use the selection, or the whole sheet when
 nothing is selected. With exactly one picture selected, the same menu offers
 **Replace picture…** (the new image keeps the old one's centre and longer side; on a PDF annotation
 page it is embedded in that PDF), **Crop picture** with six presets,
-and **Invert picture**. With one link card selected it offers **Fetch link
-preview**, which contacts the link's site only when you ask. A row that cannot
+and **Invert picture**. A link card shows its address and, once fetched, its
+title and description; its **Fetch preview** chip contacts the link's site only
+when you ask, and **Open link** (or ⌘-click on the card) opens the address in a
+new tab. With one link card selected the menu offers **Fetch link
+preview** too. A row that cannot
 run now stays on the menu and says why, such as a locked picture or a read-only
 canvas.
 
 The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
 
-**Embeds.** **Menu → Insert embed** places a web embed (for example a video link) on the board as an inert poster. Nothing is fetched until you ask: select it, right-click and choose **Load embed**; **Unload embed** puts the poster back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; **Escape** closes it too. Closing the tab or switching documents always unloads it.
+**Embeds.** **Menu → Insert embed** places a web embed (for example a video link) on the board as an inert poster. Nothing loads until you ask: press **Load** on the card (or right-click and choose **Load embed**); **Stop** on the card, or **Unload embed**, puts the card back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; **Escape** closes it too. Closing the tab or switching documents always unloads it.
 
 Navigation, selection, copy and export never edit the file; only the editing
 described above does.

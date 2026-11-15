@@ -28,6 +28,7 @@ import { createBoardSelectServices } from './selectServices';
 import { createBoardTextEditor, type BoardTextEditorOptions } from './textEditor';
 import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
+import type { BoardCardActions } from './cardControls';
 
 export interface BoardToolServicesOptions {
     readonly runtime: BoardRuntime;
@@ -56,6 +57,8 @@ export interface BoardToolServicesOptions {
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];
+        /** The embed and link-card chips' actions; the native canvas supplies them, a view without an embed host omits them. */
+        readonly cards?: BoardCardActions | null;
         shortcutsEnabled(): boolean;
         modalOpen(): boolean;
         isDirectPen(event: PointerEvent): boolean;
@@ -112,7 +115,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
-        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
+        editSticky: async id => { await text.editText(id); }, cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
     // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.

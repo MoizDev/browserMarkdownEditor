@@ -111,12 +111,6 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
             // a body even before any optional preview media is admitted.
             content.push(path(rectangle(node.w, node.h), 1, palette.background, 'grey'));
         }
-        if (node.kind === 'embed') {
-            // The poster's play affordance: a solid triangle at the card's centre, above the text the geometry places at its foot.
-            const r = Math.min(node.w, node.h) * 0.12, cx = node.w / 2, cy = node.h / 2;
-            content.push(path([['M', cx - r * 0.6, cy - r], ['L', cx + r * 0.9, cy], ['L', cx - r * 0.6, cy + r], ['Z']], 0,
-                resolveSwatch(palette, 'grey', 'semi'), 'grey'));
-        }
     }
     for (let i = 0; i < geometry.text.length; i++) content.push(textItem(node, geometry.key, geometry.text[i], i, context, palette, faces));
     options.signal.throwIfAborted();

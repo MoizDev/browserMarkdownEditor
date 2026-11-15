@@ -36,6 +36,7 @@ import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
 import { createShapeHandles } from './shapeHandles';
 import { createStickyHandles } from './stickyHandles';
+import { createCardControls, type BoardCardActions } from './cardControls';
 import { createSelectionHandles } from './selectionHandles';
 import { createBoardSelectionNavigation } from './selectionNavigation';
 import type { BoardPreview } from './preview';
@@ -62,6 +63,8 @@ export interface BoardSelectServicesOptions {
     canMutateView(): boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
+    /** The embed and link-card chips' actions; absent, the cards draw no chips. */
+    readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
@@ -116,6 +119,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         clear: () => clearTransform(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, edit: options.editSticky, error: report });
+    const cardControls = createCardControls({ runtime, overlay: options.overlay, view: options.camera, current, invalidate: requestFrame,
+        sampleToSurface: options.sampleToSurface, actions: options.cards ?? null, error: report });
     const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, error: report });
     const navigation = createBoardSelectionNavigation({ runtime, camera: options.cameraController, surface: options.surface, token,
@@ -365,7 +370,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        navigation.present(frame); selectionHandles.write(frame, transformPreview); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
@@ -428,6 +433,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
+        // A card's chips need no write right: consent to load an embed, and opening a link, change no document.
+        const chip = cardControls.begin(physicalSurface(sample), sample, modifiers.accel);
+        if (chip) return chip;
         if (!mutable()) return null;
         const surface = physicalSurface(sample), coarse = sample.source === 'touch';
         const shapeHit = shapeHandles.hit(surface, coarse, sample.time);
@@ -527,7 +535,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

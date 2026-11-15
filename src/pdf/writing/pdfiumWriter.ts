@@ -108,10 +108,14 @@ export class PdfiumWriter {
         const cooperate = async () => { await context.slice(); if (!current()) throw new PdfEngineError('AbortError', 'PDF writer source was released'); };
         try {
             await cooperate();
-            await validateBoardAttachments(args.attachments, native.source.formatId, args.writeId, cooperate);
+            // No attachments at all is a print (pinPdfInkAssembly.printable): the PDF and its ink
+            // with no board embedded. Requiring board+fence made every annotated-PDF Export → PDF
+            // and Print fail ("Editable board and compatibility fence are required").
+            const printOnly = args.attachments.length === 0;
+            if (!printOnly) await validateBoardAttachments(args.attachments, native.source.formatId, args.writeId, cooperate);
             const app = args.attachments.filter(entry => entry.role !== 'unknown');
             const required = new Set([...FIXED, ...app.filter(entry => entry.role === 'media').map(entry => entry.name)]);
-            if (!equalSets(required, new Set(native.reserved))) throw new Error('The frozen board media changed after staging');
+            if (!printOnly && !equalSets(required, new Set(native.reserved))) throw new Error('The frozen board media changed after staging');
             for (const entry of args.attachments.filter(entry => entry.role === 'unknown')) {
                 if (!native.preserved.some(item => item.originalName === entry.name && item.sha256 === entry.sha256)) throw new Error('An unknown PDF attachment was not preserved');
             }

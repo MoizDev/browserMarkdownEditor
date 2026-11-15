@@ -316,16 +316,16 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 Three kinds of file open on a canvas instead of in the text editor. The existing
 editable canvases offer pen, highlighter, shapes and text, and save themselves a
-second after you stop. The native drawing and notebook viewer described below is
-currently read-only.
+second after you stop. Native drawings and notebooks open on the native board described
+below, and are editable whenever their file can be written.
 
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with **New Notebook**, in
 the pencil button's menu at the top of the sidebar. The paper and editing controls
-below describe editable legacy notebooks; native notebooks use the read-only
-viewer described under *Drawings*.
+below describe editable legacy notebooks; native notebooks use the native
+board described under *Drawings*.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -355,7 +355,7 @@ Choose **⋯ → Export to PDF** in the notebook pane (or use its download butto
 write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
 drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
 the pages are ordinary PDF pages that anything can open. Native notebooks can
-also export from their read-only viewer: every logical sheet is included on the
+also export from their native board: every logical sheet is included on the
 physical pages, in order. If preserved content cannot be rendered faithfully,
 the export stops rather than silently leaving that artwork out.
 
@@ -396,7 +396,7 @@ direction, for diagrams and thinking rather than for a page you intend to hand
 in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
 otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
-Native drawings and notebooks currently open in a **read-only viewer**: you can
+Native drawings and notebooks open on the native board: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
 jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
 opens a notebook's page strip; click a preview to jump to that page. A drawing's
@@ -405,6 +405,13 @@ navigate; with the minimap focused, arrow keys move a quarter viewport (a full
 viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
 An empty board has no invented overview.
 
+A native board is editable when its file can be written and the emergency
+read-only switch is off. Then the toolbar's pen, highlighter, eraser, shapes,
+text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+C**
+copies and **Cmd/Ctrl+V** pastes the selection, and strokes are saved to the file
+and are there when you reopen it. Otherwise the board opens read-only, with a
+notice that says why.
+
 With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
 copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
 exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
@@ -412,8 +419,8 @@ artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
 nothing is selected. With exactly one picture selected, the same menu offers
-**Replace picture…** (the new image keeps the old one's centre and longer side;
-a PDF annotation page does not offer it yet), **Crop picture** with six presets,
+**Replace picture…** (the new image keeps the old one's centre and longer side; on a PDF annotation
+page it is embedded in that PDF), **Crop picture** with six presets,
 and **Invert picture**. With one link card selected it offers **Fetch link
 preview**, which contacts the link's site only when you ask. A row that cannot
 run now stays on the menu and says why, such as a locked picture or a read-only
@@ -421,13 +428,14 @@ canvas.
 
 The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
 
-These operations and navigation do not edit the source; drawing, Cut and Paste remain unavailable in this native viewer.
+Navigation, selection, copy and export never edit the file; only the editing
+described above does.
 
 The agent's **canvas tools** use the document session rather than its viewer.
 They can change an eligible native drawing or notebook while its pane is hidden
 or unmounted; a batch is one undo step and follows the normal save path. A disk
 conflict, emergency read-only setting or unsupported native document still
-refuses changes. This does not enable the viewer's unfinished drawing tools.
+refuses changes.
 
 Drawings and notebooks **reopen where you left them** — the same spot on a
 drawing, the same page and zoom in a notebook — just as a PDF does, whether you

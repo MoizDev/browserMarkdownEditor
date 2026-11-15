@@ -226,9 +226,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const storeMedia: StoreMedia = identity.kind === 'pdfInk'
         ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
         : restoreMedia;
-    // A PDF annotation page's pictures live in the PDF, so replacing one needs that page's own storage port, which is not built yet.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current,
-        ...(identity.kind === 'pdfInk' ? {} : { restore: restoreMedia }) });
+    // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
+    // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;

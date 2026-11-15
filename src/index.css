@@ -6171,3 +6171,90 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
  .editor-history-menu { display:flex; }
  .editor-slot-title { padding-inline:2px; }
 }
+
+/* The picture crop editor (NativeCropDialog): the window is drawn over the whole original, and everything outside it is dimmed. */
+.crop-dialog {
+  width: min(600px, 94vw);
+}
+
+.crop-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  line-height: 0;
+  user-select: none;
+  touch-action: none;
+}
+
+.crop-image {
+  display: block;
+  max-width: 100%;
+  max-height: 52vh;
+  width: auto;
+  height: auto;
+}
+
+.crop-window {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--text-accent);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.5);
+  cursor: move;
+  touch-action: none;
+}
+
+.crop-window-circle {
+  border-radius: 50%;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  background: var(--text-accent);
+  border: 1.5px solid var(--text-on-accent);
+  border-radius: 2px;
+}
+
+.crop-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle-n { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle-e { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle-s { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
+
+.crop-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 14px 0 4px;
+}
+
+.crop-field {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.crop-select {
+  padding: 5px 8px;
+  font: inherit;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.crop-range {
+  width: 100%;
+  accent-color: var(--text-accent);
+}

@@ -49,6 +49,8 @@ export interface MediaRowOptions {
     readonly pick: () => Promise<File | null>;
     /** Alternative text is asked in the board's own text dialog; a view without one offers no alt row. */
     readonly requestText?: (question: BoardTextQuestion) => Promise<string | null>;
+    /** Opens the crop editor for a picture; a view without one offers no editor row. */
+    readonly openCrop?: (id: MediaRowId) => void;
     /** Clip and animation play rows, when the view can play them. */
     readonly playback?: NativeViewLease['video'];
     /** Whether the menu's selection is still the one it was raised over. */
@@ -60,7 +62,7 @@ export interface MediaRowOptions {
 
 /** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
 export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions): ContextMenuEntry[] {
-    const { actions, fail, pick, requestText, playback, current, notice } = options;
+    const { actions, fail, pick, requestText, playback, current, notice, openCrop } = options;
     const label = (key: string, fallback: string) => options.text ? options.text(key, fallback) : fallback;
     const attempt = (action: () => void | Promise<void>) => () => {
         if (!current()) { notice('The selection changed; open the menu again.'); return; }
@@ -75,6 +77,10 @@ export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions
     if (selection.replaceable) {
         rows.push({ kind: 'command', id: 'media-replace', label: label('chrome.replaceMedia', 'Replace picture…'), ...rowState,
             run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });
+    }
+    if (openCrop) {
+        rows.push({ kind: 'command', id: 'media-crop-editor', label: label('chrome.cropImage', 'Crop image'), ...rowState,
+            run: attempt(() => openCrop(selection.id)) });
     }
     rows.push({ kind: 'submenu', id: 'media-crop', label: label('chrome.cropImage', 'Crop picture'), ...rowState,
         entries: CROP_ROWS.map(({ preset, label: presetLabel }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: presetLabel, ...rowState,

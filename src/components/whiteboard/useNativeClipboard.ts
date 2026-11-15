@@ -125,7 +125,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         : restoreMedia;
     // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
     // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,

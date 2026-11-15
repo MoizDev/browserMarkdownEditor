@@ -36,3 +36,31 @@ export function planPictureCrop(node: Readonly<PictureNode>, media: Readonly<Med
     return [{ t: 'set', id: node.id, key: 'crop', value: crop }, { t: 'set', id: node.id, key: 'w', value: w },
         { t: 'set', id: node.id, key: 'h', value: h }, { t: 'set', id: node.id, key: 'x', value: x }, { t: 'set', id: node.id, key: 'y', value: y }];
 }
+
+/** A normalized window on the original picture: 0..1 on each axis, x0 < x1 and y0 < y1. */
+export interface CropWindow { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
+/**
+ * Places a picture cropped to an explicit window (the crop editor's). The window's scale is the node's current scale, so
+ * the visible part keeps its size on the board, and the node's centre stays where it was, as a preset crop keeps it.
+ */
+export function planPictureWindow(node: Readonly<PictureNode>, media: Readonly<MediaEntry>, window: CropWindow, circle: boolean): readonly Op[] {
+    if (![window.x0, window.y0, window.x1, window.y1].every(Number.isFinite) || window.x0 < 0 || window.y0 < 0
+        || window.x1 > 1 || window.y1 > 1 || window.x1 - window.x0 <= 0 || window.y1 - window.y0 <= 0
+        || !Number.isFinite(media.w) || !Number.isFinite(media.h) || media.w <= 0 || media.h <= 0 || node.media !== media.id) {
+        throw new RangeError('Invalid picture crop window');
+    }
+    const old = node.crop ?? { x0: 0, y0: 0, x1: 1, y1: 1, circle: false };
+    if (![old.x0, old.y0, old.x1, old.y1, node.w, node.h].every(Number.isFinite) || old.x1 <= old.x0 || old.y1 <= old.y0 || node.w <= 0 || node.h <= 0) {
+        throw new RangeError('Invalid existing picture geometry');
+    }
+    const whole = window.x0 === 0 && window.y0 === 0 && window.x1 === 1 && window.y1 === 1 && !circle;
+    const crop: Crop | null = whole ? null : { x0: window.x0, y0: window.y0, x1: window.x1, y1: window.y1, circle };
+    const scaleX = node.w / ((old.x1 - old.x0) * media.w), scaleY = node.h / ((old.y1 - old.y0) * media.h);
+    const w = (window.x1 - window.x0) * media.w * scaleX, h = (window.y1 - window.y0) * media.h * scaleY;
+    if (![w, h].every(value => Number.isFinite(value) && value >= 1 && value <= 1_000_000)) throw new RangeError('Crop produces an invalid picture box');
+    const dx = (node.w - w) / 2, dy = (node.h - h) / 2, cos = Math.cos(node.rotation), sin = Math.sin(node.rotation);
+    const x = node.x + cos * dx - sin * dy, y = node.y + sin * dx + cos * dy;
+    if (![x, y].every(value => Number.isFinite(value) && Math.abs(value) <= 10_000_000)) throw new RangeError('Crop produces an invalid picture position');
+    return [{ t: 'set', id: node.id, key: 'crop', value: crop }, { t: 'set', id: node.id, key: 'w', value: w },
+        { t: 'set', id: node.id, key: 'h', value: h }, { t: 'set', id: node.id, key: 'x', value: x }, { t: 'set', id: node.id, key: 'y', value: y }];
+}

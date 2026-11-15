@@ -19,13 +19,16 @@ import { createNativeBoardOperations } from './nativeBoardOperations';
 import { createNativeCameraOperations } from './nativeCameraOperations';
 import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } from './nativeCommandSource';
 import { createNativeEditingKeyboard } from './nativeEditingKeyboard';
-import { chooseReplacementImage } from './nativeMediaRows';
+import { chooseReplacementImage, type MediaRowId } from './nativeMediaRows';
+import { NativeCropDialog, type CropWindow } from './NativeCropDialog';
 import type { NativeEditingCapabilities, NativeEditingCapabilityFactory } from './nativeEditingCapabilities';
 import { createNativeLinkOperations } from './nativeLinkOperations';
 import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
 import { documentClipboard, type NativeClipboardService } from './useNativeClipboard';
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
 import { useNativeBoardLanguage } from './useNativeBoardLanguage';
+
+interface CropOpen { readonly id: MediaRowId; readonly url: string; readonly width: number; readonly height: number; readonly window: CropWindow; readonly circle: boolean }
 
 type Links = ReturnType<typeof createNativeLinkOperations>;
 type Styles = ReturnType<typeof createBoardStyleControls>;
@@ -164,6 +167,27 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const shortcutsAvailable = useCallback(() => !!shortcutRef.current, []);
     const openShortcuts = useCallback(() => { if (!shortcutRef.current) throw new Error('Shortcuts are unavailable'); shortcutRef.current(); }, []);
     const canWrite = useCallback(() => canMutateView() && host.canWrite(identity), [canMutateView, host, identity]);
+    // The crop editor's one open picture: its original, read for this editor and released when the editor closes.
+    const [crop, setCrop] = useState<CropOpen | null>(null);
+    useEffect(() => { if (!crop) return; const url = crop.url; return () => URL.revokeObjectURL(url); }, [crop]);
+    const openCrop = useCallback((id: MediaRowId) => {
+        const info = clipboard.media.cropSource(id);
+        if (!info) { report(new Error('This picture cannot be cropped.')); return; }
+        clipboard.media.readOriginal(id, signal).then(blob => {
+            if (!blob) throw new Error('The picture bytes are unavailable.');
+            if (signal.aborted) return;
+            setCrop({ id, url: URL.createObjectURL(blob), width: info.width, height: info.height, window: info.window, circle: info.circle });
+        }).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
+    }, [clipboard, report, signal]);
+    const closeCrop = useCallback(() => setCrop(null), []);
+    const confirmCrop = useCallback((frame: CropWindow, circle: boolean) => {
+        const open = crop;
+        setCrop(null);
+        if (!open) return;
+        try { clipboard.media.cropWindow(open.id, frame, circle); } catch (error) { report(error); }
+    }, [crop, clipboard, report]);
+    const cropDialog = crop ? <NativeCropDialog key={crop.url} url={crop.url} width={crop.width} height={crop.height}
+        initial={crop.window} initialCircle={crop.circle} onConfirm={confirmCrop} onCancel={closeCrop} /> : null;
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
         requestText: dialogs.requestText, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, setNotice]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
@@ -201,13 +225,13 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
             embed: () => embedPort ? embedControllerRef.current : null,
             media: () => ({ actions: clipboard.media, selection: writable => clipboard.media.selection(writable), fail: report,
-                pick: chooseReplacementImage, requestText: dialogs.requestText, playback: lease.video }),
+                pick: chooseReplacementImage, requestText: dialogs.requestText, playback: lease.video, openCrop }),
             current, canWrite, notice: setNotice });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
     }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice,
-        dialogs.requestText]);
+        dialogs.requestText, openCrop]);
     const registerShortcuts = useCallback((open: () => void) => {
         shortcutRef.current = open; refreshServices(value => value + 1);
         return () => { if (shortcutRef.current === open) shortcutRef.current = null; };
@@ -251,7 +275,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
 
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
+    return <>{dialogs.dialogs}{cropDialog}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
             editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
             canMutate: lease.canMutateView })}</>;
 }

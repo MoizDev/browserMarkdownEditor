@@ -111,7 +111,26 @@ export async function createBoardEncoderBounds(options: {
         }
         return undefined;
     };
-    const get = (node: Node): Bounds => {
+    // A group's box is exactly the union of its children's boxes, so it is read here from the same synchronous
+    // resolver as every other node. The prepared group cache is only a shortcut: it is keyed to the revision it
+    // was measured at, and a group created by a duplicate, paste or group command is never prepared, so the
+    // save path (which cannot await) would otherwise refuse a group the board already holds. Measured: a Select
+    // All + duplicate over a group threw "Geometry unavailable" from encodeNode on save.
+    const groupUnion = (node: Node, depth: number): Bounds => {
+        if (depth >= 64) throw new Error('Encoder bounds group depth exceeded');
+        const children = doc.children.get(node.id) ?? [];
+        if (!children.length) throw new Error(`Empty group ${node.id} has no geometry bounds`);
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const child of children) {
+            const [x, y, w, h] = resolve(child, depth + 1);
+            minX = Math.min(minX, x); minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+        }
+        const x = minX, y = minY, w = nextUp(nextUp(maxX) - x), h = nextUp(nextUp(maxY) - y);
+        if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) throw new RangeError('Invalid group geometry bounds');
+        return [x, y, w, h];
+    };
+    const resolve = (node: Node, depth = 0): Bounds => {
         if (doc.nodes.get(node.id) !== node) throw new Error('Encoder bounds require the live board record');
         const live = options.local(node);
         if (live) return asBounds(world(node, copyLocal(live)), origin(node));
@@ -119,12 +138,13 @@ export async function createBoardEncoderBounds(options: {
         if (prior && Object.is(prior.epoch, epoch) && matches(node, prior.fields)) return asBounds(world(node, prior.local), origin(node));
         const group = groupWorld.get(node.id);
         if (node.kind === 'group' && group && group.revision === doc.rev && Object.is(group.epoch, epoch)) return asBounds(group.box, origin(node));
+        if (node.kind === 'group') return groupUnion(node, depth);
         const hint = originalHint(node);
         if (hint) return hint;
         throw new Error(`Geometry unavailable for native bounds of node ${node.id}`);
     };
     return {
-        bounds: get,
+        bounds: node => resolve(node),
         async prepare(ids, signal) {
             const revision = doc.rev, epoch = options.geometryEpoch?.();
             const check = () => {

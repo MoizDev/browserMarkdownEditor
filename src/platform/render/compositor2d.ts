@@ -127,6 +127,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private readonly sources = new Map<CanvasImageSource, ImageSourceState>();
     private retained = new Set<CanvasImageSource>();
     private pendingSources = new Set<CanvasImageSource>();
+    /** The sources of the last attempt under the previous frame key. While a stroke changes the key every frame, an attempt
+     * that is dropped for one missing upload is never presented, so pruning its sources at the next key released the very
+     * leases and admissions the retry needed: a first stroke on a PDF dropped every frame (measured: 147 drops, 0 shown). */
+    private priorAttempt = new Set<CanvasImageSource>();
     private readonly encodedSources = new Set<Set<CanvasImageSource>>();
     private retainedCrops = new Set<Crop>();
     private pendingCrops = new Set<Crop>();
@@ -274,7 +278,14 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (job?.stage === 'ready' && !budget.shouldYield() && budget.claimUpload(job.band.canvas.width * job.band.canvas.height * 4)) {
                 job.admission = budget;
             }
-            for (const buffer of this.buffers.values()) for (const use of buffer.images.values()) {
+            for (const buffer of this.buffers.values()) for (let use of buffer.images.values()) {
+                // A canvas source is versioned by the frame key, which changes with every wet-ink revision. Admit it under
+                // the key this frame will encode with: admitting the previous key's use let encode re-version it without an
+                // admission and drop the frame, every frame of a first stroke on a PDF (measured: 147 drops, 0 shown).
+                if (!(use.source instanceof ImageBitmap) && use.version !== key) {
+                    use = { ...use, version: key, resident: false, admission: null };
+                    buffer.images.set(use.source, use);
+                }
                 if (use.resident || budget.shouldYield()) continue;
                 if (!use.lease) use.lease = this.reserveGpu(use.bytes);
                 if (use.lease && budget.claimUpload(use.bytes)) use.admission = budget;
@@ -983,12 +994,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private beginSources(key: string): void {
         if (this.sourceKey === key) return;
         this.sourceKey = key;
+        this.priorAttempt = this.pendingSources;
         this.pendingSources = new Set(); this.pendingCrops = new Set();
         this.pruneSources();
     }
     private pruneSources(): void {
         const pinned = (source: CanvasImageSource) => {
-            if (this.retained.has(source) || this.pendingSources.has(source)) return true;
+            if (this.retained.has(source) || this.pendingSources.has(source) || this.priorAttempt.has(source)) return true;
             for (const sources of this.encodedSources) if (sources.has(source)) return true;
             return false;
         };
@@ -1025,7 +1037,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         for (const [key, buffer] of this.buffers) this.closeBuffer(key, buffer);
         for (const source of this.sources.values()) this.closeSource(source);
         this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = ''; this.shortfall = null;
-        this.retained.clear(); this.pendingSources.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.sourceKey = '';
+        this.retained.clear(); this.pendingSources.clear(); this.priorAttempt.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.sourceKey = '';
     }
 }
 

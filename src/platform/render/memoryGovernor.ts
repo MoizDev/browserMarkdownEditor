@@ -409,8 +409,7 @@ export class MemoryGovernor {
             }
         }
         if (this.charged.gpu > this.target.gpu || this.charged.cpu > this.target.cpu) this.degrade();
-        const cool = this.charged.gpu < this.target.gpu * POLICY.memoryRecoveryRatio &&
-            this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio && !liveGesture;
+        const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
@@ -519,7 +518,10 @@ export class MemoryGovernor {
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
             if (!allowed()) {
-                this.refuseReservation(pool);
+                // Only a pool that cannot hold the request is pressure. A refusal at the pane's own grant is that
+                // pane's back-pressure: degrading the whole app for it held the GPU quality at 0.51-0.8 for good,
+                // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
+                if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
                 return null;
             }
         }
@@ -702,6 +704,14 @@ export class MemoryGovernor {
         return bytes;
     }
 
+    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
+     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
+     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
+    cool(): boolean {
+        return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
+            this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
+    }
+
     private degrade(): void {
         this.state = 'degraded';
         this.belowRecoverySince = null;
@@ -721,14 +731,17 @@ export class MemoryGovernor {
         const weight = (pane: PaneMemoryDemand) => pane.focused ? POLICY.focusedPaneWeight : POLICY.unfocusedPaneWeight;
         const minimum = this.minimumProgressBytes();
         const overhead = this.kindBytes('context') + this.kindBytes('program');
-        let remaining = Math.max(0, this.target.gpu - overhead);
+        // Grants fit under the trim target: the scheduler trims the pool past memorySoftPressureRatio, so a pane granted the
+        // whole pool was evicted for using its own grant, released all its GPU work, rebuilt it and was evicted again (measured:
+        // a notebook granted 51 MB of a 64 MB pool reached 61 MB and never presented on the GPU).
+        let remaining = Math.max(0, Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio) - overhead);
         const supported: PaneMemoryDemand[] = [];
         for (const pane of [...visible].sort((a, b) => weight(b) - weight(a) || stableId(a.paneId, b.paneId))) {
             if (remaining < minimum) continue;
             supported.push(pane);
             remaining -= minimum;
         }
-        const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.surfaceMaxGpuGrantFraction), remaining);
+        const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio * POLICY.surfaceMaxGpuGrantFraction), remaining);
         // Denying GL must not deny a 2D drawing buffer (§6.3:641); both paths share this cap.
         const pixels = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.floor(pane.requestedPixels * this.qualityLimit * this.qualityLimit) })),

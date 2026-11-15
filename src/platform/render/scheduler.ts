@@ -576,6 +576,12 @@ export class FrameScheduler {
                     if (!entry.renderable || !token || !this.live(entry)) {
                         entry.wakes.clear();
                         this.cancelMotion(entry);
+                        // A failed commit is transient (a resize the grant has not reached yet). Non-renderable panes are
+                        // not polled for needsFrame, so without a retry the pane stayed parked: a stroke's tail never drew
+                        // after a commit failed at its last move, and a PDF board never followed its degraded first frame.
+                        if (result?.kind === 'failed' && token && this.live(entry) && entry.layers.some(layer => layer.needsFrame())) {
+                            queueMicrotask(() => { if (this.live(entry)) this.mark(entry, 'metrics-retry'); });
+                        }
                         if (metrics?.kind === 'dormant' && !entry.dormantNotified) {
                             entry.dormantNotified = true;
                             entry.pane.suspend('geometry-dormant');

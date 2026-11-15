@@ -167,9 +167,7 @@ export class PlatformRuntime {
 
     private advance(): void {
         this.lifecycles.advancePressure(performance.now(), [...this.panes.values()].some(pane => pane.interacting()));
-        const { state, gpu, cpu } = this.governor.readout();
-        const canRecover = state !== 'normal' && gpu.chargedBytes < gpu.targetBytes * POLICY.memoryRecoveryRatio &&
-            cpu.chargedBytes < cpu.targetBytes * POLICY.memoryRecoveryRatio;
+        const canRecover = this.governor.readout().state !== 'normal' && this.governor.cool();
         if (!canRecover && this.recoveryTimer !== null) {
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = null;

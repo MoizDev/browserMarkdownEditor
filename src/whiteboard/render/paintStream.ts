@@ -84,7 +84,10 @@ export interface PaintNodeSource {
     readNode(index: number): PaintNode;
     isCurrent(): boolean;
 }
-export interface PaintFrame {
+import type { PaintWindow } from './paintWindows';
+
+/** Identity, revision and metadata that every paint source carries, whatever its item representation. */
+export interface PaintFrameRoot {
     readonly sourceDoc?: BoardDoc;
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
@@ -97,17 +100,27 @@ export interface PaintFrame {
     readonly occupiedRoot?: Readonly<Rect>;
     /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
-    /** True for a dense frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. */
-    readonly liveOnly?: true;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;
     readonly sensitiveNodes?: ReadonlySet<string>;
     /** View-only suppression; never evidence that dry ink was presented. */
     readonly occludedInkNodeIds?: ReadonlySet<string>;
+}
+/** A full frame: every item of both bands, in canonical order, as band arrays. */
+export interface PaintFrame extends PaintFrameRoot {
+    readonly liveOnly?: undefined;
     readonly underlay: readonly PaintItem[];
     readonly content: readonly PaintItem[];
 }
+/** A live-only (dense) frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. Its items
+ * are ordered bounded windows, underlay windows before content windows; no whole band array is ever built. */
+export interface LivePaintFrame extends PaintFrameRoot {
+    readonly liveOnly: true;
+    readonly windows: readonly PaintWindow[];
+}
+/** Any paint source: the frame kind decides how its items are reached, never the caller's guess. */
+export type PaintSource = PaintFrame | LivePaintFrame;
 export type PaintEmit = (item: PaintItem, band: PaintBand) => void;
 export type PaintStreamStatus = 'pending' | 'complete' | 'stale' | 'cancelled';
 

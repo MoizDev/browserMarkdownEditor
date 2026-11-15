@@ -6,7 +6,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
-import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
+import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
+import { windowsOfSource, type PaintWindow } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
@@ -23,11 +24,11 @@ export interface BoardLayersOptions {
     readonly onError: (error: unknown) => void;
     readonly requestedRevision: () => number;
     /** View-only suppression, evaluated against the actual ready preview frame. */
-    readonly omitNodes?: (frame: PaintFrame) => ReadonlySet<string> | null;
+    readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
-    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame, context?: ViewerPaintPresentation) => void;
-    readonly onDrawn?: (revision: number, frame: PaintFrame, context: ViewerPaintPresentation) => void;
+    readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
+    readonly onDrawn?: (revision: number, frame: PaintSource, context: ViewerPaintPresentation) => void;
     /** Upper bound on the nodes this view meets, from the sheet index; null while that index builds. */
     readonly candidates?: () => number | null;
     /** The density mode changed: the owner requests the matching kind of frame (live-only for dense). */
@@ -36,8 +37,10 @@ export interface BoardLayersOptions {
     readonly requestFrame?: () => void;
 }
 interface Estimate {
-    readonly frame: PaintFrame;
-    band: 0 | 1;
+    readonly frame: PaintSource;
+    // The source's windows and the cursor into them: window, then item within it.
+    readonly windows: readonly PaintWindow[];
+    window: number;
     index: number;
     clip: number;
     chunk: number;
@@ -91,13 +94,10 @@ function addBytes(state: Estimate, bytes: number): void {
 }
 /** One estimate unit visits one item, clip, or ink chunk; no whole-frame scan in demand(). */
 function estimateStep(state: Estimate): void {
-    const items = state.band === 0 ? state.frame.underlay : state.frame.content;
-    if (state.index >= items.length) {
-        if (state.band === 0) { state.band = 1; state.index = 0; }
-        else state.done = true;
-        return;
-    }
-    const item: PaintItem = items[state.index];
+    const window = state.windows[state.window];
+    if (!window) { state.done = true; return; }
+    if (state.index >= window.items.length) { state.window++; state.index = 0; return; }
+    const item: PaintItem = window.items[state.index];
     if (state.clip < item.clips.length) {
         addBytes(state, item.clips[state.clip++].d.length * 80);
         return;
@@ -130,7 +130,7 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     invalidate(reason?: string): void;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
-    readyFrame(): PaintFrame | null;
+    readyFrame(): PaintSource | null;
     /** The canonical CPU allocator of the bound layer host, or null before the first host has drawn. */
     memory(): MemoryAllocator | null;
 }
@@ -142,8 +142,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const retiringDense = new Set<ReturnType<typeof createDensePaintAdapter>>();
     const density = new DensityController();
     let useDense = false, deferredClear = false;
-    const liveSets = new WeakMap<PaintFrame, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
-    const liveFor = (frame: PaintFrame): ReadonlySet<string> | undefined => {
+    const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
+    const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
         if (!omit?.size && !wet?.size) return frame.sensitiveNodes;
         const old = liveSets.get(frame); if (old && old.omit === omit && old.wet === wet) return old.live;
@@ -152,13 +152,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
     let missingKey: string | null = null;
-    let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
-    let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
+    let presented: PaintSource | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
+    let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
-    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation };
+    type Drawn = { frame: PaintSource; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation };
     const drawn = new Map<PaintBand, Drawn>();
-    let drawSource: PaintFrame | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
+    let drawSource: PaintSource | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
     let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
     let announced = new WeakMap<RenderToken, { underlay: Drawn; content: Drawn }>();
     const recordDraw = (band: PaintBand, value: Drawn) => {
@@ -179,27 +179,27 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         announced.set(prepareToken, { underlay, content });
         options.onDrawn?.(value.frame.sceneRevision, value.frame, value.context);
     };
-    const inkFrames = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
-    const inkFrame = (frame: PaintFrame, ink: ReadonlySet<string>): PaintFrame => {
+    const inkFrames = new WeakMap<PaintSource, WeakMap<ReadonlySet<string>, PaintSource>>();
+    const inkFrame = (frame: PaintSource, ink: ReadonlySet<string>): PaintSource => {
         if (frame.inkNodeIds === ink) return frame;
         let versions = inkFrames.get(frame); if (!versions) { versions = new WeakMap(); inkFrames.set(frame, versions); }
         let result = versions.get(ink);
         if (!result) { result = { ...frame, inkNodeIds: ink }; versions.set(ink, result); }
         return result;
     };
-    const filtered = new WeakMap<PaintFrame, WeakMap<ReadonlySet<string>, PaintFrame>>();
-    const presentedFrame = (frame: PaintFrame, omit: ReadonlySet<string> | null): PaintFrame => {
+    const filtered = new WeakMap<PaintSource, WeakMap<ReadonlySet<string>, PaintSource>>();
+    const presentedFrame = (frame: PaintSource, omit: ReadonlySet<string> | null): PaintSource => {
         if (!omit?.size) return frame;
         let versions = filtered.get(frame); if (!versions) { versions = new WeakMap(); filtered.set(frame, versions); }
         let result = versions.get(omit);
         if (!result) { result = { ...frame, inkNodeIds: new FilteredInk(frame.inkNodeIds, omit) }; versions.set(omit, result); }
         return result;
     };
-    const reservations = new Map<PaintFrame, ByteLease[]>(), known = new Set<PaintFrame>();
+    const reservations = new Map<PaintSource, ByteLease[]>(), known = new Set<PaintSource>();
     let reserved = 0;
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ } };
-    const releaseFrame = (frame: PaintFrame) => {
+    const releaseFrame = (frame: PaintSource) => {
         const leases = reservations.get(frame);
         if (!leases) return;
         reservations.delete(frame);
@@ -207,7 +207,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     // Facts borrow the exact prepared plan this draw read, never the raw provider: the 2D snapshot
     // or dense plan keeps its image leases and bitmaps alive until the lease is released.
-    const presentedImages = (frame: PaintFrame, omit: ReadonlySet<string> | null) => (): PresentedImageLease | null => {
+    const presentedImages = (frame: PaintSource, omit: ReadonlySet<string> | null) => (): PresentedImageLease | null => {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
         const { prepared } = borrow;
@@ -231,7 +231,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         let released = false;
         return Object.freeze({ frame: source, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
     };
-    const retainedByDense = (): ReadonlySet<PaintFrame> => {
+    const retainedByDense = (): ReadonlySet<PaintSource> => {
         const retained = new Set(dense?.retainedFrames());
         for (const old of retiringDense) {
             const frames = old.retainedFrames();
@@ -286,12 +286,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
         return adapter;
     };
-    const startEstimate = (frame: PaintFrame) => {
+    const startEstimate = (frame: PaintSource) => {
         if (estimate?.frame === frame) return;
         known.add(frame);
-        estimate = { frame, band: 0, index: 0, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false }; denied = false;
+        estimate = { frame, windows: windowsOfSource(frame), window: 0, index: 0, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false }; denied = false;
     };
-    const prune = (requested: PaintFrame, ready: PaintFrame | null) => {
+    const prune = (requested: PaintSource, ready: PaintSource | null) => {
         const retained = retainedByDense();
         for (const frame of known) {
             if (!retained.has(frame) && frame !== requested && frame !== ready && frame !== gpu?.readyFrame() && frame !== presented && frame !== drawn.get('underlay')?.frame && frame !== drawn.get('content')?.frame) {

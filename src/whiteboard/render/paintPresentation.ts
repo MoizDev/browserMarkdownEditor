@@ -1,6 +1,6 @@
 import type { Affine, ViewState } from '../../platform/types';
 import type { FrameToken } from '../../platform/render/types';
-import type { PaintFrame, PaintImageItem } from './paintStream';
+import type { PaintImageItem, PaintSource } from './paintStream';
 
 /** One image the actual draw consumed, with the exact accepted ImageBitmap it sampled. */
 export interface PresentedImage {
@@ -14,7 +14,7 @@ export interface PresentedImage {
  * presentation has been superseded, and a later release frees them exactly once. `frame` is the
  * DRAWN frame (dense tiles included, in paint order), whose items `images` reference by identity. */
 export interface PresentedImageLease {
-    readonly frame: PaintFrame;
+    readonly frame: PaintSource;
     readonly images: readonly PresentedImage[];
     release(): void;
 }

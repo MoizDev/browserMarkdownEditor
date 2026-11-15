@@ -1,6 +1,6 @@
 import type { FrameBudget } from '../../platform/render/types';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { PaintFrame, PaintNodeSource } from './paintStream';
+import type { PaintNodeSource, PaintSource } from './paintStream';
 import type { PaintFrameSource } from './resources';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { Rect } from '../../platform/types';
@@ -36,12 +36,12 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     prepare(budget: FrameBudget): void;
     needsFrame(): boolean;
     /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
-    presented(frame: PaintFrame): void;
+    presented(frame: PaintSource): void;
     /** Retains this exact frame's source/metadata through asynchronous presentation-fact work.
      * Release only after its physical worker work retires; hide/dispose cannot reclaim it early. */
-    retain(frame: PaintFrame): () => void;
+    retain(frame: PaintSource): () => void;
     /** Called when the backend no longer holds this frame, including cancelled staging. */
-    retire(frame: PaintFrame): void;
+    retire(frame: PaintSource): void;
     /** Retire pins on hide; outstanding presentation-fact borrows still own their source. */
     clear(): void;
     /** Resolves after retired sources, including outstanding borrows, physically release. */

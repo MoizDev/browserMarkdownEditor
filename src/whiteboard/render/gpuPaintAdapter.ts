@@ -11,7 +11,7 @@ import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { texturedQuad } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
+import type { PaintSource, PaintItem, PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
@@ -32,7 +32,7 @@ interface AnalyticGroup {
 /** The tile commands of one window, in its draw order, and the analytic groups that start inside it. */
 interface WindowTiles { readonly band: PaintBand; readonly tiles: Tile[]; readonly groupAt: Map<number, AnalyticGroup> }
 interface Plan {
-    prepared: PreparedPaint2d; sourceFrame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
+    prepared: PreparedPaint2d; sourceFrame: PaintSource; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
     x0: number; y0: number; x1: number; y1: number;
     /** The window and the item inside it that the build step has reached. */
     window: number; item: number; x: number; y: number; out: WindowTiles[];
@@ -405,7 +405,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },
-        readyFrame(): PaintFrame | null { return disposed ? null : ready?.sourceFrame ?? null; },
+        readyFrame(): PaintSource | null { return disposed ? null : ready?.sourceFrame ?? null; },
         /** The prepared paint the ready tiles were built from; consumers iterate its windows. */
         readyPaint(): PreparedPaint2d | null { return disposed ? null : ready?.prepared ?? null; },
         readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.prepared.root.inkNodeIds ?? null; },

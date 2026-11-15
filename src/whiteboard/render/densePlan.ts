@@ -4,14 +4,14 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason } from '../../platform/render/types';
 import type { Blend } from './colour';
 import type { PaintBand } from './material';
-import type { PaintFrame, PaintImageItem, PaintItem } from './paintStream';
+import type { PaintSource, PaintImageItem, PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type TilePyramid, type TileAddress, type TileScale } from './tileHierarchy';
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d } from './reference/canvasPaintAdapter';
-import { PaintWindowBuilder, rootOf, type PaintRoot } from './paintWindows';
+import { bandItemsOf, PaintWindowBuilder, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
@@ -67,7 +67,8 @@ interface TileBitmap {
  * standin entry carries the `slot` of the refinement that will replace it. */
 interface Entry { readonly blend: Blend; readonly end: string | null; readonly bitmap: TileBitmap; readonly slot: number | null }
 type Plan = {
-    source: PaintFrame; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
+    source: PaintSource; // the source's windows, read once when the plan starts
+    windows: readonly PaintWindow[]; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
     phase: 'summary' | 'tiles' | 'direct' | 'refine' | 'complete';
     /** Summaries are decided once, when the summary phase starts; null until then. */
     summaries: SummaryTarget[] | null; summaryIndex: number; summaryCache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
@@ -110,7 +111,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
     let lastFrame = -1;
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
-    let failedFrame: PaintFrame | null = null;
+    let failedFrame: PaintSource | null = null;
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased;
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
@@ -146,7 +147,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
         finishRetirement(p);
     };
-    const start = (frame: PaintFrame, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
+    const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
         // Without a reopenable stream there is no tile content to build; the caller keeps its direct path.
         if (!frame.openTile) return null;
         const demand = view.camera.z * view.viewport.dpr, target = chooseTileScale(demand).scale;
@@ -161,7 +162,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (!lease) { denied = true; return null; }
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
-            const p: Plan = { source: frame, view: projection(view), scale, sharp: scale >= demand, live,
+            const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
                 phase: summarized ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
                 summaries: null, summaryIndex: 0, summaryCache: null,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
@@ -405,7 +406,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return item;
         };
         let group: string | null = null;
-        for (const item of p.source[band]) {
+        for (const item of bandItemsOf(p.windows, band)) {
             if (!p.live?.has(item.nodeId)) continue;
             if (item.nodeId !== group) {
                 group = item.nodeId;
@@ -439,7 +440,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const adapter: CanvasPaintAdapter & {
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
         coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
-        retainedFrames(): ReadonlySet<PaintFrame>;
+        retainedFrames(): ReadonlySet<PaintSource>;
         cpuWorkingSet(nativePathUpperBound?: number): number;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {

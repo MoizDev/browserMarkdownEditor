@@ -226,7 +226,9 @@ export class PaneCapturer {
                 || (options.pixelsPerWorldUnit !== undefined && (!Number.isFinite(options.pixelsPerWorldUnit) || options.pixelsPerWorldUnit <= 0))) {
                 throw new CaptureError('invalid-input');
             }
-            const request = requestFor(worldRect, maxSidePx, options, { axis: options.clipboard ? 8192 : 16384, pixels: 2 ** 28 });
+            // The same export limits as whiteboard/export/png.ts: a download streams bands, a copy keeps the clipboard's limits.
+            const request = requestFor(worldRect, maxSidePx, options,
+                options.clipboard ? { axis: 8192, pixels: 2 ** 28 } : { axis: 65535, pixels: 2 ** 32 });
             const deadline = options.deadlineMs ?? 60_000;
             if (!Number.isFinite(deadline) || deadline <= 0 || deadline > 2147483647) throw new CaptureError('invalid-input');
             active = scope(deadline); active.link(this.lifetime.signal, 'disposed');

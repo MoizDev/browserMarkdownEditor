@@ -52,7 +52,7 @@ export function pdfContainedAssets(): Plugin {
         buildStart() { broker = undefined; worker = undefined; metadata = undefined; },
         handleHotUpdate(context) {
             const path = context.file.replaceAll('\\', '/');
-            if (path.includes('/src/pdf/') || path.includes('/src/platform/workers/') ||
+            if (path.includes('/src/pdf/') || path.includes('/src/utils/pdf') || path.includes('/src/platform/workers/') ||
                 path.endsWith('/src/utils/readingEmphasis.ts') || path.endsWith('/src/utils/sha256.ts') ||
                 path.endsWith('/src/platform/containedFrameBuild.mjs')) {
                 broker = undefined; worker = undefined; metadata = undefined;

@@ -1,3 +1,4 @@
+import type { RegionChanges } from '../scene/boundsVersions';
 import type { RenderToken } from '../../platform/render/types';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
@@ -28,7 +29,9 @@ interface Owner {
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
+    readonly regionChangesSince?: (from: number) => RegionChanges;
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
+    readonly liveOnly?: true;
     isCurrent(): boolean;
     release(): void | Promise<void>;
 }
@@ -79,8 +82,10 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get sessionRasters() { return stream.sessionRasters; },
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
+        get regionChangesSince() { return stream.regionChangesSince; },
         openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
-        isCurrent: () => stream.isCurrent(),
+        liveOnly: pin.liveOnly,
+        isCurrent: () => pin.isCurrent(),
         // The stream drains its active next() before the snapshot that pins its sources may go.
         async release() {
             try { await stream.release(); } finally { await pin.release(); }
@@ -96,29 +101,42 @@ function syncFeed(source: PaintNodeSource, add: Add): Feed {
     };
 }
 const IDLE_FEED: Feed = { step: () => 'cancelled', get waiting() { return false; }, cancel() { /* Nothing staged yet. */ } };
-function streamFeed(stream: PinnedPaintStream['stream'], add: Add, wake: () => void): Feed {
-    let pending: Promise<void> | null = null, ended = false, cancelled = false, failure: { error: unknown } | null = null;
-    return {
-        step() {
-            if (failure) { const { error } = failure; failure = null; throw error; }
-            if (cancelled) return 'cancelled';
-            if (!stream.isCurrent()) return 'stale';
-            if (pending) return 'waiting';
-            if (ended) return 'complete';
-            const run: Promise<void> = stream.next().then((node: PaintNode | null) => {
+/** Pulls nodes in background slices bounded by the staged blocks and a short time budget, then wakes
+ * the host once per slice. A per-node wake would cost one host frame for every scene node. */
+function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => boolean, wake: () => void): Feed {
+    const SLICE_MS = 4;
+    let pumping = false, ended = false, cancelled = false, failure: { error: unknown } | null = null;
+    const pump = async () => {
+        const started = performance.now();
+        try {
+            while (!cancelled && !ended && room() && performance.now() - started < SLICE_MS) {
+                const node: PaintNode | null = await stream.next();
                 if (cancelled) return;
                 if (node === null) { ended = true; return; }
                 // A node is admitted whole; its items are the only per-node memory, already bounded by the source.
                 for (const item of node.underlay ?? []) add(item, 'underlay');
                 for (const item of node.content) add(item, 'content');
-            }, error => { if (!cancelled) failure = { error }; }).finally(() => {
-                if (pending === run) pending = null;
-                if (!cancelled) wake();
-            });
-            pending = run;
+            }
+        } catch (error) { if (!cancelled) failure = { error }; }
+        finally {
+            pumping = false;
+            if (!cancelled) wake();
+        }
+    };
+    return {
+        step() {
+            if (failure) { const { error } = failure; failure = null; throw error; }
+            if (cancelled) return 'cancelled';
+            if (pumping) return 'waiting';
+            // EOF physically closes the cursor, not the immutable source the finished frame owns.
+            if (ended) return 'complete';
+            if (!stream.isCurrent()) return 'stale';
+            if (!room()) return 'waiting';
+            pumping = true;
+            void pump();
             return 'waiting';
         },
-        get waiting() { return pending !== null; },
+        get waiting() { return pumping; },
         cancel() { cancelled = true; },
     };
 }
@@ -180,7 +198,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         notifyRetired();
     };
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
-    const start = (owner: Owner, feed: (add: Add) => Feed): void => {
+    const start = (owner: Owner, feed: (add: Add, room: () => boolean) => Feed): void => {
         dropStaging();
         const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
         const blocks: Block[] = [];
@@ -192,7 +210,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 inkNodeIds.add(item.nodeId); work.used += INK_SET_ENTRY_BYTES;
             }
         };
-        work.feed = feed(add);
+        work.feed = feed(add, () => !needsBlock(work));
         staging = work;
         invalidate();
     };
@@ -201,6 +219,8 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const frame: PaintFrame = Object.freeze({ token: o.token, sceneRevision: o.sceneRevision,
             sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
+            regionChangesSince: o.regionChangesSince,
+            ...(o.liveOnly ? { liveOnly: true as const } : {}),
             underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         retained.set(frame, published); latest = published; staging = null; invalidate();
@@ -219,7 +239,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         },
         requestStream(pin) {
             if (disposed) { releaseOwned(streamOwner(pin), []); return; }
-            start(streamOwner(pin), add => streamFeed(pin.stream, add, () => { if (staging) invalidate(); }));
+            start(streamOwner(pin), (add, room) => streamFeed(pin.stream, add, room, () => { if (staging) invalidate(); }));
         },
         prepare(budget) {
             const work = staging;

@@ -21,76 +21,9 @@ import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
-import { exportFileName } from '../../whiteboard/export/scope';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
-import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
-import type { BoardPrintSource } from '../../whiteboard/export/print';
-import { pinNativeNotebookPrint } from '../../whiteboard/export/notebookPrint';
-import { pinPagedPrintSource } from '../../whiteboard/export/pagedPrintSnapshot';
-import { pinNativeWhiteboardPrint } from '../../whiteboard/export/whiteboardPrint';
-import { boardPageStack } from '../../whiteboard/model/pages';
 import { printBoard } from './printBoard';
-
-export interface FocusedBoardPrintOptions {
-    readonly runtime: BoardRuntime;
-    readonly memory: MemoryAllocator;
-    readonly kind: NativeCanvasIdentity['kind'];
-    /** The board's name, which its exported files take. */
-    boardName(): string;
-    readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    /** True only while this board is still the same live document it was when printing started. */
-    valid(): boolean;
-    notice(message: string): void;
-    onError(error: unknown): void;
-}
-
-/** Pins the focused board's own source (its paper, sheets and ink) for a single print. */
-function pinFocusedBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
-    const { runtime, memory, readMedia, onError, kind } = options;
-    const media = async (entry: Readonly<MediaEntry>, signal: AbortSignal): Promise<Blob> => {
-        const blob = await readMedia(entry as MediaEntry, signal);
-        if (!blob) throw new Error('A picture on this board is unavailable for printing.');
-        return blob;
-    };
-    if (kind === 'drawing') return pinNativeWhiteboardPrint({ runtime, memory, readMedia: media, onError });
-    if (kind === 'notebook') return pinNativeNotebookPrint({ runtime, memory, readMedia: media, onError });
-    const stack = boardPageStack(runtime.session.doc.host);
-    if (!stack) throw new Error('Print pages are unavailable for this board.');
-    const pin = createBoardExportSnapshot({ runtime, request: { sheetId: runtime.selection.getSnapshot().sheet, theme: 'light' },
-        readMedia: media, onError });
-    return pinPagedPrintSource(pin, stack.rects);
-}
-
-/** Mod-P on the focused native board: one pinned source, printed through the app's print helper. */
-async function printFocusedBoard(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted();
-    const source = pinFocusedBoard(options);
-    try {
-        const pdf = await source.pdf(signal);
-        await printBoard({ pdf, valid: options.valid, signal,
-            renderFallback: async (limit, pageSignal) => {
-                const count = Math.min(limit, source.pageCount), pages: Blob[] = [];
-                for (let page = 0; page < count; page++) pages.push(await source.pngPage(page, pageSignal));
-                return { pages, total: source.pageCount };
-            },
-            noticeTruncated: (printed, total) => options.notice(`Printing ${printed} of ${total} pages; export to PDF to print all`),
-            onError: options.onError });
-    } finally { source.release(); }
-}
-
-/** Whole-sheet PDF of the focused board, saved under the board's name and, with several sheets, the sheet's name. */
-async function exportFocusedPdf(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted();
-    const doc = options.runtime.session.doc, sheet = options.runtime.selection.getSnapshot().sheet;
-    const source = pinFocusedBoard(options);
-    try {
-        const blob = await source.pdf(signal);
-        signal.throwIfAborted();
-        const name = options.boardName();
-        downloadBoardExport(blob, exportFileName(name, doc.sheetOrder.length > 1 ? doc.sheets.get(sheet)?.name ?? null : null, 'sheet', 'pdf', new Date()));
-    } finally { source.release(); }
-}
 
 const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
     { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
@@ -231,27 +164,29 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         ...(identity.kind === 'pdfInk' ? {} : { restore: restoreMedia }) });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
+    const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
+        boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
+        transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
+        ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
+            const source = pdfSource();
+            if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+            return source.retainSource();
+        } } : {}) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
             captureWriteAuthority: () => { const captured = active; return () => !!captured && bindings.has(captured) && captured.writable(); },
-            prepareExport: (route, signal) => prepareNativeExport({ runtime, route, signal,
-                boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
-                transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-                ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
-                    const source = pdfSource();
-                    if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
-                    return source.retainSource();
-                } } : {}) }),
+            prepareExport,
             duplicate: snapshot => {
                 if (!active) return Promise.reject(new Error('The board view is unavailable'));
                 return active.controller.duplicate(snapshot);
             }, notice: report, onError: fail,
             copyPng: capture => {
-                // Both items come from one frozen export job: the public PNG and our density-carrying private copy.
-                const image = capture.then(pair => pair.image), privateImage = capture.then(pair => pair.privateImage);
-                void image.catch(() => {}); void privateImage.catch(() => {});
-                return navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]);
+                // One frozen capture yields both the shared PNG and the board-private PNG carrying the clipboard density.
+                const image = capture.then(value => value.image);
+                const custom = capture.then(value => new Blob([value.privateImage], { type: 'image/x-board+png' }));
+                void custom.catch(() => {});
+                return navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': custom })]);
             },
             copySvg: capture => {
                 const text = capture.then(blob => new Blob([blob], { type: 'text/plain' }));
@@ -262,8 +197,21 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
-    const focusedOptions = (): FocusedBoardPrintOptions => ({ runtime, memory, kind: identity.kind, readMedia,
-        boardName: () => host.identity(identity.documentId)?.name ?? identity.name, valid: current, notice: report, onError: fail });
+    const focusedPdf = async (signal: AbortSignal, print: boolean) => {
+        const job = await prepareExport(print ? 'print' : 'menu', signal);
+        try {
+            const pdf = await job.print.pdf(signal);
+            signal.throwIfAborted();
+            if (!print) { downloadBoardExport(pdf, job.filename('pdf')); return; }
+            await printBoard({ pdf, valid: current, signal, onError: fail,
+                renderFallback: async (limit, pageSignal) => {
+                    const pages: Blob[] = [], total = job.print.pageCount;
+                    for (let page = 0; page < Math.min(limit, total); page++) pages.push(await job.print.pngPage(page, pageSignal));
+                    return { pages, total };
+                },
+                noticeTruncated: (printed, total) => report(`Printing ${printed} of ${total} pages; export to PDF to print all`) });
+        } finally { job.release(); }
+    };
     let focusedTask: AbortController | undefined;
     /** One focused print or export at a time; a second request while one runs is refused, not queued. */
     const startFocusedTask = (work: (signal: AbortSignal) => Promise<void>): boolean => {
@@ -276,13 +224,14 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
-        print: () => startFocusedTask(signal => printFocusedBoard(focusedOptions(), signal)),
-        exportPdf: () => startFocusedTask(signal => exportFocusedPdf(focusedOptions(), signal)),
+        print: () => startFocusedTask(signal => focusedPdf(signal, true)),
+        exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let detached = false;
             const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
             let pointer: { x: number; y: number } | null = null;
+            // A print belongs to this view: detaching the view (pane hide, close, vault switch) cancels it.
             const surfacePoint = (x: number, y: number) => {
                 const bounds = surface.getBoundingClientRect(), viewport = lease.camera.viewport;
                 if (bounds.width <= 0 || bounds.height <= 0) throw new Error('Board surface is unavailable');
@@ -314,13 +263,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
-                // Mod-P belongs to the focused board only: the browser's page print of the app is never reached from here.
-                if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
-                    event.preventDefault(); event.stopPropagation();
-                    void printFocusedBoard({ runtime, memory, kind: identity.kind, readMedia, boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
-                        valid: () => current() && bindings.has(binding),
-                        notice: report, onError: fail }, new AbortController().signal).catch(fail);
-                    return;
+                if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
+                    event.preventDefault(); event.stopPropagation(); service.print(); return;
                 }
                 if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {

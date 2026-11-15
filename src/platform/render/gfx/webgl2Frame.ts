@@ -1,5 +1,5 @@
 import type {
-    BufferHandle, BufferSlice, ClipHandle, ClipToken, CoverageTarget, CoverageToken, DrawCommand, FrameEncoder, GpuPass,
+    BufferHandle, BufferSlice, ClipHandle, ClipToken, CoverageOutput, CoverageTarget, CoverageToken, DrawCommand, FrameEncoder, GpuPass,
     GroupToken, PassDesc, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle,
     Samples, Submission, TargetHandle, TargetLease, TextureFormat, TextureHandle, UniformSlice,
 } from './api';
@@ -631,16 +631,17 @@ class DevicePass implements GpuPass {
             return token;
         });
     }
-    endCoverage(token: CoverageToken): void {
+    endCoverage(token: CoverageToken, output: CoverageOutput): void {
         this.#guard(() => {
             const entry = this.#groups.at(-1);
             if (!entry || entry.kind !== 'coverage' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
+            if (output.kind === 'composite' ? !['normal', 'multiply'].includes(output.blend) : output.kind !== 'mask') throw new ArenaError('invalid-input');
             this.#groups.pop();
-            this.#closeCoverage(entry.isolation, entry.previous);
+            this.#closeCoverage(entry.isolation, entry.previous, output);
             this.#clip = entry.previous;
         });
     }
-    #closeCoverage(isolation: Isolation, clip: RectI): void {
+    #closeCoverage(isolation: Isolation, clip: RectI, output: CoverageOutput): void {
         if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');
         this.#scope = isolation.parent;
         const child = isolation.child;
@@ -651,11 +652,12 @@ class DevicePass implements GpuPass {
             const resolve: FrameTarget = { ...child.target, framebuffer: child.target.resolveFramebuffer, samples: 1 };
             this.#frame.blit(child.target, { x: 0, y: 0, width: child.target.width, height: child.target.height }, resolve, 0, 0);
         }
+        if (output.kind === 'mask') return;
         if (child.coverage) this.#scope.coverage = true;
         const texture = child.target.color;
         if (!texture) throw new ArenaError('invalid-resource');
         this.#frame.composite(this.#scope, clip, texture, { x: 0, y: 0, width: child.bounds.width, height: child.bounds.height },
-            child.bounds, isolation.options, null);
+            child.bounds, { opacity: 1, blend: output.blend, colourEffect: 'none' }, null);
     }
     composite(source: TextureHandle, bounds: RectI, options: { blend: 'normal' | 'multiply'; opacity: number }): void {
         this.#guard(() => {

@@ -1,3 +1,4 @@
+import { FULL_REGION_CHANGES, type RegionChanges } from './boundsVersions';
 import type { RenderToken } from '../../platform/render/types';
 import type { BoardDoc, BoardDocInput } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
@@ -42,6 +43,8 @@ export function createSceneSnapshot(options: {
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
     occupiedBounds?: SceneOccupiedBounds | null;
+    /** Changed regions between an older revision and this pin; absent means unknown. */
+    changes?: (from: number) => RegionChanges;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
     prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => ScenePaintNodeStream;
@@ -76,10 +79,12 @@ export function createSceneSnapshot(options: {
         const index = new SceneCellIndex();
         try {
             const stack: Iterator<import('../model/nodes').Node>[] = [records.children(sheetId)[Symbol.iterator]()];
+            // A build is whole-sheet work, so its slices are sized for throughput: 2048 nodes or 4 ms, never
+            // one host task per 64 nodes, which would make a million-node index spend most of its time yielding.
             let visited = 0, started = performance.now();
             while (stack.length) {
                 check();
-                if (++visited >= 64 || performance.now() - started >= 0.25) {
+                if (++visited >= 2048 || performance.now() - started >= 4) {
                     await cooperateSlice(); check(); visited = 0; started = performance.now();
                 }
                 const next = stack[stack.length - 1].next();
@@ -130,6 +135,7 @@ export function createSceneSnapshot(options: {
         ...(request.world ? { world: Object.freeze({ ...request.world }) } : {}),
         ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}),
         ...(request.only ? { only: new Set(request.only) } : {}) });
+    const regionChangesSince = (from: number): RegionChanges => options.changes ? options.changes(from) : FULL_REGION_CHANGES;
     const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined): ScenePaintNodeStream => {
         let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
         const close = (): Promise<void> => {
@@ -151,7 +157,7 @@ export function createSceneSnapshot(options: {
         if (signal.aborted) abort();
         return {
             token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
-            sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld,
+            sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
             isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),
             async next() {
                 if (closePromise) throw cancelled();
@@ -193,7 +199,7 @@ export function createSceneSnapshot(options: {
         return building;
     };
     const snapshot: SceneSnapshot = {
-        token, revision,
+        token, revision, isCurrent: () => !released && !controller.signal.aborted,
         get nodeCount() { check(); return nodeCount; },
         get occupiedBounds() { check(); return occupiedBounds; },
         get layout() { return boardPageStack(metadata.host) ?? null; },

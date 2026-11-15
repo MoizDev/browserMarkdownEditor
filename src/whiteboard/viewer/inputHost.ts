@@ -12,6 +12,7 @@ import type { PaintFrame } from '../render/paintStream';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
 import { createBoardWetLayer } from './wetLayer';
+import { NO_SENSITIVE_IDS } from './sensitiveTargets';
 
 // Provenance: input routing, presented mapping, viewer interaction and shared
 // scheduler contracts; independent view-owned wiring, no third-party source.
@@ -49,6 +50,8 @@ export interface BoardInputHostOptions {
         captureText?: ViewerInteractionPorts['captureText'];
         restoreText?: ViewerInteractionPorts['restoreText'];
         beforeHistoryReplay?: ViewerInteractionPorts['beforeHistoryReplay'];
+        /** Hover and edit targets from the tool set bound to this attachment. */
+        sensitiveNodeIds?(): ReadonlySet<string>;
         dispose?(): void;
     };
 }
@@ -86,6 +89,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             if (options.presented) safe(() => options.presented?.(revision, actual, frame, context));
         },
         liveNodeIds: () => wet.liveNodeIds(),
+        sensitiveNodeIds: () => options.overlays?.sensitiveNodeIds?.() ?? NO_SENSITIVE_IDS,
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => {

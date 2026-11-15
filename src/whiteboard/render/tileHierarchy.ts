@@ -126,13 +126,14 @@ export class TileHierarchy<T> {
             current = tileParent(current);
         }
     }
-    /** The two regions are old and new bounds of an edit, in world coordinates. */
-    invalidate(interval: string, revision: number, oldBounds: Readonly<Rect> | null, newBounds: Readonly<Rect> | null): void {
-        if (oldBounds) checkRect(oldBounds);
-        if (newBounds) checkRect(newBounds);
+    /** Marks stale every record whose tile, padded by its 2 px apron, meets a changed region (world units).
+     * The apron is part of the tile's pixels, so an apron-only neighbour still changes the edge. */
+    invalidateRegions(interval: string, revision: number, regions: readonly Rect[]): void {
+        for (const region of regions) checkRect(region);
         this.invalidateMatching(interval, revision, record => {
-            const bounds = tileRectWorld(record.address);
-            return !!((oldBounds && intersects(bounds, oldBounds)) || (newBounds && intersects(bounds, newBounds)));
+            const tile = tileRectWorld(record.address), bleed = 2 / tileScale(record.address.pyramid, record.address.level);
+            const padded = { x: tile.x - bleed, y: tile.y - bleed, width: tile.width + 2 * bleed, height: tile.height + 2 * bleed };
+            return regions.some(region => intersects(padded, region));
         });
     }
     invalidateOrder(interval: string, revision: number): void { this.invalidateMatching(interval, revision, () => true); }

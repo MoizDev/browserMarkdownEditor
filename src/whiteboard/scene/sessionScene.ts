@@ -158,7 +158,8 @@ export class SessionScene implements SceneSpatial {
     }
     private *update(dirty: SceneDirty): Generator<void, BootstrappedScene> {
         const next = yield* updateScene(this.options.doc, this.state, dirty, this.provider, 1, this.invalidateGeometry);
-        yield* this.boundsVersions.updateSteps(next.revision, next.boundsChanges);
+        yield* this.boundsVersions.updateSteps(next.revision, next.boundsChanges,
+            { ids: dirty.nodes.keys(), structural: dirty.sheets.size > 0 || dirty.pages });
         return next;
     }
     /** Called by the platform's bounded CPU preparation task, including after a
@@ -254,6 +255,7 @@ export class SessionScene implements SceneSpatial {
             const bounds = ready ? this.boundsVersions.pin() : undefined;
             renderer = binding.retainRenderer?.();
             return createSceneSnapshot({ token: binding.token, revision, records, metadata, bounds, occupiedBounds,
+                changes: from => this.boundsVersions.changedRegionsSince(from, revision),
                 renderer, prepare: binding.preparePaint, prepareStream: binding.preparePaintStream,
                 cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
         } catch (error) { try { records.release(); } finally { renderer?.release(); } throw error; }

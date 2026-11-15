@@ -79,7 +79,11 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         cleanup = (async () => {
             const failures: unknown[] = [];
             const run = (action: () => void) => { try { action(); } catch (error) { failures.push(error); } };
-            run(() => owned?.dispose());
+            // Revocation is immediate; the sources, media, serializer and render services below are read by the
+            // board's builds, so none of them is released until that runtime has retired.
+            let retiring: Promise<void> | undefined;
+            try { retiring = owned?.dispose(); } catch (error) { failures.push(error); }
+            try { await retiring; } catch (error) { failures.push(error); }
             run(releaseCreators); run(() => serializer?.dispose()); run(() => render?.dispose());
             run(() => media?.clear()); run(() => acquired?.dispose()); run(() => sources.dispose());
             try { await sources.drain(); } catch (error) { failures.push(error); }

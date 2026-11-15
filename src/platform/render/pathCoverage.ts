@@ -1,26 +1,41 @@
-import type { Affine } from '../types';
+import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
-import type { BufferHandle, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState } from './gfx/api';
+import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState } from './gfx/api';
 import { coverageTargetBytes } from './gfx/api';
 import { ArenaError } from './resourceArena';
 import type { FrameBudget } from './types';
 
+/** How the triangles combine. `nonzero` and `evenodd` count or parity-test the signed winding;
+ * `union` sets a stencil bit per covered sample, for overlapping convex pieces (stroke outlines)
+ * whose union needs no counting at all. */
+export type PathCoverageRule = 'nonzero' | 'evenodd' | 'union';
+
 /** Winding of any point is bounded by the number of edges crossing a ray from it, and an 8-bit
  * stencil counting with wrapping arithmetic keeps a nonzero winding nonzero while that bound is at
- * most 255. Callers with more edges under the nonzero rule must use their exact fallback. */
+ * most 255. Nonzero shapes with more edges must take their exact fallback. */
 export const PATH_COVERAGE_STENCIL_MAX_EDGES = 255;
 /** Multisample storage is required for the boundary coverage; the display surface is never used. */
 export const PATH_COVERAGE_SAMPLES: Samples = 4;
 
-/** Origin-relative triangles, six values per triangle, as produced by a generic path tessellator.
- * `positive` adds +1 winding, `negative` adds -1; the sum is the winding everywhere off the edges. */
+/** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
+ * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
 export interface PathCoverageShapes {
     readonly positive: Float64Array;
     readonly negative: Float64Array;
     readonly edges: number;
-    readonly rule: 'nonzero' | 'evenodd';
     /** Origin-relative bounds of the shapes, in the same units as the triangles. */
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
+}
+
+export interface PathCoverageRequest {
+    readonly shapes: PathCoverageShapes;
+    readonly rule: PathCoverageRule;
+    /** Origin-relative local to device-pixel affine, [a, b, c, d, e, f]. */
+    readonly affine: Affine;
+    readonly viewport: Readonly<{ width: number; height: number }>;
+    /** Straight colour; premultiplied at admission. A mask request ignores it and covers with white. */
+    readonly colour: Rgba;
+    readonly output: CoverageOutput;
 }
 
 export type PathCoverageAdmission =
@@ -29,30 +44,32 @@ export type PathCoverageAdmission =
     | { readonly status: 'denied' }
     | { readonly status: 'unsupported' };
 
-/** A pre-admitted coverage target and a vertex buffer, both owned by this preparation. */
+/** A pre-admitted coverage target and vertex buffer, plus the clip handle when the output is a mask. */
 export interface PreparedPathCoverage {
     readonly device: GfxDevice;
     readonly target: CoverageTarget;
     readonly vertices: BufferHandle;
+    readonly clip: ClipHandle | null;
     readonly positiveVertices: number;
     readonly negativeVertices: number;
-    readonly rule: 'nonzero' | 'evenodd';
+    readonly rule: PathCoverageRule;
+    readonly output: CoverageOutput;
     readonly bounds: RectI;
-    /** The viewport the affine and bounds were admitted against; the shader maps pixels through it. */
     readonly viewport: Readonly<{ width: number; height: number }>;
-    /** Origin-relative local to device-pixel affine, [a, b, c, d, e, f], frozen at preparation. */
     readonly affine: Affine;
     readonly colour: readonly [number, number, number, number];
     readonly gpuBytes: number;
 }
 
-const FACE_KEEP = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
+const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
 function winding(op: StencilOp): StencilState {
     const face = { fail: 'keep', depthFail: 'keep', pass: op } as const;
     return { enabled: true, compare: 'always', reference: 0, readMask: 255, writeMask: 255, front: face, back: face };
 }
+const UNION_STENCIL: StencilState = { enabled: true, compare: 'always', reference: 1, readMask: 255, writeMask: 255,
+    front: { fail: 'keep', depthFail: 'keep', pass: 'replace' }, back: { fail: 'keep', depthFail: 'keep', pass: 'replace' } };
 const COVER_STENCIL: StencilState = { enabled: true, compare: 'not-equal', reference: 0, readMask: 255, writeMask: 0,
-    front: FACE_KEEP, back: FACE_KEEP };
+    front: KEEP_FACE, back: KEEP_FACE };
 const NO_COLOUR_WRITE = [false, false, false, false] as const;
 
 const UNIFORM_BYTES = 48;
@@ -100,19 +117,23 @@ void main() { fragmentColour=fillColour; }`,
     },
 };
 
-interface Pipelines { incrementWinding: PipelineHandle; decrementWinding: PipelineHandle; invertWinding: PipelineHandle; cover: PipelineHandle }
+interface Pipelines {
+    readonly increment: PipelineHandle; readonly decrement: PipelineHandle;
+    readonly invert: PipelineHandle; readonly union: PipelineHandle; readonly cover: PipelineHandle;
+}
 
-/** Platform stencil-winding executor: winding triangles into an admitted stencil target, then one
- * cover quad of the fill colour under the not-equal test, composited once at the scope's clip.
- * Callers prepare (admission, upload) in prepare() and only borrow the result while drawing. */
+/** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
+ * one cover quad paints the colour under the not-equal test, and the scope composites once (or
+ * leaves an R-channel clip mask). Admission and uploads happen in admit(); draws only borrow. */
 export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void) {
     let device: GfxDevice | null = null, pipelines: Pipelines | null = null, pending = false, failed = false, unsupported = false;
     let incarnation = 0, disposed = false, gpuBytes = 0;
     const live = new Map<PreparedPathCoverage, number>();
     const retireOwned = (prepared: PreparedPathCoverage) => {
-        if (!live.has(prepared)) return;
-        const bytes = live.get(prepared)!;
+        const bytes = live.get(prepared);
+        if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
+        if (prepared.clip) prepared.device.destroy(prepared.clip);
         prepared.device.destroy(prepared.target.target);
         prepared.device.destroy(prepared.target.texture);
         prepared.device.destroy(prepared.vertices);
@@ -120,27 +141,27 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const release = () => {
         incarnation++;
         for (const prepared of [...live.keys()]) retireOwned(prepared);
-        if (pipelines && device) {
-            for (const handle of Object.values(pipelines)) device.destroy(handle);
-        }
+        if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
     };
     const ensurePipelines = () => {
         if (!device || pipelines || pending || failed) return;
         const owner = device, serial = ++incarnation; pending = true;
         const base = { topology: 'triangles', colorFormat: 'rgba8', samples: PATH_COVERAGE_SAMPLES, alphaToCoverage: false } as const;
+        const hidden = { blend: 'replace', colorWrite: NO_COLOUR_WRITE } as const;
         Promise.all([
-            owner.createPipeline({ ...base, shader: WINDING_SHADER, blend: 'replace', colorWrite: NO_COLOUR_WRITE, stencil: winding('increment-wrap') }),
-            owner.createPipeline({ ...base, shader: WINDING_SHADER, blend: 'replace', colorWrite: NO_COLOUR_WRITE, stencil: winding('decrement-wrap') }),
-            owner.createPipeline({ ...base, shader: WINDING_SHADER, blend: 'replace', colorWrite: NO_COLOUR_WRITE, stencil: winding('invert') }),
-            owner.createPipeline({ ...base, shader: COVER_SHADER, topology: 'triangle-strip', blend: 'source-over',
+            owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('increment-wrap') }),
+            owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('decrement-wrap') }),
+            owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('invert') }),
+            owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: UNION_STENCIL }),
+            owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'source-over',
                 colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
-        ]).then(([incrementWinding, decrementWinding, invertWinding, cover]) => {
+        ]).then(([increment, decrement, invert, union, cover]) => {
             if (disposed || incarnation !== serial || device !== owner) {
-                for (const handle of [incrementWinding, decrementWinding, invertWinding, cover]) owner.destroy(handle);
+                for (const handle of [increment, decrement, invert, union, cover]) owner.destroy(handle);
                 return;
             }
-            pipelines = { incrementWinding, decrementWinding, invertWinding, cover };
+            pipelines = { increment, decrement, invert, union, cover };
             pending = false; host.invalidate('path-coverage-ready');
         }, error => {
             if (incarnation !== serial) return;
@@ -166,36 +187,62 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         return { x0, y0, x1, y1 };
     };
+    const render = (pass: GpuPass, prepared: PreparedPathCoverage): void => {
+        if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
+            host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
+        const { bounds, affine, colour, target, viewport, output } = prepared;
+        const windingData = new Float32Array(12);
+        windingData.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0, 0]);
+        const coverData = new Float32Array(12);
+        coverData.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour]);
+        const windingUniforms = host.uniforms(windingData), coverUniforms = host.uniforms(coverData);
+        const token = pass.beginCoverage(target, bounds);
+        try {
+            const total = prepared.positiveVertices + prepared.negativeVertices;
+            const drawWinding = (pipeline: PipelineHandle, first: number, count: number) => {
+                if (!count) return;
+                pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
+                    vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first, count, instances: 1, scissor: bounds });
+            };
+            if (prepared.rule === 'evenodd') drawWinding(pipelines.invert, 0, total);
+            else if (prepared.rule === 'union') drawWinding(pipelines.union, 0, prepared.positiveVertices);
+            else {
+                drawWinding(pipelines.increment, 0, prepared.positiveVertices);
+                drawWinding(pipelines.decrement, prepared.positiveVertices, prepared.negativeVertices);
+            }
+            pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
+                vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+        } finally { pass.endCoverage(token, output); }
+    };
     return {
         warm,
         ready: isReady,
         memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: 0 }; },
-        /** Admission happens here, in prepare: target and vertex storage are reserved and created
-         * before any draw. The device and generation are those the caller will draw with. */
-        admit(shapes: PathCoverageShapes, affine: Affine, viewport: { width: number; height: number }, colour: readonly [number, number, number, number],
-            budget: FrameBudget): PathCoverageAdmission {
+        /** Admission happens here, in prepare: target, vertices and any clip handle are created before
+         * any draw. Failure is permanent for this device incarnation and returns 'unsupported'. */
+        admit(request: PathCoverageRequest, budget: FrameBudget): PathCoverageAdmission {
             // Failure is permanent for this device incarnation: the caller's exact route takes the item.
             if (disposed || failed || unsupported) return { status: 'unsupported' };
             warm();
             // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
             if (!isReady()) return { status: pending || !device ? 'denied' : 'unsupported' };
-            const owner = device!;
+            const owner = device!, { shapes, rule, affine, viewport, output } = request;
             if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'denied' };
-            if (shapes.rule === 'nonzero' && shapes.edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return { status: 'unsupported' };
+            if (rule === 'nonzero' && shapes.edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return { status: 'unsupported' };
             if (!Number.isSafeInteger(viewport.width) || !Number.isSafeInteger(viewport.height) || viewport.width <= 0 || viewport.height <= 0) {
                 throw new RangeError('Invalid path coverage viewport');
             }
-            if (!colour.every(Number.isFinite)) throw new RangeError('Invalid path coverage colour');
+            if (!request.colour.every(Number.isFinite)) throw new RangeError('Invalid path coverage colour');
             const mapped = mapBounds(shapes.bounds, affine);
             const x0 = Math.max(0, Math.floor(mapped.x0)), y0 = Math.max(0, Math.floor(mapped.y0));
             const x1 = Math.min(viewport.width, Math.ceil(mapped.x1)), y1 = Math.min(viewport.height, Math.ceil(mapped.y1));
             if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
             const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
             if (bounds.width > owner.limits.maxRenderTargetSize || bounds.height > owner.limits.maxRenderTargetSize) return { status: 'unsupported' };
-            const triangles = shapes.positive.length / 6 + shapes.negative.length / 6;
-            const vertexCount = triangles * 3, vertexBytes = vertexCount * 8;
-            if (!Number.isSafeInteger(vertexBytes)) throw new RangeError('Path vertex storage exceeds safe accounting');
+            const vertexCount = (shapes.positive.length + shapes.negative.length) / 2;
+            if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
             if (vertexCount === 0) return { status: 'empty' };
+            const vertexBytes = vertexCount * 8;
             const targetBytes = coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied' };
@@ -211,58 +258,45 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (!budget.claimUpload(vertexBytes)) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
             const targetLease = host.allocator.gpu.reserve(targetBytes);
             if (!targetLease) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
-            let vertices: BufferHandle | null = null, target: CoverageTarget | null = null, attached = false;
+            let vertices: BufferHandle | null = null, target: CoverageTarget | null = null, clip: ClipHandle | null = null;
+            let vertexAttached = false, targetAttached = false;
             try {
-                vertices = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], vertexLease); attached = true;
+                vertices = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], vertexLease); vertexAttached = true;
                 owner.writeBuffer(vertices, 0, data);
-                target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease);
+                target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease); targetAttached = true;
+                if (output.kind === 'mask') clip = owner.createClip(target.texture, bounds);
             } catch (error) {
+                if (clip) owner.destroy(clip);
+                if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
                 if (vertices) owner.destroy(vertices);
-                if (!attached) host.allocator.gpu.release(vertexLease);
-                host.allocator.gpu.release(targetLease);
+                if (!vertexAttached) host.allocator.gpu.release(vertexLease);
+                if (!targetAttached) host.allocator.gpu.release(targetLease);
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
                 throw error;
             }
+            const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
+                : [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
             const gpu = vertexBytes + targetBytes;
-            const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, positiveVertices: shapes.positive.length / 6 * 3,
-                negativeVertices: shapes.negative.length / 6 * 3, rule: shapes.rule, bounds,
+            const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
+                positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
-                affine: Object.freeze([...affine] as const) as Affine,
-                colour: Object.freeze([colour[0] * colour[3], colour[1] * colour[3], colour[2] * colour[3], colour[3]] as const),
-                gpuBytes: gpu });
+                affine: Object.freeze([...affine]) as unknown as Affine,
+                colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu });
             live.set(prepared, gpu); gpuBytes += gpu;
             return { status: 'ready', value: prepared };
         },
+        /** Composite output: borrows the admitted target inside the caller's pass. */
         draw(pass: GpuPass, prepared: PreparedPathCoverage): void {
-            if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
-                host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
-            const { bounds, affine, colour, target, viewport } = prepared;
-            const windingData = new Float32Array(12);
-            windingData.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0, 0]);
-            const coverData = new Float32Array(12);
-            coverData.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour]);
-            const windingUniforms = host.uniforms(windingData), coverUniforms = host.uniforms(coverData);
-            const token = pass.beginCoverage(target, bounds);
-            try {
-                const drawWinding = (pipeline: PipelineHandle, first: number, count: number) => {
-                    if (!count) return;
-                    pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
-                        vertices: [{ buffer: prepared.vertices, offset: 0, bytes: (prepared.positiveVertices + prepared.negativeVertices) * 8 }],
-                        first, count, instances: 1, scissor: bounds });
-                };
-                if (prepared.rule === 'evenodd') {
-                    drawWinding(pipelines.invertWinding, 0, prepared.positiveVertices + prepared.negativeVertices);
-                } else {
-                    drawWinding(pipelines.incrementWinding, 0, prepared.positiveVertices);
-                    drawWinding(pipelines.decrementWinding, prepared.positiveVertices, prepared.negativeVertices);
-                }
-                pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
-                    vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
-            } finally { pass.endCoverage(token); }
+            if (prepared.output.kind !== 'composite') throw new Error('Mask coverage is drawn with drawMask');
+            render(pass, prepared);
+        },
+        /** Mask output: renders the R-channel clip mask; the prepared clip handle is then pushed. */
+        drawMask(pass: GpuPass, prepared: PreparedPathCoverage): void {
+            if (prepared.output.kind !== 'mask' || !prepared.clip) throw new Error('Composite coverage is drawn with draw');
+            render(pass, prepared);
         },
         retire(prepared: PreparedPathCoverage): void { retireOwned(prepared); },
         release,
         dispose(): void { if (!disposed) { disposed = true; release(); } },
     };
 }
-

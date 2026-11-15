@@ -4,11 +4,14 @@ import { acquireBoardClipboard } from '../host/clipboardAcquisition';
 import { decodeBoardClipboard } from '../host/clipboardDecode';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { RichFragment } from './richText';
+import { admitRichFragmentCooperative } from './admitFragment';
+import { yieldToHost } from './cooperative';
 
 export interface PrivateTextClipboardOptions {
     readonly identity: BoardJobIdentity;
     readonly memory: MemoryAllocator;
     readonly cache: ClipboardCachePin | null;
+    readonly cooperate?: () => Promise<void>;
     isCurrent(identity: BoardJobIdentity): boolean;
 }
 
@@ -30,7 +33,10 @@ export async function readPrivateClipboardText(encoded: string, plain: string | 
             signal.throwIfAborted();
             const doc = acquired.load.doc, roots = doc.children.get(acquired.payload.from.sheet) ?? [];
             if (roots.length !== 1 || doc.nodes.size !== 1 || roots[0].kind !== 'text') return null;
-            return structuredClone(roots[0].text);
+            // The C5 text is admitted through the same fragment gate as any other pasted fragment: data-only,
+            // reader-branded opaque values, and a sliced copy that holds nothing of the acquired payload.
+            return await admitRichFragmentCooperative(roots[0].text, { signal, cooperate: options.cooperate ?? yieldToHost,
+                current: () => options.isCurrent(identity) });
         } finally { acquired.dispose(); }
     } finally { decoded.release(); }
 }

@@ -19,7 +19,7 @@ export interface PreparedBoardSession {
     readonly legacyOriginalSha256: string | null;
     take(owner: SourceOwner, isCurrent: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
         readonly board: ComposedBoardSession;
-        dispose(): void;
+        dispose(): Promise<void>;
     };
     dispose(): void;
 }

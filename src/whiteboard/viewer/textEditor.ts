@@ -37,6 +37,8 @@ import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
 
 export interface BoardTextEditorOptions {
+    /** The node whose text is being edited, or null: its paint is exact while the editor holds it. */
+    readonly editingChanged?: (id: NodeId | null) => void;
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly engine: ViewerEngine;
@@ -275,7 +277,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     };
     const manager = createTextEditingManager({ session, createText: create, select: id => runtime.selection.replace([id]), error: report,
         binding(id, key, initialSelection, creationToken) {
-            active = id; editingEpoch++; misspellings = []; queueMicrotask(checkSpelling); let latest: TextPaint | null = null;
+            active = id; options.editingChanged?.(id); editingEpoch++; misspellings = []; queueMicrotask(checkSpelling); let latest: TextPaint | null = null;
             const layoutEngine = render.text.layout;
             const view: TextEditViewServices = {
                 setSelection(selection) { options.ui.selectionChanged(id, selection); },
@@ -287,7 +289,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink,
-                finish() { stopScroll(); layoutEngine.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; options.ui.spellingMenu(0, 0, null); spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; paint = null; faces = null; currentWorld = null; }
+                finish() { stopScroll(); layoutEngine.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; options.ui.spellingMenu(0, 0, null); spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; options.editingChanged?.(null); paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
             return { container: overlay, label: 'Edit board text', node: id, key, initialSelection, creationToken,

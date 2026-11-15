@@ -206,6 +206,7 @@ export interface CoverageTarget {
     readonly samples: Samples;
 }
 export interface CoverageToken { readonly id: number }
+export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' } | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
 export function coverageTargetBytes(width: number, height: number, samples: Samples): number {
@@ -266,7 +267,9 @@ export interface GpuPass {
     // the coverage into the current colour target with the clip active at begin. Nested or
     // overlapping borrows of one target are rejected; LIFO with clips and groups is enforced.
     beginCoverage(target: CoverageTarget, bounds: RectI): CoverageToken;
-    endCoverage(token: CoverageToken): void;
+    // 'composite' blends the resolved coverage into the current colour target with the clip active
+    // at begin; 'mask' leaves it untouched as an R-channel clip mask for createClip (rendering §5.1).
+    endCoverage(token: CoverageToken, output: CoverageOutput): void;
     end(): void;
 }
 

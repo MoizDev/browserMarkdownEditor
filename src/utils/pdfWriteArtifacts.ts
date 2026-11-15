@@ -1,3 +1,5 @@
+import { Sha256 } from './sha256';
+
 // Worker-local immutable payloads, never PDFRefs or mutable document graphs.
 // Idle expiry also covers hidden panes; a failed build is never cached.
 const LIMIT = 128 * 1024 * 1024;
@@ -11,8 +13,17 @@ function touch(): void {
     idle = setTimeout(() => { cache.clear(); size = 0; idle = undefined; }, IDLE_MS);
 }
 export async function artifactHash(bytes: Uint8Array): Promise<string> {
-    const hash = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
-    return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+    // Native writing runs in an opaque worker, where WebCrypto is unavailable.
+    const hash = new Sha256();
+    for (let at = 0; at < bytes.length; at += 1024 * 1024) {
+        hash.update(bytes.subarray(at, at + 1024 * 1024));
+        if (at + 1024 * 1024 < bytes.length) await new Promise<void>(resolve => {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+            channel.port2.postMessage(null);
+        });
+    }
+    return hash.digest();
 }
 export async function immutableArtifact(key: string, create: () => Promise<Uint8Array> | Uint8Array): Promise<Uint8Array> {
     touch();

@@ -1,3 +1,4 @@
+import type { RegionChanges } from '../scene/boundsVersions';
 import type { Affine, PathCommand, Rect } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { InkCoverage } from '../ink/outline';
@@ -88,8 +89,12 @@ export interface PaintFrame {
     readonly sessionRasters?: SessionDenseRasters;
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
+    /** Changed regions since an older raster revision; absent means the cache must invalidate fully. */
+    readonly regionChangesSince?: (from: number) => RegionChanges;
     /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
+    /** True for a dense frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. */
+    readonly liveOnly?: true;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

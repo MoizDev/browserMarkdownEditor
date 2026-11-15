@@ -54,6 +54,8 @@ export interface ScenePaintBinding {
  * isCurrent on the resulting source means "this lease remains valid", NOT live-doc equality.
  */
 export interface SceneSnapshot {
+    /** The immutable root is still owned, independently of any exhausted paint cursor. */
+    isCurrent(): boolean;
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;

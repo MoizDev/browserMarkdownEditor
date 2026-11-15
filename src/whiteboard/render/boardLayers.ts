@@ -193,6 +193,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
+    // The view the layer was last asked to paint. A picture drawn for an earlier view (a zoom, before its replacement
+    // is staged) is still current by revision, so progress compares views too; otherwise a fitted board reads
+    // "settled" over a picture of the previous zoom.
+    let preparedView: ViewState | null = null;
     type Drawn = { frame: PaintSource; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation; hold: DrawHold | null };
     const drawn = new Map<PaintBand, Drawn>();
     let drawSource: PaintSource | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
@@ -251,7 +255,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const idleOnly = useDense && !!dense?.idleOnly();
         const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || (!idleOnly && !!adapter?.needsFrame())
             || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
-        if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented)) return { kind: 'current' };
+        // The frame still drawn may be the previous zoom's, re-drawn at the new view, while its replacement is staged.
+        const showsView = !!presentedContext && !!preparedView && sameView(presentedContext.view, preparedView) && !options.frames.replacing?.();
+        if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented) && showsView) return { kind: 'current' };
         const drawn = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
         return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building', drawn };
     };
@@ -418,6 +424,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const prepare = (view: ViewState, budget: FrameBudget) => {
         if (!adapter || disposed || lastPrepareFrame === budget.frameId) return;
         lastPrepareFrame = budget.frameId; prepareToken = budget.token; prepareFrameId = budget.frameId;
+        preparedView = view;
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);

@@ -52,6 +52,8 @@ export interface BoardLayersOptions {
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
+    /** Called after every prepare that reached the adapter, before a compositor frame draws what it built; a caller checks what is built. */
+    readonly onPrepared?: () => void;
     readonly onDrawn?: (revision: number, frame: PaintSource, context: ViewerPaintPresentation) => void;
     /** Upper bound on the nodes this view meets, from the sheet index; null while that index builds. */
     readonly candidates?: () => number | null;
@@ -494,7 +496,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // Three actual decision frames avoid allocating a whole-scene Path2D cache just
             // before dense mode would throw it away. No timer or stationary RAF is introduced.
             if (!useDense && density.pending()) { denied = false; return; }
-            if (!useDense && !reservations.has(frame) && !estimate!.demandPublished && estimate!.bytes) {
+            // A live overlay frame is replaced by the next pointer move, so the demand round trip (one whole frame that
+            // builds nothing) would be paid for every move and the overlay would never build: it reserves at once, and a
+            // refused reservation still re-collects the demand below before it latches.
+            if (!useDense && !options.optional && !reservations.has(frame) && !estimate!.demandPublished && estimate!.bytes) {
                 estimate!.demandPublished = true;
                 allocatorHost!.invalidate('board-native-demand-ready'); return;
             }
@@ -523,6 +528,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             adapter.prepare(view, budget);
             gpu?.prepare(view, withFirstUnit(budget));
             prune(frame, adapter.readyFrame());
+            options.onPrepared?.();
         } catch (error) { report(error); }
         finally { refreshProgress(); }
     };

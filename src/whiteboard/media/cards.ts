@@ -19,7 +19,11 @@ export function convertMediaCard(options: {
     if (!options.current() || session.isReadOnly || session.isGestureActive || !node || isLocked(doc, node)
         || node.kind !== 'linkcard' && node.kind !== 'embed') throw new Error('Card conversion is unavailable');
     if (node.kind === 'linkcard' && !resolveEmbedCandidate(node.url, options.environment, options.manifest)) throw new Error('This URL has no supported embed provider');
-    const id = newNodeId(doc), w = node.kind === 'linkcard' ? 800 : 300, h = node.kind === 'linkcard' ? 450 : 320;
+    // A card or embed keeps the size the person gave it; only a node still at a size the app gives its kind takes the target default.
+    const target = node.kind === 'linkcard' ? { w: 800, h: 450 } : { w: 300, h: 320 };
+    const kindDefaults = node.kind === 'linkcard' ? [{ w: 300, h: 320 }, { w: 320, h: 180 }] : [{ w: 800, h: 450 }];
+    const resized = !kindDefaults.some(size => size.w === node.w && size.h === node.h);
+    const id = newNodeId(doc), w = resized ? node.w : target.w, h = resized ? node.h : target.h;
     const dx = (node.w - w) / 2, dy = (node.h - h) / 2, c = Math.cos(node.rotation), s = Math.sin(node.rotation);
     const common = { id, parent: node.parent, order: node.order, page: node.page, x: node.x + c * dx - s * dy,
         y: node.y + s * dx + c * dy, rotation: node.rotation, opacity: node.opacity, locked: node.locked, ext: node.ext, w, h, url: node.url };

@@ -11,7 +11,8 @@ import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintSource, PaintItem, PaintPathItem } from './paintStream';
+import type { InkCoverage } from '../ink/outline';
+import { inkCoverageChunks, type PaintInkItem, type PaintSource, type PaintItem, type PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
@@ -237,6 +238,37 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         plan.cpuLeases.push(lease); return true;
     };
     const reset = () => { drop(staged); drop(ready); staged = ready = null; };
+    // A streaming (live-stroke) tile is keyed by the coverage chunks that reach it, not by the whole source: each
+    // publication appends chunks and replaces only the tip, so the tiles behind the tip keep their key and are reused.
+    // Keyed by the source serial, every publication re-rasterised and re-uploaded the whole stroke, one tile per frame.
+    const chunkIds = new WeakMap<object, number>();
+    let chunkSerial = 0;
+    // The coverage chunks that can reach this tile. Each publication appends chunks and replaces only the tip, so
+    // the tiles behind the tip keep their key (reused, no upload) and a tile is rasterised from its own chunks only.
+    const tileChunks = (item: PaintInkItem, scale: number, x: number, y: number): InkCoverage[] => {
+        const [a, b, c, d, e, f] = item.localToWorld, margin = 2 / scale;
+        const x0 = (x * EDGE - GUTTER) / scale - margin, x1 = ((x + 1) * EDGE + GUTTER) / scale + margin;
+        const y0 = (y * EDGE - GUTTER) / scale - margin, y1 = ((y + 1) * EDGE + GUTTER) / scale + margin;
+        const reach: InkCoverage[] = [];
+        for (const chunk of inkCoverageChunks(item.coverage)) {
+            const bb = chunk.boundsLocal;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const [px, py] of [[bb.x, bb.y], [bb.x + bb.w, bb.y], [bb.x, bb.y + bb.h], [bb.x + bb.w, bb.y + bb.h]]) {
+                const wx = a * px + c * py + e, wy = b * px + d * py + f;
+                minX = Math.min(minX, wx); maxX = Math.max(maxX, wx); minY = Math.min(minY, wy); maxY = Math.max(maxY, wy);
+            }
+            if (maxX >= x0 && minX <= x1 && maxY >= y0 && minY <= y1) reach.push(chunk);
+        }
+        return reach;
+    };
+    const streamingInkKey = (item: PaintInkItem, scale: number, x: number, y: number): string => {
+        const ids = tileChunks(item, scale, x, y).map(chunk => {
+            let id = chunkIds.get(chunk);
+            if (id === undefined) { id = ++chunkSerial; chunkIds.set(chunk, id); }
+            return id;
+        });
+        return JSON.stringify([item.key, item.localToWorld, item.material, ids]);
+    };
     return {
         prepare(view: ViewState, budget: FrameBudget): void {
             if (disposed || lastFrame === budget.frameId) return;
@@ -366,14 +398,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = `${p.partIndex}:${contentKey(item)}`;
                     }
                     const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
-                        p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, p.itemKey]);
+                        p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, streaming && item.kind === 'ink' ? streamingInkKey(item, p.scale, p.x, p.y) : p.itemKey]);
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
                         existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
-                        return;
+                        // A cache hit costs no upload, so it does not spend the frame: the next tile is taken if the budget allows.
+                        if (streaming) continue; return;
                     }
                     const cpu = host.allocator.cpu.reserve(CPU_BYTES);
                     if (!cpu) { denied = true; return; }
@@ -388,7 +421,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const ctx = canvas.getContext('2d');
                         if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
                         ctx.setTransform(scale, 0, 0, scale, GUTTER - p.x * EDGE, GUTTER - p.y * EDGE);
-                        paintItem2d(ctx, item, { ...p.prepared.resources, path: () => p.prepared.resources.path(original) });
+                        paintItem2d(ctx, streaming && item.kind === 'ink' ? { ...item, coverage: tileChunks(item, p.scale, p.x, p.y) } : item, { ...p.prepared.resources, path: () => p.prepared.resources.path(original) });
                         bitmap = canvas.transferToImageBitmap();
                         texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
@@ -403,7 +436,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     }
                     const bounds = p.tileBounds;
                     if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
-                    return;
+                    // The upload was this frame's; the next tile is a cache hit (free) or its own claim is refused.
+                    if (streaming) continue; return;
                 }
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },

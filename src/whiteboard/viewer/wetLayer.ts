@@ -312,7 +312,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const extra = pending ? (work ? (work.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? (gpu?.cpuWorkingSet().mandatoryBytes ?? 2 * 516 * 516 * 4) : 0), prefetchBytes: 0 };
         },
-        critical: () => (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
+        // A live stroke whose GPU paint is still catching up is critical: the non-critical share of a frame is one
+        // sliver, which took two frames per plan (measured: every other screencast frame held the same ink).
+        critical: () => !!owner?.device() && !!gpu?.needsFrame() || (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: (_layer, frame, backend) => {
             const missing = (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])

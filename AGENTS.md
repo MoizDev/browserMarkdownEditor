@@ -48,18 +48,20 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 
 ## Architecture: what every change must respect
 
-- **The four layers, and what may not cross between them.** `src/context/` is the only code that touches
-  the File System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by
+- **The layers, and what may not cross between them.** `src/context/` is the only code that touches the
+  File System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by
   `vaultIndex/client.ts`; listing, prompts and all mutations stay on the main thread in `FileSystemContext`.
-  `src/editor/` is CodeMirror land and is **React-free**, reached through facets and plain callbacks, never by importing a component or a
-  hook. `src/components/` is React; `src/utils/` is pure or DOM-light. An import crossing those lines is
-  the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
+  `src/editor/` is CodeMirror land, **React-free**, reached through facets and plain callbacks, never a
+  component or a hook. `src/components/` is React; `src/utils/` is pure or DOM-light; `src/app/` (App's
+  state as hooks) is imported only by `App.tsx` and itself. An import crossing those lines is the change
+  to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
   unreferenced asset is *retired* into it and returns if the reference does, an unasked-for overwrite
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
   that keeps a file over a right one that cannot be undone.
-- **State lives in `App.tsx`; the filesystem lives behind `useFileSystem()`.** App owns nearly all state
-  and every FS call goes through it; no undo stack stands behind it.
+- **App's state lives in `src/app/`, one hook per concern taking a named `deps` object; the filesystem
+  lives behind `useFileSystem()`.** `App.tsx` only composes the hooks **in effect order** — moving a call
+  reorders its effects (persist → vault switch → restore → URL writer must stay so). No undo stack.
 - **The AI agent changes the vault ONLY through the app** — its CLI runs never-ask with full normal tools
   (the user's decision; never restrict them again), but each vault read/write is a `vault_*`/`canvas_*` MCP
   call run in the browser (`utils/agentHost.ts` → App); the prompt bans disk edits. The **terminal** is the
@@ -69,8 +71,8 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   DiskBar instead. Observer records are hints, stat + hash the truth. Never write a document around it.
 - **Nothing overwrites an existing file by accident.** Every write that could land on a taken name
   goes through `freeEntryName`, which counts **both** files and folders; `moveFile`/`renameFile` and
-  the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it
-  opens-or-*truncates*, guarded at `App.handleCreateFile` and the agent host; anything new inherits it.
+  the notebook PDF export are the deliberate exceptions. **`createFile` is the hole** — it opens-or-
+  *truncates*, guarded at `useCreateEntries.handleCreateFile` and the agent host; anything new inherits it.
 - **`.Assets` (images), `.Garbage` (trash) and `.appearance.json` (looks, custom tree order; **new
   keys need the user's OK**) are per FOLDER**, hidden at every depth — a folder carries its own
   pictures, deletions and looks wherever it goes, and a folder opened as a vault of its own still
@@ -132,8 +134,8 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   for life; a fresh closure per call makes every image widget compare unequal on every ⌘E and tab switch.
 - **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, as are the context-menu,
   entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
-  `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop in
-  `App.tsx` defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
+  `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop
+  from App defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
 - **Large repeated views need a bounded layout cost.** The file tree windows its flattened, fixed-height
   rows; PDF pages use `content-visibility: auto` plus a known box so offscreen pages do not paint.
 - **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live

@@ -1071,7 +1071,7 @@ function DocumentPane({
     // cached state when it has one. A cached state was configured by whichever
     // pane last held it, so everything a SETTING feeds is re-stated here — the
     // same reconfigure the single-view build did on a tab swap.
-    const setEditorContainer = (node: HTMLDivElement | null) => {
+    const setEditorContainer = (node: HTMLDivElement | null, retried = false) => {
         if (!node || viewRef.current) return;
         const cached = markdownSessions.get(documentId);
         // A cached state whose search panel was left open focuses that panel's
@@ -1087,7 +1087,16 @@ function DocumentPane({
             if (initial === undefined) return;
             const adapter = markdownSessions.ensure(documentId, owner => createMarkdownSession(owner,
                 EditorState.create({ doc: initial, extensions: history() }), () => documentBuffers.get(documentId)?.source));
-            if (!adapter) return;
+            if (!adapter) {
+                // A note opened this very commit is not in App's tab mirror yet:
+                // App publishes it from a layout effect, and a child's ref runs
+                // before any parent layout effect, so the session host refuses
+                // the unknown id. Once more after the commit, still before paint
+                // (measured: in production, without StrictMode's second ref call,
+                // every newly opened note drew an empty pane until a tab switch).
+                if (!retried) queueMicrotask(() => setEditorContainer(node, true));
+                return;
+            }
             adapter.configure(editorExtensions(), metadataUpdate);
             const view = new EditorView({ state: adapter.state, parent: node });
             detachViewRef.current = adapter.attach(view);

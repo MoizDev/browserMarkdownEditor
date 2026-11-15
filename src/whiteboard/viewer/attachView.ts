@@ -158,13 +158,18 @@ export const attachView: AttachView = options => {
     let snapshot: ViewerSnapshot;
     function makeSnapshot(): ViewerSnapshot {
         const palette = palettes[options.session.doc.kind === 'whiteboard' ? view.theme : 'light'];
+        const nextLayers = [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
+            ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
+            layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : [],
+            ...embedPort ? [embedPort.layer] : []];
+        // A new topology seals platform input. Rebuilding the same list on preview cancellation
+        // sealed it again during React's layout effect, recursively cancelling until error #185.
+        const definitions = snapshot?.layers.length === nextLayers.length && nextLayers.every((layer, i) => snapshot.layers[i] === layer)
+            ? snapshot.layers : Object.freeze(nextLayers);
         return { state: failed ? 'failed' : !runtime.scene ? 'loading' : options.session.isReadOnly ? 'read-only' : 'ready',
             readOnlyReason: failed?.message ?? runtime.session.readOnlyReason, sceneRevision: runtime.scene?.revision ?? options.session.doc.rev,
             layout: scene.layout, palette, appearance: { background: palettes[view.theme].background, inverted: view.inverted },
-            layers: [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
-                ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
-                layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : [],
-                ...embedPort ? [embedPort.layer] : []],
+            layers: definitions,
             backendPreference: BOARD_BACKEND_PREFERENCE };
     }
     function publish(): void {

@@ -3,10 +3,6 @@ import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfRoleRead';
 import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
-<<<<<<< HEAD
-=======
-import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
->>>>>>> feat/in-house-engines
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
 import ConfirmDialog from './ConfirmDialog';
@@ -39,15 +35,9 @@ import type { PdfTiledPresentation } from './PdfTiledView';
 import type { EmphasisAvailability } from '../types/reading';
 import './PdfPane.css';
 
-<<<<<<< HEAD
 // Acquisition/editing and contained rendering stay behind their lazy entries.
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
-=======
-import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
-
-// Native annotation services remain separate from opening a PDF for reading.
->>>>>>> feat/in-house-engines
 const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
 const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
 const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
@@ -361,20 +351,12 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const readOnly = mode === 'edit' && (legacyOffer || plainNativeOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [idleHealth] = useState(createClassicPdfHealth);
-<<<<<<< HEAD
     const [, setRetryEpoch] = useState(0);
     const [retryBusy, setRetryBusy] = useState(false);
     const retryInFlight = useRef(false);
     // Role inspection has its own build worker. A refused edit displays the
     // outer PDF, so its renderer health must belong to that viewer, not a source.
     const renderHealth = idleHealth;
-=======
-    const [retryEpoch, setRetryEpoch] = useState(0);
-    const [retryBusy, setRetryBusy] = useState(false);
-    const retryInFlight = useRef(false);
-    // Native annotation owns its render health; this is the outer PDF reader.
-    const renderHealth = session?.health ?? idleHealth;
->>>>>>> feat/in-house-engines
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
     const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
     const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
@@ -775,10 +757,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
-<<<<<<< HEAD
 
-=======
->>>>>>> feat/in-house-engines
         } else if (isDirty || flushing) {
             // Between leaving the canvas and the write landing (a few hundred ms)
             // the file on disk still predates the last strokes. Say so rather than

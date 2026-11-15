@@ -22,18 +22,8 @@ export function prefetchPanes(kinds: CanvasKinds): void {
     if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.nativeDrawing && !kinds.notebook) return;
     const run = () => {
         if (kinds.epub) warm('epub', () => import('./EpubPane'));
-<<<<<<< HEAD
-        // PDF startup no longer warms a second parser. Source acquisition stays
-        // with the App-owned contained session when a PDF is actually opened.
-        if (kinds.pdf) warm('pdf', loadPdfPane);
-        // Legacy canvases warm tldraw; native drawings warm only their own entry.
-        if (kinds.drawing && route.canvas.drawing.engine === 'tldraw') warm('drawing', () => import('./DrawingPane'));
-        if (kinds.nativeDrawing) warm('native-drawing', () => import('./whiteboard/NativeCanvasEntry'));
-        if (kinds.notebook && route.canvas.notebook.engine === 'tldraw') warm('notebook', () => import('./NotebookPane'));
-=======
         if (kinds.pdf) warm('pdf', loadPdfPane);
         if (kinds.drawing || kinds.nativeDrawing || kinds.notebook) warm('canvas', () => import('./whiteboard/NativeCanvasEntry'));
->>>>>>> feat/in-house-engines
     };
     if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
     else setTimeout(run, 1500);

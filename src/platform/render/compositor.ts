@@ -7,7 +7,7 @@ import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from '
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
-import type { ClipToken, FrameEncoder, GpuPass, GroupToken, PipelineHandle, RectI, SamplerHandle, TextureHandle, UniformSlice } from './gfx/api';
+import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineHandle, RectI, SamplerHandle, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
@@ -57,10 +57,10 @@ function envelope(rect: Rect, width: number, height: number): RectI {
  * Unbalanced scope rejects the encode instead of silently changing the next layer's picture.
  */
 function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void } {
-    const scopes: Array<{ kind: 'clip'; token: ClipToken } | { kind: 'group'; token: GroupToken }> = [];
+    const scopes: Array<{ kind: 'clip'; token: ClipToken } | { kind: 'group'; token: GroupToken } | { kind: 'coverage'; token: CoverageToken }> = [];
     let active = true;
     const check = () => { if (!active) throw new ArenaError('aborted'); };
-    const pop = (kind: 'clip' | 'group', token: ClipToken | GroupToken) => {
+    const pop = (kind: 'clip' | 'group' | 'coverage', token: ClipToken | GroupToken | CoverageToken) => {
         check();
         const top = scopes.at(-1);
         if (!top || top.kind !== kind || top.token !== token) throw new ArenaError('invalid-input');
@@ -77,6 +77,10 @@ function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void } {
                 check(); const token = pass.beginGroup(bounds, options); scopes.push({ kind: 'group', token }); return token;
             },
             endGroup: token => { pop('group', token); pass.endGroup(token); },
+            beginCoverage: (target, bounds) => {
+                check(); const token = pass.beginCoverage(target, bounds); scopes.push({ kind: 'coverage', token }); return token;
+            },
+            endCoverage: (token, output) => { pop('coverage', token); pass.endCoverage(token, output); },
             composite: (source, bounds, options) => { check(); pass.composite(source, bounds, options); },
             end: () => { check(); throw new ArenaError('invalid-input'); },
         },

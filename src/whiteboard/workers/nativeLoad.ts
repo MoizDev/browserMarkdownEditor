@@ -8,6 +8,7 @@ import type { LoadRepairResult, LoadSampleWire } from '../model/loadTypes';
 import { repairLoad } from '../model/loadRepair';
 import type { SampleLease, SampleRef } from '../model/samples';
 import { validateNativeRequest } from './nativeRequest';
+import { reportBoardMemory } from './boardMemory';
 
 export interface NativeLoadReply extends Omit<NativeReadResult, 'draft'> {
     readonly repaired: LoadRepairResult | null;
@@ -20,8 +21,11 @@ export interface NativeLoadReply extends Omit<NativeReadResult, 'draft'> {
 /** Parse and graph repair share the worker-local sample store. Only immutable
  * encoded sample records cross the worker boundary; leases stay in that store. */
 export async function nativeLoad(payload: unknown, context: WorkerContext): Promise<NativeLoadReply> {
-    const request = validateNativeRequest(payload), samples = new SampleStore();
+    const request = validateNativeRequest(payload), samples = new SampleStore(), owner = {};
     const leases: SampleLease[] = [], wires = new Map<SampleRef, LoadSampleWire>();
+    // Exact decoded sample bytes from the store, plus the wire text (UTF-16) kept for repair.
+    let wireBytes = 0;
+    const cooperate = () => { reportBoardMemory(context, owner, samples.byteLength + wireBytes); return context.slice(); };
     try {
         async function* bytes(): AsyncIterable<Uint8Array> {
             const reader = request.bytes.stream().getReader();
@@ -36,10 +40,10 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
         }
         const parsed = await readNative(bytes(), {
             byteLength: request.bytes.size, expectedKind: request.expectedKind, pdfPages: request.pdfPages,
-            signal: context.signal, cooperate: context.slice,
+            signal: context.signal, cooperate,
             admitEncoded(pts, header) {
                 const lease = samples.admitEncoded(pts, header);
-                try { leases.push(lease); wires.set(lease.ref, { workerRef: lease.ref, pts, header }); }
+                try { leases.push(lease); wires.set(lease.ref, { workerRef: lease.ref, pts, header }); wireBytes += 2 * pts.length; }
                 catch (error) { lease.release(); throw error; }
                 return lease.ref;
             },
@@ -88,7 +92,7 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
                     // source bytes intact if exact geometry is unavailable.
                     throw new Error('Exact orphan bounds are unavailable for paged repair');
                 },
-                cooperate: context.slice, signal: context.signal,
+                cooperate, signal: context.signal,
             });
         } catch (error) {
             context.signal.throwIfAborted();
@@ -96,5 +100,8 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
                 issues: [...parsed.issues, { code: 'repair', reason: error instanceof Error ? error.message : 'Board repair failed', readOnly: true }] };
         }
         return { ...report, ...diagnostics, readOnly: repaired.status !== 'editable', repaired };
-    } finally { for (const lease of leases) lease.release(); }
+    } finally {
+        for (const lease of leases) lease.release();
+        reportBoardMemory(context, owner, null);
+    }
 }

@@ -7,7 +7,7 @@ import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } fr
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
-import { windowsOfSource, type PaintWindow } from './paintWindows';
+import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
@@ -38,10 +38,9 @@ export interface BoardLayersOptions {
 }
 interface Estimate {
     readonly frame: PaintSource;
-    // The source's windows and the cursor into them: window, then item within it.
-    readonly windows: readonly PaintWindow[];
-    window: number;
-    index: number;
+    // A resumable walk of the source's items in draw order: no copy of the item list is made for the estimate.
+    readonly walk: Generator<PaintItem>;
+    current: PaintItem | null;
     clip: number;
     chunk: number;
     arc: number;
@@ -94,10 +93,12 @@ function addBytes(state: Estimate, bytes: number): void {
 }
 /** One estimate unit visits one item, clip, or ink chunk; no whole-frame scan in demand(). */
 function estimateStep(state: Estimate): void {
-    const window = state.windows[state.window];
-    if (!window) { state.done = true; return; }
-    if (state.index >= window.items.length) { state.window++; state.index = 0; return; }
-    const item: PaintItem = window.items[state.index];
+    if (!state.current) {
+        const next = state.walk.next();
+        if (next.done) { state.done = true; return; }
+        state.current = next.value;
+    }
+    const item: PaintItem = state.current;
     if (state.clip < item.clips.length) {
         addBytes(state, item.clips[state.clip++].d.length * 80);
         return;
@@ -122,7 +123,7 @@ function estimateStep(state: Estimate): void {
         }
     } else if (item.kind === 'path') { addBytes(state, item.d.length * 80); state.segments += item.d.length; }
     state.items++; state.maxItemBytes = Math.max(state.maxItemBytes, state.itemBytes); state.itemBytes = 0;
-    state.index++; state.clip = 0; state.chunk = 0; state.arc = -1;
+    state.current = null; state.clip = 0; state.chunk = 0; state.arc = -1;
 }
 
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
@@ -289,7 +290,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const startEstimate = (frame: PaintSource) => {
         if (estimate?.frame === frame) return;
         known.add(frame);
-        estimate = { frame, windows: windowsOfSource(frame), window: 0, index: 0, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false }; denied = false;
+        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false }; denied = false;
     };
     const prune = (requested: PaintSource, ready: PaintSource | null) => {
         const retained = retainedByDense();

@@ -508,7 +508,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
   }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice,
     assetActivationsRef, assetRefsRef, boardBaselinesRef, bytesGenerationsRef, currentVaultIdRef, diskStateRef,
     flushingRef, nativePoliciesRef, notifyRef, pdfRebuildRef, pdfSeedForRef, pdfSeedsRef, reconcileQueueRef,
-    rootHandleRef, sessionReportRef, setSaveStatus, setTabs, tabsRef, trashInFlightRef, visiblePathsRef]);
+    rootHandleRef, sessionReportRef, setSaveStatus, setTabs, tabsRef, trashInFlightRef, visiblePathsRef, showStatus]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);

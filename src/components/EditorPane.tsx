@@ -1069,7 +1069,10 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onUnsignedPdfCopy={onUnsignedPdfCopy}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
-                            isDirty={tab.dirty}
+                            // Unsaved bytes only: tab.dirty also counts native session journalling and
+                            // rebind work, which held Original behind "Applying annotations…" forever
+                            // after a completed save (t5zy/t606). The header keeps the combined flag.
+                            isDirty={documentBuffers.isDirty(tab.id)}
                             disk={tab.disk}
                             pdfRebuild={tab.pdfRebuild}
                             pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}

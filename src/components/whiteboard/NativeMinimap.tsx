@@ -2,10 +2,11 @@ import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEven
 import type { Camera, Rect, Viewport } from '../../platform/types';
 import './nativeMinimap.css';
 
+/** A null picture and bounds is an empty sheet: the map then frames only the visible window. */
 export interface NativeMinimapThumbnail {
     readonly key: string;
-    readonly blob: Blob;
-    readonly worldBounds: Rect;
+    readonly blob: Blob | null;
+    readonly worldBounds: Rect | null;
     readonly revision: number;
 }
 
@@ -51,18 +52,21 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         if (pointer !== null && element.current?.hasPointerCapture(pointer)) element.current.releasePointerCapture(pointer);
     }, [active]);
 
-    const bounds = thumbnail?.worldBounds;
-    if (!active || !thumbnail || !bounds || !image || image.key !== key
-        || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y) || !Number.isFinite(bounds.width)
-        || !Number.isFinite(bounds.height) || bounds.width <= 0 || bounds.height <= 0
+    const content = thumbnail?.worldBounds ?? null;
+    if (!active || !thumbnail || (thumbnail.blob !== null && (!image || image.key !== key))
+        || (content !== null && (!Number.isFinite(content.x) || !Number.isFinite(content.y) || !Number.isFinite(content.width)
+            || !Number.isFinite(content.height) || content.width <= 0 || content.height <= 0))
         || !Number.isFinite(currentCamera.x) || !Number.isFinite(currentCamera.y) || !Number.isFinite(currentCamera.z)
         || currentCamera.z <= 0 || !Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)
         || viewport.width <= 0 || viewport.height <= 0) return null;
 
     // The map shows the whole board AND the visible window, so the viewport rectangle is always
     // inside it: a board smaller than the window shows small, with the window drawn around it.
+    // An empty board has no content, so its own extent is the window.
     const viewWidth = viewport.width / currentCamera.z, viewHeight = viewport.height / currentCamera.z;
     const view = { x: currentCamera.x, y: currentCamera.y, width: viewWidth, height: viewHeight };
+    const bounds = content ?? view;
+    const picture = content !== null ? image : null;
     const left = Math.min(bounds.x, view.x), top = Math.min(bounds.y, view.y);
     const right = Math.max(bounds.x + bounds.width, view.x + viewWidth), bottom = Math.max(bounds.y + bounds.height, view.y + viewHeight);
     const margin = Math.max(right - left, bottom - top) * 0.05;
@@ -125,10 +129,10 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         <div ref={frameElement} className="native-minimap-frame" style={{
             left: (BOX_WIDTH - frameWidth) / 2, top: (BOX_HEIGHT - frameHeight) / 2, width: frameWidth, height: frameHeight,
         }}>
-            <img src={image.url} alt="" draggable={false} style={{
+            {picture && <img src={picture.url} alt="" draggable={false} style={{
                 left: percent(bounds.x - frame.x, frame.width), top: percent(bounds.y - frame.y, frame.height),
                 width: percent(bounds.width, frame.width), height: percent(bounds.height, frame.height),
-            }} />
+            }} />}
             <div className="native-minimap-viewport" aria-hidden="true" style={{
                 left: percent(view.x - frame.x, frame.width), top: percent(view.y - frame.y, frame.height),
                 width: percent(view.width, frame.width), height: percent(view.height, frame.height),

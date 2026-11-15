@@ -54,7 +54,8 @@ export function fitFigureCreation(shape: FigureShape, requested: Rect): Rect {
     if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) throw new RangeError('Invalid requested figure box');
     const profile = CREATION_FIT[shape];
     const width = Math.max(1, w / (profile?.xScale ?? 1));
-    const height = Math.max(1, h / (profile?.yScale ?? 1));
+    // The one-unit floor is the stored height itself (F-FIG-005): dividing it by a fit scale would store 1/yScale.
+    const height = h <= 1 ? 1 : Math.max(1, h / (profile?.yScale ?? 1));
     return { x: x - width * (profile?.xInset ?? 0), y: y - height * (profile?.yInset ?? 0), width, height };
 }
 

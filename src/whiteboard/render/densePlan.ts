@@ -17,6 +17,7 @@ import { bandItemsOf, PaintWindowBuilder, refBytesOf, rootOf, windowsOfSource, t
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
+const FINE_GRID_MAX = 16;
 /** One streamed tile's bitmap (its apron included): the unit a tile run reserves. */
 const TILE_RUN_BYTES = 516 * 516 * 4;
 /** Granularity of the direct phase's CPU reservation: the adapter grows one chunk at a time, never by a whole-set estimate. */
@@ -241,6 +242,12 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
         if (p.windowLease) { host.allocator.cpu.release(p.windowLease); p.windowLease = null; }
         finishRetirement(p);
+    };
+    // The view's own fine grid, counted as the tiles start() would open at full scale.
+    const fineGridSmall = (view: ViewState): boolean => {
+        const side = EDGE / chooseTileScale(view.camera.z * view.viewport.dpr).scale;
+        const cols = Math.ceil(view.viewport.width / view.camera.z / side) + 1, rows = Math.ceil(view.viewport.height / view.camera.z / side) + 1;
+        return cols * rows <= FINE_GRID_MAX;
     };
     const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean, idle: boolean): Plan | null => {
         // Without a reopenable stream there is no tile content to build; the caller keeps its direct path.
@@ -584,7 +591,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 ready.ancestorsTried = true; idle = true;
             }
             try {
-                staged ??= start(frame, view, liveNodes, matches, idle);
+                // A cold view whose own fine grid is small starts fine: a provisional coarse level reads the whole sheet
+                // once per coarse tile, which made a 1% return slower than its own fine tiles (measured).
+                const fineGrid = !matches && !ready && fineGridSmall(view);
+                staged ??= start(frame, view, liveNodes, matches || fineGrid, idle);
                 const p = staged; if (!p) return;
                 p.blocked = false;
                 while (!budget.shouldYield() && !p.retired) {

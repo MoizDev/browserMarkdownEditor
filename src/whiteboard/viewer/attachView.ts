@@ -212,7 +212,7 @@ export const attachView: AttachView = options => {
                 void stream.release().catch(report).finally(() => pin.release());
                 return;
             }
-            frames.requestStream({ stream, release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
+            frames.requestStream({ stream, isCurrent: () => pin.valid, release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal) => open.call(pin, { ...identity, world: apron }, signal) });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });

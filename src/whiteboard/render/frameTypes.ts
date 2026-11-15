@@ -16,6 +16,8 @@ export interface PinnedPaintSource {
  * assembler drains and releases the stream itself before calling it. */
 export interface PinnedPaintStream {
     readonly stream: ScenePaintNodeStream;
+    /** Immutable source ownership survives exhaustion and retirement of its read cursor. */
+    isCurrent(): boolean;
     release(): void | Promise<void>;
     /** Opens another bounded stream of this same pin over `world`, with this frame's request
      * identity (precision, sensitivity). Dense tiles use it; the pin stays owned by the frame. */

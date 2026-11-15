@@ -15,6 +15,8 @@ import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { bandItemsOf, PaintWindowBuilder, refBytesOf, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
+import { PlanNodeBuffer } from './planNodeBuffer';
+import type { ScenePaintNodeStream } from './scenePaintStream';
 
 const EDGE = 512, BLOCK = 65_536;
 const FINE_GRID_MAX = 16;
@@ -146,6 +148,8 @@ type Plan = {
     borrows: number; closing: boolean; freed: boolean;
     /** Resolved nodes its tiles and bands share; disposed when the plan completes or retires. */
     resolved: ResolvedNodeCache;
+    /** The sheet read once for every pass of the plan; null when the frame cannot open tiles. Disposed with `resolved`. */
+    nodes: PlanNodeBuffer | null;
 };
 const projection = (view: ViewState) => [view.camera.x, view.camera.y, view.camera.z,
     view.viewport.width, view.viewport.height, view.viewport.dpr].join(':');
@@ -199,10 +203,14 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         return rects;
     };
     // Retiring a plan stops its work at once; the resources a retainPrepared borrow reads outlive it.
+    // A pass reads the plan's shared sheet read when it can, and its own stream otherwise.
+    const openPass = (p: Plan, apron: Readonly<Rect>, signal: AbortSignal): Promise<ScenePaintNodeStream> =>
+        (p.nodes ? p.nodes.serve(apron, signal) : Promise.resolve(null))
+            .then(stream => stream ?? p.source.openTile!(apron, signal, p.resolved));
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
         p.retired = true;
-        p.resolved.dispose();
+        p.resolved.dispose(); p.nodes?.dispose();
         p.job?.cancel(); p.job = null;
         if (p.cache) { p.cache.cache.cancel(p.cache.ticket); p.cache = null; }
         if (p.summaryCache) { p.summaryCache.cache.cancel(p.summaryCache.ticket); p.summaryCache = null; }
@@ -233,7 +241,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const free = (p: Plan) => {
         if (p.freed) return;
         p.freed = true;
-        p.resolved.dispose();
+        p.resolved.dispose(); p.nodes?.dispose();
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.owned.splice(0)) bitmap.release();
         p.bitmaps.clear(); p.bitmapBytes = 0;
@@ -276,7 +284,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowLease: null,
                 directAdapter: null, directLeases: [], directLeased: 0,
                 pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false,
-                resolved: new ResolvedNodeCache(host.allocator.cpu) };
+                resolved: new ResolvedNodeCache(host.allocator.cpu), nodes: null };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
                 p.pending++;
                 let promise;
@@ -284,6 +292,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 catch (error) { p.pending--; finishRetirement(p); throw error; }
                 return promise.finally(() => { p.pending--; finishRetirement(p); resources.invalidate(); });
             } } };
+            // One read of the plan's grid (with the tiles' bleed) serves every pass whose apron lies inside it.
+            const margin = 4 / scale;
+            if (frame.openTile) p.nodes = new PlanNodeBuffer({ memory: host.allocator.cpu,
+                world: { x: x0 * side - margin, y: y0 * side - margin, width: (x1 - x0) * side + 2 * margin, height: (y1 - y0) * side + 2 * margin },
+                open: (world, signal) => frame.openTile!(world, signal, p.resolved) });
             plans.add(p); return p;
         } catch (error) { host.allocator.cpu.release(lease); throw error; }
     };
@@ -392,7 +405,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 // Memory denied the summary: skip it, since tiles then stand in with whatever is cached.
                 if (!ticket) { p.summaryIndex++; continue; }
                 p.summaryCache = { cache, ticket };
-                p.job = createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal, p.resolved),
+                p.job = createStreamingDenseTileJob({ open: (apron, signal) => openPass(p, apron, signal),
                     rect: target.rect, scale: target.scale, band: target.band, barriers: NO_LIVE, token: p.source.token,
                     revision: p.source.sceneRevision, isCurrent: () => !p.retired && resources.frames.isCurrent(p.source),
                     images: p.resources.images, host, onError: report });
@@ -458,7 +471,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 p.cache = { cache, ticket };
             }
         }
-        p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal, p.resolved),
+        p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => openPass(p, apron, signal),
             rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, eager: () => ready === null, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             // A failed tile is retried by tileFailed; reporting it would turn one transient open into a fatal canvas error.
@@ -547,7 +560,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         } };
         if (ready !== p) drop(ready);
         ready = p;
-        if (final) { p.phase = 'complete'; p.resolved.dispose(); if (staged === p) staged = null; }
+        if (final) { p.phase = 'complete'; p.resolved.dispose(); p.nodes?.dispose(); if (staged === p) staged = null; }
         else { p.phase = 'refine'; staged = p; }
         resources.invalidate();
     };

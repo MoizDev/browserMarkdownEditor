@@ -509,8 +509,12 @@ export class MemoryGovernor {
         if (bytes > this.target[pool]) return null;
         const allowed = () => this.fits(cache, bytes);
         if (!allowed()) {
-            this.state = 'trimming';
-            this.belowRecoverySince = null;
+            // Pressure is the pool's, not one pane reaching its own grant: adapters retry a refused grant each frame, and
+            // resetting the recovery clock for it kept the governor 'trimming' at quality 0.8 with the GPU pool 57% full.
+            if (this.charged[pool] + bytes > this.target[pool]) {
+                this.state = 'trimming';
+                this.belowRecoverySince = null;
+            }
             // A pane grant refuses only its own residency, so that is reclaimed first; the pool's idle residency
             // (redundant levels, idle geometry) goes only when the reclaim did not make room.
             this.reclaimPane(cache, bytes);

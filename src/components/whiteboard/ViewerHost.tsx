@@ -3,6 +3,7 @@ import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/us
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
 import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import type { RenderToken } from '../../platform/render/types';
+import BoardPaintStatus, { type BoardPaintProgress, type BoardReadiness } from './BoardPaintStatus';
 import './viewerHost.css';
 
 /** The owner keeps the document/session alive across graph view, hidden tabs
@@ -26,6 +27,9 @@ export interface ViewerHostProps<T extends object> {
     readonly inverted: boolean;
     readonly reason: string | null;
     readonly readOnlyNotice: string;
+    /** The renderer's readiness and progress: loading before complete pixels, pending keeps the last coherent pixels. */
+    readonly readiness?: BoardReadiness;
+    readonly paint?: BoardPaintProgress;
     /** A writable view must enforce the same authority in its session and input. */
     readonly readOnly?: boolean;
     /** The editing input installs the same engine's accessible mirror itself. */
@@ -42,7 +46,7 @@ export interface ViewerHostProps<T extends object> {
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
     name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, externalAccessibility = false,
-    view, layers, platform, registerKeyboardTarget, onFocus, chrome,
+    view, layers, platform, registerKeyboardTarget, onFocus, chrome, readiness, paint,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
     const [interaction, setInteraction] = useState<HTMLDivElement | null>(null);
@@ -76,6 +80,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
+        <BoardPaintStatus readiness={readiness} paint={paint} isVisible={isVisible} reason={reason} />
         {readOnly && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
         {chrome}
     </div>;

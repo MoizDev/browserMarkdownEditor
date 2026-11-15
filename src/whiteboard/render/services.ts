@@ -1,5 +1,6 @@
 import type { Affine, Rect } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
+import type { MemoryCacheHandle } from '../../platform/render/memoryGovernor';
 import { worldPose } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import { createBoardChangeGeometry } from '../geom/changeGeometry';
@@ -26,6 +27,7 @@ import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
 import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
+import { InkLodLadder } from './inkLodLadder';
 import { paintStrokeNode, paintVectorNode, paintVectorNodeNow } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
 import type { PaintPalette } from './colour';
@@ -116,6 +118,8 @@ export function createBoardRenderServices(options: {
     /** Main-window transport only; worker-hosted admission reuses its own cooperative canonical job. */
     readonly coverageWorker?: boolean;
     readonly fonts?: BoardFonts;
+    /** The session's cache allocator for stroke LOD levels. Absent, strokes stay on their fine samples. */
+    readonly inkLodMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
@@ -127,6 +131,30 @@ export function createBoardRenderServices(options: {
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
+    // One ladder per stroke, valid for its geometry signature: an edit replaces the signature, so the old
+    // ladder is disposed at the next prepare, and the cache trim and session end release the rest.
+    const inkLadders = new Map<NodeId, { readonly signature: readonly unknown[]; readonly ladder: InkLodLadder }>();
+    const evictInkLadders = (bytes: number) => {
+        let freed = 0;
+        for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
+    };
+    const inkMemory = options.inkLodMemory?.(evictInkLadders);
+    const dropInkLadder = (id: NodeId) => {
+        const entry = inkLadders.get(id);
+        if (entry) { entry.ladder.dispose(); inkLadders.delete(id); }
+    };
+    const inkLadder = (id: NodeId, signature: readonly unknown[]): InkLodLadder | undefined => {
+        if (!inkMemory || disposed) return undefined;
+        const entry = inkLadders.get(id);
+        if (entry && sameGeometrySignature(entry.signature, signature)) return entry.ladder;
+        dropInkLadder(id);
+        const ladder = new InkLodLadder(inkMemory);
+        inkLadders.set(id, { signature, ladder });
+        return ladder;
+    };
+    const trimCached = () => {
+        while (cached.size > 256) { const gone = cached.keys().next().value!; cached.delete(gone); dropInkLadder(gone); }
+    };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
         for (const id of textIds) cached.delete(id);
@@ -140,6 +168,8 @@ export function createBoardRenderServices(options: {
     const releaseHolder = () => {
         if (--holders !== 0) return;
         disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        for (const id of [...inkLadders.keys()]) dropInkLadder(id);
+        inkMemory?.close();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -173,6 +203,8 @@ export function createBoardRenderServices(options: {
         if (node.kind === 'stroke') {
             const revision = doc.rev, sampleRef = node.samples;
             const identity = { session: workerSession, epoch: options.token.vaultEpoch, revision };
+            // Captured now, not inside the worker callback: a later edit must not hand this stroke's ladder to a newer geometry.
+            const ladder = coverageWorker && precision!.lod ? inkLadder(node.id, before) : undefined;
             const ink = await buildStrokeCoverage(node, options.samples, {
                 deviceScale: precision!.scale, cooperate: options.cooperate, signal,
                 worker: coverageWorker ? async (points, parameters, style, range, coverage) => {
@@ -181,7 +213,7 @@ export function createBoardRenderServices(options: {
                         const current = doc.nodes.get(node.id);
                         return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'
                             && current.samples === sampleRef && sameGeometrySignature(signature(current, doc), before);
-                    }, precision!.lod ? { chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined);
+                    }, precision!.lod ? { ladder, chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined);
                 } : undefined,
             });
             result = strokePrepared(key, ink);
@@ -227,7 +259,7 @@ export function createBoardRenderServices(options: {
         cached.delete(node.id); cached.set(node.id, prepared);
         // Retained source items own their geometry by reference after eviction.
         // The v1 default bounds idle local-geometry residency to 256 nodes.
-        while (cached.size > 256) cached.delete(cached.keys().next().value!);
+        trimCached();
         return prepared;
     };
     // A native copy event cannot await fonts, images, or a worker. These are the
@@ -275,7 +307,7 @@ export function createBoardRenderServices(options: {
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: false } : {}) };
         cached.delete(node.id); cached.set(node.id, prepared);
-        while (cached.size > 256) cached.delete(cached.keys().next().value!);
+        trimCached();
         return prepared;
     };
     const bounds: BoundsProvider = {
@@ -327,7 +359,7 @@ export function createBoardRenderServices(options: {
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
         const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
         return {
-            token: stream.token, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
+            token: stream.token, theme: request.theme, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
             sessionRasters, sourceWorld: world,
             get rasterVariant() { return text.fonts.epoch === epoch ? variant : undefined; },
             isCurrent: () => stream.isCurrent(),
@@ -511,7 +543,7 @@ export function createBoardRenderServices(options: {
         const box = geometrySceneBounds(vector), value = { ink: box.ink, hit: box.hit };
         if (vector.text.length) textIds.add(node.id);
         cached.set(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
-        while (cached.size > 256) cached.delete(cached.keys().next().value!);
+        trimCached();
         return value;
     };
     // A connector's conservative envelope may name an attach target the connector hint cannot box alone (a stroke,

@@ -85,3 +85,11 @@ export function* bandItemsOf(windows: readonly PaintWindow[], band: PaintBand): 
         yield* window.items;
     }
 }
+
+/** Bytes of the item references a window list holds. A list that duplicates references is charged here by its owner. */
+export const PAINT_REF_BYTES = 16;
+export function refBytesOf(windows: readonly PaintWindow[]): number {
+    let items = 0;
+    for (const window of windows) items += window.items.length;
+    return items * PAINT_REF_BYTES;
+}

@@ -196,15 +196,21 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         operationSignal.throwIfAborted();
         if (runtime.render.text.fonts.epoch !== fontEpoch) throw new Error('Board fonts changed while preparing the export; retry.');
         let topmostRoot: NodeId | null = null, topmostIndex = -1;
-        const filtered: PaintNodeSource = selectionOnly ? {
-            token: raw.token, sceneRevision: raw.sceneRevision, nodeCount: raw.nodeCount, isCurrent: () => raw.isCurrent(),
+        const selectOnly = (input: PaintNodeSource): PaintNodeSource => selectionOnly ? {
+            token: input.token, sceneRevision: input.sceneRevision, nodeCount: input.nodeCount, isCurrent: () => input.isCurrent(),
             readNode(index) {
-                const node = raw.readNode(index);
+                const node = input.readNode(index);
                 const underlay = node.underlay?.filter(item => selected.has(item.nodeId as NodeId));
                 const content = node.content.filter(item => selected.has(item.nodeId as NodeId));
                 return { underlay, content };
             },
-        } : raw;
+        } : input;
+        const filtered = selectOnly(raw);
+        // PDF and print land on white paper with no background: a dark-theme paint
+        // put near-white ink on it (seen: dark-mode Export → PDF was blank).
+        const paperSource = meta.kind === 'whiteboard' && theme !== 'light'
+            ? selectOnly(await pin.paintSource({ sheetId: selection.sheet, theme: 'light', deviceScale: 2 }, operationSignal)) : null;
+        operationSignal.throwIfAborted();
         const now = performance.now();
         let live = 0;
         const cache = getPlatformRuntime().governor.register({ id: `board-export-bounds:${token.documentId}:${++serial}`,
@@ -335,11 +341,24 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         /** One world rectangle of the PDF-backed board, captured at `pixelsPerUnit` from the same pinned backdrop and board. */
         const pdfCaptureBlob = async (world: Readonly<Rect>, pixelsPerUnit: number, layers: readonly string[],
             captureSignal: AbortSignal, clipboard: boolean): Promise<Blob> => {
-            const capturer = pdfCapturer(true);
-            try {
-                return await capturer.captureExportBlob(world, Math.max(world.width, world.height) * pixelsPerUnit,
-                    { layers, theme: 'light', inverted: false, signal: captureSignal, deadlineMs: 300_000, clipboard, pixelsPerWorldUnit: pixelsPerUnit });
-            } finally { await capturer.dispose(); }
+            const backdrop = pdfBackdrop;
+            if (!backdrop) throw new Error('The PDF backdrop is unavailable');
+            // A snapshot pins one font epoch. The pool provides a font a page first needs during the tile render,
+            // which advances the epoch and aborts this attempt. The export then re-pins at the new epoch rather than
+            // mixing pixels from two epochs. The epoch only rises while the profile lives, and the font catalogue is
+            // finite, so the loop ends. The deadline is shared by every attempt.
+            const deadline = Date.now() + 300_000;
+            for (;;) {
+                const epoch = backdrop.fontEpoch();
+                const capturer = pdfCapturer(true);
+                try {
+                    return await capturer.captureExportBlob(world, Math.max(world.width, world.height) * pixelsPerUnit,
+                        { layers, theme: 'light', inverted: false, signal: captureSignal, deadlineMs: Math.max(1, deadline - Date.now()), clipboard, pixelsPerWorldUnit: pixelsPerUnit });
+                } catch (error) {
+                    captureSignal.throwIfAborted();
+                    if (backdrop.fontEpoch() <= epoch || Date.now() >= deadline) throw error;
+                } finally { await capturer.dispose(); }
+            }
         };
         const pdfPng = async (captureSignal: AbortSignal) => {
             checkPngSize(Math.max(1, Math.ceil(scope.bounds.width * pngScale)), Math.max(1, Math.ceil(scope.bounds.height * pngScale)), route === 'copy');
@@ -461,7 +480,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 const bytes = await streamIncrementalPdf({ revision, pageCount: printPages.length,
                     async page(index, pageSignal) {
                         pageSignal.throwIfAborted();
-                        return { source, world: printPages[index]!, outputScale: printScale };
+                        return { source: paperSource ?? source, world: printPages[index]!, outputScale: printScale };
                     } }, printScale, createExportImageResolver(token, capturedImages, readImage, combined), createLazyIncrementalPdfWriter(), combined);
                 combined.throwIfAborted();
                 return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
@@ -469,9 +488,12 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pngPage: (page, requestSignal) => run(requestSignal, combined => {
                 const world = printPages[page];
                 if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                // A print page is decoded by the print viewer in this renderer, so it keeps the clipboard's budget: a
+                // download may be far larger, but a 200 dpi page past this bound would crash the page instead of printing.
+                const raster = Math.min(printRaster, pngScaleLimit(world, true));
                 // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows.
-                if (pdfBackdrop) return pdfCaptureBlob(world, printRaster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
-                return streamRasterPng(source, capturedImages, world, printRaster, combined, { background: '#ffffff' });
+                if (pdfBackdrop) return pdfCaptureBlob(world, raster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
+                return streamRasterPng(paperSource ?? source, capturedImages, world, raster, combined, { background: '#ffffff' });
             }),
             release,
         };

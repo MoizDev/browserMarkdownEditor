@@ -32,6 +32,10 @@ const flipLine = (line: ExactLine): ExactLine => ({ a: { n: -line.a.n, e: line.a
 const union = (a: Box | null, b: Box): Box => a
     ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 const pointBox = (p: Vec2): Box => [p.x, p.y, p.x, p.y];
+// default, calibration cut by owner: 64 KiB per path command, capped at the 32 MiB ceiling.
+const CURVED_CLIP_BYTES_PER_COMMAND = 64 * 1024, CURVED_CLIP_RESERVE_CEILING = 32 * 1024 * 1024;
+const curvedClipReserveBytes = (commands: number): number =>
+    Math.min(CURVED_CLIP_RESERVE_CEILING, Math.max(1, commands) * CURVED_CLIP_BYTES_PER_COMMAND);
 function rectangle(r: Rect): PathCommand[] {
     return [['M', r.x, r.y], ['L', r.x + r.width, r.y], ['L', r.x + r.width, r.y + r.height], ['L', r.x, r.y + r.height], ['Z']];
 }
@@ -138,7 +142,7 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
                 // The inner curve polygon is a genuine subset; the outer
                 // control hull is a superset. Never turn a flattened ellipse's
                 // midpoint error into an exact clipping authority.
-                hasCurve = true; temporary.push(reserve(32768 * 1024));
+                hasCurve = true; temporary.push(reserve(curvedClipReserveBytes(clip.d.length)));
                 const envelope = yield* finishJob(createConvexPathEnvelopeJob((yield* readPath(clip.d)), clip.localToWorld,
                     tolerance / 4, { maxLeaves: 4096, maxPoints: 32768 }));
                 if (envelope.status === 'uncertain') throw new BoardBoundsUncertified(envelope.reason);

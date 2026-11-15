@@ -18,6 +18,8 @@ export interface SaveScheduler {
     hasPendingEdits(): boolean;
     /** For hide, unmount, explicit save and reload: finish current input and hand it off now. */
     flushNow(): void;
+    /** For a checkpoint: hand off committed edits now, leaving a live gesture or composition running. */
+    flushCommitted(): void;
     /** The session clears this only after the corresponding revision is durable. */
     setJournalPending(active: boolean): void;
     /** pagehide does not assemble or report a source. */
@@ -123,6 +125,11 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
             // Finish callbacks may synchronously publish final edits through markDirty.
             if (composition) { composition = false; callbacks.finishComposition(); }
             if (gesture) { gesture = false; callbacks.finishGesture(); }
+            flush();
+        },
+        flushCommitted() {
+            if (disposed) return;
+            clearFlush();
             flush();
         },
         setJournalPending(active) {

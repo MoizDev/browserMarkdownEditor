@@ -2,7 +2,7 @@ import type { PathCommand, ViewState } from '../../../platform/types';
 import type { FrameBudget, GpuReleaseReason } from '../../../platform/render/types';
 import type { PaintBand } from '../material';
 import type { PaintItem, PaintSource } from '../paintStream';
-import { filterWindows, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from '../paintWindows';
+import { filterWindows, refBytesOf, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from '../paintWindows';
 import type { PaintImageLease, PaintLayerResources } from '../resources';
 import { InkCoverageUnionPath2dJob, Path2dJob } from './coverage2d';
 import type { PathOrigin2d } from './coverage2d';
@@ -131,9 +131,12 @@ export function createCanvasPaintAdapter(
     let lastFrameId: number | null = null;
 
     function start(frame: PaintSource, scale: number): Snapshot {
-        return { frame, scale, windows: windowsOfSource(frame), window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
+        const windows = windowsOfSource(frame);
+        // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
+        return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
             clips: new Map(), geometry: new Map(), images: new Map(), borrows: 0, closing: false, abort: new AbortController(),
-            pending: 0, failed: false, failure: undefined, complete: false, disposed: false, bytes: 0, job: null };
+            pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
+            bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
     function requestImage(s: Snapshot, key: string): void {
         if (s.images.has(key)) return;
@@ -208,7 +211,9 @@ export function createCanvasPaintAdapter(
         s.clipIndex = 0;
     }
     function preparedOf(s: Snapshot): PreparedPaint2d {
-        s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows: filterWindows(s.windows, include), resources: {
+        const windows = filterWindows(s.windows, include);
+        if (windows !== s.windows) s.bytes += refBytesOf(windows);
+        s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows, resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
             image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },

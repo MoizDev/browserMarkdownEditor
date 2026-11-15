@@ -137,6 +137,10 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             bind(value) {
                 if (slot.closed || !isEmbedContainmentApproved(value) || value.element.parentElement !== container || !container.isConnected) throw new Error('Invalid embed containment binding');
                 if (slot.containment && slot.containment !== value) throw new Error('Embed containment already bound');
+                // The real 800×450 node otherwise hosted the browser's default 304×154 iframe.
+                // Geometry belongs to the stable container, including its outside-board interaction mode.
+                value.element.style.display = 'block'; value.element.style.width = '100%';
+                value.element.style.height = '100%'; value.element.style.border = '0';
                 slot.containment = value; slot.estimate = estimates(slot.node!); wake();
             },
             getSnapshot: () => slot.snapshot,

@@ -34,7 +34,10 @@ export async function pngStart(args: unknown, context: WorkerContext): Promise<B
       const next = state.delivered
       state.delivered = undefined
       if (next.done) return
-      try { yield next.value }
+      // A delivery is a band of whole rows (the client batches round trips); the encoder sees rows.
+      const stride = input.width * 4, band = next.value
+      if (band.byteLength % stride !== 0) throw new Error('Unexpected PNG stream band')
+      try { for (let at = 0; at < band.byteLength; at += stride) yield band.subarray(at, at + stride) }
       finally { state.rowBytes = 0; reportMemory(context) }
     }
   }

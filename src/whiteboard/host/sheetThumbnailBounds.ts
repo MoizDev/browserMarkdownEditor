@@ -16,7 +16,7 @@ export async function pinNativeSheetThumbnailBounds(options: {
     current(): boolean;
     capture(rect: Rect, signal: AbortSignal): Promise<Blob>;
     signal: AbortSignal;
-}): Promise<{ readonly bounds: Rect; readonly blob: Blob }> {
+}): Promise<{ readonly bounds: Rect | null; readonly blob: Blob | null }> {
     const { runtime, sheet, revision, fontEpoch, signal } = options;
     const scene = runtime.scene, doc = runtime.session.doc;
     const check = () => {
@@ -48,8 +48,10 @@ export async function pinNativeSheetThumbnailBounds(options: {
         const paint = await pin.paintSource({ sheetId: sheet, theme: 'light' }, signal); check();
         const measured = await measureBoardPaintBounds(paint, { memory, signal }); check();
         const value = measured.bounds;
-        if (!value || !value.every(Number.isFinite) || value[2] <= value[0] || value[3] <= value[1]) {
-            throw new Error('There is no measurable drawing content for a minimap.');
+        // An empty sheet has nothing to picture, but its minimap still frames the visible window.
+        if (!value) { check(); return { bounds: null, blob: null }; }
+        if (!value.every(Number.isFinite) || value[2] <= value[0] || value[3] <= value[1]) {
+            throw new Error('The drawing content has no measurable extent for a minimap.');
         }
         const bounds = { x: value[0], y: value[1], width: value[2] - value[0], height: value[3] - value[1] };
         check();

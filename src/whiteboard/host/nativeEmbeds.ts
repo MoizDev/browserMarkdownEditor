@@ -4,6 +4,7 @@ import type { RenderToken } from '../../platform/render/types';
 import { activateEmbed, resolveEmbedCandidate, type EmbedLease, type EmbedManifest } from '../media/embed';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import type { BoardRuntime } from './runtime';
+import { attachEmbedInteraction } from './embedInteraction';
 
 export type NativeEmbedState = 'inert' | 'loading' | 'loaded';
 export interface NativeEmbedController {
@@ -16,7 +17,7 @@ export interface NativeEmbedController {
     dispose(): Promise<void>;
 }
 type Entry = { readonly source: string; readonly controller: AbortController; readonly task: Promise<EmbedHostingLease>;
-    hosting?: EmbedHostingLease; foreign?: EmbedLease; loaded: boolean; cleanup?: Promise<void> };
+    hosting?: EmbedHostingLease; foreign?: EmbedLease; loaded: boolean; interaction?: () => void; cleanup?: Promise<void> };
 const sameToken = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
     && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 
@@ -46,6 +47,7 @@ export function createNativeEmbedController(options: {
         if (entry.cleanup) return entry.cleanup;
         if (entries.get(id) === entry) entries.delete(id);
         entry.controller.abort(new DOMException('Embed consent ended', 'AbortError'));
+        entry.interaction?.(); entry.interaction = undefined;
         entry.foreign?.dispose();
         // Acquisition can ignore cancellation and finish late; wait for that exact task and close its actual hosting lease.
         const work = (async () => {
@@ -70,6 +72,7 @@ export function createNativeEmbedController(options: {
             const task = Promise.resolve().then(async () => {
                 const hosting = await options.presentation.acquire(id, controller.signal);
                 entry.hosting = hosting;
+                entry.interaction = attachEmbedInteraction(hosting, () => { void release(id, entry).catch(report); });
                 const check = () => {
                     controller.signal.throwIfAborted(); hosting.signal.throwIfAborted();
                     if (!eligible(id, source) || hosting.getSnapshot().node?.source !== source) throw new DOMException('Embed source changed', 'AbortError');

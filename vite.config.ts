@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { developmentPdfiumAssets } from './build/pdfiumDevAssets'
-import { pdfClassicAssets } from './build/pdfClassicAssets'
 import { pdfContainedAssets } from './build/pdfContainedAssets'
 import { pdfFontAssets } from './build/pdfFontAssets'
 import { whiteboardSvgFrames } from './build/whiteboardSvgFrames.mjs'
@@ -19,7 +18,7 @@ const buildId = randomUUID()
 export default defineConfig({
   // Index workers share split modules; Chromium-only module workers support ES chunks.
   worker: { format: 'es' },
-  plugins: [react(), pdfClassicAssets(), developmentPdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), containedEmbedFrames(root), thirdPartyNotices(root), {
+  plugins: [react(), developmentPdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), containedEmbedFrames(root), thirdPartyNotices(root), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
     // in `vite build --mode benchmark` (a dev server in that mode stays false: the
     // benchmark build is the production build plus hooks, nothing else), so every
@@ -62,6 +61,9 @@ export default defineConfig({
     // after mount changed React's shared-chunk URL; NativePdfEntry then used
     // a second dispatcher while React DOM still held the original module.
     // Pre-optimization does not fetch these lazy workers in the browser.
-    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell'],
+    // harfbuzzjs is reached only by board PNG/SVG export; found late, Vite
+    // reloaded the page mid-export and the PDF reopened in Original (cold dev
+    // server, 3 of 3 first runs; 0 of 15 once optimized).
+    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell', 'harfbuzzjs'],
   },
 })

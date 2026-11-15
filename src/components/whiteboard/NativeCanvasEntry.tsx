@@ -175,11 +175,11 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
                 current={current} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
-            {minimapOpen && minimapNotice && <span role="status">{minimapNotice}</span>}
         </div>}
         {editingChrome && notice && <span role="status">{notice}</span>}
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
-            isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}</>} />;
+            isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}
+        {minimapOpen && minimapNotice && <div className="board-viewer-notice" role="status">{minimapNotice}</div>}</>} />;
 }
 
 function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }: {

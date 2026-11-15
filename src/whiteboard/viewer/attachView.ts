@@ -18,7 +18,7 @@ import { BoundsQuality } from '../scene/bounds';
 import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
 import { createPreviewSlot } from './previewSlot';
-import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerSnapshot, ViewerViewParams } from './types';
+import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerReadiness, ViewerSnapshot, ViewerViewParams } from './types';
 
 class SelectionIds implements ReadonlySet<string> {
     readonly [Symbol.toStringTag] = 'SelectionIds';
@@ -122,10 +122,11 @@ export const attachView: AttachView = options => {
     const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
-    const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
+    const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
+        onPaintProgress: () => { if (!disposed) publish(); },
         onDrawn(revision, frame, context) {
             options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
@@ -173,6 +174,8 @@ export const attachView: AttachView = options => {
             return result || node.kind;
         } });
     const previewUnderlay = createPreviewSlot('board-preview-underlay', layers[0]), previewContent = createPreviewSlot('board-preview-content', layers[1]);
+    // Readiness needs a completed, matching paint once; after that a pending revision keeps the last pixels, not a loading screen.
+    let paintEverCurrent = false;
     let snapshot: ViewerSnapshot;
     function makeSnapshot(): ViewerSnapshot {
         const palette = palettes[options.session.doc.kind === 'whiteboard' ? view.theme : 'light'];
@@ -184,7 +187,12 @@ export const attachView: AttachView = options => {
         // sealed it again during React's layout effect, recursively cancelling until error #185.
         const definitions = snapshot?.layers.length === nextLayers.length && nextLayers.every((layer, i) => snapshot.layers[i] === layer)
             ? snapshot.layers : Object.freeze(nextLayers);
-        return { state: failed ? 'failed' : !runtime.scene ? 'loading' : options.session.isReadOnly ? 'read-only' : 'ready',
+        const paint = layers.paintProgress();
+        if (paint.kind === 'current') paintEverCurrent = true;
+        const state: ViewerReadiness = failed ? 'failed' : !runtime.scene ? 'loading'
+            : !paintEverCurrent ? (paint.kind === 'failed' ? 'failed' : 'loading')
+            : options.session.isReadOnly ? 'read-only' : 'ready';
+        return { state, paint,
             readOnlyReason: failed?.message ?? runtime.session.readOnlyReason, sceneRevision: runtime.scene?.revision ?? options.session.doc.rev,
             layout: scene.layout, palette, appearance: { background: palettes[view.theme].background, inverted: view.inverted },
             layers: definitions,

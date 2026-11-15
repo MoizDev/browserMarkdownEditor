@@ -227,6 +227,7 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
         requestStream: pin => base.requestStream(pin),
         prepare: budget => base.prepare(budget),
         needsFrame: () => base.needsFrame(),
+        blocked: () => base.blocked?.() ?? false,
         readFrame() { const frame = base.readFrame(); newest = frame; return frame ? decorate(frame) : null; },
         isCurrent: frame => base.isCurrent(original(frame)),
         presented: frame => base.presented(original(frame)),

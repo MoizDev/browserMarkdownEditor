@@ -571,13 +571,12 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const countable = !!activeFile && !isCanvas && !unreadable && !isCode;
     const statusShown = backlinksAvailable || countable || !!saveStatus;
     /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
-       a PDF or a notebook there draws its page/zoom pills in that same corner.
-       Lifted above them rather than hidden: it may be carrying counts for a
-       markdown pane to the left, or a message. A drawing draws nothing there
-       (tldraw's help button is off in this build), so it is not lifted. */
+       a PDF, a notebook or a whiteboard there draws its page, zoom and minimap
+       controls in that same corner. Lifted above them rather than hidden: it
+       may be carrying counts for a markdown pane to the left, or a message. */
     const cornerTab = paneTabs.length ? paneTabs[paneTabs.length - 1] : null;
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
-        && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
+        && (isPdfFile(cornerTab.file.name) || isCanvasFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
     const wordCountRef = useRef<HTMLSpanElement>(null);
     const charCountRef = useRef<HTMLSpanElement>(null);
@@ -1069,7 +1068,10 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onUnsignedPdfCopy={onUnsignedPdfCopy}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
-                            isDirty={tab.dirty}
+                            // Unsaved bytes only: tab.dirty also counts native session journalling and
+                            // rebind work, which held Original behind "Applying annotations…" forever
+                            // after a completed save (t5zy/t606). The header keeps the combined flag.
+                            isDirty={documentBuffers.isDirty(tab.id)}
                             disk={tab.disk}
                             pdfRebuild={tab.pdfRebuild}
                             pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}

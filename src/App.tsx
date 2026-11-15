@@ -3396,7 +3396,9 @@ export default function App() {
     const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
-      if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
+      // 'skipped' with clean bytes is a finished save: the combined dirty flag also counts
+      // background session work, which refused every print after an annotation save.
+      if (outcome !== 'written' && (outcome !== 'skipped' || documentBuffers.isDirty(id))) throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
     }
     if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()
         || documentSessions.hasPendingEdits(id)) throw new Error('The document changed while preparing to print.');
@@ -3537,7 +3539,7 @@ export default function App() {
           check();
         } else {
           const bytes = await readFileBytes(handle);
-          const { readPdfRole } = await import('./utils/pdfAnnotation');
+          const { readPdfRole } = await import('./utils/pdfRoleRead');
           const role = await readPdfRole(bytes);
           if (!canRotatePdfRole(role)) {
             notifyRef.current(role.kind === 'annotated'
@@ -3798,6 +3800,9 @@ export default function App() {
         await drain(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         const result = await flushTab(path);
+        // A board's acknowledged write still finishes its after-write step as tracked work; checking before
+        // it settles misreads a clean board as pending (seen closing a written drawing beside a PDF pane).
+        if (result === 'written') await drain(tab.id);
         const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
         if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {
@@ -3997,13 +4002,16 @@ export default function App() {
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
     if (mode === tab.mode) return;
     const view = getView(path);
-    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && view?.flushPending) {
+    const nativeEntry = documentSessions.get(tab.id);
+    const nativePdf = tab.representation.loadedKind === 'pdf' && hasHostedNativeOwner(nativeEntry, tab.id);
+    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && (view?.flushPending || nativePdf)) {
       if (pendingPdfMode.current.has(tab.id)) return;
       pendingPdfMode.current.add(tab.id);
-      void Promise.resolve(view.flushPending()).then(async () => {
-        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
+      // Native ink reports through its document bridge, not the retired canvas view reporter.
+      void Promise.resolve(view?.flushPending?.()).then(async () => {
+        const needsSave = documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty;
         const outcome = await flushTab(path, !!needsSave);
-        if (outcome === 'failed' || outcome === 'skipped' && (tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id))) return;
+        if (outcome === 'failed' || outcome === 'skipped' && (documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty)) return;
         setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
       }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
       return;
@@ -4021,7 +4029,7 @@ export default function App() {
       t.file.path === path && canChangeTabMode(t)
         ? { ...t, mode }
         : t));
-  }, [flushTab, documentBuffers]);
+  }, [flushTab, documentBuffers, documentSessions]);
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).

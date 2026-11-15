@@ -1,12 +1,12 @@
 import { writeStoredValue } from './storage';
-import { pdfEngineAvailableInBuild } from './pdfEngineAvailability';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
 // Old stored engine preferences never select a removed implementation.
 export type CanvasEngine = 'board';
-export type PdfViewer = 'classic' | 'tiled';
+export type PdfViewer = 'tiled';
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['board'];
-export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['tiled'] : [];
+// Missing production engine assets fail closed in this host, never into an old parser.
+export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['tiled'];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;

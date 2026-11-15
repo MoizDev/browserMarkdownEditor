@@ -202,6 +202,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
         {!detach && <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
+            readiness={view.readiness} paint={view.paint}
             readOnly={readOnly} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
             chrome={<>{editingChrome}<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {
@@ -282,8 +283,11 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
         handoff.current?.dispose(); handoff.current = null;
         onUnavailable(error);
     }, [onUnavailable]);
-    const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={latest.current}
-        context={context} updating={updating || awaitingPresentation} rebind={rebind} />, [updating, awaitingPresentation, rebind]);
+    // The theme is passed explicitly: latest.current still holds the previous render's props
+    // here, which left the light-theme surround painted dark until something else re-rendered.
+    const theme = props.theme;
+    const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={{ ...latest.current, theme }}
+        context={context} updating={updating || awaitingPresentation} rebind={rebind} />, [updating, awaitingPresentation, rebind, theme]);
     return <NativeCanvasEditing key={viewGeneration} props={{ identity: props.identity, nativeCanvasHost: props.host, isVisible: props.isVisible,
         isFocused: props.isFocused, theme: props.theme }} board={props.board} adapter={props.adapter}
         factory={props.host.createEditingCapabilities} createLease={createLease} renderView={renderView}

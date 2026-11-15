@@ -103,7 +103,9 @@ export async function verifyPdfWriterOutput<K extends VerifiedOperation>(op: K, 
     const bytes = new Uint8Array(result.bytes);
     if (!matches(bytes, 0, new TextEncoder().encode('%PDF-'))) throw new Error('PDF writer returned invalid output bytes');
     if (op === 'writer.finishAnnotated') {
-        await verifyBoard(args as WriterOperations['writer.finishAnnotated']['args'], signal);
+        const finish = args as WriterOperations['writer.finishAnnotated']['args'];
+        // A print carries no board (see pdfiumWriter.finishAnnotated); its mark is still verified.
+        if (!Array.isArray(finish.attachments) || finish.attachments.length) await verifyBoard(finish, signal);
         await verifyMark(bytes, args.writeId, signal);
     } else if (op === 'writer.buildNotebook') {
         const input = args as WriterOperations['writer.buildNotebook']['args'];

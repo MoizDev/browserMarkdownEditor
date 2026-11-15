@@ -15,6 +15,9 @@ export type DeviceMemoryClass = 'low' | 'medium' | 'high';
 export interface MemoryAllocator {
     reserve(bytes: number): ByteLease | null;
     release(lease: ByteLease): void;
+    /** One-shot: `wake` runs once after the next lease release or grant change, so a denied owner retries on a real
+     * capacity change instead of polling. It only schedules work, so it must not reserve synchronously. */
+    whenAvailable?(wake: () => void): void;
 }
 
 export interface CacheActivity {
@@ -183,6 +186,8 @@ function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 
 export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
     private readonly caches = new Map<string, CacheRecord>();
+    // Denied owners waiting for the next capacity change; each wake is one-shot and removed when it runs.
+    private readonly capacityWaiters = new Set<() => void>();
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
     private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
@@ -229,6 +234,7 @@ export class MemoryGovernor {
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
+                whenAvailable: wake => { if (!cache.closed) this.capacityWaiters.add(wake); },
                 readout: () => this.cacheReadout(cache),
                 updateActivity: activity => {
                     activityValid(activity);
@@ -552,6 +558,13 @@ export class MemoryGovernor {
         return used + bytes <= limit;
     }
 
+    private notifyCapacity(): void {
+        if (!this.capacityWaiters.size) return;
+        const waiting = [...this.capacityWaiters];
+        this.capacityWaiters.clear();
+        for (const wake of waiting) wake();
+    }
+
     private release(lease: ByteLease, expected?: CacheRecord): void {
         const record = this.leases.get(lease);
         if (!record || (expected && record.cache !== expected)) throw new MemoryAdmissionError('invalid-lease');
@@ -561,6 +574,7 @@ export class MemoryGovernor {
         cache.bytes -= record.bytes;
         cache.leaseCount--;
         this.charged[cache.registration.pool] -= record.bytes;
+        this.notifyCapacity();
         if (cache.closed && !cache.leaseCount) this.caches.delete(cache.registration.id);
         if (!this.trimming && ['context', 'program'].includes(cache.registration.kind)) this.plan();
         if (this.state !== 'normal') this.onPressureChange?.();
@@ -636,6 +650,7 @@ export class MemoryGovernor {
     }
 
     private plan(): void {
+        this.notifyCapacity();
         const visible = this.panes.filter(pane => pane.visible && pane.requestedPixels > 0);
         const weight = (pane: PaneMemoryDemand) => pane.focused ? POLICY.focusedPaneWeight : POLICY.unfocusedPaneWeight;
         const minimum = this.minimumProgressBytes();

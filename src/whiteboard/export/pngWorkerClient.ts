@@ -6,6 +6,8 @@ import type { RenderExportTile, TiledPngOptions } from './tiles'
 
 /** One shared platform worker compresses rows with backpressure; rasterization stays with
  * the capture owner and every transfer owns its bytes, never the live band backing store. */
+const ROW_BATCH_BYTES = 4 * 1024 * 1024
+
 export async function encodeTiledPngInWorker(
   width: number, height: number, render: RenderExportTile, identity: BoardJobIdentity, options: TiledPngOptions = {},
 ): Promise<Blob> {
@@ -27,17 +29,28 @@ export async function encodeTiledPngInWorker(
     if (!isCurrent(candidate) || !payload || typeof payload !== 'object' || (payload as { streamId?: unknown }).streamId !== streamId) return
     if (pulling) { failure = new Error('Duplicate PNG row request'); abort.abort(failure); return }
     pulling = true
-    const pull = rows.next().then(async next => {
+    // Measured: one worker round trip per row (~24ms) left a 15-page export at row 12k of 16k when
+    // its 300s deadline hit. Rows travel in bands of up to ROW_BATCH_BYTES; the encoder still sees rows.
+    const pull = (async () => {
+      const parts: Uint8Array[] = []
+      let bytes = 0
+      while (bytes < ROW_BATCH_BYTES) {
+        const next = await rows.next()
+        if (abort.signal.aborted || next.done) break
+        parts.push(next.value); bytes += next.value.byteLength
+      }
       if (abort.signal.aborted) return
-      const lease = !next.done ? options.memory?.reserve(next.value.byteLength) : undefined
-      if (!next.done && options.memory && !lease) throw new Error('Insufficient shared memory for PNG export row')
+      const lease = bytes ? options.memory?.reserve(bytes) : undefined
+      if (bytes && options.memory && !lease) throw new Error('Insufficient shared memory for PNG export rows')
       try {
-        const row = next.done ? undefined : Uint8Array.from(next.value)
+        let band: Uint8Array | undefined
+        if (bytes) { band = new Uint8Array(bytes); let at = 0; for (const part of parts) { band.set(part, at); at += part.byteLength } }
+        parts.length = 0
         pulling = false
-        await client.request<null>('pngRow', row ? { streamId, row } : { streamId, end: true }, identity,
-          { priority: 0, cpu: 'light', signal: abort.signal, transfer: row ? [row.buffer] : [] }, isCurrent)
+        await client.request<null>('pngRow', band ? { streamId, row: band } : { streamId, end: true }, identity,
+          { priority: 0, cpu: 'light', signal: abort.signal, transfer: band ? [band.buffer] : [] }, isCurrent)
       } finally { if (lease) options.memory!.release(lease) }
-    }).catch(error => { failure = error; abort.abort(error) })
+    })().catch(error => { failure = error; abort.abort(error) })
     activePulls.add(pull)
     void pull.then(() => { activePulls.delete(pull) })
   })

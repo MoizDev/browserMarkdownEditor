@@ -199,7 +199,7 @@ export function createSceneSnapshot(options: {
         return building;
     };
     const snapshot: SceneSnapshot = {
-        token, revision,
+        token, revision, isCurrent: () => !released && !controller.signal.aborted,
         get nodeCount() { check(); return nodeCount; },
         get occupiedBounds() { check(); return occupiedBounds; },
         get layout() { return boardPageStack(metadata.host) ?? null; },

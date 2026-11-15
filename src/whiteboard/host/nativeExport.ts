@@ -330,12 +330,25 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         const pdfPng = async (captureSignal: AbortSignal) => {
             const scale = (longest * pngScale) / longest;
             checkPngSize(Math.max(1, Math.ceil(scope.bounds.width * scale)), Math.max(1, Math.ceil(scope.bounds.height * scale)), route === 'copy');
-            const capturer = pdfCapturer(true);
-            try {
-                return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
-                    { layers: [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
-                        deadlineMs: 300_000, clipboard: route === 'copy', pixelsPerWorldUnit: scale });
-            } finally { await capturer.dispose(); }
+            const backdrop = pdfBackdrop;
+            if (!backdrop) throw new Error('The PDF backdrop is unavailable');
+            // A snapshot pins one font epoch. The pool provides a font a page first needs during the tile render,
+            // which advances the epoch and aborts this attempt. The export then re-pins at the new epoch rather than
+            // mixing pixels from two epochs. The epoch only rises while the profile lives, and the font catalogue is
+            // finite, so the loop ends. The deadline is shared by every attempt.
+            const deadline = Date.now() + 300_000;
+            for (;;) {
+                const epoch = backdrop.fontEpoch();
+                const capturer = pdfCapturer(true);
+                try {
+                    return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
+                        { layers: [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
+                            deadlineMs: Math.max(1, deadline - Date.now()), clipboard: route === 'copy', pixelsPerWorldUnit: scale });
+                } catch (error) {
+                    captureSignal.throwIfAborted();
+                    if (backdrop.fontEpoch() <= epoch || Date.now() >= deadline) throw error;
+                } finally { await capturer.dispose(); }
+            }
         };
         const pdfSvg = async (captureSignal: AbortSignal) => {
             if (!pages) throw new Error('PDF page geometry is unavailable');

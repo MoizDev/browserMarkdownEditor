@@ -28,6 +28,9 @@ export interface PdfInkBackdrop {
         captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
     };
     setVisible(visible: boolean, focused?: boolean): void;
+    /** The document's font-profile epoch. A snapshot pins the epoch it was taken at; a font provided
+     * later advances it and invalidates that snapshot, so a capture re-pins only by taking a new one. */
+    fontEpoch(): number;
     /** Call only after a real committed current shared frame, never a bridge presentation. */
     notePresentation(): void;
     dispose(): void;

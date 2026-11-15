@@ -10,6 +10,7 @@ import { stretchBoardLeaves } from '../commands/stretchLeaves';
 import type { StickyDirection } from '../commands/stickyNeighbour';
 import { isLocked } from '../change/commands';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
+import { BOARD_GRID_STEP, boardSnapGrid } from '../geom/gridSnap';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
@@ -210,7 +211,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const delta = direction[key], selection = runtime.selection.getSnapshot();
         if (!mutable() || !delta || !selection.selected.length) return false;
         const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
-        const scale = doc.view.grid ? (coarse ? 50 : 10) : (coarse ? 10 : 1);
+        const scale = doc.view.grid ? (coarse ? 50 : BOARD_GRID_STEP) : (coarse ? 10 : 1);
         // Repeated key presses queue individual history steps rather than racing immutable snapshots.
         nudgeTail = nudgeTail.catch(() => {}).then(async () => {
             if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
@@ -358,9 +359,43 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             try { lease?.release(); } finally { previewIds.clear(); options.preview.clear(); requestFrame(); }
         }, error: report,
     };
+    // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
+    // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
+    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null, gridKey = '';
+    const drawGrid = (frame: ScheduledFrame) => {
+        const lattice = boardSnapGrid(runtime.session.doc);
+        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridKey = ''; return; }
+        const { camera, viewport } = frame.view;
+        if (!(camera.z > 0) || !Number.isFinite(camera.z)) return;
+        if (!gridSvg || !gridPath) {
+            gridSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            gridSvg.setAttribute('aria-hidden', 'true');
+            gridSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:hidden';
+            gridPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            gridPath.setAttribute('fill', 'none'); gridPath.setAttribute('stroke', 'currentColor');
+            gridPath.setAttribute('stroke-opacity', '0.14'); gridPath.setAttribute('shape-rendering', 'crispEdges');
+            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridKey = '';
+        }
+        const key = `${camera.x} ${camera.y} ${camera.z} ${viewport.width} ${viewport.height}`;
+        if (key === gridKey) return;
+        gridKey = key;
+        const z = camera.z;
+        let period = lattice.step.x;
+        while (period * z < 8) period *= 2;
+        const right = camera.x + viewport.width / z, bottom = camera.y + viewport.height / z;
+        let d = '';
+        for (let x = lattice.origin.x + Math.floor((camera.x - lattice.origin.x) / period) * period; x <= right; x += period) {
+            d += `M${(x - camera.x) * z} 0V${viewport.height}`;
+        }
+        for (let y = lattice.origin.y + Math.floor((camera.y - lattice.origin.y) / period) * period; y <= bottom; y += period) {
+            d += `M0 ${(y - camera.y) * z}H${viewport.width}`;
+        }
+        gridPath.setAttribute('d', d);
+    };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        drawGrid(frame);
         navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

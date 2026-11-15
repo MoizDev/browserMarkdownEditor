@@ -6,7 +6,7 @@ import type { Vec2 } from './path';
 import { collectSnapCandidates, createSnapVisibility } from './snapCandidates';
 import { prepareVisibleSnapBounds } from './snapVisibleBounds';
 import { compareSnapMagnitude, exactGapDisplacement, exactSnapDisplacement, snapWithin, type ExactSnapDelta } from './snapArithmetic';
-import { nearestBoardGridCoordinate, type BoardSnapGrid } from './gridSnap';
+import { boardSnapGrid, nearestBoardGridCoordinate } from './gridSnap';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
@@ -30,8 +30,6 @@ export interface BoardSnapOptions {
     readonly thresholdCss?: number;
     readonly allowX?: boolean;
     readonly allowY?: boolean;
-    /** Explicit authoring lattice; omitted when grid snapping is disabled. */
-    readonly grid?: BoardSnapGrid | null;
 }
 interface Winner { readonly delta: ExactSnapDelta; readonly guides: readonly BoardSnapGuide[]; readonly rank: number; readonly priority: number; readonly source: number; readonly edge: number; readonly coordinateRepresentable?: boolean }
 
@@ -75,7 +73,9 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
     const candidates = await collectSnapCandidates({ runtime, scene: scene!, doc, sheet: state.sheet, focus: state.focus,
         selected: options.selected, bounds, threshold, signal, cooperate, current: () => { try { check(); return true; } catch { return false; } } });
     check();
-    if (!candidates.size && !options.grid) return { delta: { x: 0, y: 0 }, guides: [] };
+    // The lattice is the document's Show grid state, so every snap caller gets it without threading an option.
+    const lattice = boardSnapGrid(doc);
+    if (!candidates.size && !lattice) return { delta: { x: 0, y: 0 }, guides: [] };
     const scope = candidates.size ? await acquireBoardGeometryScope(runtime, candidates, { signal, cooperate, current: () => {
         try { check(); return true; } catch { return false; }
     } }) : null;
@@ -144,10 +144,10 @@ async function snapAttempt(options: BoardSnapOptions): Promise<BoardSnapResult> 
                 if (better(winner, y)) y = winner;
             }
         }
-        if (options.grid) {
+        if (lattice) {
             for (const [axis, features, origin, step] of [
-                ['x', xs, options.grid.origin.x, options.grid.step.x],
-                ['y', ys, options.grid.origin.y, options.grid.step.y],
+                ['x', xs, lattice.origin.x, lattice.step.x],
+                ['y', ys, lattice.origin.y, lattice.step.y],
             ] as const) {
                 for (let source = 0; source < features.length; source++) {
                     const grid = nearestBoardGridCoordinate(features[source], origin, step);

@@ -3,8 +3,14 @@ import { dyadic, dyadicSubtract, type Dyadic } from './numeric';
 import { compareSnapMagnitude, snapDeltaFromDyadic, type ExactSnapDelta } from './snapArithmetic';
 import type { Vec2 } from './path';
 
-/** The authoring lattice is supplied by the view; it is not the adaptive display grid. */
 export interface BoardSnapGrid { readonly origin: Vec2; readonly step: Vec2 }
+/** Origin 0,0 and a 10-unit period are the measured Show grid behaviour (spec F-SNAP-005: creation rounds to 10, nudge steps 10).
+ * The spec leaves size and origin unmeasured beyond that, so these stay the lattice until a measurement says otherwise. */
+export const BOARD_GRID_STEP = 10;
+/** The lattice Show grid enables: snapping, creation rounding and grid nudges all read this one definition. */
+export function boardSnapGrid(doc: { readonly view: { readonly grid: boolean } }): BoardSnapGrid | null {
+    return doc.view.grid ? { origin: { x: 0, y: 0 }, step: { x: BOARD_GRID_STEP, y: BOARD_GRID_STEP } } : null;
+}
 export interface GridSnapCandidate {
     readonly delta: ExactSnapDelta;
     readonly coordinate: number;

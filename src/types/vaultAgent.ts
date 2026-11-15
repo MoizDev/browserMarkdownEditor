@@ -113,8 +113,12 @@ export interface ClosedPdfAgentAccess {
 export interface NativeCanvasView {
     readonly info: DrawingViewInfo | NotebookViewInfo | PdfViewInfo;
     readonly wholeSheet: boolean;
-    capture(maxSide: number, signal?: AbortSignal, page?: number): Promise<Blob>;
+    /** `region`, in board units (a page's own units when `page` is given), crops the picture to that rectangle. */
+    capture(maxSide: number, signal?: AbortSignal, page?: number, region?: AgentRegion): Promise<Blob>;
 }
+
+/** A rectangle the agent asked to see, in board units; width and height are finite and positive. */
+export interface AgentRegion { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 
 export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.

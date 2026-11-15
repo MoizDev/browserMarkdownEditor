@@ -20,6 +20,8 @@ export function createEditCommandOperations(options: {
     readonly canWrite: () => boolean;
     readonly frameName: () => string;
     readonly zoom: () => number;
+    /** Quiet report of locked items a delete kept (R-11). */
+    readonly notice?: (message: string) => void;
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
@@ -92,7 +94,8 @@ export function createEditCommandOperations(options: {
             let builder: ReturnType<typeof session.begin> | undefined, open = true;
             try {
                 builder = session.begin('tool', 'Delete');
-                planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
+                const result = planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
+                if (result.kept.length) options.notice?.(`${result.kept.length} locked ${result.kept.length === 1 ? 'item was' : 'items were'} kept.`);
                 const applied = builder.commit(); builder = undefined;
                 try { runtime.selection.reconcile(doc); } finally { applied.release(); }
                 session.history.close(); open = false;

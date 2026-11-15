@@ -237,6 +237,8 @@ export class BoardStyleCommands {
                 if (node.kind === 'figure') this.refitLabel(ops, { ...node, width });
             }
         }
+        // Undo or Redo during the drag closes its group; the rest of the drag opens a new one, not one step per event.
+        if (this.widthGesture && !this.session.history.isOpen) this.session.history.open('Change pen width');
         apply(this.session, 'Change pen width', ops, this.widthGesture);
     }
 

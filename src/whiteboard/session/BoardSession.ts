@@ -36,6 +36,8 @@ export interface ChangeNotice {
 export interface BoardHistory {
     readonly canUndo: boolean;
     readonly canRedo: boolean;
+    /** True while a step is open (a gesture's group); Undo or Redo inside it closes the group. */
+    readonly isOpen: boolean;
     undo(): void;
     redo(): void;
     clearRedo(): void; // R-19: admitted pen/highlighter down, no step or content write.

@@ -118,7 +118,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
-                    contextMenu: options.toolOptions.ui.contextMenu, error: options.onError });
+                    // The accessibility surface has no point query, so its menu targets the selection, as before.
+                    contextMenu: event => { const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
+                        if (opener instanceof HTMLElement) options.toolOptions.ui.contextMenu({ point: { x: event.clientX, y: event.clientY }, opener, locked: null }); },
+                    error: options.onError });
                 importer = createNativeImportAdapter(binding, options.runtime, () => options.current(options.token) &&
                     options.toolOptions.editable() && options.host.canWrite(options.identity), options.onError);
                 const keyboardNavigation = createBoardKeyboardNavigation({ runtime: options.runtime, camera: options.camera,

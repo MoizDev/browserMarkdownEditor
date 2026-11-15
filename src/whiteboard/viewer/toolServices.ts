@@ -1,4 +1,5 @@
 import { surfaceToWorld, worldToSurface, type CameraController, type Point } from '../../platform/render/camera';
+import type { NodeId } from '../model/ids';
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
@@ -30,6 +31,8 @@ import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
 import type { BoardCardActions } from './cardControls';
 
+/** The board's context-menu request: the pointer, the element the menu hangs from, and the locked node it targets, if any. */
+export interface BoardContextMenuRequest { readonly point: { readonly x: number; readonly y: number }; readonly opener: HTMLElement; readonly locked: NodeId | null }
 export interface BoardToolServicesOptions {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
@@ -69,7 +72,7 @@ export interface BoardToolServicesOptions {
         error(error: unknown): void;
         /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
         notice?(message: string): void;
-        contextMenu(event: MouseEvent): void;
+        contextMenu(request: BoardContextMenuRequest): void;
         persistToolLock?(locked: boolean): void;
         penModeChanged(enabled: boolean): void;
         pointerChanged?(sample: RealSample): void;
@@ -221,6 +224,20 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (!event.defaultPrevented && editable() && options.focused() && !ui.modalOpen() && !text.manager.current) options.imports.paste(event);
     };
     options.surface.addEventListener('paste', paste);
+    // A secondary click on a locked node targets it for the context menu without selecting it (F-CTX-006). The hit is
+    // asynchronous, so the pointer and opener are read from the event now, before the browser releases it.
+    const contextMenuAt = (event: MouseEvent) => {
+        event.preventDefault();
+        const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
+        const point = { x: event.clientX, y: event.clientY };
+        const open = (locked: NodeId | null) => { if (opener instanceof HTMLElement) ui.contextMenu({ point, opener, locked }); };
+        let world: Point;
+        try { world = surfaceToWorld(options.clientToSurface(point.x, point.y), options.view().camera); } catch (error) { ui.error(error); open(null); return; }
+        void select.lockedAt(world, new AbortController().signal).then(open, error => {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error);
+            open(null);
+        });
+    };
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
         edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
@@ -237,7 +254,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
-        hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
+        hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         keyboardContextMenu: select.keyboardContextMenu,
     };

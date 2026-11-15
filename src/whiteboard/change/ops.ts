@@ -125,6 +125,9 @@ const GEOMETRY: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.
 const TEXT: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.paint | SceneImpact.text
     | SceneImpact.bounds | SceneImpact.attachments | SceneImpact.ancestors };
 const LAYOUT: OpPolicy = { history: true, dirty: 'always', scene: GEOMETRY.scene | SceneImpact.text };
+// A link preview lands when a background fetch completes, not on user intent: recorded, it would clear a dry redo branch
+// and make Undo remove text nobody typed (F-HIST-020, worker completion). It still dirties and saves like other content.
+const DERIVED_TEXT: OpPolicy = { ...TEXT, history: false };
 const REPARENT: OpPolicy = { history: true, dirty: 'always', scene: GEOMETRY.scene | SceneImpact.children };
 const ORDER: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.paint | SceneImpact.children | SceneImpact.ancestors };
 const LOCK: OpPolicy = { history: true, dirty: 'always', scene: SceneImpact.chrome };
@@ -151,7 +154,7 @@ export const NODE_OP_POLICIES = {
     url: NODE, text: TEXT, autoSize: TEXT, scale: LAYOUT, fit: LAYOUT, route: GEOMETRY, start: GEOMETRY,
     end: GEOMETRY, bend: GEOMETRY, elbowMid: GEOMETRY, headStart: GEOMETRY, headEnd: GEOMETRY,
     labelAt: TEXT, points: GEOMETRY, startAttach: GEOMETRY, endAttach: GEOMETRY, spline: GEOMETRY, name: TEXT, media: NODE, crop: GEOMETRY,
-    alt: NODE, inverted: NODE, playing: NODE, time: NODE, autoplay: NODE, preview: TEXT,
+    alt: NODE, inverted: NODE, playing: NODE, time: NODE, autoplay: NODE, preview: DERIVED_TEXT,
 } as const satisfies Record<NodePropKey, OpPolicy>;
 export const BOARD_OP_POLICIES = {
     'host.paper': PAPER, 'host.pdf': NONE, 'ui.tool': TOOL, 'ui.next': PEN, 'ui.penWidth': PEN,

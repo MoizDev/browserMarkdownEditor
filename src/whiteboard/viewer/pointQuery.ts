@@ -115,12 +115,13 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
 export function createBoardPointQuery(options: BoardPointQueryOptions): {
     hit(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     hitTarget(point: Vec2, input: InputKind, signal: AbortSignal): Promise<BoardTargetHit | null>;
+    hitLocked(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     dispose(): void;
 } {
     const jobs = new Set<AbortController>();
     let disposed = false;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean): Promise<Candidate | null> {
+    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false): Promise<Candidate | null> {
             if (disposed) throw cancelled();
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');
             const { runtime } = options, doc = runtime.session.doc, revision = doc.rev, selection = runtime.selection.getSnapshot();
@@ -153,7 +154,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 while (!scene.ready) { scene.step(32, performance.now() + 3); await tick(); }
                 if (runtime.scene !== scene || scene.revision !== revision) throw cancelled();
                 const matrix = cameraTransform(camera), surface = worldToSurface(point, camera);
-                cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode,
+                cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode || lockedMode,
                     request: { kind: 'point', x: point.x, y: point.y, maxDistance: 8 / camera.z } });
                 const selectionResult: { winner: Candidate | null } = { winner: null };
                 // Only the strongest two distinct ids can challenge the final winner:
@@ -178,7 +179,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     // evidence. Connector/group/opaque targets are excluded by model V-8. Do not lift without that evidence.
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
                         || node.kind === 'stroke' || node.kind === 'polyline')) return;
-                    const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet);
+                    const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet, lockedMode);
                     if (!selected || node.kind === 'group') return;
                     let clipped = false, clipUncertain = false, outsideFrame = false;
                     const frameClips: PointClipContour[] = [];
@@ -326,6 +327,12 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
     }
     return {
         async hit(point, input, signal) { return (await run(point, input, signal, false))?.id ?? null; },
+        /** The topmost node under the point when that node is locked, else null. A locked node cannot be selected, so a
+         * secondary click reaches it only through this (F-CTX-006); the caller must not select it. */
+        async hitLocked(point, input, signal) {
+            const id = (await run(point, input, signal, false, true))?.id ?? null;
+            return id !== null && options.runtime.session.doc.nodes.get(id)?.locked ? id : null;
+        },
         async hitTarget(point, input, signal) {
             const result = await run(point, input, signal, true);
             if (result && !result.target) throw new Error('Attachment target surface is unavailable');

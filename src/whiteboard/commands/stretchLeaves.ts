@@ -1,6 +1,7 @@
 import { isLocked } from '../change/commands';
 import { selectedRootsAsync } from '../geom/selectedRootsAsync';
-import type { NodeSetOp } from '../change/ops';
+import type { NodeSetOp, Op } from '../change/ops';
+import { prepareNotebookTransform } from '../input/notebookTranslation';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from './geometryScope';
 import { inspectOpaqueSubtrees } from './selectionScope';
 import { prepareBoardLeafResize } from '../geom/runtimeResizeKinds';
@@ -22,7 +23,7 @@ export interface StretchLeavesOptions {
 }
 export interface StretchLeavesPlan {
     readonly doc: BoardRuntime['session']['doc'];
-    readonly ops: readonly NodeSetOp[];
+    readonly ops: readonly Op[];
     commit(): void;
     cancel(): void;
 }
@@ -45,7 +46,7 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
         try { for (let i = leases.length - 1; i >= 0; i--) leases[i].release(); } finally { scope?.release(); }
         leases.length = 0; scope = undefined;
     };
-    const plan = (candidate: typeof doc, ops: readonly NodeSetOp[]): StretchLeavesPlan => {
+    const plan = (candidate: typeof doc, ops: readonly Op[]): StretchLeavesPlan => {
         const frozen = Object.freeze(ops);
         return Object.freeze({ doc: candidate, ops: frozen,
             commit() {
@@ -155,7 +156,10 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
         }
         const frozen: NodeSetOp[] = [];
         for (const op of ops) { frozen.push(Object.freeze(op)); await tick(); }
-        check(); return plan(candidate, frozen);
+        // A notebook stretch that reaches the paper edge grows it in the same step, as every notebook edit does (R-24).
+        const growth = await prepareNotebookTransform({ runtime, ids: roots.map(node => node.id), preview: { doc: candidate, ops: frozen }, signal, current, cooperate });
+        if (growth) leases.push(growth);
+        check(); return plan(growth ? growth.preview.doc : candidate, growth ? growth.ops : frozen);
     } catch (error) { release(); throw error; }
 }
 

@@ -11,7 +11,6 @@ import { projectFrameMembership } from './frameMembership';
 import { projectBoardTransformPreview } from './transformProjection';
 import type { Vec2 } from './path';
 import { snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
-import type { BoardSnapGrid } from './gridSnap';
 import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
 
@@ -21,8 +20,6 @@ export interface BoardTranslationOptions {
     readonly down: Vec2;
     readonly zoom: () => number;
     readonly alwaysSnap: () => boolean;
-    /** Explicit authoring grid supplied by the view, not the adaptive displayed grid. */
-    readonly grid?: () => BoardSnapGrid | null;
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -99,20 +96,14 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                 assert();
                 // Default, calibration cut by owner: snapping is off unless the modifier or Always Snap enables it.
                 if (options.alwaysSnap() !== accel) {
-                    const zoom = options.zoom(), configured = options.grid?.() ?? null;
-                    const grid = configured ? { origin: { ...configured.origin }, step: { ...configured.step } } : null;
-                    snapFence = () => {
-                        const now = options.grid?.() ?? null;
-                        return options.alwaysSnap() !== accel && options.zoom() === zoom && (grid === null ? now === null : !!now
-                            && now.origin.x === grid.origin.x && now.origin.y === grid.origin.y
-                            && now.step.x === grid.step.x && now.step.y === grid.step.y);
-                    };
+                    const zoom = options.zoom();
+                    snapFence = () => options.alwaysSnap() !== accel && options.zoom() === zoom;
                     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
                     const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
                     const result = await snapBoardBounds({ runtime, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
-                        selected: roots.map(node => node.id), zoom, grid, allowX: useX, allowY: useY,
+                        selected: roots.map(node => node.id), zoom, allowX: useX, allowY: useY,
                         current: () => active() && snapFence!(), signal: request, cooperate: options.cooperate });
                     assert(); if (!snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;

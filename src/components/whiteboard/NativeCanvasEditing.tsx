@@ -114,7 +114,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                         isDirectPen: event => event.pointerType === 'pen' && navigator.maxTouchPoints > 0,
                         ownsWheel: event => !event.composedPath().some(target => target instanceof Element &&
                             target.matches('input,textarea,select,[contenteditable="true"],[role="dialog"],[role="menu"]')),
-                        error: report, notice: setNotice, contextMenu(event) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.pointer(event); },
+                        error: report, notice: setNotice, contextMenu(request) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.pointer(request); },
                         openKeyboardContextMenu(request) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.keyboard(request); },
                         penModeChanged(enabled) { viewRef.current?.editing?.announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.'); },
                         text: { openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
@@ -242,7 +242,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
             media: () => ({ actions: clipboard.media, selection: writable => clipboard.media.selection(writable), fail: report,
                 pick: chooseReplacementImage, requestText: dialogs.requestText, playback: lease.video, openCrop }),
-            current, canWrite, notice: setNotice });
+            current, canWrite, notice: setNotice, zoom: () => lease.camera.camera.z });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };

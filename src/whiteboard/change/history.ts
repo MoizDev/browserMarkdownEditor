@@ -83,6 +83,7 @@ export class History implements HistoryController {
     constructor(private readonly ports: HistoryPorts, private readonly byteLimit = DEFAULT_LIMIT) {}
     get canUndo(): boolean { return this.undoStack.length > 0 || !!this.openStep?.entries.length; }
     get canRedo(): boolean { return this.redoStack.length > 0; }
+    get isOpen(): boolean { return this.openStep !== undefined; }
     private makeStep(label: string): Step {
         const before = snapshot(this.ports.snapshot());
         const entries: HistoryOperation[] = [];

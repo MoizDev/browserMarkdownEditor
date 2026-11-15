@@ -1,7 +1,8 @@
 import { isLocked } from '../change/commands';
 import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { poseInParent, worldPose, type ChangeGeometry } from '../change/coordinates';
-import type { NodeSetOp, Transaction } from '../change/ops';
+import type { NodeSetOp, Op, Transaction } from '../change/ops';
+import { prepareNotebookTransform } from '../input/notebookTranslation';
 import type { ArrangementAction, ArrangementServices } from '../geom/arrangement.types';
 import { arrangementTransactionAsync } from '../geom/arrangementAsync';
 import type { Align, Axis } from '../geom/arrange';
@@ -19,7 +20,7 @@ export interface BoardArrangementCommandOptions {
 }
 export interface BoardArrangementPlan {
     readonly doc: BoardRuntime['session']['doc'];
-    readonly ops: readonly NodeSetOp[];
+    readonly ops: readonly Op[];
     commit(): void;
     cancel(): void;
 }
@@ -32,6 +33,7 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
         const session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
         const selection = runtime.selection.getSnapshot(), { sheet, focus } = selection;
         let font: number | undefined, released = false, source: BoardGeometryScope | undefined, final: BoardGeometryScope | undefined;
+        let paperGrowth: { preview: { doc: BoardRuntime['session']['doc'] }; ops: readonly Op[]; release(): void } | undefined;
         const current = () => {
             const now = runtime.selection.getSnapshot();
             return !released && !signal.aborted && options.current() && session.doc === doc && session.owner === owner && doc.rev === revision
@@ -41,10 +43,12 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
         const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Arrangement became stale or unavailable', 'AbortError'); };
         const release = () => {
             if (released) return; released = true;
-            try { final?.release(); } finally { source?.release(); }
-            final = source = undefined;
+            try { paperGrowth?.release(); } finally {
+                try { final?.release(); } finally { source?.release(); }
+            }
+            final = source = undefined; paperGrowth = undefined;
         };
-        const plan = (projected: typeof doc, ops: readonly NodeSetOp[], transaction?: Transaction): BoardArrangementPlan => {
+        const plan = (projected: typeof doc, ops: readonly Op[], transaction?: Transaction): BoardArrangementPlan => {
             const frozen = Object.freeze(ops);
             return Object.freeze({ doc: projected, ops: frozen,
                 commit() {
@@ -126,7 +130,10 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
                 final = await acquireBoardGeometryScope(runtime, eligible, { doc: finalDoc, signal, current, cooperate }); check();
                 const frozen: NodeSetOp[] = [];
                 for (const op of ops) { frozen.push(Object.freeze(op)); await tick(); }
-                check(); return plan(finalDoc, frozen, transaction);
+                // A notebook arrangement that reaches the paper edge grows it in the same step, as every notebook edit does (R-24).
+                const growth = await prepareNotebookTransform({ runtime, ids: eligible, preview: { doc: finalDoc, ops: frozen }, signal, current, cooperate });
+                if (growth) paperGrowth = growth;
+                check(); return plan(growth ? growth.preview.doc : finalDoc, growth ? growth.ops : frozen, transaction);
             } finally { staged.release(); }
         } catch (error) { release(); throw error; }
     }

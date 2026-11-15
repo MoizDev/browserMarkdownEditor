@@ -1,3 +1,4 @@
+import { BOARD_GRID_STEP } from '../geom/gridSnap';
 import type { FigureNode } from '../model/nodes';
 
 /** The measured grid gesture rounds a rectangle's origin and dimensions, not
@@ -7,7 +8,7 @@ export function gridRectangle(node: Readonly<FigureNode>, parent: Readonly<{ x: 
     // The finite grid witness is axis-aligned. Do not change a rotated frame's
     // local geometry on the strength of a different, unmeasured coordinate space.
     if (node.shape !== 'rectangle' || parent.rotation !== 0) return node;
-    const round = (value: number) => Math.round(value / 10) * 10;
+    const round = (value: number) => Math.round(value / BOARD_GRID_STEP) * BOARD_GRID_STEP;
     return { ...node, x: round(parent.x + node.x) - parent.x, y: round(parent.y + node.y) - parent.y,
         w: Math.max(1, round(node.w)), h: Math.max(1, round(node.h)) };
 }

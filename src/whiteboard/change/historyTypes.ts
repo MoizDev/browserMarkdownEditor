@@ -50,6 +50,8 @@ export interface HistoryPorts {
 export interface HistoryController {
     readonly canUndo: boolean;
     readonly canRedo: boolean;
+    /** True while a step is open; Undo or Redo inside a gesture closes it, so the gesture must check again. */
+    readonly isOpen: boolean;
     /** Captures sheet and selection before a gesture or command changes the document. */
     open(label: string): void;
     /** Capture final selection and return this step's token, or null for an empty step. */

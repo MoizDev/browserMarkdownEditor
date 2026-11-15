@@ -10,6 +10,7 @@ import { stretchBoardLeaves } from '../commands/stretchLeaves';
 import type { StickyDirection } from '../commands/stickyNeighbour';
 import { isLocked } from '../change/commands';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
+import { BOARD_GRID_STEP, boardSnapGrid } from '../geom/gridSnap';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
@@ -53,7 +54,7 @@ export interface BoardSelectServicesOptions {
     readonly cameraChanged: () => void;
     /** Convert a physical sample using the mapping that actually presented it. */
     readonly sampleToSurface: (sample: RealSample) => Vec2;
-    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget'>;
+    readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget' | 'hitLocked'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
     readonly preview: Pick<BoardPreview, 'showOps' | 'waitUntilReady' | 'waitUntilIdle' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly overlay: HTMLElement;
@@ -219,7 +220,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const delta = direction[key], selection = runtime.selection.getSnapshot();
         if (!mutable() || !delta || !selection.selected.length) return false;
         const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
-        const scale = doc.view.grid ? (coarse ? 50 : 10) : (coarse ? 10 : 1);
+        const scale = doc.view.grid ? (coarse ? 50 : BOARD_GRID_STEP) : (coarse ? 10 : 1);
         // Repeated key presses queue individual history steps rather than racing immutable snapshots.
         nudgeTail = nudgeTail.catch(() => {}).then(async () => {
             if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
@@ -367,9 +368,43 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             try { lease?.release(); } finally { previewIds.clear(); options.preview.clear(); requestFrame(); }
         }, error: report,
     };
+    // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
+    // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
+    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null, gridKey = '';
+    const drawGrid = (frame: ScheduledFrame) => {
+        const lattice = boardSnapGrid(runtime.session.doc);
+        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridKey = ''; return; }
+        const { camera, viewport } = frame.view;
+        if (!(camera.z > 0) || !Number.isFinite(camera.z)) return;
+        if (!gridSvg || !gridPath) {
+            gridSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            gridSvg.setAttribute('aria-hidden', 'true');
+            gridSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:hidden';
+            gridPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            gridPath.setAttribute('fill', 'none'); gridPath.setAttribute('stroke', 'currentColor');
+            gridPath.setAttribute('stroke-opacity', '0.14'); gridPath.setAttribute('shape-rendering', 'crispEdges');
+            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridKey = '';
+        }
+        const key = `${camera.x} ${camera.y} ${camera.z} ${viewport.width} ${viewport.height}`;
+        if (key === gridKey) return;
+        gridKey = key;
+        const z = camera.z;
+        let period = lattice.step.x;
+        while (period * z < 8) period *= 2;
+        const right = camera.x + viewport.width / z, bottom = camera.y + viewport.height / z;
+        let d = '';
+        for (let x = lattice.origin.x + Math.floor((camera.x - lattice.origin.x) / period) * period; x <= right; x += period) {
+            d += `M${(x - camera.x) * z} 0V${viewport.height}`;
+        }
+        for (let y = lattice.origin.y + Math.floor((camera.y - lattice.origin.y) / period) * period; y <= bottom; y += period) {
+            d += `M0 ${(y - camera.y) * z}H${viewport.width}`;
+        }
+        gridPath.setAttribute('d', d);
+    };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        drawGrid(frame);
         navigation.present(frame); selectionHandles.write(frame, transformPreview); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -518,6 +553,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const keyboardContext = options.openKeyboardContextMenu ? createKeyboardContext({ runtime, camera: options.cameraController,
         surface: options.surface, current, open: options.openKeyboardContextMenu, error: report }) : null;
     const keyboardContextMenu = (surface: Vec2, world: Vec2) => keyboardContext?.request(surface, world) ?? false;
+    /** The locked node a secondary click at this world point targets, without selecting it (F-CTX-006). */
+    const lockedAt = (world: Vec2, signal: AbortSignal) => options.point.hitLocked(world, 'mouse', signal);
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         canMutateView: options.canMutateView, registerPending, error: report, keptLocked: options.onKeptLocked });
     const styleShortcuts = createStyleShortcuts({ runtime, inputToken: options.inputToken,
@@ -534,7 +571,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };

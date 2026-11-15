@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "కాంతి",
     "chrome.system": "వ్యవస్థ",
     "chrome.language": "భాష",
+    "chrome.print": "ముద్రించు",
     "chrome.uploadMedia": "మీడియాను అప్‌లోడ్ చేయండి...",
     "chrome.insertEmbed": "చొప్పించు...",
     "chrome.unlockAll": "అన్నింటినీ అన్‌లాక్ చేయండి",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "పేజీని తొలగించండి",
     "paper.cancel": "రద్దు చేయి",
     "paper.keepProtected": "లాక్ చేయబడిన కంటెంట్ ఉంచబడుతుంది.",
-    "chrome.readOnly": "ఈ బోర్డు చదవడానికి మాత్రమే."
+    "chrome.readOnly": "ఈ బోర్డు చదవడానికి మాత్రమే.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

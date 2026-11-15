@@ -30,6 +30,16 @@
       "key": "paper.a4",
       "text": "A4",
       "reason": "International paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "فاتح",
     "chrome.system": "النظام",
     "chrome.language": "اللغة",
+    "chrome.print": "طباعة",
     "chrome.uploadMedia": "رفع وسائط…",
     "chrome.insertEmbed": "إدراج محتوى مضمن…",
     "chrome.unlockAll": "إلغاء قفل الكل",
@@ -430,6 +441,8 @@
     "paper.deleteConfirm": "حذف الصفحة",
     "paper.cancel": "إلغاء",
     "paper.keepProtected": "سيتم الاحتفاظ بالمحتوى المقفل.",
-    "chrome.readOnly": "هذه اللوحة للقراءة فقط."
+    "chrome.readOnly": "هذه اللوحة للقراءة فقط.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

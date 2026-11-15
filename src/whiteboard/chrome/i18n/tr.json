@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Işık",
     "chrome.system": "Sistem",
     "chrome.language": "Dil",
+    "chrome.print": "Yazdır",
     "chrome.uploadMedia": "Medya yükle…",
     "chrome.insertEmbed": "Gömmeyi ekle…",
     "chrome.unlockAll": "Tümünün kilidini aç",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Sayfayı sil",
     "paper.cancel": "İptal",
     "paper.keepProtected": "Kilitli içerik saklanacaktır.",
-    "chrome.readOnly": "Bu pano salt okunurdur."
+    "chrome.readOnly": "Bu pano salt okunurdur.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

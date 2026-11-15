@@ -21,6 +21,7 @@ import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { selectAllAtFocus } from '../../whiteboard/selection';
 import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
+import { exportFileName } from '../../whiteboard/export/scope';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
@@ -35,6 +36,8 @@ export interface FocusedBoardPrintOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
     readonly kind: NativeCanvasIdentity['kind'];
+    /** The board's name, which its exported files take. */
+    boardName(): string;
     readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     /** True only while this board is still the same live document it was when printing started. */
     valid(): boolean;
@@ -73,6 +76,19 @@ async function printFocusedBoard(options: FocusedBoardPrintOptions, signal: Abor
             },
             noticeTruncated: (printed, total) => options.notice(`Printing ${printed} of ${total} pages; export to PDF to print all`),
             onError: options.onError });
+    } finally { source.release(); }
+}
+
+/** Whole-sheet PDF of the focused board, saved under the board's name and, with several sheets, the sheet's name. */
+async function exportFocusedPdf(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const doc = options.runtime.session.doc, sheet = options.runtime.selection.getSnapshot().sheet;
+    const source = pinFocusedBoard(options);
+    try {
+        const blob = await source.pdf(signal);
+        signal.throwIfAborted();
+        const name = options.boardName();
+        downloadBoardExport(blob, exportFileName(name, doc.sheetOrder.length > 1 ? doc.sheets.get(sheet)?.name ?? null : null, 'sheet', 'pdf', new Date()));
     } finally { source.release(); }
 }
 
@@ -140,6 +156,10 @@ export interface NativeClipboardService {
     /** The one picture/card action provider for this document; every view's menu reads its selection. */
     readonly media: MediaActions;
     theme(): 'light' | 'dark';
+    /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
+    print(): boolean;
+    /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
+    exportPdf(): boolean;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean, writable?: () => boolean): NativeClipboardBinding;
 }
@@ -239,11 +259,25 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 return navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })]);
             },
             download: downloadBoardExport,
+            boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
+    const focusedOptions = (): FocusedBoardPrintOptions => ({ runtime, memory, kind: identity.kind, readMedia,
+        boardName: () => host.identity(identity.documentId)?.name ?? identity.name, valid: current, notice: report, onError: fail });
+    let focusedTask: AbortController | undefined;
+    /** One focused print or export at a time; a second request while one runs is refused, not queued. */
+    const startFocusedTask = (work: (signal: AbortSignal) => Promise<void>): boolean => {
+        if (disposed || !current() || focusedTask) return false;
+        const controller = new AbortController();
+        focusedTask = controller;
+        void work(controller.signal).catch(fail).finally(() => { if (focusedTask === controller) focusedTask = undefined; });
+        return true;
+    };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
+        print: () => startFocusedTask(signal => printFocusedBoard(focusedOptions(), signal)),
+        exportPdf: () => startFocusedTask(signal => exportFocusedPdf(focusedOptions(), signal)),
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let detached = false;
@@ -283,7 +317,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 // Mod-P belongs to the focused board only: the browser's page print of the app is never reached from here.
                 if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
                     event.preventDefault(); event.stopPropagation();
-                    void printFocusedBoard({ runtime, memory, kind: identity.kind, readMedia, valid: () => current() && bindings.has(binding),
+                    void printFocusedBoard({ runtime, memory, kind: identity.kind, readMedia, boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
+                        valid: () => current() && bindings.has(binding),
                         notice: report, onError: fail }, new AbortController().signal).catch(fail);
                     return;
                 }

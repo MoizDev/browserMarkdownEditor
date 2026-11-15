@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Ljus",
     "chrome.system": "Styrelsestyrning: System",
     "chrome.language": "Språk",
+    "chrome.print": "Skriv ut",
     "chrome.uploadMedia": "Ladda upp media...",
     "chrome.insertEmbed": "Infoga inbäddning...",
     "chrome.unlockAll": "Lås upp alla",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Ta bort sida",
     "paper.cancel": "Avbryt",
     "paper.keepProtected": "Låst innehåll kommer att behållas.",
-    "chrome.readOnly": "Denna tavla är skrivskyddad."
+    "chrome.readOnly": "Denna tavla är skrivskyddad.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

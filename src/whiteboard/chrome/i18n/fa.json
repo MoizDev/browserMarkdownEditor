@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "نور",
     "chrome.system": "سیستم",
     "chrome.language": "زبان",
+    "chrome.print": "چاپ",
     "chrome.uploadMedia": "آپلود رسانه…",
     "chrome.insertEmbed": "درج جاسازی…",
     "chrome.unlockAll": "همه را باز کنید",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "حذف صفحه",
     "paper.cancel": "لغو کنید",
     "paper.keepProtected": "محتوای قفل شده حفظ خواهد شد.",
-    "chrome.readOnly": "این تابلو فقط خواندنی است."
+    "chrome.readOnly": "این تابلو فقط خواندنی است.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

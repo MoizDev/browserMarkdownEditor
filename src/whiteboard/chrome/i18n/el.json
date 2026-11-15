@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Φως",
     "chrome.system": "Σύστημα",
     "chrome.language": "Γλώσσα",
+    "chrome.print": "Εκτύπωση",
     "chrome.uploadMedia": "Μεταφόρτωση πολυμέσων…",
     "chrome.insertEmbed": "Εισαγωγή ενσωμάτωσης…",
     "chrome.unlockAll": "Ξεκλειδώστε όλα",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Διαγραφή σελίδας",
     "paper.cancel": "Ακύρωση",
     "paper.keepProtected": "Το κλειδωμένο περιεχόμενο θα διατηρηθεί.",
-    "chrome.readOnly": "Αυτός ο πίνακας είναι μόνο για ανάγνωση."
+    "chrome.readOnly": "Αυτός ο πίνακας είναι μόνο για ανάγνωση.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -30,7 +30,7 @@ function safeName(value: string): string {
 }
 function two(value: number): string { return String(value).padStart(2, '0') }
 /** The caller supplies time so one command uses one name despite asynchronous rendering. */
-export function exportFileName(base: string, sheet: string | null, scope: ExportScope['kind'], extension: 'png' | 'svg', time: Date): string {
+export function exportFileName(base: string, sheet: string | null, scope: ExportScope['kind'], extension: 'png' | 'svg' | 'pdf' | 'json', time: Date): string {
   const name = safeName(base)
   if (scope === 'sheet') return `${name}${sheet ? ` – ${safeName(sheet)}` : ''}.${extension}`
   if (!Number.isFinite(time.getTime())) throw new RangeError('Invalid export timestamp')

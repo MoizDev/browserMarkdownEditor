@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "світло",
     "chrome.system": "система",
     "chrome.language": "Мова",
+    "chrome.print": "Друк",
     "chrome.uploadMedia": "Завантажити медіафайли…",
     "chrome.insertEmbed": "Вставити вбудований…",
     "chrome.unlockAll": "Розблокувати все",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Видалити сторінку",
     "paper.cancel": "Скасувати",
     "paper.keepProtected": "Заблокований вміст буде збережено.",
-    "chrome.readOnly": "Ця дошка доступна лише для читання."
+    "chrome.readOnly": "Ця дошка доступна лише для читання.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

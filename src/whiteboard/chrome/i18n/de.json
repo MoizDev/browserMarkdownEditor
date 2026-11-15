@@ -95,6 +95,16 @@
       "key": "paper.a4",
       "text": "A4",
       "reason": "International paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -190,6 +200,7 @@
     "chrome.light": "Licht",
     "chrome.system": "System",
     "chrome.language": "Sprache",
+    "chrome.print": "Drucken",
     "chrome.uploadMedia": "Medien hochladen…",
     "chrome.insertEmbed": "Einbettung einfügen…",
     "chrome.unlockAll": "Schalte alle frei",
@@ -443,6 +454,8 @@
     "paper.deleteConfirm": "Seite löschen",
     "paper.cancel": "Abbrechen",
     "paper.keepProtected": "Gesperrte Inhalte bleiben erhalten.",
-    "chrome.readOnly": "Dieses Forum ist schreibgeschützt."
+    "chrome.readOnly": "Dieses Forum ist schreibgeschützt.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -7,13 +7,17 @@ import type { CommandBuilder, Op } from '../change/ops';
 import { ClipboardCopy } from '../clipboard/copy';
 import { createBoardCopySnapshotNow, type BoardCopySnapshotNowResult } from '../clipboard/runtimeSnapshotNow';
 import { createBoardCopySnapshot } from '../clipboard/runtimeSnapshot';
-import { copyBoardJsonFresh } from '../clipboard/copyJson';
+import { buildBoardJson, copyBoardJsonFresh } from '../clipboard/copyJson';
 import type { CopySnapshot } from '../clipboard/snapshot';
 import { deletionContents } from '../commands/pagesAndSheets';
 import type { NativeExportJob } from './nativeExport';
 import { hashMedia } from '../media/sha256';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from './runtime';
+import type { NodeId } from '../model/ids';
+import { exportFileName } from '../export/scope';
+
+const JSON_MEDIA_NOTICE = 'Media are referenced by hash; this JSON is not a portable asset bundle';
 
 const mediaBytes = Symbol('copied board media');
 type ResourceSnapshot = CopySnapshot & { readonly [mediaBytes]: { readonly blobs: ReadonlyMap<MediaId, Blob>; readonly fontEpoch: number } }; 
@@ -45,6 +49,8 @@ export interface NativeClipboardCommandsOptions {
     copyPng(capture: Promise<Readonly<{ image: Blob; privateImage: Blob }>>): Promise<void>;
     copySvg(capture: Promise<Blob>): Promise<void>;
     download(blob: Blob, filename: string): void;
+    /** The open board's name, for the files it exports. */
+    boardName(): string;
 }
 
 /** Event copy uses the real synchronous native projection, never the previous selection. */
@@ -207,6 +213,25 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     // One export or copy of this view at a time: a new one supersedes the one still running, so the older capture stops
     // instead of finishing into a clipboard or download the user has already replaced.
     let latest: AbortController | undefined;
+    /** File export of the records: the same chunked producer as copy, saved under the board's name. A selection on a
+     * context route, otherwise the whole sheet. */
+    const exportJson = async (route: 'context' | 'menu', signal: AbortSignal) => {
+        guard();
+        const state = runtime.selection.getSnapshot(), roots = route === 'context' ? [...state.selected] : [];
+        const selection = roots.length ? roots : [...(board.doc.bySheet.get(state.sheet) ?? [])];
+        let media = 0;
+        const built = await buildBoardJson({ runtime, memory: options.memory, signal, current, capture: async captureSignal => {
+            const snapshot = await createBoardCopySnapshot({ runtime, memory: options.memory, current, selection, signal: captureSignal });
+            media = snapshot.media.length;
+            return snapshot;
+        } });
+        try {
+            signal.throwIfAborted();
+            const sheet = board.doc.sheetOrder.length > 1 ? board.doc.sheets.get(state.sheet)?.name ?? null : null;
+            options.download(built.blob, exportFileName(options.boardName(), sheet, roots.length ? 'selection' : 'sheet', 'json', new Date()));
+            if (media) options.notice(JSON_MEDIA_NOTICE);
+        } finally { built.release(); }
+    };
     const withController = async (work: (signal: AbortSignal) => Promise<void>) => {
         latest?.abort(new DOMException('Export superseded', 'AbortError'));
         const owned = new AbortController(); active.add(owned); latest = owned;
@@ -248,8 +273,9 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
                 media = snapshot.media.length;
                 return snapshot;
             } });
-            if (media) options.notice('Media are referenced by hash; this JSON is not a portable asset bundle');
+            if (media) options.notice(JSON_MEDIA_NOTICE);
         }),
+        exportJson: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => exportJson(route, signal))),
         exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),
         exportSvg: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('svg', route, signal))),
         dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry();

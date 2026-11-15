@@ -4,7 +4,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { pasteBoardClipboardInJob } from '../../whiteboard/clipboard/paste';
 import { acquireCopiedBoardClipboard, type BoardClipboardAcquisition } from '../../whiteboard/host/clipboardAcquisition';
-import { createBoardClipboardPasteHost, NATIVE_Z_MAX } from '../../whiteboard/host/clipboardPasteHost';
+import { createBoardClipboardPasteHost } from '../../whiteboard/host/clipboardPasteHost';
+import { BOARD_Z_MAX } from '../../utils/boardZMax';
 import { readNativeClipboardMedia } from '../../whiteboard/host/clipboardCommands';
 import { classifyClipboardJson } from '../../whiteboard/host/clipboardJsonKind';
 import { createClipboardHtmlFrameHost } from '../../whiteboard/clipboard/htmlFrameHost';
@@ -127,12 +128,12 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 ? { ...capturedInput, privatePng } : capturedInput;
             // One host for this job: its classifier, HTML frame, ingestor and media seams all run under this job's identity.
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
-            const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token, zMax: NATIVE_Z_MAX,
+            const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token, zMax: BOARD_Z_MAX,
                 classifier: { appOrigin: location.origin, markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({
                     bytes: new Blob([text]), identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) },
                 html, ingestor: options.ingestor, receivingBoardId: identity.documentId, cameraZoom: zoom,
                 current: targetCurrent, readBlob: options.readMedia, storeMedia: options.storeMedia,
-                notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('\n')),
+                notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')),
                 isCurrent: workerCurrent });
             await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
         }, { signal, deadlineMs: 120_000 });

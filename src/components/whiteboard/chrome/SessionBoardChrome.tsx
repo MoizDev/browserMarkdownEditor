@@ -58,7 +58,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     }, [registerShortcuts, isVisible]);
     const labels = localizeBoardChrome(props.translate);
     const canRead = (id: BoardCommand) => id === 'copy' || id === 'selectAll' || id === 'copyAsPng'
-        || id === 'copyAsSvg' || id === 'copyAsJson' || id === 'exportPng' || id === 'exportSvg';
+        || id === 'copyAsSvg' || id === 'copyAsJson' || id === 'exportPng' || id === 'exportSvg' || id === 'exportJson';
     const commandState = (id: BoardCommand): CommandState => props.readOnly && !canRead(id)
         ? { enabled: false, reason: props.readOnlyReason } : props.commands.state(id);
     const commandSource: BoardCommandSource = {

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Svetloba",
     "chrome.system": "Sistem",
     "chrome.language": "Jezik",
+    "chrome.print": "Natisni",
     "chrome.uploadMedia": "Naloži predstavnost ...",
     "chrome.insertEmbed": "Vstavi vdelano ...",
     "chrome.unlockAll": "Odkleni vse",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Izbriši stran",
     "paper.cancel": "Prekliči",
     "paper.keepProtected": "Zaklenjena vsebina bo ohranjena.",
-    "chrome.readOnly": "Ta plošča je samo za branje."
+    "chrome.readOnly": "Ta plošča je samo za branje.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

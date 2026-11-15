@@ -747,9 +747,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         },
         renderPageWithInfo,
         async renderPage(pageNumber, maxSide) { return (await renderPageWithInfo(pageNumber, maxSide)).png; },
-        async pdfText(pages) {
+        async pdfText(pages, signal) {
             assertPdfCopyAllowed(capabilities);
-            const result = await pdfAgentPages(pdf.poolDocument, pages, new AbortController().signal, () => session.isCurrent());
+            const result = await pdfAgentPages(pdf.poolDocument, pages, signal ?? new AbortController().signal, () => session.isCurrent());
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },

@@ -166,11 +166,14 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
         requestText: dialogs.requestText, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, setNotice]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
+    // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
+    const runPrint = useCallback(() => clipboard.print(), [clipboard]);
+    const runExportPdf = useCallback(() => clipboard.exportPdf(), [clipboard]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {
         const camera = createNativeCameraOperations({ runtime, lease, current, signal, minimapVisible, setMinimapVisible });
-        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts });
+        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, print: runPrint, exportPdf: runExportPdf });
         const labels = localizeBoardChrome((key, values) => translateBoard(language.getSnapshot().table, key, values));
         const commands = createNativeBoardOperations({ runtime, lease, current, canWrite,
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
@@ -179,7 +182,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const value = { camera, commands }; setOwned(value);
         return () => setOwned(previous => previous === value ? null : previous);
     }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts,
-        language, canWrite, link, mac, setNotice, report]);
+        language, canWrite, link, mac, setNotice, report, runPrint, runExportPdf]);
     useLayoutEffect(() => {
         if (!owned) return;
         const { commands, camera } = owned;
@@ -234,9 +237,9 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         } catch (error) { report(error); }
     }, [props.isVisible, signal, current, attached, chromeReady, owned, embedPort, lease, styleRef, commandRef,
         contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
+
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}
-        {renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
+    return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
             editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
             canMutate: lease.canMutateView })}</>;
 }

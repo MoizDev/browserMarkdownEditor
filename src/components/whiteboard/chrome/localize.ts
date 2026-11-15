@@ -13,7 +13,7 @@ export function localizeBoardChrome(t: BoardTranslate) {
         contextSectionLabel: (key: ContextSection) => t(`sections.${key}`),
         mainSectionLabel: (key: MainSection) => t(`sections.${key}`),
         preferenceLabel: (key: PreferenceLabel) => t(`preferences.${key}`),
-        actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' ? `commands.${key}` : `chrome.${key}`),
+        actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' || key === 'exportPdf' || key === 'exportJson' ? `commands.${key}` : `chrome.${key}`),
         text: (key: string) => t(`chrome.${key}`),
     };
 }

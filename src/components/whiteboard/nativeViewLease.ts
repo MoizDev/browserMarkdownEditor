@@ -146,6 +146,10 @@ export function createNativeViewLease(options: {
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const boardRuntime = runtime;
     const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
+    if (board.doc.kind === 'pdf-ink' && options.parameters.mode === 'edit' &&
+        (!sourceToken || !options.pdfBackdrop?.isCurrentSource?.() || !host.canWriteSource(identity))) {
+        throw new Error('PDF editing requires its current acquired source and write policy');
+    }
     if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
         sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
         sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||

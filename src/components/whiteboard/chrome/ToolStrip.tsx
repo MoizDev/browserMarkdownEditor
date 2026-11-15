@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
+import { MoreToolIcon, ToolIcon } from './toolIcons';
 import './chrome.css';
 
 export interface ToolChoice {
@@ -58,23 +59,26 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
         return <button
             type="button"
             key={`${choice.id}:${choice.figure ?? ''}`}
-            className="board-chrome-tool"
+            className="board-chrome-tool board-chrome-tool-icon"
             aria-label={label}
             data-tooltip={reason ?? label}
             aria-pressed={sameTool(choice, selected)}
             disabled={disabled || reason !== undefined}
             onClick={() => { select(choice); setOpen(false); }}
-        >{choice.label}</button>;
+        ><ToolIcon id={choice.id} figure={choice.figure} /></button>;
     }
 
     const moreDisabled = disabled || more.every(choice => disabledReason?.(choice) !== undefined);
     const moreReason = moreDisabled ? more.map(choice => disabledReason?.(choice)).find(reason => reason !== undefined) : undefined;
+    // A tool living in the popover still shows on the bar: the chevron takes the active look while it is selected.
+    const moreCurrent = more.some(choice => sameTool(choice, selected));
     return <div className="board-chrome-tools" ref={root}>
-        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row" dir="ltr">
+        <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row board-chrome-tool-strip" dir="ltr">
             <div className="board-chrome-primary-tools">{primary.map(button)}</div>
-            <button type="button" ref={trigger} className="board-chrome-tool" aria-label={moreLabel}
-                data-tooltip={moreReason ?? moreLabel} aria-expanded={open} aria-haspopup="dialog" disabled={moreDisabled}
-                onClick={() => setOpen(value => !value)}>{moreLabel}</button>
+            <button type="button" ref={trigger} className="board-chrome-tool board-chrome-tool-icon board-chrome-tool-more"
+                aria-label={moreLabel} data-tooltip={moreReason ?? moreLabel} data-current={moreCurrent || undefined}
+                aria-expanded={open} aria-haspopup="dialog" disabled={moreDisabled}
+                onClick={() => setOpen(value => !value)}><MoreToolIcon /></button>
         </div>
         {open && <div ref={popup} role="dialog" aria-label={moreLabel} className="board-chrome-more">
             {more.map(button)}

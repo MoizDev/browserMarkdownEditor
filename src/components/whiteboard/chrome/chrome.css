@@ -15,22 +15,27 @@
     pointer-events: auto;
 }
 
+/* The tool bar is centred on the pane's bottom edge and the zoom controls keep the corner: the
+   outer columns take the free width, so the centred bar never moves when zoom's label grows. */
 .board-chrome-bottom {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+    align-items: end;
     gap: 8px;
     min-width: 0;
 }
 
 .board-chrome-bottom > .board-chrome-tools {
+    grid-column: 2;
+    justify-self: center;
     min-width: 0;
 }
 
 .board-chrome-zoom {
-    flex: 0 1 auto;
+    grid-column: 3;
+    justify-self: end;
     min-width: 0;
-    max-width: 40%;
+    max-width: 100%;
 }
 
 .board-chrome-zoom .board-chrome-tool-row {
@@ -118,13 +123,20 @@
     overflow-x: auto;
 }
 
+/* Opens above the bar, flush with its right end where the chevron sits: five icons to a row. */
 .board-chrome-more {
     position: absolute;
     z-index: 1;
-    bottom: calc(100% + 6px);
-    inset-inline-start: 0;
-    flex-wrap: wrap;
-    width: min(360px, 90vw);
+    bottom: calc(100% + 8px);
+    inset-inline-end: 0;
+    display: grid;
+    grid-template-columns: repeat(5, 40px);
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
     max-height: min(50vh, 360px);
     overflow: auto;
 }
@@ -161,6 +173,46 @@
 .board-chrome-tool:disabled {
     cursor: default;
     opacity: .45;
+}
+
+/* The board's tool bar: one floating rounded bar of 40px icon buttons, measured off the owner's pictures.
+   Its colours are the board theme's (index.css); a notebook or PDF pane has no board theme, so it falls back
+   to the app's own surfaces. */
+.board-chrome-tool-strip {
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
+}
+
+.board-chrome-tool-strip .board-chrome-primary-tools {
+    gap: 4px;
+}
+
+.board-chrome-tool-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 8px;
+    color: var(--text-normal);
+}
+
+/* The same blue whichever pane hosts the bar, so a notebook's active tool matches a drawing's. */
+.board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true'],
+.board-chrome-tool-strip .board-chrome-tool-more[data-current] {
+    background: var(--board-tool-active, #4a7fe8);
+    color: var(--board-tool-active-fg, #fff);
+}
+
+.board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true']:hover,
+.board-chrome-tool-strip .board-chrome-tool-more[data-current]:hover {
+    background: var(--board-tool-active, #4a7fe8);
 }
 
 /* Native select and text input, dressed as the chrome's own controls. Options carry their own

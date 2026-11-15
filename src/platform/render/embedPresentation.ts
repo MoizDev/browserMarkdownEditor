@@ -89,6 +89,10 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
+    const requestsChanged = () => {
+        wake();
+        try { options.invalidate?.(); } catch (error) { report(error); }
+    };
     const releasePacket = (value: EmbedPresentationFrame | null) => {
         if (!value) return;
         let promise: Promise<void>;
@@ -144,6 +148,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             },
             async dispose() { close(slot); },
         };
+        // The id stays in the requested set (now as a slot), so this is no change to repaint for.
         slots.set(slot.id, slot); requests.delete(request); request.signal?.removeEventListener('abort', request.abort);
         if (request.signal) {
             slot.externalSignal = request.signal; slot.externalAbort = () => close(slot);
@@ -164,7 +169,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             request.waitingForFacts = false;
             const base = host.allocator.cpu.reserve(SLOT_BYTES);
             if (!base) { requestBlocked = true; break; }
-            try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); request.reject(error); }
+            try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); requestsChanged(); request.reject(error); }
         }
         for (const slot of slots.values()) {
             if (budget.shouldYield()) break;
@@ -279,9 +284,15 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             if (signal?.aborted) return Promise.reject(signal.reason);
             if (slots.has(id) || [...requests].some(item => item.id === id)) return Promise.reject(new Error('Embed already acquired'));
             return new Promise((resolve, reject) => {
-                const request: Request = { id, signal, waitingForFacts: false, resolve, reject, abort: () => { requests.delete(request); reject(signal?.reason ?? new DOMException('Embed cancelled', 'AbortError')); } };
-                requests.add(request); signal?.addEventListener('abort', request.abort, { once: true }); wake();
+                const request: Request = { id, signal, waitingForFacts: false, resolve, reject, abort: () => { requests.delete(request); requestsChanged(); reject(signal?.reason ?? new DOMException('Embed cancelled', 'AbortError')); } };
+                requests.add(request); signal?.addEventListener('abort', request.abort, { once: true }); requestsChanged();
             });
+        },
+        requestedNodeIds() {
+            if (disposed) return EMPTY_INLINE;
+            const ids = new Set<string>(slots.keys());
+            for (const request of requests) ids.add(request.id);
+            return ids.size ? new InlineIds(ids) : EMPTY_INLINE;
         },
         inlineNodeIds(sceneRevision) {
             if (!packet || (sceneRevision !== undefined && packet.sceneRevision !== sceneRevision)) return EMPTY_INLINE;

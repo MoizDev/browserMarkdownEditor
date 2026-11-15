@@ -225,7 +225,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
         if (!usable) { borrow.release(); return null; }
         let released = false;
-        return Object.freeze({ images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
+        return Object.freeze({ frame: prepared.frame, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
     };
     const retainedByDense = (): ReadonlySet<PaintFrame> => {
         const retained = new Set(dense?.retainedFrames());

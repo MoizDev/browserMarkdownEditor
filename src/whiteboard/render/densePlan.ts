@@ -236,7 +236,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const key = `dense/${++serial}`;
             p.bitmaps.set(key, entry.bitmap);
             const item: PaintImageItem = { kind: 'image', key, geometryKey: key, imageKey: key, nodeId: key,
-                localToWorld: [1, 0, 0, 1, 0, 0], clips: [], rect: entry.bitmap.rect,
+                localToWorld: [1, 0, 0, 1, 0, 0], clips: [], rect: entry.bitmap.rect, allocationBounds: entry.bitmap.rect,
                 sourceRect: { x: 2, y: 2, width: EDGE, height: EDGE }, opacity: 1, blend: entry.blend, inverted: false, retainedTile: true };
             return item;
         };

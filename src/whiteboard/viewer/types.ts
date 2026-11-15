@@ -75,6 +75,8 @@ export interface ViewerEngine {
     cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     connectEmbeds(port: EmbedPresentationPort | null): void;
+    /** The requested or accepted embed set changed: repaint with the live barriers that set implies. */
+    embedsChanged(): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,

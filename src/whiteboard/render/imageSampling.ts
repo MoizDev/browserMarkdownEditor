@@ -98,16 +98,15 @@ export function texturedQuad(dest: Readonly<Rect>, textureSize: number, crop: Re
     return { x0: dest.x - apron, y0: dest.y - apron, x1: dest.x + dest.width + apron, y1: dest.y + dest.height + apron };
 }
 
-/** Reads the exact alpha of a source bitmap through a 2D canvas. The bytes are charged to the
- * CPU allocator before they exist; a denied reservation returns null (facts stay unavailable). */
+/** Reads the exact alpha of a source bitmap through a 2D canvas. The bytes are charged to the CPU
+ * allocator before they exist; the caller owns the returned lease and releases it with its holds. A
+ * denied reservation returns null (facts stay unavailable). */
 export function readAlphaPlane(source: CanvasImageSource, width: number, height: number,
-    allocator: MemoryAllocator): { plane: AlphaPlane; release(): void } | null {
+    allocator: MemoryAllocator): { plane: AlphaPlane; lease: ByteLease } | null {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid alpha plane size');
     const bytes = width * height * 5;
     const lease: ByteLease | null = allocator.reserve(bytes);
     if (!lease) return null;
-    let released = false;
-    const release = () => { if (!released) { released = true; allocator.release(lease); } };
     try {
         const canvas = new OffscreenCanvas(width, height);
         const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -116,6 +115,6 @@ export function readAlphaPlane(source: CanvasImageSource, width: number, height:
         const pixels = context.getImageData(0, 0, width, height).data;
         const alpha = new Uint8Array(width * height);
         for (let i = 0; i < alpha.length; i++) alpha[i] = pixels[i * 4 + 3];
-        return { plane: { width, height, alpha }, release };
-    } catch (error) { release(); throw error; }
+        return { plane: { width, height, alpha }, lease };
+    } catch (error) { allocator.release(lease); throw error; }
 }

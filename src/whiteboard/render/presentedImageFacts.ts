@@ -1,7 +1,7 @@
 import type { EmbedLaterPaint } from '../../platform/render/embedPresentation.types';
 import type { PathCommand, Affine } from '../../platform/types';
-import { classifyImageFootprint, texturedQuad, type AlphaPlane, type DeviceRect } from '../render/imageSampling';
-import type { PresentedImage } from '../render/paintPresentation';
+import { classifyImageFootprint, texturedQuad, type AlphaPlane, type DeviceRect } from './imageSampling';
+import type { PresentedImage } from './paintPresentation';
 
 /** `null` when the image puts nothing inside the region; `unknown` when its facts cannot be proven,
  * which keeps the true-order poster rather than a guessed translucence. */

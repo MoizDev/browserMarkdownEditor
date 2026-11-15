@@ -97,6 +97,10 @@ export interface EmbedPresentationPort {
     drawn(paint: EmbedDrawnPaint): void;
     /** Call only for the semantic per-node Load action. Resolves after actual facts/admission. */
     acquire(nodeId: string, signal?: AbortSignal): Promise<EmbedHostingLease>;
+    /** Embeds the user has asked for (acquire waiters and acquired slots), whether or not their facts are ready. The
+     * board draws each as a real live barrier at its paint position, so it is never absorbed into a tile and never
+     * omitted before its facts are proven. This is precision only: it claims no omission. */
+    requestedNodeIds(): ReadonlySet<string>;
     /** Desired card omissions for this view ONLY. Captures/exports keep the static poster. */
     inlineNodeIds(sceneRevision?: number): ReadonlySet<string>;
     setVisible(visible: boolean): void;
@@ -107,4 +111,6 @@ export interface EmbedPresentationOptions {
     /** Stable pane overlay below app chrome. This must share the board's real input ancestor. */
     readonly overlay: HTMLElement;
     readonly onError?: (error: unknown) => void;
+    /** Called when the set of requested embeds changes, so the board repaints with them as live barriers. */
+    readonly invalidate?: () => void;
 }

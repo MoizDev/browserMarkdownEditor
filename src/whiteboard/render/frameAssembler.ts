@@ -11,6 +11,7 @@ import type { PaintBand } from './material';
 import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from './frameTypes';
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
+import type { ResolvedNodeCache } from './resolvedNodeCache';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -37,7 +38,7 @@ interface Owner {
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
-    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache) => Promise<ScenePaintNodeStream>;
     readonly liveOnly?: true;
     isCurrent(): boolean;
     release(): void | Promise<void>;
@@ -101,7 +102,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get sensitiveMayMeet() { return stream.sensitiveMayMeet; },
         get mayPaint() { return stream.mayPaint; },
         get occupiedRoot() { return stream.occupiedRoot; },
-        openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
+        openTile: pin.open ? (world, signal, resolved) => pin.open!(world, signal, resolved) : undefined,
         liveOnly: pin.liveOnly,
         isCurrent: () => pin.isCurrent(),
         // The stream drains its active next() before the snapshot that pins its sources may go.

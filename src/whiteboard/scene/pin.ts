@@ -7,6 +7,7 @@ import { boardPageStack } from '../model/pages';
 import type { PaintNode, PaintNodeSource } from '../render/paintStream';
 import type { Rect } from '../../platform/types';
 import type { ScenePaintNodeStream } from '../render/scenePaintStream';
+import type { ResolvedNodeCache } from '../render/resolvedNodeCache';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import { BoundsQuality, validBox } from './bounds';
 import { createPinnedPaintDoc } from './paintDoc';
@@ -47,7 +48,7 @@ export function createSceneSnapshot(options: {
     changes?: (from: number) => RegionChanges;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
-    prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => ScenePaintNodeStream;
+    prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache) => ScenePaintNodeStream;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
 }): SceneSnapshot {
@@ -266,7 +267,7 @@ export function createSceneSnapshot(options: {
             })());
             return waitFor(work, signal);
         },
-        ...(options.prepareStream ? { async paintStream(request: ScenePaintRequest, signal?: AbortSignal) {
+        ...(options.prepareStream ? { async paintStream(request: ScenePaintRequest, signal?: AbortSignal, resolved?: ResolvedNodeCache) {
             check(); signal?.throwIfAborted();
             const pinnedRequest = copyRequest(request), local = new AbortController();
             const combined = AbortSignal.any(signal ? [controller.signal, local.signal, signal] : [controller.signal, local.signal]);
@@ -274,7 +275,7 @@ export function createSceneSnapshot(options: {
                 const doc = paintDocument();
                 const index = await indexFor(pinnedRequest.sheetId);
                 check(); combined.throwIfAborted();
-                const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(index, pinnedRequest));
+                const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(index, pinnedRequest), resolved);
                 const stream = wrapStream(source, combined, local, pinnedRequest.world, index);
                 try {
                     check(); combined.throwIfAborted();

@@ -156,7 +156,7 @@ function livePosition(info: ViewInfo): string {
         }
         case 'drawing': {
             const v = info.viewport;
-            return `tldraw page "${info.pageName}" (${info.pageIndex + 1} of ${info.pageCount}), zoom ${zoomPct(info.camera.z)}, `
+            return `page "${info.pageName}" (${info.pageIndex + 1} of ${info.pageCount}), zoom ${zoomPct(info.camera.z)}, `
                 + `showing x ${r1(v.x)}…${r1(v.x + v.w)}, y ${r1(v.y)}…${r1(v.y + v.h)}, `
                 + `${plural(info.shapesTotal, 'shape')} in view${info.selectedShapeIds.length ? `, ${info.selectedShapeIds.length} selected` : ''}`;
         }

@@ -52,6 +52,9 @@ Load `rendering-platform` for shared frame/layer/capture changes and `verify-in-
 - PDF HOST metadata belongs to `session/inkHost.ts`. Allocate one write ID before frozen serialization;
   pin without changing live undo/dirty state. Preserve opaque HOST ext. Every document save goes through
   App's versioned IO against the actual disk baseline, never directly from a worker.
+- The pane's OWN autosave does not rebind: `useSaveFunnel` keeps the byte generation (the writer builds from
+  pristine + full ink, so the new bytes are what the pane already paints) and `pdfInkRebind` skips a same-generation
+  write. A rebind covers with input detached, dropping presses for ~150 ms; only outside changes may cause one.
 - Rebind only to freshly inspected saved bytes and an authoritative forward generation with the same
   pristine source. The real prepare→runtime caller invokes `runtime.adoptPaintSource` before publishing
   ready. Spatial `scene.ready` is not source permission; presentation still needs its real sharp proof.

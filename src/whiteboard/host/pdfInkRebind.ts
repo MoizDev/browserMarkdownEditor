@@ -79,6 +79,9 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                     context.source.token.bytesGeneration > outer.bytesGeneration ||
                     context.source.pristineFingerprint !== initialSource.source.pristineFingerprint) throw stale();
                 target = { ...outer };
+                // The app keeps the generation for this pane's own save (useSaveFunnel): the live source already
+                // paints those bytes, so there is nothing to rebind and the board stays live.
+                if (outer.bytesGeneration === snapshot.token.bytesGeneration && snapshot.status === 'ready') return Promise.resolve();
             } catch (error) {
                 report(error);
                 if (!disposed) {

@@ -390,8 +390,14 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) {
           setBaseline(id, result.version);
-          if (isPdf) bumpBytesGeneration(id, nativeSource && !!sessionAtCall && documentSessions.get(id) === sessionAtCall
-            && typeof bufferedSource !== 'string' && bufferedSource?.owner.session === sessionAtCall.serial);
+          // A self-save of annotated-PDF ink keeps the byte generation: the writer builds every save from the pristine
+          // source plus the board's full ink, so the bytes just written are what this pane already shows, and a new
+          // generation would rebind the pane — new immutable tokens, an opaque Updating cover with input detached —
+          // dropping any press in the ~150 ms after each autosave (whiteboard's person-click matrix: 2 of 6 PDF rows).
+          // The versioned baseline above still moves, and any outside change still bumps and rebinds.
+          const selfSave = nativeSource && !!sessionAtCall && documentSessions.get(id) === sessionAtCall
+            && typeof bufferedSource !== 'string' && bufferedSource?.owner.session === sessionAtCall.serial;
+          if (isPdf && !selfSave) bumpBytesGeneration(id);
         }
         if (isPdf && data instanceof Uint8Array) {
           const aliases = (await import('../utils/pdfBuildClient')).pdfBuildAliases(data);

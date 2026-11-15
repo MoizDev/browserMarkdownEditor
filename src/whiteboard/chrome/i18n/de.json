@@ -169,6 +169,7 @@
     "commands.bringFront": "Nach vorne bringen",
     "commands.rotateCounterclockwise": "Gegen den Uhrzeigersinn drehen",
     "commands.rotateClockwise": "Im Uhrzeigersinn drehen",
+    "commands.toggleAutoSize": "Automatische Größe umschalten",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

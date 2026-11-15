@@ -104,6 +104,7 @@
     "commands.bringFront": "Přiveďte dopředu",
     "commands.rotateCounterclockwise": "Otočte proti směru hodinových ručiček",
     "commands.rotateClockwise": "Otočte po směru hodinových ručiček",
+    "commands.toggleAutoSize": "Přepnout automatickou velikost",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

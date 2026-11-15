@@ -104,6 +104,7 @@
     "commands.bringFront": "Portare in primo piano",
     "commands.rotateCounterclockwise": "Ruotare in senso antiorario",
     "commands.rotateClockwise": "Ruotare in senso orario",
+    "commands.toggleAutoSize": "Attiva/disattiva dimensione automatica",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

@@ -104,6 +104,7 @@
     "commands.bringFront": "മുന്നിലേക്ക് കൊണ്ടുവരിക",
     "commands.rotateCounterclockwise": "എതിർ ഘടികാരദിശയിൽ തിരിക്കുക",
     "commands.rotateClockwise": "ഘടികാരദിശയിൽ തിരിക്കുക",
+    "commands.toggleAutoSize": "ഓട്ടോ സൈസ് ടോഗിൾ ചെയ്യുക",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

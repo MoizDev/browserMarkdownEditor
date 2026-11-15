@@ -104,6 +104,7 @@
     "commands.bringFront": "Keen hore",
     "commands.rotateCounterclockwise": "U rog dhanka saacada kahor",
     "commands.rotateClockwise": "U rog dhinaca saacada",
+    "commands.toggleAutoSize": "Beddel cabbirka otomaatiga ah",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

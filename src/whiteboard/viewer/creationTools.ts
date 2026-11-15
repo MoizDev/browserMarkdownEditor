@@ -139,9 +139,13 @@ class CreationGesture implements GestureOwner {
             }
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });
-            case 'sticky': return createSticky({ ...base, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
+            case 'sticky': {
+                // A click's note is centred on the pointer (200 units at scale 1); its origin is the top-left corner.
+                const centred = moved ? base : { ...base, x: base.x - 100, y: base.y - 100 };
+                return createSticky({ ...centred, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
                 size: style.size, font: style.font, align: style.align, valign: style.valign, growY: 0, fit: null,
                 scale: moved ? Math.max(.01, Math.max(w, h) / 200) : 1, url: null });
+            }
             case 'polyline': return createPolyline({ ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
                 spline: style.spline, color: style.color, dash: style.dash, size: style.size, width });
             case 'connector': return createConnector({ ...this.base, route: style.route, start: { x: centered ? -dx : 0, y: centered ? -dy : 0, attach: null },

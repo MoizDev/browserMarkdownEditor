@@ -104,6 +104,7 @@
     "commands.bringFront": "Bawa ke depan",
     "commands.rotateCounterclockwise": "Putar berlawanan arah jarum jam",
     "commands.rotateClockwise": "Putar searah jarum jam",
+    "commands.toggleAutoSize": "Alihkan ukuran otomatis",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

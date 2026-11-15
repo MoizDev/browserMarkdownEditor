@@ -104,6 +104,7 @@
     "commands.bringFront": "समोर आणा",
     "commands.rotateCounterclockwise": "घड्याळाच्या उलट दिशेने फिरवा",
     "commands.rotateClockwise": "घड्याळाच्या दिशेने फिरवा",
+    "commands.toggleAutoSize": "ऑटो साइज टॉगल करा",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

@@ -104,6 +104,7 @@
     "commands.bringFront": "นำมาไว้ข้างหน้า",
     "commands.rotateCounterclockwise": "หมุนทวนเข็มนาฬิกา",
     "commands.rotateClockwise": "หมุนตามเข็มนาฬิกา",
+    "commands.toggleAutoSize": "สลับขนาดอัตโนมัติ",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

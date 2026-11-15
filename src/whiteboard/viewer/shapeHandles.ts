@@ -155,7 +155,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
             if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, snap,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
-            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control });
+            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z });
         },
         toggleHead(hit: ShapeHandleHit): boolean {
             if (!current() || !selected || hit.kind !== 'connector-end') return false;

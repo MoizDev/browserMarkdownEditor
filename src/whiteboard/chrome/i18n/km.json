@@ -104,6 +104,7 @@
     "commands.bringFront": "នាំយកទៅខាងមុខ",
     "commands.rotateCounterclockwise": "បង្វិលច្រាសទ្រនិចនាឡិកា",
     "commands.rotateClockwise": "បង្វិលតាមទ្រនិចនាឡិកា",
+    "commands.toggleAutoSize": "បិទ/បើកទំហំស្វ័យប្រវត្តិ",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

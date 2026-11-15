@@ -75,7 +75,9 @@ function elbowProjection(geometry: ConnectorGeometry, point: Vec2, fallback: num
 
 /** Project a label handle onto the visible body, preserving its fraction when
  * the body or radial projection is degenerate rather than inventing movement. */
-export function projectConnectorLabel(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2): ConnectorLabelProjection {
+/** `snapWorld`, when given, snaps a projection that lands within that world distance of the path's centre onto the
+ * centre (fraction 0.5), so the middle of a connector is reachable by dragging. The caller sets it from a screen distance. */
+export function projectConnectorLabel(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2, snapWorld?: number): ConnectorLabelProjection {
     finitePoint(point);
     const fallback = typeof node.labelAt === 'number' && Number.isFinite(node.labelAt) ? clamp(node.labelAt) : 0.5; // default, calibration cut by owner
     if (node.route === 'elbow') return elbowProjection(geometry, point, fallback);
@@ -89,7 +91,11 @@ export function projectConnectorLabel(node: Readonly<ConnectorNode>, geometry: C
         if (![at.x, at.y, distance].every(Number.isFinite)) throw new RangeError('Connector label projection overflows');
         return { fraction: fallback, point: at, distance, degenerate: true };
     }
-    const fraction = clamp((sample.t - a.t) / (b.t - a.t)), at = pointOnBody(body, a.t + (b.t - a.t) * fraction);
+    let fraction = clamp((sample.t - a.t) / (b.t - a.t)), at = pointOnBody(body, a.t + (b.t - a.t) * fraction);
+    if (snapWorld !== undefined && Number.isFinite(snapWorld)) {
+        const centre = pointOnBody(body, a.t + (b.t - a.t) / 2);
+        if (Math.hypot(at.x - centre.x, at.y - centre.y) <= snapWorld) { fraction = 0.5; at = centre; }
+    }
     const distance = Math.hypot(point.x - at.x, point.y - at.y);
     if (![at.x, at.y, distance, fraction].every(Number.isFinite)) throw new RangeError('Connector label projection overflows');
     return { fraction, point: at, distance, degenerate: false };

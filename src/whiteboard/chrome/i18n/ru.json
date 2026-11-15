@@ -104,6 +104,7 @@
     "commands.bringFront": "Вынести на передний план",
     "commands.rotateCounterclockwise": "Поворот против часовой стрелки",
     "commands.rotateClockwise": "Повернуть по часовой стрелке",
+    "commands.toggleAutoSize": "Переключить автоматический размер",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

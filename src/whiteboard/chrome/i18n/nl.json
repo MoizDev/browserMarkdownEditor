@@ -104,6 +104,7 @@
     "commands.bringFront": "Naar voren brengen",
     "commands.rotateCounterclockwise": "Draai tegen de klok in",
     "commands.rotateClockwise": "Draai met de klok mee",
+    "commands.toggleAutoSize": "Automatische grootte wisselen",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

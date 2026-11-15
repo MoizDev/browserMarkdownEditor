@@ -22,6 +22,8 @@ export function createEditCommandOperations(options: {
     readonly notice: (message: string) => void;
     readonly frameName: () => string;
     readonly zoom: () => number;
+    /** Quiet report of locked items a delete kept (R-11). */
+    readonly notice?: (message: string) => void;
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });

@@ -18,6 +18,7 @@ export function createNativeLinkOperations(options: {
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly requestText: (question: BoardTextQuestion) => Promise<string | null>;
+    readonly requestTextChoice: (question: BoardTextQuestion) => Promise<{ readonly value: string } | 'alt' | null>;
     readonly notice: (message: string) => void;
 }) {
     const { runtime, lease } = options, session = runtime.session, doc = session.doc;
@@ -37,9 +38,9 @@ export function createNativeLinkOperations(options: {
         if (node && !isLocked(doc, node)) return { enabled: true };
         return { enabled: false, reason: 'Select text or one unlocked picture, figure, note or card' };
     };
-    const ask = (initial: string, allowEmpty: boolean) => options.requestText({ title: 'Edit link', body: allowEmpty
+    const ask = (initial: string, allowEmpty: boolean) => options.requestTextChoice({ title: 'Edit link', body: allowEmpty
         ? 'Enter an absolute link address, or leave it empty to remove the link.' : 'Enter an absolute link address.',
-        confirmLabel: 'Apply', input: { label: 'URL', initialValue: initial, placeholder: 'https://…', validate(value) {
+        confirmLabel: 'Apply', altLabel: allowEmpty ? 'Remove link' : undefined, input: { label: 'URL', initialValue: initial, placeholder: 'https://…', validate(value) {
             if (allowEmpty && !value.trim()) return null;
             const result = checkContentUrl(value.trim(), 'click', environment);
             return result.ok ? null : result.reason;
@@ -47,8 +48,9 @@ export function createNativeLinkOperations(options: {
     const editText = async () => {
         const text = editor(), context = text?.linkContext();
         if (!text || !context || (!context.href && context.selection.anchor === context.selection.focus)) return;
-        const value = await ask(context.href ?? '', !!context.href);
-        if (value === null || !options.current() || !options.canWrite() || session.isReadOnly) return;
+        const answer = await ask(context.href ?? '', !!context.href);
+        if (answer === null || !options.current() || !options.canWrite() || session.isReadOnly) return;
+        const value = answer === 'alt' ? '' : answer.value;
         const trimmed = value.trim(), decision = trimmed ? checkContentUrl(trimmed, 'click', environment) : null;
         if (decision && !decision.ok) throw new Error(decision.reason);
         if (!text.applyTextLink(context, decision?.ok ? decision.url : null)) options.notice('The text selection changed; edit the link again.');
@@ -58,8 +60,9 @@ export function createNativeLinkOperations(options: {
         if (!node || isLocked(doc, node)) return;
         // A card needs its address; any other item loses its link when the field is left empty.
         const card = node.kind === 'linkcard' || node.kind === 'embed';
-        const value = await ask(node.url ?? '', !card);
-        if (value === null) return;
+        const answer = await ask(node.url ?? '', !card);
+        if (answer === null) return;
+        const value = answer === 'alt' ? '' : answer.value;
         if (!options.current() || !options.canWrite() || session.isReadOnly || session.isGestureActive || doc.rev !== revision ||
             runtime.selection.getSnapshot() !== selection || doc.nodes.get(node.id) !== node || isLocked(doc, node)) {
             throw new DOMException('Link source changed', 'AbortError');

@@ -104,6 +104,7 @@
     "commands.bringFront": "ముందుకు తీసుకురండి",
     "commands.rotateCounterclockwise": "అపసవ్య దిశలో తిప్పండి",
     "commands.rotateClockwise": "సవ్యదిశలో తిప్పండి",
+    "commands.toggleAutoSize": "ఆటో సైజ్ టోగుల్ చేయి",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

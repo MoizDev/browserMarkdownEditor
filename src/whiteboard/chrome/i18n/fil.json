@@ -104,6 +104,7 @@
     "commands.bringFront": "Dalhin sa harap",
     "commands.rotateCounterclockwise": "I-rotate ang counterclockwise",
     "commands.rotateClockwise": "I-rotate clockwise",
+    "commands.toggleAutoSize": "I-toggle ang auto size",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

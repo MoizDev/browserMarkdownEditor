@@ -104,6 +104,7 @@
     "commands.bringFront": "إحضار إلى الأمام",
     "commands.rotateCounterclockwise": "تدوير عكس عقارب الساعة",
     "commands.rotateClockwise": "تدوير مع عقارب الساعة",
+    "commands.toggleAutoSize": "تبديل الحجم التلقائي",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

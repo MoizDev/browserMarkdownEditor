@@ -104,6 +104,7 @@
     "commands.bringFront": "Öne getir",
     "commands.rotateCounterclockwise": "Saat yönünün tersine döndür",
     "commands.rotateClockwise": "Saat yönünde döndür",
+    "commands.toggleAutoSize": "Otomatik boyutu değiştir",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

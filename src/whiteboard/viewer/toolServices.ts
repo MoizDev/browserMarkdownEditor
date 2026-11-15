@@ -194,8 +194,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
                     sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
-                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
-                        { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
+                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
+                        { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
             }
             default: throw new Error(`Unsupported routed board tool: ${choice.id}`);
         }
@@ -215,6 +215,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
+        handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {
             if (select.command(id)) return true;
             // grid and focus are document state: a non-editable view consumes them rather than letting the host's global route promote them.

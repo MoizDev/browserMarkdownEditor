@@ -62,7 +62,7 @@ export function createNativeBoardContextMenu(options: {
         const pages = backend.targets().map(page => ({ id: page.id, label: page.label,
             enabled: page.enabled && options.canWrite(), ...(!page.enabled || !options.canWrite() ? { reason: page.reason ?? 'Board view is read-only' } : {}) }));
         const source = { ...options.commands, run: safeRun, sectionLabel: labels.contextSectionLabel,
-            selectedCount: selected.length, canUngroup: ungroupEligibility(session.doc, selected, selection).enabled,
+            selectedCount: selected.length, textSelected: selected.some(id => session.doc.nodes.get(id)?.kind === 'text'), canUngroup: ungroupEligibility(session.doc, selected, selection).enabled,
             debugMode: preferences.view.debugMode, transparent: preferences.view.transparent,
             transparentLabel: labels.text('transparent'), ...(!options.canWrite() ? { transparentDisabledReason: 'Board view is read-only' } : {}),
             noPagesReason: 'No eligible pages', pages, extraEntries: extra,

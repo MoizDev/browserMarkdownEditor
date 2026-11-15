@@ -104,6 +104,7 @@
     "commands.bringFront": "Aduceți în față",
     "commands.rotateCounterclockwise": "Rotiți în sens invers acelor de ceasornic",
     "commands.rotateClockwise": "Rotiți în sensul acelor de ceasornic",
+    "commands.toggleAutoSize": "Comută dimensiunea automată",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

@@ -104,6 +104,7 @@
     "commands.bringFront": "맨 앞으로 가져오기",
     "commands.rotateCounterclockwise": "시계 반대 방향으로 회전",
     "commands.rotateClockwise": "시계방향으로 회전",
+    "commands.toggleAutoSize": "자동 크기 전환",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

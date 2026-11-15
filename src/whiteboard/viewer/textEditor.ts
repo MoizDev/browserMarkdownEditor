@@ -60,6 +60,8 @@ export interface BoardTextEditorOptions {
         menu(x: number, y: number): void;
         spellingMenu(x: number, y: number, rows: SpellMenuRows | null): void;
         openLink(url: string): void;
+        /** Opens the directional neighbour of the edited note once its own edit has committed. */
+        stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
         command(name: string, selection: EditSelection): void;
         selectionChanged(node: NodeId | null, selection: EditSelection | null): void;
         touchHandles(show: boolean): void;
@@ -289,7 +291,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 command: options.ui.command,
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
-                menu: openTextMenu, openLink: options.ui.openLink,
+                menu: openTextMenu, openLink: options.ui.openLink, stickyNeighbour: direction => stickyNeighbour(direction),
                 finish() { stopScroll(); layoutEngine.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; options.ui.spellingMenu(0, 0, null); spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; options.editingChanged?.(null); paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };
@@ -498,7 +500,13 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             && id !== 'link' && id !== 'finish' && !id.startsWith('paste-')) editor.focus();
         return handled;
     };
-    return { manager, input, editText, writeOverlays, captureText, command,
+    const stickyNeighbour = (direction: 'left' | 'right' | 'up' | 'down'): boolean => {
+        const node = active && doc.nodes.get(active);
+        if (!current() || !manager.current || !node || node.kind !== 'sticky' || session.isReadOnly || !options.ui.stickyNeighbour) return false;
+        if (!command('finish')) return false;
+        return options.ui.stickyNeighbour(direction);
+    };
+    return { manager, input, editText, writeOverlays, captureText, command, stickyNeighbour,
         selectAll(): boolean {
             const editor = manager.current?.editor;
             if (!current() || !editor || !active || !doc.nodes.has(active)) return false;

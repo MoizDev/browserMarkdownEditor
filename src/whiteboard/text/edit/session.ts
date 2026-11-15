@@ -28,6 +28,8 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     readonly history: HistoryController;
     /** A single-line name (a frame title): Enter commits the edit instead of adding a paragraph. */
     readonly singleLine?: boolean;
+    /** Ends this note's edit and opens its directional neighbour; false where no neighbour flow applies. */
+    stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
     prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
     alive(): boolean;
@@ -294,6 +296,7 @@ export class TextEditSession {
         handleEditKey(event, {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
+            neighbour: direction => this.canEdit() && !!this.services.stickyNeighbour?.(direction),
             adjacent: (offset, direction) => this.words.adjacent(this.services.readText(), offset, direction),
             move: (offset, direction) => this.move(offset, direction),
             collapse: (selection, direction) => {

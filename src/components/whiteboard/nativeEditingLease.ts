@@ -171,6 +171,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                                     ], onClose() { if (textMenu === request) textMenu = null; } };
                                 textMenu = request; openContextMenu(request);
                             },
+                            stickyNeighbour(direction) { return tools?.actualsubcontrollers.select.stickyNeighbour(direction) ?? false; },
                             selectionChanged(node) { textClipboard?.setActive(node !== null); },
                             command(name, selection) {
                                 if (name === 'paste-inverted' || name === 'paste-plain' || name === 'paste-plain-inverted') {

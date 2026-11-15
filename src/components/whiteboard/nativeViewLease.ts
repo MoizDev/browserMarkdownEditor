@@ -1,4 +1,5 @@
 import { getBoardPreferences } from '../../utils/boardPreferences';
+import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -348,7 +349,11 @@ export function createNativeViewLease(options: {
         const sheetId = runtime.selection.getSnapshot().sheet;
         const blobs = new Map<MediaId, Blob>();
         for (const id of board.doc.media.keys()) { const blob = runtime.media.get(id); if (blob) blobs.set(id, blob); }
-        const capturer = createPlatformCapturer({ paneId, owner: token, snapshot: (capture, memory) => {
+        const revision = board.doc.rev;
+        const capturer = createPlatformCapturer({ paneId, owner: token,
+            encodePngTiles: (width, height, render, encodeOptions) => encodeTiledPngInWorker(width, height, render,
+                { session: `view:${token.session}:${revision}`, epoch: token.vaultEpoch, revision }, encodeOptions),
+            snapshot: (capture, memory) => {
             if (!current()) throw new DOMException('Native view ended', 'AbortError');
             const readMedia = async (entry: { readonly id: MediaId; readonly bytes: number }, signal: AbortSignal) => {
                 signal.throwIfAborted();
@@ -404,6 +409,18 @@ export function createNativeViewLease(options: {
                         }
                         return result;
                     },
+                    // One bounded export tile at a time, so a PNG never holds a whole page of PDF tiles plus a full canvas.
+                    async prepareTile(tile, signal) {
+                        let result: 'exact' | 'standin' | 'incomplete' = 'exact';
+                        for (const child of children) {
+                            const part = { ...tile, layers: child.request.layers };
+                            const status = child.snapshot.prepareTile ? await child.snapshot.prepareTile(part, signal)
+                                : await child.snapshot.prepare(part, '2d', signal);
+                            if (status === 'incomplete') return status;
+                            if (status === 'standin') result = status;
+                        }
+                        return result;
+                    },
                     release() {
                         if (releasing) return releasing;
                         controller.abort();
@@ -423,8 +440,10 @@ export function createNativeViewLease(options: {
     };
     const captureRegion = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
         withCapturer(capturer => capturer.captureRegion(rect, maxSide, request));
+    // A PNG streams through bounded tiles: one single canvas for a 6x page plus every PDF tile of that page
+    // did not fit the memory grant (a one-page agent view of a small PDF failed; the whole view fitted).
     const captureBlob = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
-        withCapturer(capturer => capturer.captureBlob(rect, maxSide, request));
+        withCapturer(capturer => capturer.captureExportBlob(rect, maxSide, request));
     const captureLayers = () => board.doc.kind === 'notebook' ? ['notebook-paper', 'board-underlay', 'board-content']
         : board.doc.kind === 'pdf-ink' ? [...(backdrop?.layers.map(layer => layer.id) ?? []), 'board-underlay', 'board-content']
             : ['board-underlay', 'board-content'];

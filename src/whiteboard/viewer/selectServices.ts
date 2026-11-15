@@ -101,15 +101,19 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return had;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
+    // A transform preview draws the moving shape; the committed selection box must not stay behind it.
+    let transformPreview = false;
+    const showTransform = (ops: readonly Op[]) => { transformPreview = true; options.preview.showOps(ops); requestFrame(); };
+    const clearTransform = () => { transformPreview = false; options.preview.clear(); requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         sampleToSurface: physicalSurface, alwaysSnap: options.alwaysSnap ?? (() => false), guides: setGuides,
         invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
-        show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
+        show: ops => showTransform(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
         armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
-        clear: () => options.preview.clear(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
+        clear: () => clearTransform(), resolveAttachment: (point, signal, request) => attachments.resolve(point, signal, request), error: report });
     const stickyHandles = createStickyHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
         invalidate: requestFrame, edit: options.editSticky, error: report });
     const selectionHandles = createSelectionHandles({ runtime, overlay: options.overlay, camera: options.camera, current: mutable, visible: mutable,
@@ -186,16 +190,16 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
                 zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
                 hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
-                show: ops => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                show: ops => showTransform(ops), waitUntilReady: options.preview.waitUntilReady,
                 armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
-                guides: setGuides, clear() { setGuides([]); options.preview.clear(); }, error: report,
+                guides: setGuides, clear() { setGuides([]); clearTransform(); }, error: report,
             });
         },
         onError: report,
     };
     const presentAndCommit = async (ops: readonly Op[], signal: AbortSignal, active: () => boolean, commit: () => void) => {
         if (!ops.length) { commit(); return; }
-        options.preview.showOps(ops);
+        showTransform(ops);
         try {
             await options.preview.waitUntilReady(signal);
             signal.throwIfAborted(); if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
@@ -361,7 +365,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        navigation.present(frame); selectionHandles.write(frame); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview); shapeHandles.write(frame); stickyHandles.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
@@ -433,9 +437,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
             const ids = [...runtime.selection.getSnapshot().selected], host = {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
-                show: (ops: readonly Op[]) => options.preview.showOps(ops), waitUntilReady: options.preview.waitUntilReady,
+                show: (ops: readonly Op[]) => showTransform(ops), waitUntilReady: options.preview.waitUntilReady,
                 armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
-                guides: setGuides, clear: () => { setGuides([]); options.preview.clear(); }, error: report,
+                guides: setGuides, clear: () => { setGuides([]); clearTransform(); }, error: report,
             };
             if (hit.kind === 'rotate') return rotationHandleGesture(sample, modifiers,
                 { runtime, ids, centre: hit.centre, orientation: hit.orientation, current: mutable }, host);

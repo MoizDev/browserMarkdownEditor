@@ -103,9 +103,12 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
                 return { kind: 'rotate', centre: point(box, box.width / 2, box.height / 2), orientation: box.rotation };
             return null;
         },
-        write(frame: ScheduledFrame) {
+        /** `moving`: a transform preview shows the shape elsewhere, so the box at the committed place is hidden. */
+        write(frame: ScheduledFrame, moving = false) {
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
+            if (moving) { if (svg) svg.style.display = 'none'; return; }
+            if (svg) svg.style.display = '';
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);

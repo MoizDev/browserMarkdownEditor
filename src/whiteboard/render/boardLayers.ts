@@ -13,16 +13,13 @@ import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
+import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
 import { DensityController, type DensityMode } from './density';
 import { FilteredInk, LiveNodeUnion } from './nodeSets';
 import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } from './paintPresentation';
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
-/** Cadence of the retry while a memory reservation is refused: a demand refresh runs before each attempt. */
-// A refused reservation is retried at 250 ms, doubling to 2 s while the refusal lasts: a stalled board is a few retries
-// a second, not one per frame.
-const MEMORY_RETRY_MS = 250, MEMORY_RETRY_MAX_MS = 2000;
 /** What the renderer holds for the current revision. `pending` keeps the last coherent presented pixels on screen;
  * `current` needs a presented frame of the requested revision with nothing outstanding; `failed` is a real error. */
 export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
@@ -186,7 +183,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     /** Segment count at which a direct cache was refused; null while direct drawing fits. */
     let deniedDirectSegments: number | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
-    let memoryRetry: ReturnType<typeof setTimeout> | null = null, memoryRetryMs = MEMORY_RETRY_MS;
+    // One back-off for every refused reservation of this layer pair; the dense plan and the direct estimate both consult it.
+    const memoryGate = new MemoryRetryGate();
+    let memoryRetry: ReturnType<typeof setTimeout> | null = null;
     // The first prepare after a hide drops the session bitmaps the returned view cannot draw, before it plans.
     let returnedFromHide = false;
     const replacementAsked = new WeakSet<PaintSource>();
@@ -258,12 +257,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const armMemoryRetry = (waiting: boolean) => {
         if (!waiting || disposed) {
             if (memoryRetry !== null) { clearTimeout(memoryRetry); memoryRetry = null; }
-            memoryRetryMs = MEMORY_RETRY_MS;
+            // Nothing is waiting for memory any more, so the next refusal starts a fresh back-off.
+            if (!waiting) memoryGate.admitted();
             return;
         }
         if (memoryRetry !== null) return;
-        const delay = memoryRetryMs;
-        memoryRetryMs = Math.min(MEMORY_RETRY_MAX_MS, delay * 2);
+        // The retry lands when the refusal's window ends; before any refusal it re-checks at the minimum cadence.
+        const delay = memoryGate.closed() ? Math.max(1, memoryGate.remaining()) : MEMORY_RETRY_MIN_MS;
         memoryRetry = setTimeout(() => { memoryRetry = null; allocatorHost?.invalidate('board-memory-retry'); }, delay);
     };
     const refreshProgress = () => {
@@ -379,7 +379,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } };
             direct = createCanvasPaintAdapter(resources,
                 (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
-            dense = createDensePaintAdapter(resources, host, report);
+            dense = createDensePaintAdapter(resources, host, report, memoryGate);
             const current = () => useDense ? dense! : direct!;
             adapter = {
                 prepare: (view, budget) => {
@@ -477,13 +477,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (!useDense && !reservations.has(frame)) {
                 const bytes = estimate!.bytes;
                 if (bytes) {
+                    // Inside a refusal's back-off the whole-frame estimate is not asked again.
+                    if (memoryGate.closed()) { denied = true; return; }
                     const lease = allocatorHost!.allocator.cpu.reserve(bytes);
                     if (!lease) {
+                        memoryGate.refused();
                         denied = true;
                         if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
                         allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
                         return;
                     }
+                    memoryGate.admitted();
                     reservations.set(frame, [lease]); reserved += lease.bytes;
                 } else reservations.set(frame, []);
             }
@@ -602,7 +606,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         options.frames.bindMemory?.(allocatorHost.allocator.cpu);
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
-                            invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report);
+                            invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
                         gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report);
                     }
                 },

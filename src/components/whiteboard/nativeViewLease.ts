@@ -467,7 +467,9 @@ export function createNativeViewLease(options: {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
                     presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
-                if (presentedFrame === null) presentedView = null;
+                // A null presentation is pane lifecycle (suspend, dispose, hide), not a new mapping: the last frame shown
+                // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
+                if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
@@ -561,6 +563,8 @@ export function createNativeViewLease(options: {
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
                 if (parameters.visible && (!next.visible || (parameters.focused && !next.focused))) recordViewport();
+                // The camera may move while hidden; the frame shown before hiding no longer describes it.
+                if (parameters.visible && !next.visible) presentedView = null;
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
                 images.setVisible(parameters.visible && current());

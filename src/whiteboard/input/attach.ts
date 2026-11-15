@@ -108,7 +108,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let zoomHeld = false
   let temporaryPan = false
   let pendingPrediction: readonly PredictedPoint[] | undefined
-  let suppressMenu = false
+  /** A right (or Ctrl) press in progress: its native menu is the app's to decide, on release, once it is known to be a click (F-INPUT-012). */
+  let rightPressActive = false
   const touchAdmission = new Map<number, boolean>()
   const pendingContinuations = new Set<() => void>()
   const cancelContinuations = (): boolean => {
@@ -126,23 +127,30 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     startFling: services.startFling,
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
-  const secondaryPan: Tool<unknown> = {
+  // Right-button drag pans and never opens a menu on release; a stationary press opens the board menu on release (F-INPUT-012).
+  const secondaryPan: Tool<PointerEvent | undefined> = {
     id: 'secondary-pan', holdsNoGesture: true,
-    begin(sample, modifiers) {
+    begin(sample, modifiers, press) {
       const origin = physicalSurface(sample)
       const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })
       if (!pan) return null
+      rightPressActive = true
       let dragging = false
+      const release = () => { rightPressActive = false }
       const owner: GestureOwner = {
         kind: 'pan', pointerIds: pan.pointerIds,
         update(samples, nextModifiers) {
           for (const point of samples) {
             const surface = physicalSurface(point)
-            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) { dragging = true; suppressMenu = true }
+            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) dragging = true
             if (dragging) pan.update([point], nextModifiers)
           }
         },
-        finish: reason => pan.finish(reason), cancel: reason => pan.cancel(reason),
+        finish(reason) {
+          pan.finish(reason); release()
+          if (reason === 'up' && !dragging && press) services.contextMenu?.(press)
+        },
+        cancel(reason) { pan.cancel(reason); release() },
       }
       return owner
     },
@@ -188,7 +196,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
       }
       if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
-      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
+      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) {
+        // A barrel press while the pen is drawing belongs to that stroke: no pan, no menu (F-INPUT-008).
+        if (activeSource === 'pen' && event.button === 2) return null
+        return { tool: secondaryPan, context: event }
+      }
       if (event.type === 'pointerdown' && event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
@@ -256,7 +268,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
-    contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
+    // The native menu is always replaced. A mouse-originated one (a right or Ctrl press) is decided by the press itself;
+    // only a keyboard-raised one opens the board menu directly.
+    contextMenu: event => { event.preventDefault(); if (!rightPressActive && event.button !== 2 && !event.ctrlKey) services.contextMenu?.(event) },
     error: services.error,
   })
   let cancelKeyboardGesture = () => false

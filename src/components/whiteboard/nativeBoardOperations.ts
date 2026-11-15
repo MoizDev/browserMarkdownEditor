@@ -24,12 +24,14 @@ export function createNativeBoardOperations(options: {
     readonly actionLabel: (id: MainAction) => string;
     readonly actionShortcut: (id: MainAction) => string | undefined;
     readonly notice: (message: string) => void;
+    readonly keptLockedNotice: (count: number) => string;
     readonly onError: (error: unknown) => void;
 }) {
     const { runtime, lease } = options, session = runtime.session;
     if (lease.runtime !== runtime) throw new Error('Board commands need the attached session');
     const edit = createEditCommandOperations({ runtime, current: options.current, canWrite: options.canWrite,
-        frameName: options.frameName, zoom: () => lease.camera.camera.z });
+        frameName: options.frameName, zoom: () => lease.camera.camera.z,
+        keptLocked: count => options.notice(options.keptLockedNotice(count)) });
     const arrange = createArrangementCommandOperations({ runtime, current: options.current, canWrite: options.canWrite });
     const binding = () => lease.editing?.getBinding();
     const attached = (): CommandState => binding() ? yes : no('The board input is not attached');

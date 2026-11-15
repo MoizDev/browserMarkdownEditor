@@ -1,5 +1,6 @@
 import { isLocked, selectedRoots } from '../change/commands';
 import { planDelete } from '../commands/delete';
+import { prepareBoardFrameFit } from '../commands/fitFrame';
 import { createBoardSelectionCommands } from '../commands/selection';
 import { childrenOf, hasOpaqueDescendant } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -20,6 +21,8 @@ export function createEditCommandOperations(options: {
     readonly canWrite: () => boolean;
     readonly frameName: () => string;
     readonly zoom: () => number;
+    /** Reports locked descendants a delete kept in place (R-11), so the user sees what was not removed. */
+    readonly keptLocked?: (count: number) => void;
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
@@ -92,10 +95,11 @@ export function createEditCommandOperations(options: {
             let builder: ReturnType<typeof session.begin> | undefined, open = true;
             try {
                 builder = session.begin('tool', 'Delete');
-                planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
+                const result = planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
                 const applied = builder.commit(); builder = undefined;
                 try { runtime.selection.reconcile(doc); } finally { applied.release(); }
                 session.history.close(); open = false;
+                if (result.kept.length) options.keptLocked?.(result.kept.length);
             } catch (error) {
                 try { builder?.abort(); } finally { if (open) session.history.cancel(); }
                 throw error;
@@ -112,6 +116,21 @@ export function createEditCommandOperations(options: {
         ungroup: operation(() => { const state = selectionState(1, 'structural'); return state.enabled ? selectionState(1, 'ungroup') : state; },
             () => commands.ungroup(selected()).then(() => {})),
         frameSelection: operation(structural, () => commands.frameSelection(selected(), options.frameName()).then(() => {})),
+        // Removing a frame keeps its children; only the container goes (R-11 keeps locked ones in the parent too).
+        removeFrame: operation(() => {
+            const state = selectionState(1, 'structural'); if (!state.enabled) return state;
+            return eligibility().roots.every(node => node.kind === 'frame') ? enabled : disabled('Select frames to remove');
+        }, () => commands.removeFrames(selected()).then(() => {})),
+        fitFrame: operation(() => {
+            const state = selectionState(1, 'structural'); if (!state.enabled) return state;
+            const roots = eligibility().roots;
+            return roots.length === 1 && roots[0].kind === 'frame' ? enabled : disabled('Select one frame to fit');
+        }, async () => {
+            const frame = eligibility().roots[0];
+            if (!frame) throw new Error('Select one frame to fit');
+            const plan = await prepareBoardFrameFit({ runtime, id: frame.id, current: options.current });
+            plan.commit();
+        }),
         toggleLocked: operation(() => selectionState(1, 'lock'), () => commands.toggleLocked(selected())),
         sendBack: operation(structural, () => commands.reorderSelection(selected(), 'back')),
         sendBackward: operation(structural, () => commands.reorderSelection(selected(), 'backward')),

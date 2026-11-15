@@ -177,6 +177,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const labels = localizeBoardChrome((key, values) => translateBoard(language.getSnapshot().table, key, values));
         const commands = createNativeBoardOperations({ runtime, lease, current, canWrite,
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
+            keptLockedNotice: count => translateBoard(language.getSnapshot().table, 'notice.keptLocked', { count }),
             label: labels.commandLabel, shortcut: id => nativeCommandShortcut(id, mac), actionLabel: labels.actionLabel,
             actionShortcut: id => nativeActionShortcut(id, mac), notice: setNotice, onError: report });
         const value = { camera, commands }; setOwned(value);

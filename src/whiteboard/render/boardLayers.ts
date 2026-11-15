@@ -616,9 +616,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         : { gpuBytes: 0, cpuBytes: 0 };
                 },
                 // Dense tiles are paced by preparation: while the requested picture is still building, it takes the frame's share.
+                // Nothing presented at all: the board shows "Loading drawing…" and nothing on screen is waiting on this pane's frame.
                 prepareUrgent() {
-                    const current = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
-                    return !disposed && !ended && useDense && !current;
+                    return !disposed && !ended && presented === null;
                 },
                 needsFrame() {
                     return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending() || !!adapter?.needsFrame()

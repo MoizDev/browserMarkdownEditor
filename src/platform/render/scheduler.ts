@@ -196,6 +196,10 @@ const initialIntervalMs = 16.67;
 const frameGapMs = 250;
 /** Share of the frame target preparation always gets, however long the last presentation took. */
 const PREPARE_FLOOR_FRACTION = 0.25;
+/** Share of the frame interval a pane with nothing presented may prepare with (see `prepareUrgent`). The rest is left for
+ * input and the other panes. The 4 ms frame target is for a board that already shows content; a board showing
+ * "Loading drawing…" has nothing on screen to protect. */
+const URGENT_PREPARE_INTERVAL_SHARE = 0.8;
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -625,7 +629,7 @@ export class FrameScheduler {
             // A pane building its first picture has nothing presented to encode, so that share is its preparation's: a
             // dense first picture was paced at about 1 ms of preparation per frame and took seconds to appear.
             const urgent = work.some(item => this.call(item.entry, () => item.entry.layers.some(layer => layer.prepareUrgent?.() === true)) === true);
-            const prepareMs = urgent ? Math.max(targetMs * PREPARE_FLOOR_FRACTION, targetMs - elapsedInput - this.maintenanceMs)
+            const prepareMs = urgent ? Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs * URGENT_PREPARE_INTERVAL_SHARE - elapsedInput - this.maintenanceMs)
                 : Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
                     targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
             const prepareDeadline = performance.now() + prepareMs;

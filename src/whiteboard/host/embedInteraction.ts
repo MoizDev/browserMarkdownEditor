@@ -29,16 +29,20 @@ export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => 
             && node.laterPaint.some(paint => paint.opacity === 'translucent');
         // ResizeObserver supplies the actual pane box, including while the slot is visibility:hidden.
         // Observing chrome itself would deadlock: inline mode hides chrome with display:none.
-        const usable = eligible && width > 32 && height > 80;
+        // The board's own chrome floats over the pane's top (menu/actions, ~128px) and bottom
+        // (tools, ~72px); the surface lives in the clear band between them, never under a toolbar.
+        const top = 136, bottom = 80;
+        const usable = eligible && width > 32 && height > top + 32 + bottom + 48;
         if (!usable) {
             header.style.display = 'none'; stopEscape?.(); stopEscape = undefined;
             if (key !== '') { key = ''; hosting.setInteractionRect(null); }
             return;
         }
         const aspect = node.rect.width / node.rect.height;
-        const panelWidth = Math.min(640, width - 32, (height - 80) * aspect);
+        const panelWidth = Math.min(640, width - 32, (height - top - 32 - bottom) * aspect);
         const panelHeight = panelWidth / aspect;
-        const rect = { x: (width - panelWidth) / 2, y: 48, width: panelWidth, height: panelHeight };
+        const band = height - top - bottom;
+        const rect = { x: (width - panelWidth) / 2, y: top + Math.max(32, (band - panelHeight + 32) / 2), width: panelWidth, height: panelHeight };
         header.style.display = 'flex'; header.style.left = `${rect.x}px`; header.style.top = `${rect.y - 32}px`;
         header.style.width = `${rect.width}px`;
         stopEscape ??= dismissOnEscape(unload);

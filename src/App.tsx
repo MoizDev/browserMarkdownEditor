@@ -1432,7 +1432,10 @@ export default function App() {
           throw new DOMException('Legacy conversion is no longer authorized', 'AbortError');
         }
         const prior = documentBuffers.get(identity.documentId);
-        sessionReportRef.current(identity.documentId, source);
+        // The converted source IS the disk bytes, re-expressed: install it as the clean baseline.
+        // As an edit it marked the tab dirty and autosaved, converting every legacy file on mere
+        // open; import.md I-2 has the first real change convert (with its .Garbage backup).
+        sessionReportRef.current(identity.documentId, source, { fromDisk: true });
         const accepted = documentBuffers.get(identity.documentId);
         if (!accepted || accepted.revision === prior?.revision || accepted.source !== source) {
           throw new Error('Legacy conversion source was not accepted');
@@ -3294,9 +3297,8 @@ export default function App() {
               sessionReportRef.current(target.id, source);
             }
             if (documentSessions.get(target.id) !== session || documentBuffers.get(target.id)?.revision !== buffer.revision) throw new Error('Recovery revision changed before capture');
-            const capture = session.adapter.journalDelta?.();
-            if (!capture) throw new Error('This session cannot yet capture recovery data');
-            return capture;
+            // undefined: no change past the session's baseline yet, e.g. a legacy board just converted on open.
+            return session.adapter.journalDelta?.();
           } });
       }
     }

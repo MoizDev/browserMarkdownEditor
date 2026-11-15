@@ -9,7 +9,7 @@ export interface JournalCapture {
     mediaRefs: string[];
 }
 export type JournalEvent =
-    | { type: 'change'; documentId: string; vaultId: string; path: string; fingerprint: string; kind: string; revision: number; capture(): JournalCapture }
+    | { type: 'change'; documentId: string; vaultId: string; path: string; fingerprint: string; kind: string; revision: number; capture(): JournalCapture | undefined }
     | { type: 'written'; documentId: string; revision: number; fingerprint: string }
     | { type: 'checkpoint'; documentId?: string }
     | { type: 'retarget'; vaultId: string; from: string; to: string; folder: boolean }
@@ -33,7 +33,7 @@ export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJo
             for (let attempt = 0; attempt < 8; attempt++) {
                 const change = session.change;
                 if (sessions.get(documentId) !== session || !change || change.revision <= session.saved) { settled = true; break; }
-                let data: JournalCapture;
+                let data: JournalCapture | undefined;
                 try { data = change.capture(); }
                 catch (error) {
                     if (sessions.get(documentId) !== session || session.change !== change) continue;
@@ -41,6 +41,8 @@ export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJo
                 }
                 if (sessions.get(documentId) !== session || session.change !== change) continue;
                 if (change.revision <= session.saved) { settled = true; break; }
+                // Nothing past the session's baseline (a just-converted legacy board): no work to lose.
+                if (!data) { settled = true; break; }
                 try {
                     journal.record({ vaultId: change.vaultId, journalId: session.journalId, path: change.path,
                         fingerprint: change.fingerprint, kind: change.kind, revision: change.revision,
@@ -66,7 +68,7 @@ export function createRecoveryFunnel(journal: ReturnType<typeof createRecoveryJo
                 const capture = change.capture;
                 session.change = { ...change, path: move(change.path), capture: () => {
                     const data = capture();
-                    return { ...data, mediaRefs: data.mediaRefs.map(move) };
+                    return data && { ...data, mediaRefs: data.mediaRefs.map(move) };
                 } };
             }
             return journal.retarget(event.vaultId, event.from, event.to, event.folder);

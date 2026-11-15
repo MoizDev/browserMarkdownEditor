@@ -167,7 +167,7 @@
     border-radius: 5px;
     background: var(--background-primary-alt);
     color: var(--text-normal);
-    font: inherit;
+    font: -webkit-small-control;
 }
 
 .board-chrome-select option {

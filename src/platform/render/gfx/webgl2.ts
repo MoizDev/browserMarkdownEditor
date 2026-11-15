@@ -2059,7 +2059,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             case 'texture': {
                 const texture = object as NativeTexture;
                 if (!texture.reference) {
-                    const coverage = this.#coverageTextures.get(texture.texture);
+                    // The coverage map exists only in benchmark builds; reading it elsewhere throws, and did on
+                    // every texture deletion, so no ordinary build ever brought a board up on the GPU.
+                    const coverage = __BME_BENCH__ ? this.#coverageTextures.get(texture.texture) : undefined;
                     if (coverage) {
                         this.#coverageTextures.delete(texture.texture);
                         this.#arena.release(coverage);

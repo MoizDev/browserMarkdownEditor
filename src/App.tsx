@@ -3645,7 +3645,9 @@ export default function App() {
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
         if (outcome === 'failed' || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || getView(path)?.hasPendingEdits?.() ||
-            outcome === 'skipped' && (now.dirty || documentBuffers.isDirty(now.id))) {
+            // Unsaved bytes only: now.dirty also counts native session journalling, which
+            // refused every trash/close of an annotated PDF whose ink had already been written.
+            outcome === 'skipped' && documentBuffers.isDirty(now.id)) {
           if (outcome === 'skipped' && !refusal) notifyRef.current('These annotations have not been saved. Keep this PDF open and resolve its notice before closing it.');
           return false;
         }

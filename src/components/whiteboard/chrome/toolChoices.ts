@@ -6,6 +6,7 @@ export type ToolLabel =
     | 'star' | 'cloud' | 'heart' | 'xBox' | 'checkBox' | 'arrowLeft' | 'arrowUp'
     | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame';
 
+/** Every figure, in the order the more-tools popover lists them. Rectangle has its own button on the bar. */
 const figures: readonly [ToolLabel, string][] = [
     ['rectangle', 'rectangle'], ['ellipse', 'ellipse'], ['triangle', 'triangle'],
     ['diamond', 'diamond'], ['hexagon', 'hexagon'], ['oval', 'oval'], ['rhombus', 'rhombus'],
@@ -15,7 +16,9 @@ const figures: readonly [ToolLabel, string][] = [
 ];
 
 export interface ToolChoices {
+    /** The bar's nine tools, in order; the chevron that opens `more` follows them. */
     readonly primary: readonly ToolChoice[];
+    /** Every tool not on the bar: each other figure, line, highlighter, laser and frame. */
     readonly more: readonly ToolChoice[];
 }
 
@@ -23,23 +26,21 @@ export interface ToolChoices {
 export function toolChoices(
     label: (key: ToolLabel) => string,
     shortcut: (id: string, figure?: string) => string | undefined,
-    lastFigure: string,
 ): ToolChoices {
     const choice = (key: ToolLabel, id: string, figure?: string): ToolChoice => ({
         id, figure, label: label(key), shortcut: shortcut(id, figure),
     });
     const figureChoices = figures.map(([key, figure]) => choice(key, 'figure', figure));
-    const lastChoice = figureChoices.find(item => item.figure === lastFigure) ?? figureChoices[0];
+    const rectangle = figureChoices.find(item => item.figure === 'rectangle') ?? figureChoices[0];
     return {
         primary: [
             choice('select', 'select'), choice('hand', 'hand'), choice('draw', 'pen'),
             choice('eraser', 'eraser'), choice('arrow', 'connector'), choice('text', 'text'),
-            choice('note', 'sticky'), choice('media', 'media'), lastChoice,
+            choice('note', 'sticky'), choice('media', 'media'), rectangle,
         ],
         more: [
-            ...figureChoices, choice('line', 'polyline'), choice('highlight', 'highlighter'),
+            ...figureChoices.filter(item => item !== rectangle), choice('line', 'polyline'), choice('highlight', 'highlighter'),
             choice('laser', 'laser'), choice('frame', 'frame'),
-            choice('text', 'text'), choice('note', 'sticky'), choice('media', 'media'),
         ],
     };
 }

@@ -412,6 +412,8 @@ navigate; with the minimap focused, arrow keys move a quarter viewport (a full
 viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
 An empty board has no invented overview.
 
+The tool bar sits at the bottom centre: select, hand, pen, eraser, arrow, text, sticky note, image and rectangle, in that order. The chevron at its end opens the rest: the other shapes, line, highlighter, laser and frame. While one of those is the active tool, the chevron shows it filled in blue.
+
 A native board is editable when its file can be written and the emergency
 read-only switch is off. Then the toolbar's pen, highlighter, eraser, shapes,
 text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+C**

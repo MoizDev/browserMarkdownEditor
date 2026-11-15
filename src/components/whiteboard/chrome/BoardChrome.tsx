@@ -11,7 +11,6 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
     readonly selectedTool: ToolChoice;
-    readonly lastFigure: string;
     readonly toolLabel: (key: ToolLabel) => string;
     readonly toolShortcut: (id: string, figure?: string) => string | undefined;
     readonly toolsLabel: string;
@@ -29,9 +28,9 @@ export interface BoardChromeProps extends BoardHeaderProps {
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
-export function BoardChrome({ locale, direction, selectedTool, lastFigure, toolLabel, toolShortcut, toolsLabel, moreLabel,
+export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
-    const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
+    const choices = toolChoices(toolLabel, toolShortcut);
     return <>
         {debug && <DebugOverlay {...debug} />}
         {!focusMode && <div className="board-chrome-overlay" lang={locale} dir={direction}>

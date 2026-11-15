@@ -2,9 +2,21 @@ import type { Op, Transaction } from '../../change/ops';
 import type { BoardDoc } from '../../model/doc';
 import type { NodeId } from '../../model/ids';
 import type { Node } from '../../model/nodes';
+import type { FigureNode } from '../../model/nodes';
 import type { TextLayoutEngine, TextLayoutRequest } from '../paint';
 import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../richText';
 import type { TextEditTransactionPreparer } from './bindingTypes';
+import { editableTextRequest } from './request';
+
+/** The growY a figure's label needs at the figure's current size and width, measured exactly as a text edit measures it.
+ * Undefined for an empty label: nothing has to grow, so the stored value stays. Used by style changes, which never edit text. */
+export function figureLabelGrowY(measure: (request: TextLayoutRequest) => { readonly requiredHeight: number },
+    fontEpoch: number, node: Readonly<FigureNode>): number | undefined {
+    const label = node.label ?? EMPTY_RICH_TEXT;
+    if (!label.blocks.some(block => block.runs.some(run => run.text.length > 0))) return undefined;
+    const request = editableTextRequest(node, label, { revision: `style:${node.id}:${node.size}:${node.width}:${node.labelScale}`, fontEpoch, zoom: 1 });
+    return Math.max(0, measure(request).requiredHeight + node.width - node.h);
+}
 
 /** Compute stored text bounds as part of the triggering edit, never on font arrival. */
 export function createTextEditGrowth(doc: BoardDoc, id: NodeId, engine: TextLayoutEngine,

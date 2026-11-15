@@ -1,6 +1,7 @@
 import type { Rgba } from '../../platform/types';
 import { BoardLanguageState, translateBoard } from '../chrome/language';
 import { penPanelView } from '../chrome/penPanel';
+import { figureLabelGrowY } from '../text/edit/growth';
 import { clampPenScale } from '../chrome/penWidth';
 import { BoardStyleCommands } from '../chrome/styleCommands';
 import type { ToolState } from '../input/gesture';
@@ -24,7 +25,8 @@ export interface BoardStyleControlsOptions {
 /** This view store borrows the session, tool and selection; none is recreated by the panel. */
 export function createBoardStyleControls(options: BoardStyleControlsOptions) {
     const { runtime, tool, language } = options, session = runtime.session;
-    const commands = new BoardStyleCommands(session, () => runtime.selection.getSnapshot().selected, () => tool.getSnapshot().active.id);
+    const commands = new BoardStyleCommands(session, () => runtime.selection.getSnapshot().selected, () => tool.getSnapshot().active.id,
+        node => figureLabelGrowY(request => runtime.render.text.layout.measure(request), runtime.render.text.fonts.epoch, node));
     const listeners = new Set<() => void>();
     let disposed = false, cached: ReturnType<typeof penPanelView> | undefined;
     const refresh = () => {

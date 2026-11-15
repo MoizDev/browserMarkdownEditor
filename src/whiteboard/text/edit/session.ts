@@ -26,6 +26,8 @@ export interface EditLayout {
 }
 export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
     readonly history: HistoryController;
+    /** A single-line name (a frame title): Enter commits the edit instead of adding a paragraph. */
+    readonly singleLine?: boolean;
     prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
     alive(): boolean;
@@ -237,6 +239,7 @@ export class TextEditSession {
     /** The keyboard and Core's text menu use the same controller and transaction path. */
     command(name: string): boolean {
         if (!this.canEdit()) return false;
+        if (name === 'enter' && this.services.singleLine) return this.command('finish');
         if (name === 'select-all') return this.selectAll();
         const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
             strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };

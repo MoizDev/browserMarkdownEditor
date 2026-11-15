@@ -113,6 +113,7 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         return false;
     }
     const services: EditSessionServices = {
+        singleLine: key === 'name',
         ...view,
         history: session.history,
         ...adapter,

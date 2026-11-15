@@ -19,6 +19,8 @@ export interface ConnectorControlOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
+    /** World distance within which a dragged label snaps to the path centre (a screen distance at the current zoom). */
+    readonly labelSnapWorld?: number;
 }
 export interface ConnectorControlPreview {
     readonly ops: readonly NodeSetOp[];
@@ -27,13 +29,13 @@ export interface ConnectorControlPreview {
     release(): void;
 }
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
-export function connectorLabelFraction(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2): number {
-    return projectConnectorLabel(node, geometry, point).fraction;
+export function connectorLabelFraction(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2, snapWorld?: number): number {
+    return projectConnectorLabel(node, geometry, point, snapWorld).fraction;
 }
-function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, control: ConnectorControl, point: Vec2): NodeSetOp {
+function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, control: ConnectorControl, point: Vec2, snapWorld?: number): NodeSetOp {
     const a = geometry.start.aimWorld, b = geometry.end.aimWorld, dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
     if (![a.x, a.y, b.x, b.y, dx, dy, length].every(Number.isFinite)) throw new RangeError('Connector control geometry overflows');
-    if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: connectorLabelFraction(node, geometry, point) };
+    if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: connectorLabelFraction(node, geometry, point, snapWorld) };
     if (control === 'elbow') {
         // Default, calibration cut by owner: the dominant route axis controls the elbow midpoint.
         const value = Math.abs(dx) >= Math.abs(dy) ? (dx ? (point.x - a.x) / dx : 0.5) : (dy ? (point.y - a.y) / dy : 0.5);
@@ -63,7 +65,7 @@ export async function prepareConnectorControl(options: ConnectorControlOptions):
         check(); epoch = runtime.render.text.fonts.epoch;
         const prepared = await runtime.render.prepareForPick(node, signal, doc); check();
         if (!prepared.connector) throw new Error('Connector geometry is unavailable');
-        const control = controlValue(node, prepared.connector, options.control, options.point);
+        const control = controlValue(node, prepared.connector, options.control, options.point, options.labelSnapWorld);
         const ops: NodeSetOp[] = Object.is(Reflect.get(node, control.key), control.value) ? [] : [control];
         if (!ops.length) {
             const release = () => { if (!released) { released = true; source.release(); } };

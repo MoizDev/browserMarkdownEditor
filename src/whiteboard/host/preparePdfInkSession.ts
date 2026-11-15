@@ -10,6 +10,8 @@ import { MEDIA_MIMES, type MediaId } from '../model/media';
 import { createPdfInkRebind, type PdfInkRebindSnapshot } from './pdfInkRebind';
 import { prepareNativePdfRuntime } from './prepareNativePdfRuntime';
 import type { PdfInkSourceLease } from './pdfInkSourceOwner';
+import { pdfInkSourceSlot as sourceSlot } from './pdfInkSourceState';
+export { getPdfInkSourceState } from './pdfInkSourceState';
 
 export interface PdfInkSourceState {
     retainSource(): PdfInkSourceLease;
@@ -38,13 +40,7 @@ export interface PreparePdfInkSessionOptions {
     onHistoryLimit(): void;
 }
 
-const sourceSlot = Symbol('native PDF ink source state');
 const stale = () => new DOMException('PDF ink session ended', 'AbortError');
-
-/** A view borrows the state of the App-owned document, never a second PDF source. */
-export function getPdfInkSourceState(documentId: string): PdfInkSourceState | undefined {
-    return getSessionIdentity(documentId)?.getSlot<PdfInkSourceState>(sourceSlot);
-}
 
 /** Preparation is pane-cancellable until take; the accepted source then follows the document owner. */
 export async function preparePdfInkSession(options: PreparePdfInkSessionOptions) {

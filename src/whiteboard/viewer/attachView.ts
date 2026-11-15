@@ -6,6 +6,8 @@ import type { NodeId } from '../model/ids';
 import type { PaintFrame } from '../render/paintStream';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
 import type { DensityMode } from '../render/density';
@@ -43,6 +45,7 @@ export const attachView: AttachView = options => {
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
+    let embedProducer: NativeEmbedPresentationProducer | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
     // Density mode and the index's candidate count drive which frame kind is requested; both are read
     // by the layers, which never own a frame request of their own.
@@ -138,8 +141,14 @@ export const attachView: AttachView = options => {
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
             interaction?.presented?.(revision, token, frame, context);
+            embedProducer?.presented(revision, token, frame, context);
         },
     });
+    // The producer reserves and releases through the layer host's canonical CPU allocator, which exists only once a host has drawn.
+    const embedMemory: MemoryAllocator = {
+        reserve: bytes => layers.memory()?.reserve(bytes) ?? null,
+        release: lease => layers.memory()?.release(lease),
+    };
     const accessibility = createViewerAccessibility({ token: options.token, session: options.session, selection: runtime.selection, scene,
         visibleIds: () => options.session.doc.bySheet.get(sheet()) ?? [],
         label: node => {
@@ -262,6 +271,7 @@ export const attachView: AttachView = options => {
     const dispose = () => {
         if (disposed) return;
         clearPreview?.(); clearPreview = null;
+        const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;
         if (oldEmbed) { oldEmbed.setVisible(false); void oldEmbed.dispose().catch(report); }
         disposed = true; paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
@@ -294,10 +304,15 @@ export const attachView: AttachView = options => {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
             const old = embedPort; embedPort = port;
+            // One port, one producer: the producer presents only through the same port the per-node Load/Unload uses.
+            const oldProducer = embedProducer;
+            embedProducer = port ? createNativeEmbedPresentationProducer({ port, images, memory: embedMemory, onError: report }) : null;
+            oldProducer?.dispose();
             if (old) { old.setVisible(false); void old.dispose().catch(report); }
             port?.setVisible(view.visible);
             publish(); layers.invalidate('board-embed-port');
         },
+        presentationAccepted(presentation) { embedProducer?.onPresentation(presentation); },
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

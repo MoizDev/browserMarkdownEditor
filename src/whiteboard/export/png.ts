@@ -23,6 +23,12 @@ export function checkPngSize(width: number, height: number, clipboard = false): 
   return { width, height }
 }
 
+/** The largest scale at which checkPngSize accepts these world bounds, shaved a hair for the rounding up to whole pixels. */
+export function pngScaleLimit(world: Readonly<{ width: number; height: number }>, clipboard = false): number {
+  const side = clipboard ? 8192 : 16384
+  return Math.min(side / world.width, side / world.height, Math.sqrt(2 ** 28 / world.width / world.height)) * (1 - 1e-9)
+}
+
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
   for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ (0xedb88320 & -(value & 1))
   return value >>> 0

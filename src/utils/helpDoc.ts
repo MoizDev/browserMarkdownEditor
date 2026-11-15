@@ -411,7 +411,18 @@ exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
 artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected. With exactly one picture selected, the same menu offers
+nothing is selected.
+
+The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and
+**JSON**. **PDF** saves the whole sheet as one PDF; a notebook saves every page.
+**JSON** saves the sheet's native records, with media referenced by hash rather
+than bundled. A selection's **Export as** menu offers **JSON** for just the
+selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open
+board: a notebook prints every page, and a whiteboard prints the drawn content of
+its sheet. A board with a PDF backdrop cannot be printed or exported to PDF from
+here yet; use the PDF pane's own print for that file.
+
+With exactly one picture selected, the same menu offers
 **Replace picture…** (the new image keeps the old one's centre and longer side;
 a PDF annotation page does not offer it yet), **Crop picture** with six presets,
 and **Invert picture**. With one link card selected it offers **Fetch link
@@ -461,7 +472,7 @@ It leaves the source, save state, undo history and copied text intact. PDF and E
 ### PDFs
 PDFs open **inside the app** in their own pane. **Original PDF** shows the original page layout, **Read extracted text** is an optional text view, and **Annotate** lets you draw on eligible PDFs. Returning to Original after saving shows the actual saved pages with ink; Annotate rebuilds them from the embedded pristine source and editable marks, not from an already-stamped copy.
 
-Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus), choose **Prepare PDF** to save pending annotations, then **Open PDF** to open the exact saved file in a new browser tab. Print from the browser’s PDF viewer there. A blocked pop-up or changed file is reported; resolve the notice or allow pop-ups and try again. An encrypted PDF may ask for its password again in that viewer. To print a notebook, export it to PDF first.
+Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus), choose **Prepare PDF** to save pending annotations, then **Open PDF** to open the exact saved file in a new browser tab. Print from the browser’s PDF viewer there. A blocked pop-up or changed file is reported; resolve the notice or allow pop-ups and try again. An encrypted PDF may ask for its password again in that viewer. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` while it is focused on the board, or export it to PDF first.
 
 The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
 

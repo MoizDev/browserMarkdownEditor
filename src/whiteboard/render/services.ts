@@ -303,7 +303,8 @@ export function createBoardRenderServices(options: {
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
-                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined });
+                        { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
+                            tiles: { deviceScale: request.deviceScale, world: request.world } });
                 return withAllocation(paint, geometry, context);
             },
         };

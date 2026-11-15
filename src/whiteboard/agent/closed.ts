@@ -98,5 +98,5 @@ export async function readClosedShapePage(source: ByteSource, options: ClosedSha
             guard();
             return listAgentSheets(read.board.doc, projection.geometry, options.query, options.diskRevision);
         } finally { projection.dispose(); }
-    } finally { read.board.dispose(); }
+    } finally { await read.board.dispose(); }
 }

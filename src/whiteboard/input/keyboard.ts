@@ -57,6 +57,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
   { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },
+  { id: 'file.print', group: 'edit', label: 'Print', key: 'p', accel: true },
   { id: 'arrange.back', group: 'edit', label: 'Send to back', key: '[' },
   { id: 'arrange.backward', group: 'edit', label: 'Send backward', key: '[', alt: true },
   { id: 'arrange.forward', group: 'edit', label: 'Bring forward', key: ']', alt: true },

@@ -1,4 +1,4 @@
-import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
+import type { PlatformLayerDefinition, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
@@ -75,6 +75,8 @@ export interface ViewerEngine {
     cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     connectEmbeds(port: EmbedPresentationPort | null): void;
+    /** The platform's acceptance of a presented frame; the embed producer builds only after this matches its draw. */
+    presentationAccepted(presentation: PlatformPresentation | null): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,

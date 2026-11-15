@@ -1,0 +1,443 @@
+{
+  "snapshot": "20261101T000000Z",
+  "repositories": [
+    "debian/bookworm/main",
+    "debian-security/bookworm-security/main"
+  ],
+  "bootstrapCaSha256": "a386d6cea5dc81a00217d48873a56c843511e05c60c203465aab85df34565bd5",
+  "requested": [
+    "ca-certificates=20250419~deb12u2",
+    "curl=7.88.1-10+deb12u15",
+    "git=1:2.39.5-0+deb12u3",
+    "python3=3.11.2-1+b1",
+    "xz-utils=5.4.1-1+deb12u2",
+    "time=1.9-0.2",
+    "make=4.3-4.1",
+    "patch=2.7.6-7",
+    "unzip=6.0-28+deb12u1",
+    "file=1:5.44-3"
+  ],
+  "metadata": [
+    {
+      "file": "snapshot.debian.org_archive_debian-security_20261101T000000Z_dists_bookworm-security_InRelease",
+      "sha256": "a6e07d793eab50af0fcef4a26aca8063e88a602f3c85727fc412ebc4fe128397",
+      "bytes": 34770
+    },
+    {
+      "file": "snapshot.debian.org_archive_debian_20261101T000000Z_dists_bookworm_InRelease",
+      "sha256": "77737fa4b34f2693e982cc9ee35736816c35a7778fc2d326cc1bbf5b301fe1aa",
+      "bytes": 151075
+    }
+  ],
+  "packages": [
+    {
+      "file": "ca-certificates_20250419~deb12u2_all.deb",
+      "bytes": 160948,
+      "sha256": "b9f76b5271a7ac373fd5e7e1b5b826a71ddd702b42a0d104955ecb1acfffc94b",
+      "Package": "ca-certificates",
+      "Version": "20250419~deb12u2",
+      "Architecture": "all"
+    },
+    {
+      "file": "curl_7.88.1-10+deb12u15_arm64.deb",
+      "bytes": 309524,
+      "sha256": "880d20cb636d2c36b2f57c58ab284b442a1680365b488d3e696c147c4d84ef25",
+      "Package": "curl",
+      "Version": "7.88.1-10+deb12u15",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "file_1%3a5.44-3_arm64.deb",
+      "bytes": 42476,
+      "sha256": "de027231666482a8ae108f7f9c64711e08382b23476bb1f67979f9e3c39905c6",
+      "Package": "file",
+      "Version": "1:5.44-3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "git-man_1%3a2.39.5-0+deb12u3_all.deb",
+      "bytes": 2053236,
+      "sha256": "904dbd8dbc3db34c6780fb0abfe35816d4a90a490126ef0a055a77a0c5dcab82",
+      "Package": "git-man",
+      "Version": "1:2.39.5-0+deb12u3",
+      "Architecture": "all"
+    },
+    {
+      "file": "git_1%3a2.39.5-0+deb12u3_arm64.deb",
+      "bytes": 7152820,
+      "sha256": "435176549a9f5c8bbadaa126b64a036b38ea34ad9f3eb128dc40b8407a5b5620",
+      "Package": "git",
+      "Version": "1:2.39.5-0+deb12u3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libbrotli1_1.0.9-2+deb12u1_arm64.deb",
+      "bytes": 266740,
+      "sha256": "131e62b9708da9aea88be990d275cb5c7b119e40beccf174c23ac8dc7246bb0f",
+      "Package": "libbrotli1",
+      "Version": "1.0.9-2+deb12u1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libcurl3-gnutls_7.88.1-10+deb12u15_arm64.deb",
+      "bytes": 362416,
+      "sha256": "053f0518249c0be7f476b73b28d9c9922ea5597d744e86736f89ced17e4a1ec1",
+      "Package": "libcurl3-gnutls",
+      "Version": "7.88.1-10+deb12u15",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libcurl4_7.88.1-10+deb12u15_arm64.deb",
+      "bytes": 367496,
+      "sha256": "e54bdd269c960b643ded903c3dbde36fe5d4d5f5b6389b47a0344d4a711cf70a",
+      "Package": "libcurl4",
+      "Version": "7.88.1-10+deb12u15",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "liberror-perl_0.17029-2_all.deb",
+      "bytes": 29032,
+      "sha256": "5a466348531b9c38c8e5ccb18c231f27a98b9fdab61b37ea22592553de5d2ced",
+      "Package": "liberror-perl",
+      "Version": "0.17029-2",
+      "Architecture": "all"
+    },
+    {
+      "file": "libexpat1_2.5.0-1+deb12u5_arm64.deb",
+      "bytes": 91748,
+      "sha256": "4a733e7f636de4a4483e3e5d7b02dc8e788b115361a04dd58df89461ce2ae65a",
+      "Package": "libexpat1",
+      "Version": "2.5.0-1+deb12u5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libgdbm-compat4_1.23-3_arm64.deb",
+      "bytes": 47996,
+      "sha256": "acc13a12acbf3b17dbacc77e3c22c6c273a552150cd50fdc9bd70cdb5169af73",
+      "Package": "libgdbm-compat4",
+      "Version": "1.23-3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libgdbm6_1.23-3_arm64.deb",
+      "bytes": 70948,
+      "sha256": "3c704feaf89c5f2709a76b84126ac8affe4ddff69dc0b91af0ca9910c7e75714",
+      "Package": "libgdbm6",
+      "Version": "1.23-3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libgssapi-krb5-2_1.20.1-2+deb12u5_arm64.deb",
+      "bytes": 124152,
+      "sha256": "a00678963f692a929312968f19b77a61a8fc0011690d7dc909a8a2c4810fc7b3",
+      "Package": "libgssapi-krb5-2",
+      "Version": "1.20.1-2+deb12u5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libk5crypto3_1.20.1-2+deb12u5_arm64.deb",
+      "bytes": 79880,
+      "sha256": "8ae2c31cde0b3e6f80c573a495b0f90bf6d9efb4455d900728278bb54d9092e5",
+      "Package": "libk5crypto3",
+      "Version": "1.20.1-2+deb12u5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libkeyutils1_1.6.3-2_arm64.deb",
+      "bytes": 8844,
+      "sha256": "aac46cb6faec4e737502b3c2290b7b02f8ba04e8accd5af7fd07934df0c867b1",
+      "Package": "libkeyutils1",
+      "Version": "1.6.3-2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libkrb5-3_1.20.1-2+deb12u5_arm64.deb",
+      "bytes": 315528,
+      "sha256": "c3c7227f5db903a7a8b8936d47d1d79643edcda36365c4c992e1a96bcc2d4c7e",
+      "Package": "libkrb5-3",
+      "Version": "1.20.1-2+deb12u5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libkrb5support0_1.20.1-2+deb12u5_arm64.deb",
+      "bytes": 32592,
+      "sha256": "3043fd4a54b945a1b503170749527f825dcfc7add2f8bf5abb4a329deeb48f4a",
+      "Package": "libkrb5support0",
+      "Version": "1.20.1-2+deb12u5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libldap-2.5-0_2.5.13+dfsg-5_arm64.deb",
+      "bytes": 170832,
+      "sha256": "71e6ae4291a20db999c62cd0a4f30a92a799c46b99205d5e787d4acd7c343b91",
+      "Package": "libldap-2.5-0",
+      "Version": "2.5.13+dfsg-5",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libmagic-mgc_1%3a5.44-3_arm64.deb",
+      "bytes": 304888,
+      "sha256": "ff57ca94d3c1231b16d10587e60a2cf6c53b53249879235c59fa0b19e832974c",
+      "Package": "libmagic-mgc",
+      "Version": "1:5.44-3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libmagic1_1%3a5.44-3_arm64.deb",
+      "bytes": 98536,
+      "sha256": "2fbaa1e2efdb80cf20cb13b2c523e82602c117cf5ec922c6d1d4ce6e18440052",
+      "Package": "libmagic1",
+      "Version": "1:5.44-3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libncursesw6_6.4-4_arm64.deb",
+      "bytes": 121688,
+      "sha256": "cf32cb6751718872c6def448b82211eec494f688e2f1a3e6c71bfdaf6b0722c5",
+      "Package": "libncursesw6",
+      "Version": "6.4-4",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libnghttp2-14_1.52.0-1+deb12u3_arm64.deb",
+      "bytes": 68976,
+      "sha256": "7767833033739adb2e2e374f2c4b36134d9f36fcdfe8e2aab7029bf850146da9",
+      "Package": "libnghttp2-14",
+      "Version": "1.52.0-1+deb12u3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libnsl2_1.3.0-2_arm64.deb",
+      "bytes": 36908,
+      "sha256": "8f9ba58b219779b43c4ccc78c79b0a23f721fc96323c202abb31e02f942104b3",
+      "Package": "libnsl2",
+      "Version": "1.3.0-2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libperl5.36_5.36.0-7+deb12u4_arm64.deb",
+      "bytes": 4001524,
+      "sha256": "35013c8ce9c319abd608d27719d71ff5d2090002e5a424708df26c11d18bffb3",
+      "Package": "libperl5.36",
+      "Version": "5.36.0-7+deb12u4",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libpsl5_0.21.2-1_arm64.deb",
+      "bytes": 58600,
+      "sha256": "90a68e4a6d9eb95abee32595762dbf67974f13c158e4ce4a05c7c2b54440db73",
+      "Package": "libpsl5",
+      "Version": "0.21.2-1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libpython3-stdlib_3.11.2-1+b1_arm64.deb",
+      "bytes": 9296,
+      "sha256": "3ceea13a9d2eff6e850d47b4f03ebd0162acb2aa5646a84ccbe77783be104302",
+      "Package": "libpython3-stdlib",
+      "Version": "3.11.2-1+b1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libpython3.11-minimal_3.11.2-6+deb12u9_arm64.deb",
+      "bytes": 813684,
+      "sha256": "dd9847d2f77c5a924b1d3dd953b81f161db9374c94d03b9216191925350928c3",
+      "Package": "libpython3.11-minimal",
+      "Version": "3.11.2-6+deb12u9",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libpython3.11-stdlib_3.11.2-6+deb12u9_arm64.deb",
+      "bytes": 1750132,
+      "sha256": "9937cbe3f647aa89a590fec647438ce02098c113d1c6f70e4cb1230c368d42a4",
+      "Package": "libpython3.11-stdlib",
+      "Version": "3.11.2-6+deb12u9",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libreadline8_8.2-1.3_arm64.deb",
+      "bytes": 154776,
+      "sha256": "f3b162b7c1e05430607e792ebdbfc417cbd1f1d32cf83664133ae63d811a72d2",
+      "Package": "libreadline8",
+      "Version": "8.2-1.3",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "librtmp1_2.4+20151223.gitfa8646d.1-2+b2_arm64.deb",
+      "bytes": 59364,
+      "sha256": "a3a1a6e4b02bcd3254e932b1972ed744082fd7dd5cc1545eec3dd3d539ce6c93",
+      "Package": "librtmp1",
+      "Version": "2.4+20151223.gitfa8646d.1-2+b2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libsasl2-2_2.1.28+dfsg-10+deb12u1_arm64.deb",
+      "bytes": 58272,
+      "sha256": "b3686e0815d99e5ca6ce9234e486ca0ecd373d491e34457c3b9cba5c6dbba287",
+      "Package": "libsasl2-2",
+      "Version": "2.1.28+dfsg-10+deb12u1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libsasl2-modules-db_2.1.28+dfsg-10+deb12u1_arm64.deb",
+      "bytes": 20992,
+      "sha256": "37d5834fa07d30275b75dc1ec2ccf43f9ce55d0885bb846db7cf04c98da30ae5",
+      "Package": "libsasl2-modules-db",
+      "Version": "2.1.28+dfsg-10+deb12u1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libsqlite3-0_3.40.1-2+deb12u2_arm64.deb",
+      "bytes": 785596,
+      "sha256": "a690f7f2aa6435bd1fd7cbbd2216acb9acbb8c48c9721f2c195766375439eb13",
+      "Package": "libsqlite3-0",
+      "Version": "3.40.1-2+deb12u2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libssh2-1_1.10.0-3+deb12u1_arm64.deb",
+      "bytes": 169420,
+      "sha256": "72db6dc64cb0dd4c8a6b0f1b998063338956a7b3eb8a27125beb27bee0d7cc46",
+      "Package": "libssh2-1",
+      "Version": "1.10.0-3+deb12u1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libssl3_3.0.22-1~deb12u2_arm64.deb",
+      "bytes": 1829128,
+      "sha256": "3d04ecd8d0f57fed50d205abaeedfcc84c1960073ea085719c00add44b0ccd7f",
+      "Package": "libssl3",
+      "Version": "3.0.22-1~deb12u2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "libtirpc-common_1.3.3+ds-1_all.deb",
+      "bytes": 14048,
+      "sha256": "3e3ef129b4bf61513144236e15e1b4ec57fa5ae3dc8a72137abdbefb7a63af85",
+      "Package": "libtirpc-common",
+      "Version": "1.3.3+ds-1",
+      "Architecture": "all"
+    },
+    {
+      "file": "libtirpc3_1.3.3+ds-1_arm64.deb",
+      "bytes": 80940,
+      "sha256": "deaf9ea54f74cab6690b4bc0b427f05cbe62cc073580d84f5f18a8d9e2ece401",
+      "Package": "libtirpc3",
+      "Version": "1.3.3+ds-1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "make_4.3-4.1_arm64.deb",
+      "bytes": 391184,
+      "sha256": "7ef5f5c0e3f909c811f941598107119af0a0554641b5cc590f584cea6a55d204",
+      "Package": "make",
+      "Version": "4.3-4.1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "media-types_10.0.0_all.deb",
+      "bytes": 26136,
+      "sha256": "aaa46dcb3b39948ae2e0fdb72cfcb2f48c0b59f19785a3da8045c05eb19955dd",
+      "Package": "media-types",
+      "Version": "10.0.0",
+      "Architecture": "all"
+    },
+    {
+      "file": "openssl_3.0.22-1~deb12u2_arm64.deb",
+      "bytes": 1409768,
+      "sha256": "416af916dd59f08e996ec887acf3d267039169ef40ee4d38b44829b5ec3e92a4",
+      "Package": "openssl",
+      "Version": "3.0.22-1~deb12u2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "patch_2.7.6-7_arm64.deb",
+      "bytes": 120712,
+      "sha256": "11e5e56f3cb4b306c9589bb37f9c701bf23bb37c410bac12e6a50d6461e71bd6",
+      "Package": "patch",
+      "Version": "2.7.6-7",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "perl-modules-5.36_5.36.0-7+deb12u4_all.deb",
+      "bytes": 2817356,
+      "sha256": "3ed38ffa8320e9bf7597cefa01b6a6ace4a08ccc77cdfd15ef7d8b711dea7166",
+      "Package": "perl-modules-5.36",
+      "Version": "5.36.0-7+deb12u4",
+      "Architecture": "all"
+    },
+    {
+      "file": "perl_5.36.0-7+deb12u4_arm64.deb",
+      "bytes": 239392,
+      "sha256": "b20b172eff2f1edef5c29ebb9fec09ceec5b32ca62aeb9b3700e7c71a58b5071",
+      "Package": "perl",
+      "Version": "5.36.0-7+deb12u4",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "python3-minimal_3.11.2-1+b1_arm64.deb",
+      "bytes": 26296,
+      "sha256": "f01c94963ace8a6fec59300427c95fc4ac204d752567dd2e4b36ee930755110f",
+      "Package": "python3-minimal",
+      "Version": "3.11.2-1+b1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "python3.11-minimal_3.11.2-6+deb12u9_arm64.deb",
+      "bytes": 1861676,
+      "sha256": "617855dbf3299e03873926c75d61feaf3d36924586aecc1951a0b965a95bc694",
+      "Package": "python3.11-minimal",
+      "Version": "3.11.2-6+deb12u9",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "python3.11_3.11.2-6+deb12u9_arm64.deb",
+      "bytes": 575032,
+      "sha256": "f8d1726c2f5c61b42dbf7652cd9c01da23e55029e3c384a9f1802334fd964091",
+      "Package": "python3.11",
+      "Version": "3.11.2-6+deb12u9",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "python3_3.11.2-1+b1_arm64.deb",
+      "bytes": 26284,
+      "sha256": "d31a6f8bdea49711f221baee0e27197c314d0cbe748c020262d32650aca5f017",
+      "Package": "python3",
+      "Version": "3.11.2-1+b1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "readline-common_8.2-1.3_all.deb",
+      "bytes": 68988,
+      "sha256": "69317523fe56429aa361545416ad339d138c1500e5a604856a80dd9074b4e35c",
+      "Package": "readline-common",
+      "Version": "8.2-1.3",
+      "Architecture": "all"
+    },
+    {
+      "file": "time_1.9-0.2_arm64.deb",
+      "bytes": 50628,
+      "sha256": "79ea009c4785d294ac17150e7cf5c5f32d04ab6a52f121c114770d5381e0d597",
+      "Package": "time",
+      "Version": "1.9-0.2",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "unzip_6.0-28+deb12u1_arm64.deb",
+      "bytes": 157500,
+      "sha256": "28b082677d0da11106b7da9173a9359267d76c6fe1d26e86982c014b183ad3ec",
+      "Package": "unzip",
+      "Version": "6.0-28+deb12u1",
+      "Architecture": "arm64"
+    },
+    {
+      "file": "xz-utils_5.4.1-1+deb12u2_arm64.deb",
+      "bytes": 470856,
+      "sha256": "79b5b77de62315e3fa415aa80bd6fa68ea584e4f122d9dc4542172d85b067d68",
+      "Package": "xz-utils",
+      "Version": "5.4.1-1+deb12u2",
+      "Architecture": "arm64"
+    }
+  ],
+  "downloadedDebBytes": 30365784
+}

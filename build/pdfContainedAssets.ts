@@ -1,5 +1,4 @@
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import type { Plugin } from 'vite';
@@ -23,15 +22,6 @@ export function pdfContainedAssets(): Plugin {
     });
     return {
         name: 'contained-pdf-engine-assets',
-        config(_config, env) {
-            const pin = JSON.parse(readFileSync(new URL('../src/pdf/engine/dev/source-manifest.json', import.meta.url), 'utf8')) as {
-                shippingAllowed?: boolean; qualification?: string;
-            };
-            // A dev server claims the native engine only when pdfiumDevAssets actually serves it (BME_DEV_ENGINE_DIR set);
-            // otherwise the build behaves like production and every PDF route takes its existing classic/generated path.
-            return { define: { __BME_PDF_ENGINE_AVAILABLE__: JSON.stringify((env.command === 'serve' && !!process.env.BME_DEV_ENGINE_DIR) || env.mode === 'benchmark' ||
-                (pin.shippingAllowed === true && pin.qualification !== 'development')) } };
-        },
         resolveId(id) {
             if (id === 'virtual:pdf-engine-broker') return brokerId;
             if (id === 'virtual:pdf-engine-worker') return workerId;

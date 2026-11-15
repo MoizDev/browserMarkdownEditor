@@ -19,10 +19,8 @@ export function pdfFontAssets(): Plugin {
     return {
         name: 'pdf-font-assets',
         config(_config, env) {
-            const pin = JSON.parse(readFileSync(new URL('../src/pdf/engine/dev/source-manifest.json', import.meta.url), 'utf8')) as {
-                shippingAllowed?: boolean; qualification?: string;
-            };
-            emit = env.command === 'build' && (env.mode === 'benchmark' || (pin.shippingAllowed === true && pin.qualification !== 'development'));
+            // The engine ships in every build (build/pdfiumAssets.ts), so its fallback fonts do too.
+            emit = env.command === 'build';
         },
         configResolved(config) {
             // Vite copies public files without plugin inspection, bypassing the pin.

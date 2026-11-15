@@ -5,4 +5,3 @@
 declare const __BME_BENCH__: boolean
 declare const __BME_BUILD_ID__: string
 /** Whether this build may load its pinned PDF engine; host support is checked separately. */
-declare const __BME_PDF_ENGINE_AVAILABLE__: boolean

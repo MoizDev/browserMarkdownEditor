@@ -1,0 +1,15 @@
+{
+  "archives": [
+    {
+      "file": "772bb4648be4a897ca062d6adc65bc70223d2703-wasm-binaries-arm64.tar.xz",
+      "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/772bb4648be4a897ca062d6adc65bc70223d2703/wasm-binaries-arm64.tar.xz",
+      "bytes": 253974236
+    },
+    {
+      "file": "node-v22.16.0-linux-arm64.tar.xz",
+      "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v22.16.0-linux-arm64.tar.xz",
+      "bytes": 29126496
+    }
+  ],
+  "conservativeTotalFetchBytes": 409018746
+}

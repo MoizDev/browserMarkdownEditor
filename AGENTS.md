@@ -117,6 +117,8 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   native runtimes, worker clients and rendering services stay behind their lazy hosts; load
   `pdf-and-drawings` (notebooks and drawings too) before adding an import. The chunks
   warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
+  The PDFium engine is committed (`src/pdf/vendor/pdfium/`, rebuilt by `build/pdfium/`); dev and production
+  load those exact bytes, and `build/pdfiumAssets.ts` fails the build on any mismatch with its manifest.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does
   the same, so buffers and search offsets stay in step; a reader that skips it drifts on CRLF.
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string

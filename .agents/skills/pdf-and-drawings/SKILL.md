@@ -11,8 +11,11 @@ reader and native annotation host. The old pdf.js reader/worker and tldraw PDF a
 been removed. Older PDF annotation DATA remains supported through explicit conversion, not a renderer
 fallback. `pdf-lib` is permitted only in lazy metadata/writer operations, never reader startup.
 
-A production build without the owner's qualified shipping artifact reports engine unavailability.
-Never relabel the development artifact, fabricate qualification or restore an old parser fallback.
+One engine ships: the committed from-source build in `src/pdf/vendor/pdfium/` (recipe and rebuild in
+`build/pdfium/`), loaded the same way in dev and production; `build/pdfiumAssets.ts` serves/emits it at
+`pdfium/<buildId>/` and fails dev/build on any byte that differs from `manifest.json`. Its glue/WASM load
+only when a PDF first opens. Swap engine files and manifest together, never edit them, and never restore an
+old parser fallback: a load failure is `EngineBroken` with a truthful message.
 Load `rendering-platform` for shared frame/layer/capture changes and `verify-in-browser` for a real look.
 
 ## Source, authority and lifetime

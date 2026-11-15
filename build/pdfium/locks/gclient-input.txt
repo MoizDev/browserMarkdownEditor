@@ -1,0 +1,2 @@
+solutions = [{"name": "pdfium", "url": "https://pdfium.googlesource.com/pdfium.git", "managed": False, "custom_deps": {}, "custom_vars": {"checkout_configuration": "minimal", "checkout_rust": False, "checkout_clang_coverage_tools": False, "checkout_clang_tidy": False, "checkout_clangd": False, "download_remoteexec_cfg": False}}]
+target_os = ["emscripten"]

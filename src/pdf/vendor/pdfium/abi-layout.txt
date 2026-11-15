@@ -1,0 +1,224 @@
+
+*** Dumping AST Record Layout
+         0 | struct __NSConstantString_tag
+         0 |   const int * isa
+         4 |   int flags
+         8 |   const char * str
+        12 |   long length
+           | [sizeof=16, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct (unnamed at /toolchain/emsdk/upstream/lib/clang/23/include/__stddef_max_align_t.h:19:9)
+         0 |   long long __clang_max_align_nonce1
+         8 |   long double __clang_max_align_nonce2
+           | [sizeof=24, align=8]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_BSTR_
+         0 |   char * str
+         4 |   int len
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FS_MATRIX_
+         0 |   float a
+         4 |   float b
+         8 |   float c
+        12 |   float d
+        16 |   float e
+        20 |   float f
+           | [sizeof=24, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FS_RECTF_
+         0 |   float left
+         4 |   float top
+         8 |   float right
+        12 |   float bottom
+           | [sizeof=16, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FS_SIZEF_
+         0 |   float width
+         4 |   float height
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FS_POINTF_
+         0 |   float x
+         4 |   float y
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FS_QUADPOINTSF
+         0 |   FS_FLOAT x1
+         4 |   FS_FLOAT y1
+         8 |   FS_FLOAT x2
+        12 |   FS_FLOAT y2
+        16 |   FS_FLOAT x3
+        20 |   FS_FLOAT y3
+        24 |   FS_FLOAT x4
+        28 |   FS_FLOAT y4
+           | [sizeof=32, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_LIBRARY_CONFIG_
+         0 |   int version
+         4 |   const char ** m_pUserFontPaths
+         8 |   void * m_pIsolate
+        12 |   unsigned int m_v8EmbedderSlot
+        16 |   void * m_pPlatform
+        20 |   FPDF_RENDERER_TYPE m_RendererType
+        24 |   FPDF_FONT_BACKEND_TYPE m_FontLibraryType
+        28 |   FPDF_BOOL m_BrotliEnabled
+        32 |   FPDF_BOOL m_IsolatePerDocument
+           | [sizeof=36, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct (unnamed at /toolchain/work/pdfium/public/fpdfview.h:473:9)
+         0 |   unsigned long m_FileLen
+         4 |   int (*)(void *, unsigned long, unsigned char *, unsigned long) m_GetBlock
+         8 |   void * m_Param
+           | [sizeof=12, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_FILEHANDLER_
+         0 |   void * clientData
+         4 |   void (*)(void *) Release
+         8 |   FPDF_DWORD (*)(void *) GetSize
+        12 |   FPDF_RESULT (*)(void *, FPDF_DWORD, void *, FPDF_DWORD) ReadBlock
+        16 |   FPDF_RESULT (*)(void *, FPDF_DWORD, const void *, FPDF_DWORD) WriteBlock
+        20 |   FPDF_RESULT (*)(void *) Flush
+        24 |   FPDF_RESULT (*)(void *, FPDF_DWORD) Truncate
+           | [sizeof=28, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_COLORSCHEME_
+         0 |   FPDF_DWORD path_fill_color
+         4 |   FPDF_DWORD path_stroke_color
+         8 |   FPDF_DWORD text_fill_color
+        12 |   FPDF_DWORD text_stroke_color
+           | [sizeof=16, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _IPDF_JsPlatform
+         0 |   int version
+         4 |   int (*)(struct _IPDF_JsPlatform *, FPDF_WIDESTRING, FPDF_WIDESTRING, int, int) app_alert
+         8 |   void (*)(struct _IPDF_JsPlatform *, int) app_beep
+        12 |   int (*)(struct _IPDF_JsPlatform *, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_BOOL, void *, int) app_response
+        16 |   int (*)(struct _IPDF_JsPlatform *, void *, int) Doc_getFilePath
+        20 |   void (*)(struct _IPDF_JsPlatform *, void *, int, FPDF_BOOL, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING) Doc_mail
+        24 |   void (*)(struct _IPDF_JsPlatform *, FPDF_BOOL, int, int, FPDF_BOOL, FPDF_BOOL, FPDF_BOOL, FPDF_BOOL, FPDF_BOOL) Doc_print
+        28 |   void (*)(struct _IPDF_JsPlatform *, void *, int, FPDF_WIDESTRING) Doc_submitForm
+        32 |   void (*)(struct _IPDF_JsPlatform *, int) Doc_gotoPage
+        36 |   int (*)(struct _IPDF_JsPlatform *, void *, int) Field_browse
+        40 |   void * m_pFormfillinfo
+        44 |   void * m_isolate
+        48 |   unsigned int m_v8EmbedderSlot
+           | [sizeof=52, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FPDF_SYSTEMTIME
+         0 |   unsigned short wYear
+         2 |   unsigned short wMonth
+         4 |   unsigned short wDayOfWeek
+         6 |   unsigned short wDay
+         8 |   unsigned short wHour
+        10 |   unsigned short wMinute
+        12 |   unsigned short wSecond
+        14 |   unsigned short wMilliseconds
+           | [sizeof=16, align=2]
+
+*** Dumping AST Record Layout
+         0 | struct _FPDF_FORMFILLINFO
+         0 |   int version
+         4 |   void (*)(struct _FPDF_FORMFILLINFO *) Release
+         8 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE, double, double, double, double) FFI_Invalidate
+        12 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE, double, double, double, double) FFI_OutputSelectedRect
+        16 |   void (*)(struct _FPDF_FORMFILLINFO *, int) FFI_SetCursor
+        20 |   int (*)(struct _FPDF_FORMFILLINFO *, int, TimerCallback) FFI_SetTimer
+        24 |   void (*)(struct _FPDF_FORMFILLINFO *, int) FFI_KillTimer
+        28 |   FPDF_SYSTEMTIME (*)(struct _FPDF_FORMFILLINFO *) FFI_GetLocalTime
+        32 |   void (*)(struct _FPDF_FORMFILLINFO *) FFI_OnChange
+        36 |   FPDF_PAGE (*)(struct _FPDF_FORMFILLINFO *, FPDF_DOCUMENT, int) FFI_GetPage
+        40 |   FPDF_PAGE (*)(struct _FPDF_FORMFILLINFO *, FPDF_DOCUMENT) FFI_GetCurrentPage
+        44 |   int (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE) FFI_GetRotation
+        48 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_BYTESTRING) FFI_ExecuteNamedAction
+        52 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_WIDESTRING, FPDF_DWORD, FPDF_BOOL) FFI_SetTextFieldFocus
+        56 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_BYTESTRING) FFI_DoURIAction
+        60 |   void (*)(struct _FPDF_FORMFILLINFO *, int, int, float *, int) FFI_DoGoToAction
+        64 |   IPDF_JSPLATFORM * m_pJsPlatform
+        68 |   FPDF_BOOL xfa_disabled
+        72 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE, FPDF_BOOL, double, double, double, double) FFI_DisplayCaret
+        76 |   int (*)(struct _FPDF_FORMFILLINFO *, FPDF_DOCUMENT) FFI_GetCurrentPageIndex
+        80 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_DOCUMENT, int) FFI_SetCurrentPage
+        84 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_DOCUMENT, FPDF_WIDESTRING) FFI_GotoURL
+        88 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE, double *, double *, double *, double *) FFI_GetPageViewRect
+        92 |   void (*)(struct _FPDF_FORMFILLINFO *, int, FPDF_DWORD) FFI_PageEvent
+        96 |   FPDF_BOOL (*)(struct _FPDF_FORMFILLINFO *, FPDF_PAGE, FPDF_WIDGET, int, float, float) FFI_PopupMenu
+       100 |   FPDF_FILEHANDLER *(*)(struct _FPDF_FORMFILLINFO *, int, FPDF_WIDESTRING, const char *) FFI_OpenFile
+       104 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_FILEHANDLER *, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING) FFI_EmailTo
+       108 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_FILEHANDLER *, int, FPDF_WIDESTRING) FFI_UploadTo
+       112 |   int (*)(struct _FPDF_FORMFILLINFO *, void *, int) FFI_GetPlatform
+       116 |   int (*)(struct _FPDF_FORMFILLINFO *, void *, int) FFI_GetLanguage
+       120 |   FPDF_FILEHANDLER *(*)(struct _FPDF_FORMFILLINFO *, FPDF_WIDESTRING) FFI_DownloadFromURL
+       124 |   FPDF_BOOL (*)(struct _FPDF_FORMFILLINFO *, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_BSTR *) FFI_PostRequestURL
+       128 |   FPDF_BOOL (*)(struct _FPDF_FORMFILLINFO *, FPDF_WIDESTRING, FPDF_WIDESTRING, FPDF_WIDESTRING) FFI_PutRequestURL
+       132 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_ANNOTATION, int) FFI_OnFocusChange
+       136 |   void (*)(struct _FPDF_FORMFILLINFO *, FPDF_BYTESTRING, int) FFI_DoURIActionWithKeyboardModifier
+           | [sizeof=140, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_IMAGEOBJ_METADATA
+         0 |   unsigned int width
+         4 |   unsigned int height
+         8 |   float horizontal_dpi
+        12 |   float vertical_dpi
+        16 |   unsigned int bits_per_pixel
+        20 |   int colorspace
+        24 |   int marked_content_id
+           | [sizeof=28, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FX_FILEAVAIL
+         0 |   int version
+         4 |   FPDF_BOOL (*)(struct _FX_FILEAVAIL *, size_t, size_t) IsDataAvail
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FX_DOWNLOADHINTS
+         0 |   int version
+         4 |   void (*)(struct _FX_DOWNLOADHINTS *, size_t, size_t) AddSegment
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _IFSDK_PAUSE
+         0 |   int version
+         4 |   FPDF_BOOL (*)(struct _IFSDK_PAUSE *) NeedToPauseNow
+         8 |   void * user
+           | [sizeof=12, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_FILEWRITE_
+         0 |   int version
+         4 |   int (*)(struct FPDF_FILEWRITE_ *, const void *, unsigned long) WriteBlock
+           | [sizeof=8, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct _FPDF_SYSFONTINFO
+         0 |   int version
+         4 |   void (*)(struct _FPDF_SYSFONTINFO *) Release
+         8 |   void (*)(struct _FPDF_SYSFONTINFO *, void *) EnumFonts
+        12 |   void *(*)(struct _FPDF_SYSFONTINFO *, int, FPDF_BOOL, int, int, const char *, FPDF_BOOL *) MapFont
+        16 |   void *(*)(struct _FPDF_SYSFONTINFO *, const char *) GetFont
+        20 |   unsigned long (*)(struct _FPDF_SYSFONTINFO *, void *, unsigned int, unsigned char *, unsigned long) GetFontData
+        24 |   unsigned long (*)(struct _FPDF_SYSFONTINFO *, void *, char *, unsigned long) GetFaceName
+        28 |   int (*)(struct _FPDF_SYSFONTINFO *, void *) GetFontCharset
+        32 |   void (*)(struct _FPDF_SYSFONTINFO *, void *) DeleteFont
+           | [sizeof=36, align=4]
+
+*** Dumping AST Record Layout
+         0 | struct FPDF_CharsetFontMap_
+         0 |   int charset
+         4 |   const char * fontname
+           | [sizeof=8, align=4]

@@ -3,11 +3,8 @@ import { PdfEngineError } from '../engine/types';
 interface AssetPin { path: string; sha256: string; bytes: number }
 interface EngineManifest {
     schemaVersion: number;
-    qualification: string;
-    shippingAllowed: boolean;
     buildId: string;
     artifactSha256: string;
-    servedBase: string;
     factory: { roleVersion: number; format: string };
     files: { glue: AssetPin; wasm: AssetPin };
     abi: AssetPin;
@@ -63,27 +60,16 @@ async function verifiedBytes(url: string, pin: AssetPin, signal?: AbortSignal): 
     return bytes.buffer;
 }
 
-/** The pin is app-owned, never taken from a PDF, pane, message, URL parameter or vault file. */
+/** The pin is app-owned, never taken from a PDF, pane, message, URL parameter or vault file. One engine ships:
+ * the committed src/pdf/vendor/pdfium/, served by build/pdfiumAssets.ts at pdfium/<buildId>/ in dev and in dist. */
 export async function loadTrustedPdfAssets(signal?: AbortSignal): Promise<TrustedPdfAssets> {
     try {
         signal?.throwIfAborted();
-        let manifest: EngineManifest;
-        if (import.meta.env.DEV || __BME_BENCH__) {
-            manifest = (await import('../engine/dev/source-manifest.json')).default as unknown as EngineManifest;
-        } else {
-            // No shipping engine artefact is bundled yet; say so rather than blame a development engine.
-            throw new PdfEngineError('EngineBroken', 'This build of the app does not include its PDF engine, so PDFs cannot be opened.');
-        }
+        const manifest = (await import('../vendor/pdfium/manifest.json')).default as unknown as EngineManifest;
         if (manifest.schemaVersion !== 1 || manifest.factory.roleVersion !== 1 || manifest.factory.format !== 'es-module' ||
             !/^(?:dev-)?[a-f0-9]{64}$/.test(manifest.buildId) || !/^[a-f0-9]{64}$/.test(manifest.artifactSha256) ||
             manifest.artifactSha256 !== manifest.files.wasm.sha256) throw broken();
-        // Development engines are not shipping artefacts, even when a persisted developer switch is on.
-        if (!(import.meta.env.DEV || __BME_BENCH__) &&
-            (!manifest.shippingAllowed || manifest.qualification === 'development' || manifest.buildId.startsWith('dev-'))) {
-            throw new PdfEngineError('EngineBroken', 'A development PDF engine cannot run in a production build');
-        }
-        const basePath = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/${manifest.servedBase.replace(/^\/+/, '')}`;
-        const base = new URL(basePath, location.origin);
+        const base = new URL(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/pdfium/${manifest.buildId}/`, location.origin);
         if (base.origin !== location.origin || !base.pathname.endsWith('/') || base.search || base.hash) throw broken();
         const glueUrl = pinUrl(base, manifest.files.glue), abiUrl = pinUrl(base, manifest.abi);
         const wasmUrl = pinUrl(base, manifest.files.wasm);

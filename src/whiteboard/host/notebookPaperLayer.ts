@@ -10,7 +10,7 @@ import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
-import type { CanvasPaintAdapter, PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
+import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
@@ -74,8 +74,8 @@ class NotebookPaperLayer implements Layer {
     private gpuPrepared: PreparedPaint2d | null = null;
     private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
-        prepare: () => {}, readyFrame: () => this.gpuPrepared?.frame ?? null,
-        borrowPrepared: () => this.gpuPrepared, draw2d: () => {}, release: () => {},
+        prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
+        borrowPrepared: () => this.gpuPrepared, retainPrepared: () => null, draw2d: () => {}, release: () => {},
         needsFrame: () => false, memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
@@ -190,11 +190,11 @@ class NotebookPaperLayer implements Layer {
         const frame: PaintFrame = { token: { vaultEpoch: token.vaultEpoch, documentId: token.documentId,
             bytesGeneration: token.bytesGeneration, session: token.session }, sceneRevision: ready.revision,
         inkNodeIds: new Set(), underlay: [], content: items };
-        this.gpuPrepared = { frame, resources: {
+        this.gpuPrepared = preparedOfFrame(frame, {
             path: item => { const path = paths.get(item as PaintPathItem); if (!path) throw new Error('Notebook GPU path unavailable'); return path; },
             clip: key => { const clip = clips.get(key); if (!clip) throw new Error('Notebook GPU clip unavailable'); return clip; },
             image: () => { throw new Error('Notebook paper has no image resources'); },
-        } };
+        });
         this.gpuSource = { ready, first, last, token: { ...token } };
     }
     drawGpu(pass: GpuPass, view: ViewState): void { this.gpu.drawGpu(pass, view, 'content'); }
@@ -250,7 +250,7 @@ class NotebookPaperLayer implements Layer {
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
         if (!current) return { complete: false, sharp: false, staleVersion: true };
         if (backend === 'canvas2d') return { complete: true, sharp: true };
-        if (this.gpu.readyFrame() !== this.gpuPrepared?.frame) return { complete: false, sharp: false, staleVersion: true };
+        if (this.gpu.readyPaint() !== this.gpuPrepared) return { complete: false, sharp: false, staleVersion: true };
         return this.gpu.coverage(frame.view);
     }
 }

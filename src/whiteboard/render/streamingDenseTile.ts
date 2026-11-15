@@ -28,6 +28,8 @@ export interface StreamingDenseTileOptions {
     readonly band: PaintBand;
     /** Live node ids of this band. Each is a barrier the frame draws itself; its pixels are never here. */
     readonly barriers: ReadonlySet<string>;
+    /** Sensitive nodes paint at precision, so a tile touching one is not reusable document pixels. */
+    readonly sensitive?: ReadonlySet<string>;
     readonly token: RenderToken;
     readonly revision: number;
     readonly isCurrent: () => boolean;
@@ -88,6 +90,7 @@ export class StreamingDenseTileJob {
     private finished: DenseTilePart[] = [];
     private lastBarrier: string | null = null;
     private barriers = 0;
+    private touched = false;
     private imageBytes = 0;
     private pathLease: ByteLease | null = null;
     private estimate = 0;
@@ -126,6 +129,8 @@ export class StreamingDenseTileJob {
     get isComplete(): boolean { return this.state === 'complete'; }
     get isEmpty(): boolean { return this.state === 'empty'; }
     /** The tile's only part when no barrier split it: the complete band content of this apron. */
+    /** True when the apron met a barrier or a sensitive node: such a tile is never published to the cache. */
+    get touchedLive(): boolean { return this.touched; }
     get singlePart(): DenseTilePart | null {
         return this.barriers === 0 && this.finished.length === 1 && (this.state === 'complete') ? this.finished[0] : null;
     }
@@ -355,6 +360,7 @@ export class StreamingDenseTileJob {
                     const items = this.options.band === 'underlay' ? this.node!.underlay ?? [] : this.node!.content;
                     if (this.itemIndex >= items.length) { this.node = null; this.state = 'read'; continue; }
                     const item = items[this.itemIndex++];
+                    if (this.options.barriers.has(item.nodeId) || this.options.sensitive?.has(item.nodeId)) this.touched = true;
                     if (this.options.barriers.has(item.nodeId)) {
                         // A node's items are contiguous in its band, so one barrier event per node.
                         if (this.lastBarrier !== item.nodeId) {

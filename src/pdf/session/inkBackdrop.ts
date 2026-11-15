@@ -11,6 +11,7 @@ import { pdfPageLayerDefinition } from '../layer/definition';
 import { createPdfCaptureSnapshot } from '../layer/captureSnapshot';
 import { getPdfSessionMirrors } from '../layer/tileMirror';
 import { createPdfTileProducer } from '../layer/tileProducer';
+import { consumePdfTileArrival } from '../pool/arrivalWindow';
 import type { PdfPool } from '../pool/types';
 import { pdfDocKey } from '../worker/protocol';
 import { PdfTiledDocumentSession, pdfGeometryDigest } from './documentSession';
@@ -214,7 +215,9 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
                             checkSource();
                             if (tile.key.contentRevision !== pdfVariantRevision('plain', epoch)) throw stale();
                             const bitmap = await actual.document.producer.render(tile, AbortSignal.any([signal, controller.signal]));
-                            try { signal.throwIfAborted(); checkSource(); return bitmap; } catch (error) { bitmap.close(); throw error; }
+                            // The arrival is counted by the tile producer; a bitmap dropped here must release that count too.
+                            try { signal.throwIfAborted(); checkSource(); return bitmap; }
+                            catch (error) { consumePdfTileArrival(bitmap); bitmap.close(); throw error; }
                         } };
                         return { document: { producer }, signal: AbortSignal.any([actual.signal, controller.signal]), release: actual.release };
                     } catch (error) { actual.release(); throw error; }

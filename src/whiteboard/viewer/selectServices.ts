@@ -567,7 +567,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return navigate(id) || transform(id);
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
-    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle };
+    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle,
+        insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time) };
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };

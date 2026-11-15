@@ -71,7 +71,8 @@ export async function loadTrustedPdfAssets(signal?: AbortSignal): Promise<Truste
         if (import.meta.env.DEV || __BME_BENCH__) {
             manifest = (await import('../engine/dev/source-manifest.json')).default as unknown as EngineManifest;
         } else {
-            throw new PdfEngineError('EngineBroken', 'A development PDF engine cannot run in a production build');
+            // No shipping engine artefact is bundled yet; say so rather than blame a development engine.
+            throw new PdfEngineError('EngineBroken', 'This build of the app does not include its PDF engine, so PDFs cannot be opened.');
         }
         if (manifest.schemaVersion !== 1 || manifest.factory.roleVersion !== 1 || manifest.factory.format !== 'es-module' ||
             !/^(?:dev-)?[a-f0-9]{64}$/.test(manifest.buildId) || !/^[a-f0-9]{64}$/.test(manifest.artifactSha256) ||

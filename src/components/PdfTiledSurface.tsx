@@ -61,7 +61,8 @@ export default function PdfTiledSurface(props: Props) {
                 value.session.token.documentId === reading.identity.documentId && value.session.token.session === identity?.serial &&
                 value.session.token.bytesGeneration === identity.bytesGeneration) { setLoaded({ key, source: value }); setError(null); }
         }, failure => {
-            if (!controller.signal.aborted) setError({ key, message: failure instanceof Error ? failure.message : 'PDF could not be opened.' });
+            // An engine failure arrives wrapped in worker-host prefixes; the reader sees only the engine's own sentence.
+            if (!controller.signal.aborted) setError({ key, message: failure instanceof Error ? failure.message.replace(/^.*\bEngineBroken: /, '') : 'PDF could not be opened.' });
         });
         return () => controller.abort();
     }, [reading, identity, key, retry]);

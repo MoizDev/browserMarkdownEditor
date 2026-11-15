@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Questa bacheca è di sola lettura.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Rimuovi cornice",
+        "commands.fitFrame": "Adatta al contenuto",
+        "notice.keptLocked": "Conservati {count} elementi bloccati.",
+        "commands.toggleAutoSize": "Attiva/disattiva dimensione automatica",
     },
 });

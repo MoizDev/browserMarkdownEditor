@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
-import { createStructureControls } from '../../whiteboard/host/structureControls';
+import { createStructureControls, NEW_SHEET_NAME } from '../../whiteboard/host/structureControls';
 import type { SheetId } from '../../whiteboard/model/ids';
 import type { NativeViewLease } from './nativeViewLease';
 import type { BoardQuestion } from './useNativeBoardDialogs';
@@ -21,7 +21,7 @@ export function useNativeSheetControls(options: {
 }) {
     const { runtime, lease, current, canWrite, confirm, onError } = options;
     const controls = useMemo(() => createStructureControls({ runtime, current, canWrite, confirm, onError,
-        newSheetName: () => 'Untitled sheet', readPage: () => lease.getNavigationSnapshot().page, jump: page => lease.jump(page) }),
+        newSheetName: () => NEW_SHEET_NAME, readPage: () => lease.getNavigationSnapshot().page, jump: page => lease.jump(page) }),
     [runtime, lease, current, canWrite, confirm, onError]);
     const subscribe = useCallback((listener: () => void) => {
         const a = runtime.session.subscribe(listener), b = runtime.selection.subscribe(listener);

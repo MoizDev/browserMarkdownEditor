@@ -26,6 +26,10 @@ export interface EditLayout {
 }
 export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
     readonly history: HistoryController;
+    /** A single-line name (a frame title): Enter commits the edit instead of adding a paragraph. */
+    readonly singleLine?: boolean;
+    /** Ends this note's edit and opens its directional neighbour; false where no neighbour flow applies. */
+    stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
     prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
     alive(): boolean;
@@ -237,6 +241,7 @@ export class TextEditSession {
     /** The keyboard and Core's text menu use the same controller and transaction path. */
     command(name: string): boolean {
         if (!this.canEdit()) return false;
+        if (name === 'enter' && this.services.singleLine) return this.command('finish');
         if (name === 'select-all') return this.selectAll();
         const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
             strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };
@@ -291,6 +296,7 @@ export class TextEditSession {
         handleEditKey(event, {
             text: () => this.services.plainText(), selection: () => this.selection,
             setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
+            neighbour: direction => this.canEdit() && !!this.services.stickyNeighbour?.(direction),
             adjacent: (offset, direction) => this.words.adjacent(this.services.readText(), offset, direction),
             move: (offset, direction) => this.move(offset, direction),
             collapse: (selection, direction) => {

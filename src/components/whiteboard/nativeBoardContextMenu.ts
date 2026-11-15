@@ -9,6 +9,11 @@ import type { NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
 import type { KeyboardContextRequest } from '../../whiteboard/viewer/keyboardContext';
 import { contextEntries, type BoardCommand, type BoardCommandSource } from './chrome/boardCommands';
 import { localizeBoardChrome } from './chrome/localize';
+import { mediaRows, type MediaRowOptions, type MediaRowSelection } from './nativeMediaRows';
+
+export interface MediaMenuSource extends Omit<MediaRowOptions, 'current' | 'notice' | 'text'> {
+    readonly selection: (writable: boolean) => MediaRowSelection | null;
+}
 
 /** Every context row belongs to the actual selection and revision which raised the menu. */
 export function createNativeBoardContextMenu(options: {
@@ -17,6 +22,8 @@ export function createNativeBoardContextMenu(options: {
     readonly language: BoardLanguageState;
     readonly preferences: BoardPreferenceState;
     readonly embed: () => NativeEmbedController | null;
+    /** The picture or card rows for this view; edit mode's menu is the only one a right-click opens. */
+    readonly media: () => MediaMenuSource | null;
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly notice: (message: string) => void;
@@ -45,10 +52,17 @@ export function createNativeBoardContextMenu(options: {
                     void pending.catch(error => options.notice(error instanceof Error ? error.message : String(error)));
                 } });
         }
+        const mediaSource = options.media();
+        const picture = mediaSource ? mediaSource.selection(options.canWrite()) : null;
+        if (picture && mediaSource) {
+            const rows = mediaRows(picture, { ...mediaSource, current: same, notice: options.notice,
+                text: (key, fallback) => lang.table.strings[key] !== undefined ? t(key) : fallback });
+            if (rows.length) extra.push({ kind: 'separator', id: 'media-separator' }, ...rows);
+        }
         const pages = backend.targets().map(page => ({ id: page.id, label: page.label,
             enabled: page.enabled && options.canWrite(), ...(!page.enabled || !options.canWrite() ? { reason: page.reason ?? 'Board view is read-only' } : {}) }));
         const source = { ...options.commands, run: safeRun, sectionLabel: labels.contextSectionLabel,
-            selectedCount: selected.length, canUngroup: ungroupEligibility(session.doc, selected, selection).enabled,
+            selectedCount: selected.length, textSelected: selected.some(id => session.doc.nodes.get(id)?.kind === 'text'), canUngroup: ungroupEligibility(session.doc, selected, selection).enabled,
             debugMode: preferences.view.debugMode, transparent: preferences.view.transparent,
             transparentLabel: labels.text('transparent'), ...(!options.canWrite() ? { transparentDisabledReason: 'Board view is read-only' } : {}),
             noPagesReason: 'No eligible pages', pages, extraEntries: extra,

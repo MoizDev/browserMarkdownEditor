@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Bảng này ở chế độ chỉ đọc.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Xóa khung",
+        "commands.fitFrame": "Vừa khít nội dung",
+        "notice.keptLocked": "Đã giữ lại {count} mục bị khóa.",
+        "commands.toggleAutoSize": "Bật/tắt cỡ tự động",
     },
 });

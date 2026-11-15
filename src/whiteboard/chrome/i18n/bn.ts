@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "এই বোর্ড শুধুমাত্র পঠনযোগ্য.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "ফ্রেম সরান",
+        "commands.fitFrame": "বিষয়বস্তুতে মানান",
+        "notice.keptLocked": "{count}টি লক করা আইটেম রাখা হয়েছে।",
+        "commands.toggleAutoSize": "স্বয়ংক্রিয় আকার টগল করুন",
     },
 });

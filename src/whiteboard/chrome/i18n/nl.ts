@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Dit bord is alleen-lezen.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Kader verwijderen",
+        "commands.fitFrame": "Aanpassen aan inhoud",
+        "notice.keptLocked": "{count} vergrendelde items behouden.",
+        "commands.toggleAutoSize": "Automatische grootte wisselen",
     },
 });

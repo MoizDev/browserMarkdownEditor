@@ -96,6 +96,12 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         || id === 'distribute.horizontal' || id === 'distribute.vertical' || Object.hasOwn(alignments, id) || Object.hasOwn(orders, id);
     const run = (id: string): boolean => {
         if (id === 'select.all') return selectAll();
+        // Escape clears the selection (F-SEL-007): session state only, so it is never a document step or a write.
+        if (id === 'escape') {
+            if (!runtime.selection.getSnapshot().selected.length) return false;
+            runtime.selection.clear();
+            return true;
+        }
         // A view that refuses edits consumes these document commands so the host's global route cannot promote them.
         if (!writable()) return owned(id) && live() && (!options.canMutateView() || session.isReadOnly);
         const count = runtime.selection.getSnapshot().selected.length;

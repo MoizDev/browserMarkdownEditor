@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Denna tavla är skrivskyddad.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Ta bort ram",
+        "commands.fitFrame": "Anpassa till innehåll",
+        "notice.keptLocked": "{count} låsta objekt behölls.",
+        "commands.toggleAutoSize": "Växla automatisk storlek",
     },
 });

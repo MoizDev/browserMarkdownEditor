@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "이 보드는 읽기 전용입니다.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "프레임 제거",
+        "commands.fitFrame": "콘텐츠에 맞추기",
+        "notice.keptLocked": "잠긴 항목 {count}개를 유지했습니다.",
+        "commands.toggleAutoSize": "자동 크기 전환",
     },
 });

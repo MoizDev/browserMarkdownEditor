@@ -396,5 +396,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Ce forum est en lecture seule.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Retirer le cadre",
+        "commands.fitFrame": "Ajuster au contenu",
+        "notice.keptLocked": "{count} élément(s) verrouillé(s) conservé(s).",
+        "commands.toggleAutoSize": "Basculer la taille automatique",
     },
 });

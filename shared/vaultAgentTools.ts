@@ -105,7 +105,9 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
         description: 'Look at a file as a picture: a rendered PDF page, a notebook page, a drawing, or an image file. Use it to see handwriting, diagrams and layout that text cannot convey. EPUB capture is unavailable; vault_read can read the bounded visible canonical text of a loaded book.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
-            properties: { path: PATH, page: PAGE },
+            properties: { path: PATH, page: PAGE, region: { type: 'object', additionalProperties: false, required: ['x', 'y', 'w', 'h'],
+                description: 'A rectangle to see, in board units (a page\'s own units with page). Open boards only.',
+                properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number', exclusiveMinimum: 0 }, h: { type: 'number', exclusiveMinimum: 0 } } } },
         },
     },
     {

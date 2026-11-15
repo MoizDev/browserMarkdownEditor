@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Denne tavlen er skrivebeskyttet.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Fjern ramme",
+        "commands.fitFrame": "Tilpass til innhold",
+        "notice.keptLocked": "{count} låste elementer ble beholdt.",
+        "commands.toggleAutoSize": "Slå automatisk størrelse av/på",
     },
 });

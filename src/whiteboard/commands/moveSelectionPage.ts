@@ -1,9 +1,9 @@
 import type { ApplyController } from '../change/apply';
 import type { Applied, Op } from '../change/ops';
-import { isLocked, selectedRoots } from '../change/commands';
+import { isLocked, moveNodesToSheet, selectedRoots } from '../change/commands';
 import type { BoardRuntime } from '../host/runtime';
-import { hasOpaqueDescendant, isSheetParent, type BoardDoc } from '../model/doc';
-import type { NodeId } from '../model/ids';
+import { hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../model/doc';
+import type { NodeId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
 
@@ -40,6 +40,11 @@ export function pageCount(doc: BoardDoc): number { return boardPageStack(doc.hos
  */
 export function movableSelectionRoots(doc: BoardDoc, ids: Iterable<NodeId>): { readonly roots: readonly Node[]; readonly block?: PageMoveBlock } {
     if (doc.kind === 'whiteboard') return { roots: [], block: 'no-pages' };
+    return movableRoots(doc, ids);
+}
+
+/** The movable roots of a selection on any board kind; a logical-sheet move is not a physical-page move. */
+function movableRoots(doc: BoardDoc, ids: Iterable<NodeId>): { readonly roots: readonly Node[]; readonly block?: PageMoveBlock } {
     let roots: Node[];
     try { roots = selectedRoots(doc, ids); } catch {
         // A selection naming a node that no longer exists has nothing movable; the next selection event refreshes it.
@@ -81,6 +86,48 @@ export function moveSelectionToPage(doc: BoardDoc, apply: MutationPort, ids: Ite
     return apply.apply({ origin: 'host', label: 'Move to page', ops });
 }
 
+const SHEET_ID = /^sheet:(.+)$/;
+export function sheetMoveId(sheet: SheetId): string { return `sheet:${sheet}`; }
+function parseSheetMoveId(id: string): SheetId | undefined {
+    const match = SHEET_ID.exec(id);
+    return match ? match[1] as SheetId : undefined;
+}
+
+/**
+ * One row per logical sheet (spec F-ARR-013): every board kind has them, paper hosts included, and a whiteboard
+ * has no physical pages, so its Move to page menu offers only these. A row is enabled when the whole selection
+ * is movable and not already on that sheet. `page` is -1: a logical sheet is not a physical page.
+ */
+export function sheetMoveTargets(doc: BoardDoc, ids: Iterable<NodeId>): readonly PageMoveTarget[] {
+    const { roots, block } = movableRoots(doc, ids);
+    return doc.sheetOrder.map(({ id, name }) => {
+        const reason = block ?? (roots.every(node => sheetOf(doc, node.id) === id) ? 'current-page' : undefined);
+        return { id: sheetMoveId(id), page: -1, label: name, enabled: reason === undefined, reason };
+    });
+}
+
+/**
+ * Moves the selection's movable roots to another logical sheet as ONE history step (F-ARR-013, R-1). The same node
+ * ids keep their world pose; the view then reveals the moved nodes on their new sheet.
+ */
+function moveSelectionToSheet(runtime: BoardRuntime, ids: readonly NodeId[], target: SheetId): void {
+    const session = runtime.session, doc = session.doc, { block } = movableRoots(doc, ids);
+    if (block) throw new Error(`Selection cannot move to a sheet: ${block}`);
+    session.history.open('Move to sheet');
+    let builder: ReturnType<typeof session.begin> | undefined, open = true;
+    try {
+        builder = session.begin('host', 'Move to sheet');
+        const moved = moveNodesToSheet(doc, builder, ids, target, runtime.render.changeGeometry);
+        if (!moved.length) { builder.abort(); builder = undefined; session.history.cancel(); open = false; return; }
+        const applied = builder.commit(); builder = undefined;
+        try { runtime.selection.setSheet(target); runtime.selection.replace(moved); } finally { applied.release(); }
+        session.history.close(); open = false;
+    } catch (error) {
+        try { builder?.abort(); } finally { if (open) session.history.cancel(); }
+        throw error;
+    }
+}
+
 /** The live backend Core's context menu uses: targets come from the current document and selection. */
 export function createPageMoveBackend(runtime: BoardRuntime) {
     const selected = (): readonly NodeId[] => [...runtime.selection.getSnapshot().selected];
@@ -88,12 +135,15 @@ export function createPageMoveBackend(runtime: BoardRuntime) {
         : runtime.session.isGestureActive ? 'busy' : undefined;
     return {
         targets(): readonly PageMoveTarget[] {
-            const doc = runtime.session.doc, stop = blocked(), rows = pageMoveTargets(doc, selected());
+            const doc = runtime.session.doc, stop = blocked();
+            const rows = [...sheetMoveTargets(doc, selected()), ...pageMoveTargets(doc, selected())];
             return stop ? rows.map(row => ({ ...row, enabled: false, reason: stop })) : rows;
         },
         moveToPage(id: string): void {
             const stop = blocked();
             if (stop) throw new Error(`Selection cannot move to a page: ${stop}`);
+            const sheet = parseSheetMoveId(id);
+            if (sheet !== undefined) { moveSelectionToSheet(runtime, selected(), sheet); return; }
             moveSelectionToPage(runtime.session.doc, runtime.session, selected(), parsePageMoveId(id))?.release();
         },
     };

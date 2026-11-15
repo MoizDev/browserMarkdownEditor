@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Aquest tauler és només de lectura.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Suprimeix el marc",
+        "commands.fitFrame": "Ajusta al contingut",
+        "notice.keptLocked": "S'han mantingut {count} elements bloquejats.",
+        "commands.toggleAutoSize": "Canvia la mida automàtica",
     },
 });

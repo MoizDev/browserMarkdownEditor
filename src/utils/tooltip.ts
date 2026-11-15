@@ -19,6 +19,7 @@
 // so a disabled control's tooltip (the reason it cannot act) still shows.
 
 import { getContextMenu } from './contextMenu';
+import { getBoardPreferences } from './boardPreferences';
 
 const SHOW_DELAY_MS = 400;
 // Sliding from one control to the next along a toolbar shows the next bubble at
@@ -50,12 +51,16 @@ let dismissed = false;
 let showTimer = 0;
 let hiddenAt = -Infinity;
 let observer: MutationObserver | null = null;
-let enhanced = false;
+// Enhanced accessibility mode shows descriptions at once and keeps them hoverable, so a pointer can move onto one.
+function enhanced(): boolean {
+    return getBoardPreferences().enhancedA11yMode;
+}
 let leaveTimer = 0;
 
 function tooltipText(el: Element): string {
     return el.getAttribute('data-tooltip')?.trim() ?? '';
 }
+
 
 function ensureBubble(): HTMLDivElement {
     if (bubble) return bubble;
@@ -63,6 +68,8 @@ function ensureBubble(): HTMLDivElement {
     bubble.className = 'tooltip';
     bubble.setAttribute('role', 'tooltip');
     bubble.style.display = 'none';
+    // Leaving a hoverable description closes it, as leaving its target does otherwise.
+    bubble.addEventListener('pointerleave', () => { if (enhanced()) leave(); });
     document.body.appendChild(bubble);
     return bubble;
 }
@@ -197,12 +204,11 @@ function dismiss(): void {
 
 /** Enhanced accessibility mode (a board preference, F-A11Y-004): board tooltips show at once and stay hoverable. */
 export function setEnhancedBoardTooltips(on: boolean): void {
-    enhanced = on;
     if (!on) cancelLeave();
 }
 
 function promptFor(el: Element): boolean {
-    return enhanced && el.closest('.board-chrome-overlay') !== null;
+    return enhanced() && el.closest('.board-chrome-overlay') !== null;
 }
 
 function cancelLeave(): void {
@@ -217,11 +223,12 @@ function onPointerOver(e: PointerEvent): void {
     if (el === target) { cancelLeave(); return; }
     cancelLeave();
     if (!el || !tooltipText(el)) { reset(); return; }
-    const warm = shown || performance.now() - hiddenAt < WARM_MS;
+    const warm = shown || performance.now() - hiddenAt < WARM_MS, instant = promptFor(el);
     hideBubble();
     target = el;
     dismissed = false;
-    if (warm || promptFor(el)) show();
+    if (bubble) bubble.style.pointerEvents = instant ? 'auto' : '';
+    if (warm || instant) show();
     else showTimer = window.setTimeout(show, SHOW_DELAY_MS);
 }
 

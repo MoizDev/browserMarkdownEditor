@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "ఈ బోర్డు చదవడానికి మాత్రమే.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "ఫ్రేమ్ తీసివేయి",
+        "commands.fitFrame": "కంటెంట్‌కు సరిపోల్చు",
+        "notice.keptLocked": "{count} లాక్ చేయబడిన అంశాలు ఉంచబడ్డాయి.",
+        "commands.toggleAutoSize": "ఆటో సైజ్ టోగుల్ చేయి",
     },
 });

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "បន្ទះនេះគឺបានតែអាន។",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "យកស៊ុមចេញ",
+        "commands.fitFrame": "ផ្គូផ្គងនឹងមាតិកា",
+        "notice.keptLocked": "បានរក្សា​ធាតុ​ចាក់សោ {count}។",
+        "commands.toggleAutoSize": "បិទ/បើកទំហំស្វ័យប្រវត្តិ",
     },
 });

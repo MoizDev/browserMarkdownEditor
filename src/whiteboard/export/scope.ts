@@ -25,14 +25,18 @@ export function resolveExportScope(source: ExportScopeSource, route: ExportRoute
   return { kind: selection ? 'selection' : 'sheet', ids, bounds: { ...bounds }, includeBackdrop: source.paged && !selection }
 }
 
+// Characters a portable file name cannot hold become underscores; a name cannot end in a dot or space.
+const RESERVED = new Set(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
 function safeName(value: string): string {
-  return Array.from(value, ch => ch === '/' || ch === '\\' || ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127 ? ' ' : ch).join('').trim() || 'Untitled'
+  const replaced = Array.from(value, ch => RESERVED.has(ch) || ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127 ? '_' : ch).join('')
+  return replaced.trim().replace(/[. ]+$/, '') || 'Untitled'
 }
 function two(value: number): string { return String(value).padStart(2, '0') }
 /** The caller supplies time so one command uses one name despite asynchronous rendering. */
-export function exportFileName(base: string, sheet: string | null, scope: ExportScope['kind'], extension: 'png' | 'svg' | 'pdf' | 'json', time: Date): string {
+/** R-15: the board's own name for a whole-sheet export, and `<name> selection <date time>` for a selection. */
+export function exportFileName(base: string, scope: ExportScope['kind'], extension: 'png' | 'svg' | 'pdf' | 'json', time: Date): string {
   const name = safeName(base)
-  if (scope === 'sheet') return `${name}${sheet ? ` – ${safeName(sheet)}` : ''}.${extension}`
+  if (scope === 'sheet') return `${name}.${extension}`
   if (!Number.isFinite(time.getTime())) throw new RangeError('Invalid export timestamp')
   const stamp = `${time.getFullYear()}-${two(time.getMonth() + 1)}-${two(time.getDate())} ${two(time.getHours())}.${two(time.getMinutes())}.${two(time.getSeconds())}`
   return `${name} selection ${stamp}.${extension}`

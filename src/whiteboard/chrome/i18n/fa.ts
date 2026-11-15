@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "این تابلو فقط خواندنی است.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "حذف قاب",
+        "commands.fitFrame": "تطبیق با محتوا",
+        "notice.keptLocked": "{count} مورد قفل‌شده حفظ شد.",
+        "commands.toggleAutoSize": "تغییر اندازه خودکار",
     },
 });

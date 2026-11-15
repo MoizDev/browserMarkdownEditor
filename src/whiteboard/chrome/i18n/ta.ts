@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "இந்த பலகை படிக்க மட்டுமே.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "சட்டகத்தை அகற்று",
+        "commands.fitFrame": "உள்ளடக்கத்துக்கு ஏற்ப",
+        "notice.keptLocked": "{count} பூட்டிய உருப்படிகள் வைக்கப்பட்டன.",
+        "commands.toggleAutoSize": "தானியங்கு அளவை மாற்று",
     },
 });

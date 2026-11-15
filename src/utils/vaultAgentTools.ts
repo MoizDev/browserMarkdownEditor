@@ -32,7 +32,7 @@
 
 import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
-import type { AgentChange, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
+import type { AgentChange, AgentRegion, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
 import { getView, type CanvasApplyResult, type CanvasShapePage, type CanvasShapeQuery, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
@@ -681,7 +681,8 @@ function onScreenCaption(viewport: { readonly x: number; readonly y: number; rea
 
 /** What a native canvas picture shows, said plainly: a recorded view, the whole sheet when the board was never viewed,
  *  or one page. A hidden or unmounted board is never claimed to be on screen. */
-function nativeViewCaption(path: string, native: NativeCanvasView, page: number | undefined): string {
+function nativeViewCaption(path: string, native: NativeCanvasView, page: number | undefined, region?: AgentRegion): string {
+    if (region) return `${path}${page !== undefined ? `, page ${page}` : ''}, the region x ${Math.round(region.x)}…${Math.round(region.x + region.w)}, y ${Math.round(region.y)}…${Math.round(region.y + region.h)}:`;
     const info = native.info;
     if (info.kind === 'drawing') return `${path}${native.wholeSheet ? ', the whole sheet' : onScreenCaption(info.viewport)}:`;
     const count = info.pageCount;
@@ -701,8 +702,20 @@ function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
     return ` (word emphasis not applied${reason ? `: ${reason}` : ''})`;
 }
 
+/** The agent's region, checked: finite numbers and a positive extent. An empty but valid region is pictured as a blank image. */
+function regionArg(value: unknown): AgentRegion | undefined {
+    if (value === undefined) return undefined;
+    const r = value as Partial<Record<'x' | 'y' | 'w' | 'h', unknown>> | null;
+    if (!r || typeof r !== 'object' || ![r.x, r.y, r.w, r.h].every(item => typeof item === 'number' && Number.isFinite(item))
+        || !((r.w as number) > 0) || !((r.h as number) > 0)) {
+        throw new ToolError('region needs finite x and y, and a positive w and h, in board units.');
+    }
+    return { x: r.x as number, y: r.y as number, w: r.w as number, h: r.h as number };
+}
+
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
+    const region = regionArg(a.region);
     if (!ctx.host.canvasShapePage) assertSupportedCanvasFormat(path);
     await requireFile(ctx, path);
     const name = baseName(path);
@@ -723,11 +736,12 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             if (native) {
                 const count = native.info.kind === 'pdf-annotate' ? native.info.pageCount : 0;
                 if (page !== undefined && count && page > count) throw new ToolError(`page ${page} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
-                const blob = await withTimeout(native.capture(max, ctx.signal, page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+                const blob = await withTimeout(native.capture(max, ctx.signal, page, region), REPORTER_TIMEOUT_MS, 'capturing the canvas');
                 ctx.ensureLive();
-                return pngResult(blob, nativeViewCaption(path, native, page), `"${path}"`);
+                return pngResult(blob, nativeViewCaption(path, native, page, region), `"${path}"`);
             }
         }
+        if (region) throw new ToolError(`A region is shown only for an open ink board. Look at a whole page of "${path}" instead.`);
         if (view) {
             const info = await describe(view);
             if (info.kind === 'pdf' && info.surface === 'text') throw new ToolError('PDF Text image capture is unavailable. Use vault_read for canonical text or switch to Original to view page images.');
@@ -781,6 +795,7 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         let native = await ctx.host.nativeCanvasView?.(path, guard) ?? null;
         ctx.ensureLive();
         if (!native && ctx.host.nativeClosedPicture) {
+            if (region) throw new ToolError(`"${path}" is closed: a region is shown only for an open board. Open it, or look at a whole page.`);
             const closed = await ctx.host.nativeClosedPicture(path, page, max, guard);
             ctx.ensureLive();
             if (closed) {
@@ -802,9 +817,9 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             throw new ToolError(`page ${page} is past the end of "${path}", which has ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.`);
         }
         const shownPage = info.kind === 'drawing' ? undefined : page;
-        const blob = await withTimeout(native.capture(max, ctx.signal, shownPage), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+        const blob = await withTimeout(native.capture(max, ctx.signal, shownPage, region), REPORTER_TIMEOUT_MS, 'capturing the canvas');
         ctx.ensureLive();
-        return pngResult(blob, nativeViewCaption(path, native, shownPage), `"${path}"`);
+        return pngResult(blob, nativeViewCaption(path, native, shownPage, region), `"${path}"`);
     }
 
     throw new ToolError(`vault_view shows PDFs, notebooks, drawings and images; "${path}" is text — read it with vault_read.`);
@@ -1061,15 +1076,9 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok([...head, '', ...lines].join('\n'));
     }
     if (isPdfFile(baseName(path))) {
-        // An ink board is read from its session or its admitted closed source. One that is not yet on screen opens beside
-        // the user, without taking focus, and is then read through its session. A refusal there throws; nothing falls back.
-        let result = await nativeShapePage(ctx, path, { page });
-        if (!result) {
-            await ctx.host.openCanvasForAgent(path);
-            ctx.ensureLive();
-            result = await nativeShapePage(ctx, path, { page });
-        }
-        if (!result) throw new ToolError(`"${path}" has no native ink board that can be read.`);
+        // An open ink board is read from its session. A closed PDF is refused, asking for annotation mode (F-AGENT-001).
+        const result = await nativeShapePage(ctx, path, { page });
+        if (!result) throw new ToolError(`Open "${path}" in annotation mode to read its shapes.`);
         const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`, COORDS_PAGED];
         return ok([...head, '', ...pagedShapeLines(result, 0, MAX_TOOL_TEXT_CHARS - 1500).lines].join('\n'));
     }

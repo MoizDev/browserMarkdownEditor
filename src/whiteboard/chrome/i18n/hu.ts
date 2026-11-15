@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Ez a tábla csak olvasható.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Keret eltávolítása",
+        "commands.fitFrame": "Illesztés a tartalomhoz",
+        "notice.keptLocked": "{count} zárolt elem megmaradt.",
+        "commands.toggleAutoSize": "Automatikus méret be/ki",
     },
 });

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Papan ini hanya dapat dibaca.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Hapus bingkai",
+        "commands.fitFrame": "Sesuaikan dengan konten",
+        "notice.keptLocked": "{count} item terkunci dipertahankan.",
+        "commands.toggleAutoSize": "Alihkan ukuran otomatis",
     },
 });

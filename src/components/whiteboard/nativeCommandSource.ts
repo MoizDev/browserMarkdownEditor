@@ -39,7 +39,7 @@ function bindingShortcut(key: string | undefined, mac: boolean): string | undefi
 }
 export function nativeCommandShortcut(command: BoardCommand, mac: boolean): string | undefined {
     const key = Object.entries(keyCommands).find(([, value]) => value === command)?.[0]
-        ?? ({ undo: 'undo', redo: 'redo' } as Partial<Record<BoardCommand, string>>)[command];
+        ?? ({ undo: 'undo', redo: 'redo', frameSelection: 'frame.toggle', removeFrame: 'frame.toggle' } as Partial<Record<BoardCommand, string>>)[command];
     return bindingShortcut(key, mac);
 }
 export function nativeActionShortcut(action: MainAction, mac: boolean): string | undefined {
@@ -60,7 +60,7 @@ export function createNativeKeyCommands(source: BoardCommandSource, other: (id: 
 
 const commandMutates: Record<BoardCommand, boolean> = {
     undo: true, redo: true, delete: true, duplicate: true, cut: true, copy: false, paste: true, selectAll: false,
-    group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, toggleLocked: true,
+    group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, removeFrame: true, fitFrame: true, toggleLocked: true, toggleAutoSize: true,
     alignLeft: true, alignHorizontal: true, alignRight: true, alignTop: true, alignVertical: true, alignBottom: true,
     stretchHorizontal: true, stretchVertical: true, distributeHorizontal: true, distributeVertical: true,
     stackHorizontal: true, stackVertical: true, pack: true, sendBack: true, sendBackward: true,

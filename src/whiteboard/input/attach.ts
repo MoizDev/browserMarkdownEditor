@@ -104,6 +104,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let start: ToolStateSnapshot | null = null
   let activeSource: RealSample['source'] | null = null
   let completeTool = false
+  /** The tool the stylus eraser end displaced; it returns when that end lifts (F-INPUT-009). */
+  let restoreTool: string | null = null
   let spaceHeld = false
   let zoomHeld = false
   // F-TOOL-009: the quick overview is Shift pressed while Z is held. Shift pressed first is the direct zoom route, not this.
@@ -117,7 +119,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   let temporaryPan = false
   let pendingPrediction: readonly PredictedPoint[] | undefined
-  let suppressMenu = false
+  /** A right (or Ctrl) press in progress: its native menu is the app's to decide, on release, once it is known to be a click (F-INPUT-012). */
+  let rightPressActive = false
   const touchAdmission = new Map<number, boolean>()
   const pendingContinuations = new Set<() => void>()
   const cancelContinuations = (): boolean => {
@@ -135,23 +138,30 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     startFling: services.startFling,
   }
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
-  const secondaryPan: Tool<unknown> = {
+  // Right-button drag pans and never opens a menu on release; a stationary press opens the board menu on release (F-INPUT-012).
+  const secondaryPan: Tool<PointerEvent | undefined> = {
     id: 'secondary-pan', holdsNoGesture: true,
-    begin(sample, modifiers) {
+    begin(sample, modifiers, press) {
       const origin = physicalSurface(sample)
       const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })
       if (!pan) return null
+      rightPressActive = true
       let dragging = false
+      const release = () => { rightPressActive = false }
       const owner: GestureOwner = {
         kind: 'pan', pointerIds: pan.pointerIds,
         update(samples, nextModifiers) {
           for (const point of samples) {
             const surface = physicalSurface(point)
-            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) { dragging = true; suppressMenu = true }
+            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) dragging = true
             if (dragging) pan.update([point], nextModifiers)
           }
         },
-        finish: reason => pan.finish(reason), cancel: reason => pan.cancel(reason),
+        finish(reason) {
+          pan.finish(reason); release()
+          if (reason === 'up' && !dragging && press) services.contextMenu?.(press)
+        },
+        cancel(reason) { pan.cancel(reason); release() },
       }
       return owner
     },
@@ -191,10 +201,17 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       const choice = start.active
       completeTool = false
       if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
-        return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
+        if (!editable()) return null
+        // Eraser-end selects Eraser for as long as it is held, separately from the E key and the right button.
+        if (start.active.id !== 'eraser' && services.tools.getRegistration('eraser')) { restoreTool = start.active.id; services.tools.setTool('eraser') }
+        return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
       }
       if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
-      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
+      if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) {
+        // A barrel press while the pen is drawing belongs to that stroke: no pan, no menu (F-INPUT-008).
+        if (activeSource === 'pen' && event.button === 2) return null
+        return { tool: secondaryPan, context: event }
+      }
       if (event.type === 'pointerdown' && event.button !== 0) return null
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
@@ -251,6 +268,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       // A non-editable view must not write the single-use reset: complete() can persist ui.tool to the shared document.
       if (reason === 'up' && start && completeTool && editable()) services.tools.complete(start)
       completeTool = false
+      if (restoreTool !== null && editable() && services.tools.getRegistration(restoreTool)) services.tools.setTool(restoreTool)
+      restoreTool = null
       temporaryPan = false
       pendingPrediction = undefined
       start = null
@@ -262,7 +281,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
       view.wet.invalidate()
     },
-    contextMenu: event => { if (suppressMenu) suppressMenu = false; else services.contextMenu?.(event) },
+    // The native menu is always replaced. A mouse-originated one (a right or Ctrl press) is decided by the press itself;
+    // only a keyboard-raised one opens the board menu directly.
+    contextMenu: event => { event.preventDefault(); if (!rightPressActive && event.button !== 2 && !event.ctrlKey) services.contextMenu?.(event) },
     error: services.error,
   })
   let cancelKeyboardGesture = () => false
@@ -287,7 +308,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopSharedPenMode = services.tools.subscribePenMode(onPenMode)
   services.penModeChanged?.(touch.penMode)
   const stopPenContacts = services.tools.subscribePenContacts((id, down, direct, time) => {
-    try { if (down) touch.penDown(id, direct); else touch.penUp(id, time) }
+    try { if (down) touch.penDown(id, direct); else touch.penUp(id) }
     catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
@@ -337,7 +358,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
-    else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
+    else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover()
   }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)

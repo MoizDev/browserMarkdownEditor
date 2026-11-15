@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Această placă este doar pentru citire.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Elimină cadrul",
+        "commands.fitFrame": "Potrivește la conținut",
+        "notice.keptLocked": "S-au păstrat {count} elemente blocate.",
+        "commands.toggleAutoSize": "Comută dimensiunea automată",
     },
 });

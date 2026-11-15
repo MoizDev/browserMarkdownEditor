@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Looxani waa akhri-kaliya.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Ka saar qaabka",
+        "commands.fitFrame": "Ku habee waxa ku jira",
+        "notice.keptLocked": "Waxaa la ilaaliyay {count} shay oo quful ah.",
+        "commands.toggleAutoSize": "Beddel cabbirka otomaatiga ah",
     },
 });

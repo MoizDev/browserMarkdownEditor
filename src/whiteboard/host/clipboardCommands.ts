@@ -227,8 +227,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         } });
         try {
             signal.throwIfAborted();
-            const sheet = board.doc.sheetOrder.length > 1 ? board.doc.sheets.get(state.sheet)?.name ?? null : null;
-            options.download(built.blob, exportFileName(options.boardName(), sheet, roots.length ? 'selection' : 'sheet', 'json', new Date()));
+            options.download(built.blob, exportFileName(options.boardName(), roots.length ? 'selection' : 'sheet', 'json', new Date()));
             if (media) options.notice(JSON_MEDIA_NOTICE);
         } finally { built.release(); }
     };

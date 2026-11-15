@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Эта доска доступна только для чтения.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Убрать рамку",
+        "commands.fitFrame": "По содержимому",
+        "notice.keptLocked": "Сохранено заблокированных элементов: {count}.",
+        "commands.toggleAutoSize": "Переключить автоматический размер",
     },
 });

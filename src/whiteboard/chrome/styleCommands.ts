@@ -1,6 +1,7 @@
 import { isLocked } from '../change/commands';
 import type { Op } from '../change/ops';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
+import type { FigureNode } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
@@ -45,7 +46,14 @@ export class BoardStyleCommands {
         private readonly session: BoardSession,
         private readonly selection: () => readonly NodeId[],
         private readonly activeTool: () => string,
+        /** A figure's label must stay inside its figure after a size or width change (R-9): the caller measures it. */
+        private readonly figureGrowY: (node: Readonly<FigureNode>) => number | undefined = () => undefined,
     ) {}
+
+    private refitLabel(ops: Op[], node: FigureNode): void {
+        const growY = this.figureGrowY(node);
+        if (growY !== undefined && growY !== node.growY) ops.push({ t: 'set', id: node.id, key: 'growY', value: growY });
+    }
 
     currentColor(): Swatch | null {
         const doc = this.session.doc;
@@ -188,7 +196,9 @@ export class BoardStyleCommands {
             ops.push({ t: 'set', id: node.id, key: 'size', value: size });
             if (node.kind === 'figure' || node.kind === 'connector' || node.kind === 'polyline') {
                 const scale = styleGeometryMetrics.legacyEquivalent(node.kind, node.size, node.width);
-                ops.push({ t: 'set', id: node.id, key: 'width', value: styleGeometryMetrics.actualWidth(node.kind, size, scale) });
+                const width = styleGeometryMetrics.actualWidth(node.kind, size, scale);
+                ops.push({ t: 'set', id: node.id, key: 'width', value: width });
+                if (node.kind === 'figure') this.refitLabel(ops, { ...node, size, width });
             }
         }
         apply(this.session, 'Change style size', ops);
@@ -224,6 +234,7 @@ export class BoardStyleCommands {
             } else if (node.kind === 'figure' || node.kind === 'connector' || node.kind === 'polyline') {
                 const width = styleGeometryMetrics.actualWidth(node.kind, node.size, value);
                 if (node.width !== width) ops.push({ t: 'set', id: node.id, key: 'width', value: width });
+                if (node.kind === 'figure') this.refitLabel(ops, { ...node, width });
             }
         }
         apply(this.session, 'Change pen width', ops, this.widthGesture);

@@ -395,5 +395,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Dieses Forum ist schreibgeschützt.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Rahmen entfernen",
+        "commands.fitFrame": "An Inhalt anpassen",
+        "notice.keptLocked": "{count} gesperrte Elemente wurden beibehalten.",
+        "commands.toggleAutoSize": "Automatische Größe umschalten",
     },
 });

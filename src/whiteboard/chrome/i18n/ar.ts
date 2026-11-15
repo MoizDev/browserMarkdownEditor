@@ -434,5 +434,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "هذه اللوحة للقراءة فقط.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "إزالة الإطار",
+        "commands.fitFrame": "ملاءمة للمحتوى",
+        "notice.keptLocked": "تم الإبقاء على {count} عناصر مقفلة.",
+        "commands.toggleAutoSize": "تبديل الحجم التلقائي",
     },
 });

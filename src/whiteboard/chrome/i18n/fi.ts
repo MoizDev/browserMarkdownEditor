@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Tämä taulu on vain luku -tilassa.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Poista kehys",
+        "commands.fitFrame": "Sovita sisältöön",
+        "notice.keptLocked": "Säilytettiin {count} lukittua kohdetta.",
+        "commands.toggleAutoSize": "Vaihda automaattinen koko",
     },
 });

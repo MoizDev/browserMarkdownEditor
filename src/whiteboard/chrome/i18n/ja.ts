@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "このボードは読み取り専用です。",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "フレームを削除",
+        "commands.fitFrame": "コンテンツに合わせる",
+        "notice.keptLocked": "ロックされた項目を{count}件残しました。",
+        "commands.toggleAutoSize": "自動サイズを切り替え",
     },
 });

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Esta placa é somente leitura.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Remover quadro",
+        "commands.fitFrame": "Ajustar ao conteúdo",
+        "notice.keptLocked": "{count} itens bloqueados foram mantidos.",
+        "commands.toggleAutoSize": "Alternar tamanho automático",
     },
 });

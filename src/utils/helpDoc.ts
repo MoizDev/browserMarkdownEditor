@@ -398,7 +398,14 @@ otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Native drawings and notebooks open on the native board: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
-jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
+jump through a notebook, zoom with − / +, and invert the view. With the canvas
+focused, **Alt/Option+←** or **↑** goes to the previous sheet and **Alt/Option+→**
+or **↓** to the next; on the last sheet, a forward step adds a new sheet once that
+sheet has content. Drag with the **Frame** tool to draw a named frame: it clips
+what sits inside it and takes in content fully enclosed by the box. **Cmd/Ctrl+Alt+G**
+frames the selection, or removes the frames when only frames are selected (their
+contents stay where they are). A selected frame's menu offers **Fit to content**,
+which shrinks or grows it around its contents. **Thumbnails**
 opens a notebook's page strip; click a preview to jump to that page. A drawing's
 **Minimap** shows its artwork and your current viewport. Click or drag in it to
 navigate; with the minimap focused, arrow keys move a quarter viewport (a full
@@ -411,6 +418,10 @@ text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+
 copies and **Cmd/Ctrl+V** pastes the selection, and strokes are saved to the file
 and are there when you reopen it. Otherwise the board opens read-only, with a
 notice that says why.
+
+Elbow connectors from earlier versions keep their ends, their attachments, their arrowheads
+and their label. This app draws their bends itself, so an elbow may bend in a different place
+than it did before; it still joins the same shapes by the same sides.
 
 With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
 copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image

@@ -51,6 +51,15 @@ function rootPage(context: PlacementContext, node: Node): number {
 }
 function center(box: LocalBox): Point { return { x: box.x + box.w / 2, y: box.y + box.h / 2 }; }
 
+/** The unrotated rectangle whose axis-aligned bounds are `width` × `height` at world `angle`, or null when no
+ * positive rectangle has them (F-AGENT-004: w/h request the bounds, not the unrotated box). */
+function localForBounds(width: number, height: number, angle: number): { readonly w: number; readonly h: number } | null {
+    const c = Math.abs(Math.cos(angle)), s = Math.abs(Math.sin(angle)), det = c * c - s * s;
+    if (Math.abs(det) < 1e-9) return null;
+    const w = (c * width - s * height) / det, h = (c * height - s * width) / det;
+    return w > 0 && h > 0 && Number.isFinite(w) && Number.isFinite(h) ? { w, h } : null;
+}
+
 // C8: x/y and w/h describe the unrotated rectangle; rotation is absolute about
 // its centre. Exact local boxes come from the same projection as canvas_shapes.
 export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementContext): { readonly ops: readonly NodeSetOp[]; readonly notes: readonly string[] } {
@@ -67,6 +76,7 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
     const oldY = worldCenter.y - (oldPageOrigin?.y ?? 0) - oldBox.h / 2;
     let candidate = node;
     const ops: NodeSetOp[] = [];
+    let boundsSolved = false;
     if (op.w !== undefined || op.h !== undefined) {
         if (node.kind === 'text' && op.w !== undefined && op.h === undefined) {
             candidate = { ...node, w: op.w, autoSize: false };
@@ -106,14 +116,28 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
                 { t: 'set', id: node.id, key: 'end', value: end }, { t: 'set', id: node.id, key: 'bend', value: bend });
         } else {
             if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
-            candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };
-            if (op.w !== undefined) ops.push({ t: 'set', id: node.id, key: 'w', value: op.w });
-            if (op.h !== undefined) ops.push({ t: 'set', id: node.id, key: 'h', value: op.h });
+            // A rectangle's w/h are its axis-aligned bounds after the rotation this op leaves it at.
+            const rectangular = node.kind !== 'figure' || node.shape === 'rectangle';
+            const angleAfter = op.rotation !== undefined ? (op.rotation % 360) * Math.PI / 180
+                : parentTransform(context, node, target.page).angle + node.rotation;
+            if (rectangular) {
+                const angleBefore = oldParent.angle + node.rotation, c = Math.abs(Math.cos(angleBefore)), s = Math.abs(Math.sin(angleBefore));
+                const local = localForBounds(op.w ?? c * node.w + s * node.h, op.h ?? s * node.w + c * node.h, angleAfter);
+                if (!local) throw new AgentOpRefused('the requested bounds cannot be set exactly at this rotation');
+                candidate = { ...node, w: local.w, h: local.h };
+                ops.push({ t: 'set', id: node.id, key: 'w', value: local.w }, { t: 'set', id: node.id, key: 'h', value: local.h });
+                boundsSolved = true;
+            } else {
+                if (Math.abs(Math.sin(2 * angleAfter)) > 1e-9) throw new AgentOpRefused('this shape cannot be resized while rotated; set its size unrotated');
+                candidate = { ...node, w: op.w ?? node.w, h: op.h ?? node.h };
+                if (op.w !== undefined) ops.push({ t: 'set', id: node.id, key: 'w', value: op.w });
+                if (op.h !== undefined) ops.push({ t: 'set', id: node.id, key: 'h', value: op.h });
+            }
         }
     }
     const newBox = context.localBox(candidate);
-    if ((op.w !== undefined && Math.abs(newBox.w - op.w) > 0.01)
-        || (op.h !== undefined && Math.abs(newBox.h - op.h) > 0.01)) {
+    if (!boundsSolved && ((op.w !== undefined && Math.abs(newBox.w - op.w) > 0.01)
+        || (op.h !== undefined && Math.abs(newBox.h - op.h) > 0.01))) {
         throw new AgentOpRefused('requested size cannot be represented exactly');
     }
     const parent = parentTransform(context, node, target.page);

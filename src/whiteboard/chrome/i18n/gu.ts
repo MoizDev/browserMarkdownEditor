@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "આ બોર્ડ ફક્ત વાંચવા માટે છે.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "ફ્રેમ દૂર કરો",
+        "commands.fitFrame": "સામગ્રી પ્રમાણે ફિટ કરો",
+        "notice.keptLocked": "{count} લૉક આઇટમ રાખી.",
+        "commands.toggleAutoSize": "ઓટો સાઇઝ ટૉગલ કરો",
     },
 });

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Este tablero es de sólo lectura.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Quitar marco",
+        "commands.fitFrame": "Ajustar al contenido",
+        "notice.keptLocked": "Se conservaron {count} elementos bloqueados.",
+        "commands.toggleAutoSize": "Alternar tamaño automático",
     },
 });

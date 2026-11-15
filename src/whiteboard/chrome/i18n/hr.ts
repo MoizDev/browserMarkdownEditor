@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Ova ploča je samo za čitanje.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Ukloni okvir",
+        "commands.fitFrame": "Prilagodi sadržaju",
+        "notice.keptLocked": "Zadržano je {count} zaključanih stavki.",
+        "commands.toggleAutoSize": "Uključi ili isključi automatsku veličinu",
     },
 });

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "该板是只读的。",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "移除框架",
+        "commands.fitFrame": "适应内容",
+        "notice.keptLocked": "已保留 {count} 个锁定项目。",
+        "commands.toggleAutoSize": "切换自动大小",
     },
 });

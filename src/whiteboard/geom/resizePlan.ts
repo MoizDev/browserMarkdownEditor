@@ -27,8 +27,10 @@ export class ResizePlan {
         const common = commonResizeRotation(rotations);
         this.mixed = common === null;
         // Default, calibration cut by owner: one aspect-locked participant locks the whole selection.
+        // A picture's side handle keeps its proportions (spec F-XFORM-013: 80×40 → 120×60); its corners stay free.
         this.forceAspect = this.mixed || this.snapshots.some(target => target.forceAspect || target.node.kind === 'clip'
-            || target.node.kind === 'sticky' || (target.node.kind === 'text' && !!handle.x && !!handle.y));
+            || target.node.kind === 'sticky' || (target.node.kind === 'text' && !!handle.x && !!handle.y)
+            || (target.node.kind === 'picture' && !(handle.x && handle.y)));
         const rotation = common ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const target of this.snapshots) {

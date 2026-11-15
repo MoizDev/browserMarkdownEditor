@@ -61,7 +61,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     });
     const flush = () => {
         const ids = [...contacts]; contacts.clear(); drag = null; space = false; suppressMenu = false;
-        for (const id of ids) { touch.touchUp(id); touch.penUp(id, performance.now()); release(id); }
+        for (const id of ids) { touch.touchUp(id); touch.penUp(id); release(id); }
         reportInteraction(); cancelMotion();
     };
     const samples = (d: Drag, p: Point, time: number) => {
@@ -86,7 +86,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
             if (event.pointerType === 'pen') touch.penDown(event.pointerId, false);
             contacts.add(event.pointerId); reportInteraction();
             try { surface.setPointerCapture(event.pointerId); }
-            catch { contacts.delete(event.pointerId); touch.penUp(event.pointerId, event.timeStamp); reportInteraction(); return; }
+            catch { contacts.delete(event.pointerId); touch.penUp(event.pointerId); reportInteraction(); return; }
         }
         if (secondary) suppressMenu = false;
         const open = !secondary && event.button === 0 && !space && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
@@ -116,7 +116,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         if (d) drag = null;
         contacts.delete(event.pointerId); reportInteraction();
         if (event.pointerType === 'touch') touch.touchUp(event.pointerId);
-        if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp);
+        if (event.pointerType === 'pen') touch.penUp(event.pointerId);
         release(event.pointerId);
         if (!allowed || cancelled || !d) return;
         if (!d.moved) { if (!d.secondary) d.open?.(); return; }

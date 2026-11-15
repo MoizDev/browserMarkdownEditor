@@ -1,6 +1,7 @@
 import { isLocked } from '../change/commands';
 import type { Op } from '../change/ops';
 import { BoardStyleCommands } from '../chrome/styleCommands';
+import { figureLabelGrowY } from '../text/edit/growth';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { InputToken } from '../input/tool';
@@ -28,7 +29,8 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
     let disposed = false, generation = 0;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const writable = () => current() && options.canMutateView() && !session.isReadOnly && !session.isGestureActive;
-    const commands = new BoardStyleCommands(session, () => runtime.selection.getSnapshot().selected, () => runtime.tools.getSnapshot().active.id);
+    const commands = new BoardStyleCommands(session, () => runtime.selection.getSnapshot().selected, () => runtime.tools.getSnapshot().active.id,
+        node => figureLabelGrowY(request => runtime.render.text.layout.measure(request), runtime.render.text.fonts.epoch, node));
     const cancel = () => { generation++; for (const controller of controllers) controller.abort(); controllers.clear(); };
     const change = (color: 'white' | null, fill: Fill | null): boolean => {
         if (!writable()) return false;

@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Ang board na ito ay read-only.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Alisin ang frame",
+        "commands.fitFrame": "I-fit sa nilalaman",
+        "notice.keptLocked": "Pinanatili ang {count} naka-lock na item.",
+        "commands.toggleAutoSize": "I-toggle ang auto size",
     },
 });

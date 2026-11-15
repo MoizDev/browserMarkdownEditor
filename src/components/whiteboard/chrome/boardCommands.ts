@@ -2,7 +2,7 @@ import type { ContextMenuCommand, ContextMenuEntry } from '../../../utils/contex
 
 export type BoardCommand =
     | 'undo' | 'redo' | 'delete' | 'duplicate' | 'cut' | 'copy' | 'paste' | 'selectAll'
-    | 'group' | 'ungroup' | 'flatten' | 'editLink' | 'frameSelection' | 'toggleLocked'
+    | 'group' | 'ungroup' | 'flatten' | 'editLink' | 'frameSelection' | 'removeFrame' | 'fitFrame' | 'toggleLocked' | 'toggleAutoSize'
     | 'alignLeft' | 'alignHorizontal' | 'alignRight' | 'alignTop' | 'alignVertical' | 'alignBottom'
     | 'stretchHorizontal' | 'stretchVertical' | 'distributeHorizontal' | 'distributeVertical'
     | 'stackHorizontal' | 'stackVertical' | 'pack' | 'sendBack' | 'sendBackward'
@@ -45,6 +45,8 @@ export interface BoardContextMenuSource extends BoardCommandSource {
     readonly transparent: boolean;
     readonly transparentLabel: string;
     readonly transparentDisabledReason?: string;
+    /** The selection holds text, so Toggle auto size is offered (it is enabled only for fixed-width text). */
+    readonly textSelected: boolean;
     readonly noPagesReason: string;
     toggleTransparent(): void;
     readonly pages: readonly { id: string; label: string; enabled: boolean; reason?: string }[];
@@ -69,6 +71,10 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
         menu('edit', rows([
             ...(source.canUngroup ? ['ungroup' as const] : source.selectedCount > 1 ? ['group' as const] : []),
             'flatten', ...(source.selectedCount === 1 ? ['editLink' as const] : ['frameSelection' as const]),
+            ...(source.textSelected ? ['toggleAutoSize' as const] : []),
+            // Frame rows appear only for a selection they can act on, so other selections keep their menu unchanged.
+            ...(source.state('removeFrame').enabled ? ['removeFrame' as const] : []),
+            ...(source.state('fitFrame').enabled ? ['fitFrame' as const] : []),
             'toggleLocked',
         ])),
         menu('arrange', rows([

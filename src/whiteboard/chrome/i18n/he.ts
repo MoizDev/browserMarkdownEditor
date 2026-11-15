@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "לוח זה הוא לקריאה בלבד.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "הסרת מסגרת",
+        "commands.fitFrame": "התאמה לתוכן",
+        "notice.keptLocked": "נשמרו {count} פריטים נעולים.",
+        "commands.toggleAutoSize": "החלפת גודל אוטומטי",
     },
 });

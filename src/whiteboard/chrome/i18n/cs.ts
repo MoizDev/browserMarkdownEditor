@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Tato deska je pouze pro čtení.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Odebrat rám",
+        "commands.fitFrame": "Přizpůsobit obsahu",
+        "notice.keptLocked": "Ponecháno {count} uzamčených položek.",
+        "commands.toggleAutoSize": "Přepnout automatickou velikost",
     },
 });

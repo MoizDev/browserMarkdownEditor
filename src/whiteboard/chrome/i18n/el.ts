@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Αυτός ο πίνακας είναι μόνο για ανάγνωση.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Αφαίρεση πλαισίου",
+        "commands.fitFrame": "Προσαρμογή στο περιεχόμενο",
+        "notice.keptLocked": "Διατηρήθηκαν {count} κλειδωμένα στοιχεία.",
+        "commands.toggleAutoSize": "Εναλλαγή αυτόματου μεγέθους",
     },
 });

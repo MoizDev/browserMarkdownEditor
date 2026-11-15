@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "บอร์ดนี้เป็นแบบอ่านอย่างเดียว",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "นำกรอบออก",
+        "commands.fitFrame": "พอดีกับเนื้อหา",
+        "notice.keptLocked": "เก็บรายการที่ล็อกไว้ {count} รายการ",
+        "commands.toggleAutoSize": "สลับขนาดอัตโนมัติ",
     },
 });

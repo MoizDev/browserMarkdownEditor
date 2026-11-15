@@ -3,6 +3,7 @@ import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { PaintSource } from '../render/paintStream';
+import { keptLockedMessage } from '../commands/delete';
 import type { ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
@@ -63,6 +64,8 @@ export interface BoardToolServicesOptions {
         edgeScrolling(): boolean;
         invertMouseZoom(): boolean;
         error(error: unknown): void;
+        /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
+        notice?(message: string): void;
         contextMenu(event: MouseEvent): void;
         persistToolLock?(locked: boolean): void;
         penModeChanged(enabled: boolean): void;
@@ -109,7 +112,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
-        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu });
+        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
+        onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
     // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.
     const sensitive = createSensitiveTargets(() => { if (!disposed) options.interaction.invalidate(); });
@@ -196,8 +200,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
                     sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
-                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
-                        { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
+                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
+                        { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
             }
             default: throw new Error(`Unsupported routed board tool: ${choice.id}`);
         }
@@ -218,6 +222,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
         edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
+        handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {
             if (select.command(id)) return true;
             // grid and focus are document state: a non-editable view consumes them rather than letting the host's global route promote them.

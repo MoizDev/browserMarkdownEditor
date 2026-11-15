@@ -11,7 +11,10 @@ import { inspectPdfVisualDoc, type PdfVisualPreflight } from './pdfVisualPreflig
 /** Pin the actual paged scene and embedded/media-store bytes, not live view geometry. */
 export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void) {
     const doc = runtime.session.doc;
-    if (!current() || doc.rev !== revision || !runtime.scene) throw new Error('Paged board scene is not ready for this revision');
+    // Callers fence their own revision: notebook export on doc.rev, the PDF save build on the content
+    // revision (e0ba0c0b), which non-dirtying commits such as text editing move doc.rev past. A doc.rev-only
+    // check failed every annotated-PDF save while a text box was open ("Could not continue").
+    if (!current() || doc.rev !== revision && runtime.session.contentRevision !== revision || !runtime.scene) throw new Error('Paged board scene is not ready for this revision');
     const scene = runtime.scene.pin(), held: MediaLease[] = [], lifetime = new AbortController();
     let images: ReturnType<typeof createBoardHostImages> | undefined, released = false;
     let assessment: Promise<PdfVisualPreflight> | undefined;
@@ -39,7 +42,9 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
         }
     };
     try {
-        if (scene.revision !== revision || !scene.layout) throw new Error('Paged scene revision or layout is unavailable');
+        // At a content-revision fence the scene is current at doc.rev, which only non-dirtying commits moved past it.
+        const sceneCurrent = scene.revision === revision || runtime.session.contentRevision === revision && scene.revision === doc.rev;
+        if (!sceneCurrent || !scene.layout) throw new Error('Paged scene revision or layout is unavailable');
         const rects = Object.freeze(scene.layout.rects.map(rect => Object.freeze({ ...rect })));
         const sheets = Object.freeze(doc.sheetOrder.map(sheet => sheet.id));
         const entries = new Map([...doc.media].map(([id, entry]) => [id, structuredClone(entry)]));

@@ -54,6 +54,12 @@ export function stageInkCreate(op: InkCreate, context: InkCreateContext): Create
                     pressure ? (a.p ?? 0.5) + ((b.p ?? 0.5) - (a.p ?? 0.5)) * t : undefined);
             }
         }
+        // F-AGENT-015: every stored coordinate and the bounds must be finite, or the op is refused whole (never a nonfinite node).
+        const summary = samples.summary();
+        if (!summary) throw new AgentOpRefused('the stroke is too long or too spread out to store exactly; split it into shorter strokes');
+        for (let i = 0; i < samples.count; i++) {
+            if (!Number.isFinite(samples.x(i)) || !Number.isFinite(samples.y(i))) throw new AgentOpRefused('the stroke has a point that cannot be stored exactly');
+        }
         // The batch keeps this lease until its commit has retained the payload; releasing it here would delete the sample.
         const lease = context.admit(samples);
         const width = styleGeometryMetrics.actualWidth('stroke:pen', op.size ?? 's', 1);

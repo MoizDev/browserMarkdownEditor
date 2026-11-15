@@ -382,5 +382,9 @@ export default defineBoardLanguage({
         "chrome.readOnly": "Bu pano salt okunurdur.",
         "commands.exportPdf": "PDF",
         "commands.exportJson": "JSON",
+        "commands.removeFrame": "Çerçeveyi kaldır",
+        "commands.fitFrame": "İçeriğe sığdır",
+        "notice.keptLocked": "{count} kilitli öğe korundu.",
+        "commands.toggleAutoSize": "Otomatik boyutu değiştir",
     },
 });

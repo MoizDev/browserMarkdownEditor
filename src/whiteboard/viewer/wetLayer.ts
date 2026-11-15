@@ -245,7 +245,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         }
     };
     const make = (band: 'underlay' | 'content'): PlatformLayerDefinition => ({
-        id: `board-wet-${band}`, group: 'document',
+        id: `board-wet-${band}`, group: 'document', liveInput: true,
         create(host) {
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;

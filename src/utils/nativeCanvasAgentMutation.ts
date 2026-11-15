@@ -1,6 +1,5 @@
 import type { AgentHostDeps } from './agentHost';
 import type { VaultToolHost } from '../types/vaultAgent';
-import { isNativeDrawingFile } from './fileTypes';
 import { readCanvasViewPos } from './canvasViewState';
 import { createNativeAgentMutation } from '../whiteboard/host/nativeAgentMutation';
 
@@ -23,9 +22,8 @@ export async function applyNativeCanvasOperations(options: {
     if (!tab || (loaded !== 'drawing' && loaded !== 'notebook' && loaded !== 'pdf')) {
         throw new DOMException('Canvas representation changed', 'AbortError');
     }
-    // This is a representation choice, never a fallback after native acquisition failure. A PDF has no Classic
-    // board to fall back to, so an open PDF always takes the native route and its failures throw.
-    if (loaded !== 'pdf' && !tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
+    // Every loaded canvas, legacy text included, is admitted by its App-owned session (which converts a legacy
+    // board under its own consent and backup rules). A refusal there throws; no second editor takes over.
     if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
     const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
     check();

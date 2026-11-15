@@ -42,6 +42,8 @@ import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
 
 /** How long `openCanvasForAgent` waits for a canvas to mount and register. */
 const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
+/** A mounted board registers a live reporter; a reporter without one is not a board. */
+const hasLiveBoard = (reporter: ViewReporter) => !!reporter.live;
 
 /** What the hosts need from App, re-read on every call. */
 export interface AgentHostDeps {
@@ -253,12 +255,26 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!deps.root || !tab) return null;
             const kind = tab.representation.nativeCanvasKind;
             const native = isNativeDrawingFile(path) ? true
+                : isDrawingFile(path) ? kind === 'drawing'
                 : isNotebookFile(path) ? kind === 'notebook'
                     : isPdfFile(path) ? kind === 'pdfInk' : false;
             if (!native) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+            // A mounted board that has a viewport answers from its own live camera, inversion and frame.
+            const live = getView(path)?.live;
+            if (live?.measured()) {
+                const base = guard.signal ?? new AbortController().signal;
+                const job = { signal: base, deadlineMs: 30_000 };
+                const info = await live.describe(job);
+                if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+                const withSignal = (captureSignal?: AbortSignal) => ({ signal: captureSignal ? AbortSignal.any([base, captureSignal]) : base, deadlineMs: 30_000 });
+                return { info, wholeSheet: false,
+                    capture: (maxSide, captureSignal, page) => page !== undefined
+                        ? live.renderPage(page, maxSide, withSignal(captureSignal))
+                        : live.capture(maxSide, withSignal(captureSignal)) };
+            }
             // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
             const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
             const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
@@ -534,33 +550,31 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
 
         async openCanvasForAgent(path) {
             const deps = getDeps();
-            const open = openTabAt(deps,path);
-            if(isNativeDrawingFile(path)||isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
+            const open = openTabAt(deps, path);
+            if (isEpubFile(path) || open?.representation?.loadedKind === 'epub' || open?.readError) return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
-            const route = routeEngines().canvas[pdf ? 'pdfInk' : isNotebookFile(path) ? 'notebook' : 'drawing'];
-            if (route.engine !== 'tldraw') throw new Error('The selected canvas engine does not yet support agent editing.');
-            if (!pdf) {
+            // A legacy text canvas whose text the editor refuses is never mounted: no pane would ever register for it.
+            if (!pdf && !isNativeDrawingFile(path)) {
                 const captured = open ? deps.snapshotOf(path) : undefined;
                 try {
-                if (open && captured && typeof captured.data !== 'string') return null;
-                let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
-                if (open && text === undefined) return null;
-                if (text === undefined) {
-                    const found = deps.root && await fileAt(deps.root, path);
-                    if (!found) return null;
-                    text = await deps.readFile(found.handle);
-                }
-                if (getDeps().root !== deps.root) return null;
-                const reason = canvasReadOnlyReason(sniffCanvas(text, path));
-                // Refused panes deliberately register no editor: do not spend
-                // the mount timeout waiting for one that must never exist.
-                if (reason) throw new Error(reason);
+                    if (open && captured && typeof captured.data !== 'string') return null;
+                    let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
+                    if (open && text === undefined) return null;
+                    if (text === undefined) {
+                        const found = deps.root && await fileAt(deps.root, path);
+                        if (!found) return null;
+                        text = await deps.readFile(found.handle);
+                    }
+                    if (getDeps().root !== deps.root) return null;
+                    const reason = canvasReadOnlyReason(sniffCanvas(text, path));
+                    if (reason) throw new Error(reason);
                 } finally { captured?.release(); }
             }
-            const hasCanvas = (r: ViewReporter) => !!r.canvas;
+            // The board mounts through its own native session (App's acquisition, legacy conversion and consent included).
+            // Its live reporter, registered by the mounted lease, is the only thing waited for.
             const now = getView(path);
-            if (now?.canvas) return now;
+            if (now?.live) return now;
 
             const tab = openTabAt(deps, path);
             if (!tab) {
@@ -574,7 +588,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 deps.setTabMode(path, 'edit');
             }
             deps.showBeside(path);
-            return whenViewReady(path, CANVAS_MOUNT_TIMEOUT_MS, hasCanvas);
+            return whenViewReady(path, CANVAS_MOUNT_TIMEOUT_MS, hasLiveBoard);
         },
     };
 

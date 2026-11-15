@@ -3,8 +3,6 @@ import { inventoryAttachments } from '../../utils/pdfAttachmentTree';
 import { NOTEBOOK_SOURCE_ATTACHMENT } from '../../utils/pdfFormat';
 import { inspectPdfDocumentWriteSafety } from '../../utils/pdfWriteSafety';
 import type { WorkerContext } from '../../platform/workers/serve';
-import type { DisplayPdfInput } from './types';
-import { emitDocument } from './emit';
 import { validNotebookSourcePath } from './notebookPointer';
 import { readPdfNotebookPointer } from './notebookInspection';
 
@@ -67,18 +65,6 @@ async function finishNotebook(generated: Uint8Array, pages: readonly PageSize[],
     if (actual.path !== path || actual.exportedAt === undefined || JSON.stringify(actual) !== pointer) throw new Error('Notebook source pointer verification failed');
     await context.slice();
     return bytes;
-}
-
-/** This accepts generated pages only; imported PDFs use their preservation-aware route. */
-export async function assembleDisplayPdf(input: DisplayPdfInput, context: WorkerContext): Promise<Uint8Array> {
-    if (!input || input.schema !== 1) throw new Error('Unsupported display-list schema');
-    if (input.notebookSource && !validNotebookSourcePath(input.notebookSource.path)) throw new Error('Notebook source must be a vault-root-relative notebook path');
-    const { bytes: generated } = await emitDocument(input.pages, context);
-    await context.slice();
-    if (input.notebookSource) return finishNotebook(generated, input.pages, input.notebookSource.path, context);
-    const doc = await PDFDocument.load(generated, { updateMetadata: false, parseSpeed: Infinity });
-    verifyGeometry(doc, input.pages);
-    return generated;
 }
 
 /** Only fresh generated memory bytes enter; source and final document are independently inspected. */

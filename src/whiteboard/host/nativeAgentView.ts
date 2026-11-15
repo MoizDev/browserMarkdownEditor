@@ -11,25 +11,26 @@ export interface RecordedNativeAgentView {
     readonly region: Readonly<Rect>;
     readonly view: AgentViewSnapshot;
 }
+/** A board's own camera, as the view presents it right now. */
+export interface NativeAgentViewInput {
+    readonly camera: Readonly<Camera>;
+    readonly viewport: Readonly<Viewport>;
+    readonly insets: Readonly<ViewportInsets>;
+    /** The view's own dark-mode page inversion (a PDF ink board's pages). */
+    readonly inverted?: boolean;
+}
 // Metadata only: hiding/unmounting a view must not destroy the logical region
 // the agent was shown. Neither a CameraController nor mutable content lives here.
 const recorded = new WeakMap<BoardRuntime, RecordedNativeAgentView>();
 
-export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
-    readonly camera: Readonly<Camera>;
-    readonly viewport: Readonly<Viewport>;
-    readonly insets: Readonly<ViewportInsets>;
-    readonly focused?: boolean;
-    /** The view's own dark-mode page inversion (a PDF ink board's pages). */
-    readonly inverted?: boolean;
-}): void {
+/** What a camera shows of this board, without recording it. Null when the camera cannot describe a view (unmeasured). */
+export function snapshotNativeAgentView(runtime: BoardRuntime, input: NativeAgentViewInput): RecordedNativeAgentView | null {
     const { camera, viewport } = input, doc = runtime.session.doc;
-    if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook' && doc.kind !== 'pdf-ink') return;
-    if (input.focused === false && recorded.has(runtime)) return;
+    if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook' && doc.kind !== 'pdf-ink') return null;
     if (![camera.x, camera.y, camera.z, viewport.width, viewport.height].every(Number.isFinite)
-        || camera.z <= 0 || viewport.width <= 0 || viewport.height <= 0) return;
+        || camera.z <= 0 || viewport.width <= 0 || viewport.height <= 0) return null;
     const selection = runtime.selection.getSnapshot(), sheet = doc.sheets.get(selection.sheet);
-    if (!sheet) return;
+    if (!sheet) return null;
     const region = Object.freeze({ x: camera.x, y: camera.y, width: viewport.width / camera.z, height: viewport.height / camera.z });
     const selectedShapeIds = [...selection.selected];
     let view: AgentViewSnapshot;
@@ -39,7 +40,7 @@ export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
             viewport: { x: region.x, y: region.y, w: region.width, h: region.height }, selectedShapeIds };
     } else {
         const stack = boardPageStack(doc.host), position = stack && pagedPosition(camera, viewport, stack, input.insets);
-        if (!stack || !position || (doc.host.kind !== 'notebook' && doc.host.kind !== 'pdf-ink')) return;
+        if (!stack || !position || (doc.host.kind !== 'notebook' && doc.host.kind !== 'pdf-ink')) return null;
         const visiblePages: number[] = [];
         const first = Math.max(0, pageAt(stack, region.y)), last = Math.min(stack.rects.length - 1, pageAt(stack, region.y + region.height));
         for (let index = first; index <= last; index++) {
@@ -57,7 +58,15 @@ export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
                 zoom: position.zoom, visiblePages, paper: `${paper.ruling} · ${paper.size} · ${paper.orientation}`, selectedShapeIds };
         }
     }
-    recorded.set(runtime, { sheet: selection.sheet, region, view });
+    return { sheet: selection.sheet, region, view };
+}
+
+export function recordNativeAgentViewport(runtime: BoardRuntime, input: NativeAgentViewInput & {
+    readonly focused?: boolean;
+}): void {
+    if (input.focused === false && recorded.has(runtime)) return;
+    const next = snapshotNativeAgentView(runtime, input);
+    if (next) recorded.set(runtime, next);
 }
 
 export function readNativeAgentViewport(runtime: BoardRuntime): RecordedNativeAgentView | null {

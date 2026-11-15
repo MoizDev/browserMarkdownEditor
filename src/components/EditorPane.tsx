@@ -101,7 +101,6 @@ interface EditorPaneProps {
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
-    closingDocumentIds: ReadonlySet<string>;
     /** The columns, each with its own tabs, and which column has focus. */
     layout: TabLayout;
     theme: Theme;
@@ -142,8 +141,6 @@ interface EditorPaneProps {
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
-    /** Buffer content and write it immediately, skipping the save debounce. */
-    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy: NonNullable<React.ComponentProps<PdfPaneComponent>['onUnsignedPdfCopy']>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */

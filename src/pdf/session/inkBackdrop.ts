@@ -232,6 +232,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         } catch (error) { releaseFont(); throw error; }
     };
     return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible, captureSnapshot,
+        fontEpoch: () => getPdfFontEpoch(pdf.docKey),
         notePresentation() {
             if (!updating || !latestView || !isCurrent() || !lease.visible || !options.isVisible()) return;
             const coverage = layer.current()?.coverage(latestView, false);

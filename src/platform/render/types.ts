@@ -53,6 +53,9 @@ export interface Layer {
     memory(): { gpuBytes: number; cpuBytes: number };
     /** Awaiting a worker alone is not executable work and must return false (design:661). */
     needsFrame(): boolean;
+    /** Optional. True while the layer's picture for the requested revision is not yet current and it is building one: its
+     * preparation may then take the frame's presentation share, since nothing current is waiting to be encoded there. */
+    prepareUrgent?(): boolean;
     /** Optional by vr-lead ruling; a later rAF after submission, not physical scan-out (C4.3:538–542).
      * The compositor validates the full FrameToken before acknowledging a drawn revision.
      */

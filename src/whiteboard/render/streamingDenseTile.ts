@@ -37,6 +37,9 @@ export interface StreamingDenseTileOptions {
     readonly host: LayerHost;
     readonly onError: (error: unknown) => void;
     readonly signal?: AbortSignal;
+    /** While true, a finished read-ahead slice starts the next one itself (yielding to the event loop between slices)
+     * instead of waiting for a frame: a first picture is otherwise paced at one short read per frame. */
+    readonly eager?: () => boolean;
 }
 /** One rasterized sub-run of a tile: a single blend, drawn by the frame before `end`. The receiver
  * owns `bitmap` and `bytesLease` and must release both through `releaseDenseTilePart`. */
@@ -275,6 +278,11 @@ export class StreamingDenseTileJob {
     private readNext(): void {
         if (this.queue.length) { this.node = this.queue.shift()!; this.itemIndex = 0; this.state = 'items'; return; }
         if (this.readerEnded) { this.finish(); return; }
+        this.refill();
+    }
+    /** Starts one read-ahead slice that refills the queue. Its completion invalidates the frame, or, while `eager` holds,
+     * starts the next slice on its own. */
+    private refill(): void {
         if (this.pumping) return;
         const stream = this.stream!; this.pumping = true;
         const started = performance.now();
@@ -291,7 +299,11 @@ export class StreamingDenseTileJob {
         })();
         this.track(slice).then(() => {
             this.pumping = false;
-            if (!this.controller.signal.aborted) this.options.host.invalidate('streaming-dense-node');
+            if (this.controller.signal.aborted) return;
+            this.options.host.invalidate('streaming-dense-node');
+            if (this.options.eager?.() && !this.readerEnded && this.queue.length < 64) {
+                setTimeout(() => { if (!this.controller.signal.aborted && !this.pumping && !this.readerEnded && this.queue.length < 64) this.refill(); }, 0);
+            }
         }, error => {
             this.pumping = false;
             if (!this.controller.signal.aborted) this.stop(true, error);

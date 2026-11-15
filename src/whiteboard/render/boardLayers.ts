@@ -468,7 +468,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // Without it, only a whole-scene estimate can judge, which a live-only frame never is.
             if (deniedDirectSegments !== null && (candidates !== null || !frame.liveOnly) && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
             // A live-only frame is the kind dense mode itself requests; it carries no tile stream of its own.
-            const mode = useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
+            // A frame whose dense tile jobs failed their bounded retries is drawn direct; the next frame starts over.
+            const mode = dense!.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
@@ -606,6 +607,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const extra = gpu?.memory();
                     return allocatorHost === host ? { gpuBytes: extra?.gpuBytes ?? 0, cpuBytes: reserved + (dense?.memory().cpuBytes ?? 0) + (options.frames.memoryBytes?.() ?? 0) + (extra?.cpuBytes ?? 0) }
                         : { gpuBytes: 0, cpuBytes: 0 };
+                },
+                // Dense tiles are paced by preparation: while the requested picture is still building, it takes the frame's share.
+                prepareUrgent() {
+                    const current = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
+                    return !disposed && !ended && useDense && !current;
                 },
                 needsFrame() {
                     return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending() || !!adapter?.needsFrame()

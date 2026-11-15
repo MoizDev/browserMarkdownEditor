@@ -39,7 +39,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'preferences.focus', group: 'preferences', label: 'Focus mode', key: '.', accel: true },
   { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
   { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
-  { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', shift: true },
+  { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', accel: true, alt: true },
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },

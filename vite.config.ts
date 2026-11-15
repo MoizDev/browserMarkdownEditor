@@ -61,9 +61,10 @@ export default defineConfig({
     // after mount changed React's shared-chunk URL; NativePdfEntry then used
     // a second dispatcher while React DOM still held the original module.
     // Pre-optimization does not fetch these lazy workers in the browser.
-    // harfbuzzjs is reached only by board PNG/SVG export; found late, Vite
-    // reloaded the page mid-export and the PDF reopened in Original (cold dev
-    // server, 3 of 3 first runs; 0 of 15 once optimized).
-    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell', 'harfbuzzjs'],
+    include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell'],
+    // harfbuzzjs finds its WASM with new URL('harfbuzz.wasm', import.meta.url): pre-bundled into the
+    // deps cache that URL fell through to index.html ("expected magic word 00 61 73 6d"). Excluded, it is
+    // served from node_modules and never discovered late, which had reloaded the page mid-export.
+    exclude: ['harfbuzzjs'],
   },
 })

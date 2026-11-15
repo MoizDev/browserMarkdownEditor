@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "मिनिम्याप टगल गर्नुहोस्",
     "chrome.debugMode": "डिबग मोड",
     "chrome.sheet": "पाना",
+    "chrome.annotationSheets": "एनोटेसन पाना",
     "chrome.newSheet": "नयाँ पाना",
     "chrome.renameSheet": "पाना पुन: नामाकरण गर्नुहोस्",
     "chrome.deleteSheet": "पाना मेटाउनुहोस्",

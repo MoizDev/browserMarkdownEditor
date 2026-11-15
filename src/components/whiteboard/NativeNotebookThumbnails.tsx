@@ -62,13 +62,13 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
             style={{ position: 'absolute', top: '100%', right: 0, maxHeight: 'min(70vh, 600px)', overflowY: 'auto',
                 display: 'grid', gap: 6, padding: 8, background: 'var(--background-secondary)',
                 border: '1px solid var(--background-modifier-border)', borderRadius: 6 }}>
-            <div><button type="button" disabled={start === 0} onClick={() => setOffset(Math.max(0, start - WINDOW))}>Previous pages</button>{' '}
-                <button type="button" disabled={start + WINDOW >= pages.length} onClick={() => setOffset(start + WINDOW)}>Next pages</button>{' '}
-                {controlled && <button type="button" onClick={() => setOpen(false)}>Close thumbnails</button>}</div>
+            <div><button type="button" className="board-chrome-tool" disabled={start === 0} onClick={() => setOffset(Math.max(0, start - WINDOW))}>Previous pages</button>{' '}
+                <button type="button" className="board-chrome-tool" disabled={start + WINDOW >= pages.length} onClick={() => setOffset(start + WINDOW)}>Next pages</button>{' '}
+                {controlled && <button type="button" className="board-chrome-tool" onClick={() => setOpen(false)}>Close thumbnails</button>}</div>
             {Array.from({ length: Math.min(WINDOW, pages.length - start) }, (_, index) => {
                 const number = start + index, image = images.find(item => item.page === number && item.revision === revision);
                 return <div key={number} style={{ display: 'grid', justifyItems: 'center', gap: 4 }}>
-                    <button type="button" aria-label={`Go to page ${number + 1}`}
+                    <button type="button" className="board-thumb-button" aria-label={`Go to page ${number + 1}`}
                         aria-current={page === number ? 'page' : undefined} onClick={() => { if (current()) jump(number); }}
                         style={{ display: 'grid', justifyItems: 'center', gap: 4 }}>
                         {image ? <img src={image.url} alt="" draggable={false} style={{ maxWidth: 160, maxHeight: 192 }} />
@@ -76,9 +76,9 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
                         <span>Page {number + 1}</span>
                     </button>
                     {reorder && <div role="group" aria-label={`Reorder page ${number + 1}`}>
-                        <button type="button" disabled={number === 0} aria-label={`Move page ${number + 1} earlier`}
+                        <button type="button" className="board-chrome-tool" disabled={number === 0} aria-label={`Move page ${number + 1} earlier`}
                             onClick={() => reorder(number, number - 1)}>Earlier</button>{' '}
-                        <button type="button" disabled={number >= pages.length - 1} aria-label={`Move page ${number + 1} later`}
+                        <button type="button" className="board-chrome-tool" disabled={number >= pages.length - 1} aria-label={`Move page ${number + 1} later`}
                             onClick={() => reorder(number, number + 1)}>Later</button>
                     </div>}
                 </div>;

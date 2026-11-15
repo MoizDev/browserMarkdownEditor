@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "মিনিম্যাপ টগল করুন",
     "chrome.debugMode": "ডিবাগ মোড",
     "chrome.sheet": "শীট",
+    "chrome.annotationSheets": "টীকা শিট",
     "chrome.newSheet": "নতুন শীট",
     "chrome.renameSheet": "শীট পুনঃনামকরণ করুন",
     "chrome.deleteSheet": "শীট মুছুন",

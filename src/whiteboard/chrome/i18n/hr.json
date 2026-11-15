@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Uključi/isključi minikartu",
     "chrome.debugMode": "Način otklanjanja pogrešaka",
     "chrome.sheet": "List",
+    "chrome.annotationSheets": "Listovi s bilješkama",
     "chrome.newSheet": "Novi list",
     "chrome.renameSheet": "Preimenuj list",
     "chrome.deleteSheet": "Izbriši list",

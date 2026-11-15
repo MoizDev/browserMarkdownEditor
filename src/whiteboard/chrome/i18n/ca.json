@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Commuta el minimapa",
     "chrome.debugMode": "Mode de depuració",
     "chrome.sheet": "Full",
+    "chrome.annotationSheets": "Fulls d'anotació",
     "chrome.newSheet": "Full nou",
     "chrome.renameSheet": "Canvia el nom del full",
     "chrome.deleteSheet": "Esborra el full",

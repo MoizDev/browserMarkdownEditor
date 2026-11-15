@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Alihkan peta mini",
     "chrome.debugMode": "Modus debug",
     "chrome.sheet": "Lembar",
+    "chrome.annotationSheets": "Lembar anotasi",
     "chrome.newSheet": "Lembar baru",
     "chrome.renameSheet": "Ganti nama lembar",
     "chrome.deleteSheet": "Hapus lembar",

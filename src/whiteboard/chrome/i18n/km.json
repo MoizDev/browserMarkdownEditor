@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "បិទ/បើក​ផែនទី​តូច",
     "chrome.debugMode": "របៀបបំបាត់កំហុស",
     "chrome.sheet": "សន្លឹក",
+    "chrome.annotationSheets": "ចំណារពន្យល់ផ្ទាំង",
     "chrome.newSheet": "សន្លឹកថ្មី។",
     "chrome.renameSheet": "ប្តូរឈ្មោះសន្លឹក",
     "chrome.deleteSheet": "លុបសន្លឹក",

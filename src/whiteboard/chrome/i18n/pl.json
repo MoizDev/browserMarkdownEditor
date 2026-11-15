@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "Przełącz minimapę",
     "chrome.debugMode": "Tryb debugowania",
     "chrome.sheet": "Arkusz",
+    "chrome.annotationSheets": "Arkusze adnotacji",
     "chrome.newSheet": "Nowy arkusz",
     "chrome.renameSheet": "Zmień nazwę arkusza",
     "chrome.deleteSheet": "Usuń arkusz",

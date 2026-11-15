@@ -50,8 +50,17 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
             return { created: created.id, notes: created.notes };
         }
         const created = stageSimpleCreate(op, base);
+        let notes = created.notes;
+        // A text's size is only known once laid out: place it again through the staged geometry so
+        // its whole box is clamped to the page, as figures and stickies are at creation.
+        const node = op.type === 'text' && host.doc.kind !== 'whiteboard' ? host.doc.nodes.get(created.id) : undefined;
+        if (node && op.type === 'text') {
+            const placed = host.placement(node, { op: 'update', id: created.id, x: op.x, y: op.y, ...(op.page !== undefined ? { page: op.page } : {}) });
+            for (const change of placed.ops) context.builder.push(change);
+            if (placed.notes?.length) notes = [...new Set([...notes, ...placed.notes])];
+        }
         host.reanchor(created.id, context.builder);
-        return { created: created.id, notes: created.notes };
+        return { created: created.id, notes };
     }
     if (op.op === 'update') {
         const id = context.resolve(op.id);

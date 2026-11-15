@@ -38,7 +38,9 @@ export function createBoardViewCamera(options: {
     const initialCamera = drawing && sheet ? { x: drawing.x, y: drawing.y, z: drawing.z } : { x: 0, y: 0, z: 1 };
     const camera = new CameraController(initialCamera, options.initialViewport,
         stack ? pagedConstraint(stack, limits, insets) : freeConstraint(limits));
-    let pendingDrawing = drawing && sheet ? initialCamera : undefined;
+    // The default top-left needs the same re-apply: without it every drawing with no remembered
+    // position opened shifted by half a pane (a legacy board's content sat in the bottom-right).
+    let pendingDrawing = drawing && sheet || doc.kind === 'whiteboard' ? initialCamera : undefined;
     let timer: ReturnType<typeof setTimeout> | undefined, dirty = false, disposed = false;
     const restore = () => {
         // The first 0→measured resize preserves the old viewport's centre.

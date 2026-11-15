@@ -35,11 +35,33 @@ export function createNativeAgentReader(options: {
         const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
         return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
     };
+    // Right after an apply the board still settles (text layout bumps the revision), which aborts a
+    // read mid-way with 'source changed'. Re-read the settled board a few times rather than fail it.
     const read = async <T>(job: JobOptions, consume: (doc: BoardDoc, sheet: SheetId, revision: number,
+        reader: AgentGeometryReader, guard: () => void) => Promise<T>): Promise<T> => {
+        for (let attempt = 0; ; attempt++) {
+            try { return await readOnce(job, consume); }
+            catch (error) {
+                if (attempt >= 4 || requestSignal(job).aborted || !options.isCurrent()
+                    || !(error instanceof DOMException && error.name === 'AbortError' && /source changed|revision or sheet differs/.test(error.message))) throw error;
+                await cooperate();
+            }
+        }
+    };
+    const readOnce = async <T>(job: JobOptions, consume: (doc: BoardDoc, sheet: SheetId, revision: number,
         reader: AgentGeometryReader, guard: () => void) => Promise<T>): Promise<T> => {
         const signal = requestSignal(job);
         signal.throwIfAborted();
         if (!options.isCurrent()) throw new DOMException('Board source ended', 'AbortError');
+        // An agent reads right after its own canvas_apply: step the scene to the new revision (as
+        // frameDrop/pointQuery do) instead of failing every describe/picture that follows an apply.
+        const deadline = performance.now() + 10_000;
+        while (runtime.scene && (!runtime.scene.ready || runtime.scene.revision !== runtime.session.doc.rev) && performance.now() < deadline) {
+            runtime.scene.step(64, performance.now() + 3);
+            await cooperate();
+            signal.throwIfAborted();
+            if (!options.isCurrent()) throw new DOMException('Board source ended', 'AbortError');
+        }
         const scene = runtime.scene, revision = runtime.session.doc.rev, owner = runtime.session.owner;
         const sheet = runtime.selection.getSnapshot().sheet;
         if (!scene?.ready || scene.revision !== revision) throw new Error('Board scene is not ready');

@@ -132,7 +132,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 current: targetCurrent, readBlob: options.readMedia, storeMedia: options.storeMedia,
                 notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')),
                 isCurrent: workerCurrent });
-            await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
+            const placed = await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
+            // A paste that places nothing and says nothing is indistinguishable from a broken one: name it.
+            if (!placed.length && !duplicate) options.notice('Nothing was pasted from the clipboard.');
         }, { signal, deadlineMs: 120_000 });
         return work.finally(() => {
             try { stop(); } finally {
@@ -142,11 +144,16 @@ export function createNativeClipboardController(options: NativeClipboardControll
         });
     };
     const report = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
+    // An interrupted paste (its target changed, or it was cancelled) used to end silently: say so, and say to paste again.
+    const pasteFailure = (error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') options.notice('Nothing was pasted: the paste was interrupted. Paste again.');
+        else options.onError(error);
+    };
     const pasteEvent = (event: ClipboardEvent) => {
         if (options.editingText() || !event.clipboardData) return false;
         return (() => { try { const captured = targetNow(), input = captureTransfer(event.clipboardData!); event.preventDefault();
             const imageRead = input.files.some(file => file.blob.type.startsWith('image/')) ? readClipboard().catch(() => null) : undefined;
-            void execute(Promise.resolve(input), captured, 'paste', undefined, imageRead).catch(options.onError); return true; }
+            void execute(Promise.resolve(input), captured, 'paste', undefined, imageRead).catch(pasteFailure); return true; }
             catch (error) { options.onError(error); return false; } })();
     };
     const readClipboard = async (): Promise<ClipboardInput> => {
@@ -195,13 +202,13 @@ export function createNativeClipboardController(options: NativeClipboardControll
         capturePasteTarget,
         paste(intent: 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted' = 'paste') {
             if (options.editingText()) return;
-            report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(options.onError); });
+            report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(pasteFailure); });
         },
         keydown(event: KeyboardEvent) {
             if (options.editingText() || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'v' || (!event.altKey && !event.shiftKey)) return false;
             event.preventDefault();
             const intent = event.shiftKey ? event.altKey ? 'paste-plain-inverted' : 'paste-plain' : 'paste-inverted';
-            report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(options.onError); });
+            report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(pasteFailure); });
             return true;
         },
         duplicate(snapshot: CopySnapshot): Promise<void> {
@@ -235,7 +242,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
         drop(event: DragEvent) {
             if (!event.dataTransfer || !acceptsBoardDrag(event)) return false;
             report(() => { const point = surfaceToWorld(options.surfacePoint(event.clientX, event.clientY), options.camera.camera);
-                const target = targetNow(point), input = captureTransfer(event.dataTransfer!); void execute(Promise.resolve(input), target, 'drop').catch(options.onError); });
+                const target = targetNow(point), input = captureTransfer(event.dataTransfer!); void execute(Promise.resolve(input), target, 'drop').catch(pasteFailure); });
             return true;
         },
         retire(onIdle: () => void) { if (disposed) { onIdle(); return; } retired = onIdle; releaseRetired(); },

@@ -35,7 +35,9 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         panel.current?.querySelector<HTMLButtonElement>('button')?.focus();
         const escape = dismissOnEscape(() => { closeRef.current(); if (anchor.isConnected) anchor.focus(); });
         const outside = (event: PointerEvent) => {
-            if (event.target instanceof Element && event.target.closest('.context-menu-panel')) return;
+            // The app menu's root is `.context-menu`; only its submenus are `.context-menu-panel` (missing the root closed this
+            // menu before Rename could show its field).
+            if (event.target instanceof Element && event.target.closest('.context-menu, .context-menu-panel')) return;
             if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.contains(event.target)) closeRef.current();
         };
         document.addEventListener('pointerdown', outside);

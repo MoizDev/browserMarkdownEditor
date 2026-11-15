@@ -55,6 +55,9 @@ export interface GestureOwner {
 // The host supplies commands and services through Context; tools never own the session or view.
 export interface Tool<Context = unknown> {
   readonly id: string
+  /** A view-only gesture (right-button pan) takes no session gesture hold, so the context menu its press
+   * opens sees no "current gesture" and keeps Delete, Select all and Arrange enabled. */
+  readonly holdsNoGesture?: boolean
   begin(sample: RealSample, modifiers: Modifiers, context: Context): GestureOwner | null
 }
 

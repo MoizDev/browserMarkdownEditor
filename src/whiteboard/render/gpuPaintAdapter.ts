@@ -76,7 +76,7 @@ function contentKey(item: PaintItem): string {
         identity(item.material.glyphs), identity(item.material.backgrounds), identity(item.material.decorations)]);
     if (item.kind === 'path') {
         const stroke = item.material.stroke;
-        return JSON.stringify([common, item.fillRule, item.material.blend, item.material.fill,
+        return JSON.stringify([common, identity(item.d), item.fillRule, item.material.blend, item.material.fill,
             stroke && [stroke.color, stroke.width, stroke.cap, stroke.join, stroke.miterLimit,
                 stroke.dash && [identity(stroke.dash.array), stroke.dash.phase]]]);
     }

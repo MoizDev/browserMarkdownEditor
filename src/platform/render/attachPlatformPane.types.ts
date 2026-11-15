@@ -25,6 +25,9 @@ export interface PlatformLayerDefinition {
     }>;
     /** Gives back up to `bytes` of the layer's own redundant CPU residency when the pane grant refuses a reservation. */
     cpuEvict?(layer: Layer, bytes: number): void;
+    /** A live gesture's layer (wet ink): its GPU cache is bounded by the pool, not by the pane's cache grant, because it
+     * retires only once the pane's committed layers have presented, with memory from that same grant. */
+    readonly liveInput?: boolean;
     critical(layer: Layer, view: ViewState): boolean;
     /** Optional raster document denominator; compiled out with its benchmark-only provider. */
     benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];

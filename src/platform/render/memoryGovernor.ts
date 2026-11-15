@@ -6,7 +6,11 @@ import type { RenderToken } from './types';
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
     'redundant-level' | 'prefetch' | 'scene-cache' | 'critical';
-export type MemoryKind = 'working' | 'canvas-working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture';
+export type MemoryKind = 'working' | 'canvas-working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture' |
+    /** A live gesture's working set (wet ink). Bounded by the pool, outside its pane's cache grant: it is released only
+     * after the committed layers present the dry frame, so charging it to the grant those layers need was a cycle
+     * (measured: 101 wet-tile refusals in one stroke with the pool 57% full, then the stroke's tail never drew). */
+    'live-input';
 export type MemorySessionOwner = Readonly<Pick<RenderToken, 'vaultEpoch' | 'documentId' | 'session'>>;
 export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinned';
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
@@ -559,6 +563,7 @@ export class MemoryGovernor {
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
         if (pool === 'gpu' && !grant?.pixelGrant) return false;
+        if (kind === 'live-input') return true;
         if (pool === 'cpu' && (cache.activity.hiddenAt !== null || !pane?.visible)) return true;
         if (!grant) return false;
         const limit = kind === 'surface' ? grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel :
@@ -576,7 +581,7 @@ export class MemoryGovernor {
     private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
         return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
             other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
-                !['surface', 'program', 'context'].includes(other.registration.kind)))
+                !['surface', 'program', 'context', 'live-input'].includes(other.registration.kind)))
             .reduce((sum, other) => sum + other.bytes, 0);
     }
 

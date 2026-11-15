@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Largura da caneta",
         "chrome.transparent": "Transparente",
         "chrome.keyboardShortcuts": "Atalhos de teclado",
+        "chrome.keyboardShortcutsMenu": "Atalhos de teclado…",
         "chrome.close": "Fechar",
         "chrome.theme": "Tema",
         "chrome.dark": "Escuro",

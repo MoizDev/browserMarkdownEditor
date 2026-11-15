@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "कलम चौडाइ",
         "chrome.transparent": "पारदर्शी",
         "chrome.keyboardShortcuts": "किबोर्ड सर्टकटहरू",
+        "chrome.keyboardShortcutsMenu": "किबोर्ड सर्टकटहरू...",
         "chrome.close": "बन्द गर्नुहोस्",
         "chrome.theme": "विषयवस्तु",
         "chrome.dark": "अँध्यारो",

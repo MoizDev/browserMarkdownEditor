@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "పెన్ వెడల్పు",
         "chrome.transparent": "పారదర్శకం",
         "chrome.keyboardShortcuts": "కీబోర్డ్ సత్వరమార్గాలు",
+        "chrome.keyboardShortcutsMenu": "కీబోర్డ్ సత్వరమార్గాలు...",
         "chrome.close": "మూసివేయి",
         "chrome.theme": "థీమ్",
         "chrome.dark": "చీకటి",

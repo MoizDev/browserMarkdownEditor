@@ -150,11 +150,12 @@
     left: 50%;
     transform: translateX(-50%);
     padding: 2px;
+    border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
-    background: var(--background-primary);
+    background: var(--board-bar-bg, var(--background-primary));
     /* The grid's glyphs are mid-grey, between the card and the text ink, in both themes. */
     color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
-    box-shadow: 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%);
+    box-shadow: var(--board-bar-shadow, 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%));
 }
 
 .board-chrome-action svg {
@@ -200,10 +201,10 @@
 :root[data-theme] .board-main-menu .context-menu {
     min-width: 156px;
     padding: 4px;
-    border: 0;
+    border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
-    background: var(--background-primary);
-    box-shadow: 0 4px 16px rgb(0 0 0 / 12%), 0 1px 3px rgb(0 0 0 / 8%);
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 16px rgb(0 0 0 / 12%), 0 1px 3px rgb(0 0 0 / 8%));
 }
 
 .context-menu.board-main-menu {

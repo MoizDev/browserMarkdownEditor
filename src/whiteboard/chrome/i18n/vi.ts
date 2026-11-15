@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Chiều rộng bút",
         "chrome.transparent": "Minh bạch",
         "chrome.keyboardShortcuts": "Phím tắt",
+        "chrome.keyboardShortcutsMenu": "Phím tắt…",
         "chrome.close": "Đóng",
         "chrome.theme": "chủ đề",
         "chrome.dark": "Tối",

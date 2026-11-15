@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Širina pisala",
         "chrome.transparent": "Transparentna",
         "chrome.keyboardShortcuts": "Bližnjice na tipkovnici",
+        "chrome.keyboardShortcutsMenu": "Bližnjice na tipkovnici...",
         "chrome.close": "Zapri",
         "chrome.theme": "Tema",
         "chrome.dark": "Temno",

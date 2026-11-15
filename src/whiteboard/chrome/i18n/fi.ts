@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Kynän leveys",
         "chrome.transparent": "Läpinäkyvä",
         "chrome.keyboardShortcuts": "Pikanäppäimet",
+        "chrome.keyboardShortcutsMenu": "Pikanäppäimet…",
         "chrome.close": "Sulje",
         "chrome.theme": "Teema",
         "chrome.dark": "Tumma",

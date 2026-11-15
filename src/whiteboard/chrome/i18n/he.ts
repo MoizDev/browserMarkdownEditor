@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "רוחב העט",
         "chrome.transparent": "שקוף",
         "chrome.keyboardShortcuts": "קיצורי מקלדת",
+        "chrome.keyboardShortcutsMenu": "קיצורי מקלדת...",
         "chrome.close": "סגור",
         "chrome.theme": "נושא",
         "chrome.dark": "כהה",

@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Kalem genişliği",
         "chrome.transparent": "Şeffaf",
         "chrome.keyboardShortcuts": "Klavye kısayolları",
+        "chrome.keyboardShortcutsMenu": "Klavye kısayolları…",
         "chrome.close": "Kapat",
         "chrome.theme": "Tema",
         "chrome.dark": "Karanlık",

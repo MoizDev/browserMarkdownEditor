@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "പേനയുടെ വീതി",
         "chrome.transparent": "സുതാര്യം",
         "chrome.keyboardShortcuts": "കീബോർഡ് കുറുക്കുവഴികൾ",
+        "chrome.keyboardShortcutsMenu": "കീബോർഡ് കുറുക്കുവഴികൾ...",
         "chrome.close": "അടയ്ക്കുക",
         "chrome.theme": "തീം",
         "chrome.dark": "ഇരുട്ട്",

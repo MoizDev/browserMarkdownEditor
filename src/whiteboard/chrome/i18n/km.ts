@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "ទទឹងប៊ិច",
         "chrome.transparent": "តម្លាភាព",
         "chrome.keyboardShortcuts": "ផ្លូវកាត់ក្តារចុច",
+        "chrome.keyboardShortcutsMenu": "ផ្លូវកាត់ក្តារចុច...",
         "chrome.close": "បិទ",
         "chrome.theme": "ប្រធានបទ",
         "chrome.dark": "ងងឹត",

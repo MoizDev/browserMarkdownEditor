@@ -127,6 +127,7 @@ export const english = {
     "chrome.penWidth": "Pen width",
     "chrome.transparent": "Transparent",
     "chrome.keyboardShortcuts": "Keyboard shortcuts",
+    "chrome.keyboardShortcutsMenu": "Keyboard shortcuts…",
     "chrome.close": "Close",
     "chrome.theme": "Theme",
     "chrome.dark": "Dark",

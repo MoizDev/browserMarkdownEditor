@@ -144,7 +144,10 @@
 /* A whiteboard pane draws in its own board theme (F-THEME-002, R-26: Preferences > Theme and Mod+/ keep today's
    behaviour, where the board's Dark/Light recolours its toolbars and panels too). Only the colour variables the
    light theme overrides are re-scoped; accent and settings-driven variables stay the app's. */
-.canvas-pane[data-board-theme="dark"] {
+/* .board-main-menu-dark is the board's main menu when it is opened from a dark board: the menu renders outside the
+   pane, so it takes the same tokens by its own class (BoardHeader sets it from the pane it was raised in). */
+.canvas-pane[data-board-theme="dark"],
+.board-main-menu-dark {
   --background-primary: #1e1e1e;
   --background-primary-alt: #252525;
   --background-secondary: #202020;

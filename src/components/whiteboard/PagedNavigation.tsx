@@ -27,11 +27,11 @@ export function PagedNavigation({ page, count, inverted, thumbnailsOpen, t, jump
     };
     const pageLabel = t('paper.pageNumber', { page: page + 1, count });
     return <>
-        <button type="button" aria-pressed={thumbnailsOpen} onClick={toggleThumbnails}
+        <button type="button" className="board-chrome-tool" aria-pressed={thumbnailsOpen} onClick={toggleThumbnails}
             aria-label={t(thumbnailsOpen ? 'paper.hideThumbnails' : 'paper.showThumbnails')}>{t('paper.thumbnails')}</button>
-        <button type="button" aria-pressed={inverted} onClick={toggleInversion}
+        <button type="button" className="board-chrome-tool" aria-pressed={inverted} onClick={toggleInversion}
             aria-label={t('paper.invert')} data-tooltip={t(inverted ? 'paper.showColours' : 'paper.invertColours')}>{t('paper.invert')}</button>
-        <span className="notebook-page-number"><input aria-label={pageLabel} inputMode="numeric" value={draft ?? String(page + 1)}
+        <span className="notebook-page-number"><input className="board-chrome-field" aria-label={pageLabel} inputMode="numeric" value={draft ?? String(page + 1)}
             data-tooltip={pageLabel} onFocus={event => { const value = String(page + 1); cancelled.current = false;
                 setInitial(value); setDraft(value); event.currentTarget.select(); }}
             onChange={event => setDraft(event.currentTarget.value)} onBlur={applyPage}

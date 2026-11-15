@@ -13,8 +13,9 @@ import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode } from '../model/nodes';
 import type { PathMaterial, StrokeMaterial } from '../render/material';
-import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintImageItem, type PaintItem, type PaintNodeSource,
-    type PaintTextItem } from '../render/paintStream';
+import { inkCoverageChunks, type PaintClip, type PaintImageItem, type PaintItem, type PaintNodeSource,
+    type PaintSource, type PaintTextItem } from '../render/paintStream';
+import { paintItemsOf } from '../render/paintWindows';
 import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation as Presentation } from '../render/paintPresentation';
 import { imageLaterPaint } from '../render/presentedImageFacts';
 import { readAlphaPlane, type DeviceRect } from '../render/imageSampling';
@@ -24,7 +25,7 @@ import type { BoardJobIdentity } from '../workers/protocol';
 // Provenance: embed presentation facts from this repository's own paint stream,
 // canonical ink, glyph, raster and path coverage and compositor contracts; independent composition.
 
-export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: Presentation) => void;
+export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintSource, context?: Presentation) => void;
 
 export interface NativeEmbedPresentationOptions {
     readonly port: EmbedPresentationPort;
@@ -45,7 +46,7 @@ interface Pending {
     readonly revision: number;
     readonly token: RenderToken;
     /** The raw source frame: sourceDoc is its immutable metadata authority. */
-    readonly frame: PaintFrame;
+    readonly frame: PaintSource;
     readonly context: Presentation;
     readonly releaseRaw: () => void;
     /** The exact backings this draw read, borrowed at the draw itself; null when they cannot be proven. */
@@ -150,16 +151,18 @@ function inheritedOpacity(doc: BoardDoc, node: EmbedNode): number {
     return value;
 }
 
-interface EmbedCard { readonly nodeId: string; readonly index: number; readonly node: EmbedNode; readonly world: Rect }
+interface EmbedCard { readonly nodeId: string; readonly index: number; readonly item: PaintItem; readonly node: EmbedNode; readonly world: Rect }
 /** The first paint item of each live embed is its card: the quad every later item is tested against. */
-function embedCards(doc: BoardDoc, items: readonly PaintItem[]): readonly EmbedCard[] {
-    const first = new Map<string, number>();
-    items.forEach((item, index) => {
-        if (!first.has(item.nodeId) && doc.nodes.get(item.nodeId as NodeId)?.kind === 'embed') first.set(item.nodeId, index);
-    });
-    return [...first].map(([nodeId, index]) => {
+function embedCards(doc: BoardDoc, source: PaintSource): readonly EmbedCard[] {
+    const first = new Map<string, { index: number; item: PaintItem }>();
+    let index = 0;
+    for (const item of paintItemsOf(source)) {
+        if (!first.has(item.nodeId) && doc.nodes.get(item.nodeId as NodeId)?.kind === 'embed') first.set(item.nodeId, { index, item });
+        index++;
+    }
+    return [...first].map(([nodeId, { index: at, item }]) => {
         const node = doc.nodes.get(nodeId as NodeId) as EmbedNode;
-        return { nodeId, index, node, world: quadBounds(items[index].localToWorld, node.w, node.h) };
+        return { nodeId, index: at, item, node, world: quadBounds(item.localToWorld, node.w, node.h) };
     });
 }
 function laterItemBounds(item: PaintItem, nodeId: string): Rect {
@@ -350,38 +353,42 @@ async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, cx: C
     return acc;
 }
 
-function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine,
+function presentedEmbeds(doc: BoardDoc, frame: PaintSource, omitted: ReadonlySet<string> | null, pane: Affine,
     later: ReadonlyMap<number | string, LaterCoverage>): readonly EmbedPresentedNode[] {
-    const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
-    const presented: EmbedPresentedNode[] = [];
-    for (const card of embedCards(doc, items)) {
-        const laterPaint: EmbedLaterPaint[] = [];
-        for (let j = card.index + 1; j < items.length; j++) {
-            const item = items[j];
-            if (item.nodeId === card.nodeId || omitted?.has(item.nodeId)) continue;
-            if (!overlaps(laterItemBounds(item, card.nodeId), card.world)) continue;
+    // One walk over the items in paint order: each later item is tested against every card it follows.
+    const cards = embedCards(doc, frame), laterPaint = cards.map((): EmbedLaterPaint[] => []);
+    let j = -1;
+    for (const item of paintItemsOf(frame)) {
+        j++;
+        if (omitted?.has(item.nodeId)) continue;
+        cards.forEach((card, c) => {
+            if (j <= card.index || item.nodeId === card.nodeId) return;
+            if (!overlaps(laterItemBounds(item, card.nodeId), card.world)) return;
             const coverage = later.get(j) ?? later.get(`${j}|${card.nodeId}`);
             if (!coverage) throw new Error(`Later coverage for ${item.nodeId} was not prepared`);
-            laterPaint.push(...coverage.opaque);
-            if (coverage.partial.some(region => overlaps(region, card.world))) laterPaint.push({ opacity: 'translucent' });
-        }
-        const cardItem = items[card.index];
+            laterPaint[c].push(...coverage.opaque);
+            if (coverage.partial.some(region => overlaps(region, card.world))) laterPaint[c].push({ opacity: 'translucent' });
+        });
+    }
+    const presented: EmbedPresentedNode[] = [];
+    cards.forEach((card, c) => {
+        const cardItem = card.item;
         presented.push({ nodeId: card.nodeId, source: card.node.url, order: card.index, rect: { x: 0, y: 0, width: card.node.w, height: card.node.h },
             toPane: compose(pane, cardItem.localToWorld), clips: clipsOf(cardItem.clips, pane), opacity: inheritedOpacity(doc, card.node),
-            poster: omitted?.has(card.nodeId) ? 'omitted' : 'painted', laterPaint: Object.freeze(laterPaint) });
-    }
+            poster: omitted?.has(card.nodeId) ? 'omitted' : 'painted', laterPaint: Object.freeze(laterPaint[c]) });
+    });
     return Object.freeze(presented);
 }
 
 /** Coverage for every later item that overlaps an embed is prepared before the synchronous node build, from the DRAWN frame
  * in paint order. A retained dense tile is classified per card by its own alpha footprint (its real draw), and an item whose
  * backing is not in the draw resolves to unknown, which keeps the card on its poster. */
-async function prepareLater(doc: BoardDoc, frame: PaintFrame, source: PaintNodeSource, cx: Coverage,
+async function prepareLater(doc: BoardDoc, frame: PaintSource, source: PaintNodeSource, cx: Coverage,
     deviceScale: number, omitted: ReadonlySet<string> | null): Promise<ReadonlyMap<number | string, LaterCoverage>> {
-    const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
-    const cards = embedCards(doc, items), later = new Map<number | string, LaterCoverage>();
-    for (let j = 0; j < items.length; j++) {
-        const item = items[j];
+    const cards = embedCards(doc, frame), later = new Map<number | string, LaterCoverage>();
+    let j = -1;
+    for (const item of paintItemsOf(frame)) {
+        j++;
         // An omitted item is not painted by this draw, so it is no later paint at all (presentedEmbeds skips it too).
         if (omitted?.has(item.nodeId)) continue;
         if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j)) continue;
@@ -419,9 +426,15 @@ function deviceRect(world: Rect, cx: Coverage): DeviceRect {
 }
 
 /** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
-function frameSource(frame: PaintFrame, live: () => boolean): PaintNodeSource {
-    return { sourceDoc: frame.sourceDoc, token: frame.token, sceneRevision: frame.sceneRevision, nodeCount: 1,
-        readNode: () => ({ underlay: frame.underlay, content: frame.content }), isCurrent: live };
+function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
+    // A live frame is read one window per node, so the text resolver never receives a whole-frame array.
+    return { sourceDoc: frame.sourceDoc, token: frame.token, sceneRevision: frame.sceneRevision,
+        nodeCount: frame.liveOnly ? frame.windows.length : 1,
+        readNode: index => {
+            if (!frame.liveOnly) return { underlay: frame.underlay, content: frame.content };
+            const window = frame.windows[index];
+            return window.band === 'underlay' ? { underlay: window.items, content: [] } : { content: window.items };
+        }, isCurrent: live };
 }
 
 /**

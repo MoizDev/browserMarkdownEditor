@@ -1,5 +1,5 @@
 import type { PaintBand } from './material';
-import type { PaintFrame, PaintItem } from './paintStream';
+import type { LivePaintFrame, PaintFrame, PaintFrameRoot, PaintItem, PaintSource } from './paintStream';
 
 /** Items per window. A window is the unit every prepared-paint consumer iterates: a published paint is an
  * ordered list of windows of at most this many items, so no consumer holds a whole-sheet item array of its
@@ -11,10 +11,12 @@ export interface PaintWindow { readonly band: PaintBand; readonly items: readonl
 
 /** Explicit root metadata of a prepared paint: the canonical token, revision, sensitive and ink sets of its
  * source. It carries no items; the items are only reachable through the windows. */
-export type PaintRoot = Omit<PaintFrame, 'underlay' | 'content'>;
+export type PaintRoot = PaintFrameRoot;
 
-export function rootOf(frame: PaintFrame): PaintRoot {
-    const { underlay: _underlay, content: _content, ...root } = frame;
+/** The root of any paint source: everything but its item representation. */
+export function rootOf(source: PaintSource): PaintRoot {
+    const { underlay: _underlay, content: _content, windows: _windows, liveOnly: _liveOnly, ...root } =
+        source as Partial<PaintFrame> & Partial<LivePaintFrame> & PaintFrameRoot;
     return root;
 }
 
@@ -49,6 +51,31 @@ export function windowsOf(frame: PaintFrame, include?: (item: PaintItem) => bool
     for (const item of frame.underlay) if (!include || include(item)) builder.push('underlay', item);
     for (const item of frame.content) if (!include || include(item)) builder.push('content', item);
     return builder.finish();
+}
+
+/** The ordered windows of any paint source. A live frame already holds its windows; a full frame's windows are
+ * built from its band arrays (legacy and readDocument paths keep those arrays by contract). */
+export function windowsOfSource(source: PaintSource): readonly PaintWindow[] {
+    return source.liveOnly ? source.windows : windowsOf(source);
+}
+
+/** The same windows with every item `include` rejects skipped in place; `undefined` keeps them as they are. */
+export function filterWindows(windows: readonly PaintWindow[], include: ((item: PaintItem) => boolean) | undefined): readonly PaintWindow[] {
+    if (!include) return windows;
+    const builder = new PaintWindowBuilder();
+    for (const window of windows) for (const item of window.items) if (include(item)) builder.push(window.band, item);
+    return builder.finish();
+}
+
+/** Every item of a paint source in canonical draw order (underlay, then content). A live frame's windows are
+ * walked one at a time; a full frame's arrays are walked in place. Nothing is copied into a new array. */
+export function* paintItemsOf(source: PaintSource): Generator<PaintItem> {
+    if (source.liveOnly) {
+        for (const window of source.windows) yield* window.items;
+        return;
+    }
+    yield* source.underlay;
+    yield* source.content;
 }
 
 /** Every item of one band, in canonical order, across the windows; the iteration holds one window at a time. */

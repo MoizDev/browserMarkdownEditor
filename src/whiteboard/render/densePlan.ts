@@ -4,7 +4,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason } from '../../platform/render/types';
 import type { Blend } from './colour';
 import type { PaintBand } from './material';
-import type { PaintFrame, PaintImageItem, PaintItem } from './paintStream';
+import type { PaintSource, PaintImageItem, PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type TilePyramid, type TileAddress, type TileScale } from './tileHierarchy';
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
@@ -38,6 +38,34 @@ function rootFloorLevel(root: Readonly<Rect>, viewport: TileScale): number {
         if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 4) return level;
     }
 }
+/** A level whose whole occupied root spans at most this many tiles is session-maintained (every coarse level
+ * up to it is kept for every viewport). Measured by the tile count of a full root: 16 tiles is one 4×4 grid. */
+const FULL_SUMMARY_TILES = 16;
+function rootTileCount(root: Readonly<Rect>, pyramid: TilePyramid, level: number): number {
+    const side = DENSE_TILE_PIXELS / tileScale(pyramid, level);
+    const x0 = Math.floor(root.x / side), y0 = Math.floor(root.y / side);
+    const x1 = Math.floor((root.x + root.width) / side), y1 = Math.floor((root.y + root.height) / side);
+    if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Occupied root overflows the summary grid');
+    return (x1 - x0 + 1) * (y1 - y0 + 1);
+}
+/** The first level from `floor` whose whole root is no longer session-maintained; `limit` when all are. Counts grow
+ * with the level, so the maintained levels are a prefix from the floor. */
+function fullRootTop(root: Readonly<Rect>, pyramid: TilePyramid, floor: number, limit: number): number {
+    let level = floor;
+    while (level < limit && rootTileCount(root, pyramid, level) <= FULL_SUMMARY_TILES) level++;
+    return level;
+}
+/** Every tile of the occupied root at levels `[from, to)`, coarse first. */
+function rootAddresses(root: Readonly<Rect>, pyramid: TilePyramid, from: number, to: number): TileAddress[] {
+    const out: TileAddress[] = [];
+    for (let level = from; level < to; level++) {
+        const side = DENSE_TILE_PIXELS / tileScale(pyramid, level);
+        const x0 = Math.floor(root.x / side), y0 = Math.floor(root.y / side);
+        const x1 = Math.floor((root.x + root.width) / side), y1 = Math.floor((root.y + root.height) / side);
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push({ pyramid, level, x, y });
+    }
+    return out;
+}
 /** The viewport's tile grid at its own level and pyramid. Tiles are `[x0, x1) × [y0, y1)`. */
 interface ViewGrid { readonly pyramid: TilePyramid; readonly level: number; readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 /** Every ancestor of the grid's tiles from `floor` up to one level below the grid, coarse first. The ancestors
@@ -67,7 +95,8 @@ interface TileBitmap {
  * standin entry carries the `slot` of the refinement that will replace it. */
 interface Entry { readonly blend: Blend; readonly end: string | null; readonly bitmap: TileBitmap; readonly slot: number | null }
 type Plan = {
-    source: PaintFrame; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
+    source: PaintSource; // the source's windows, read once when the plan starts
+    windows: readonly PaintWindow[]; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
     phase: 'summary' | 'tiles' | 'direct' | 'refine' | 'complete';
     /** Summaries are decided once, when the summary phase starts; null until then. */
     summaries: SummaryTarget[] | null; summaryIndex: number; summaryCache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
@@ -110,7 +139,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
     let lastFrame = -1;
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
-    let failedFrame: PaintFrame | null = null;
+    let failedFrame: PaintSource | null = null;
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased;
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
@@ -156,7 +185,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
         finishRetirement(p);
     };
-    const start = (frame: PaintFrame, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
+    const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
         // Without a reopenable stream there is no tile content to build; the caller keeps its direct path.
         if (!frame.openTile) return null;
         const demand = view.camera.z * view.viewport.dpr, target = chooseTileScale(demand).scale;
@@ -171,7 +200,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (!lease) { denied = true; return null; }
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
-            const p: Plan = { source: frame, view: projection(view), scale, sharp: scale >= demand, live,
+            const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
                 phase: summarized ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
                 summaries: null, summaryIndex: 0, summaryCache: null,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
@@ -281,14 +310,18 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             }
             cache.bindMemory(host.allocator.cpu);
             const grid = summaryGrid(p);
-            if (uncached(cache, variant, grid)) {
-                const floor = rootFloorLevel(root, chooseTileScale(p.scale));
-                for (const address of summaryAddresses(grid, floor)) {
-                    const rect = tileRectWorld(address);
-                    if (p.source.mayPaint?.(rect) === false) continue;
-                    for (const band of BANDS) p.summaries.push({ band, address, rect, scale: tileScale(address.pyramid, address.level) });
-                }
-            }
+            const floor = rootFloorLevel(root, chooseTileScale(p.scale));
+            // The coarse levels whose whole root is a few tiles are session-maintained: every one is kept current
+            // for every viewport, whichever viewport built it. Only finer summary levels follow the viewport.
+            const top = fullRootTop(root, grid.pyramid, floor, grid.level);
+            const targets: SummaryTarget[] = p.summaries;
+            const add = (address: TileAddress) => {
+                const rect = tileRectWorld(address);
+                if (p.source.mayPaint?.(rect) === false) return;
+                for (const band of BANDS) targets.push({ band, address, rect, scale: tileScale(address.pyramid, address.level) });
+            };
+            for (const address of rootAddresses(root, grid.pyramid, floor, top)) add(address);
+            if (uncached(cache, variant, grid)) for (const address of summaryAddresses(grid, top)) add(address);
         }
         while (p.summaryIndex < p.summaries.length) {
             if (!p.job) {
@@ -415,7 +448,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return item;
         };
         let group: string | null = null;
-        for (const item of p.source[band]) {
+        for (const item of bandItemsOf(p.windows, band)) {
             if (!p.live?.has(item.nodeId)) continue;
             if (item.nodeId !== group) {
                 group = item.nodeId;
@@ -450,7 +483,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const adapter: CanvasPaintAdapter & {
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
         coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
-        retainedFrames(): ReadonlySet<PaintFrame>;
+        retainedFrames(): ReadonlySet<PaintSource>;
         cpuWorkingSet(nativePathUpperBound?: number): number;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {

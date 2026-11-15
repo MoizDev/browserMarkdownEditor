@@ -12,7 +12,7 @@ import type { DryInkIdentity, WetInkHandover, WetInkSnapshot } from '../input/li
 import type { Swatch } from '../model/styles';
 import { colourCss, resolveSwatch, withOpacity, type PaintPalette } from '../render/colour';
 import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA } from '../render/material';
-import type { PaintFrame, PaintInkItem } from '../render/paintStream';
+import type { PaintSource, PaintInkItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { bandItemsOf } from '../render/paintWindows';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
@@ -30,7 +30,7 @@ type Work = { snapshot: WetInkSnapshot; path: Path2D; origin: readonly [number, 
 export interface BoardWetOptions {
     readonly token: RenderToken;
     readonly palette: () => PaintPalette;
-    readonly readyFrame: () => PaintFrame | null;
+    readonly readyFrame: () => PaintSource | null;
     readonly current: () => boolean;
     readonly exists: (identity: DryInkIdentity) => boolean;
     readonly invalidate: () => void;
@@ -40,17 +40,17 @@ export interface BoardWetRenderer extends BoardWetLayer {
     readonly layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }>;
     consumeInput(): void;
     liveNodeIds(): ReadonlySet<string>;
-    presented(revision: number, token: RenderToken, frame?: PaintFrame): void;
+    presented(revision: number, token: RenderToken, frame?: PaintSource): void;
     clear(): void;
     dispose(): void;
 }
 function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
-function available(frame: PaintFrame | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
+function available(frame: PaintSource | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
     return !!frame && sameToken(frame.token, token) && frame.sceneRevision >= identity.nodeRevision && frame.inkNodeIds.has(identity.nodeId);
 }
-function visuallyCovered(frame: PaintFrame | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
+function visuallyCovered(frame: PaintSource | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
     return available(frame, identity, token) || !!frame && sameToken(frame.token, token)
         && frame.sceneRevision >= identity.nodeRevision && !!frame.occludedInkNodeIds?.has(identity.nodeId);
 }
@@ -221,7 +221,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (highlight) emit('underlay', HIGHLIGHT_UNDERLAY_ALPHA);
             emit('content', highlight ? HIGHLIGHT_OVERLAY_ALPHA : 1);
         }
-        const frame: PaintFrame = { token: options.token, sceneRevision: generation, inkNodeIds: new Set(), underlay, content };
+        const frame: PaintSource = { token: options.token, sceneRevision: generation, inkNodeIds: new Set(), underlay, content };
         gpuPrepared = preparedOfFrame(frame, {
             path: item => { const source = paths.get(item as PaintInkItem); if (!source) throw new Error('Wet GPU path unavailable'); return { path: source.path, origin: source.origin }; },
             clip: () => { throw new Error('Wet ink has no clips'); }, image: () => { throw new Error('Wet ink has no images'); },

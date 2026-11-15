@@ -30,17 +30,25 @@ interface SummaryTarget { readonly band: PaintBand; readonly address: TileAddres
 const summaryInterval = (variant: string, band: PaintBand) => JSON.stringify([variant, band, 'summary']);
 const bandInterval = (variant: string, band: PaintBand) => JSON.stringify([variant, band]);
 const sameAddress = (a: TileAddress, b: TileAddress) => a.pyramid === b.pyramid && a.level === b.level && a.x === b.x && a.y === b.y;
-/** The session bitmaps a view can draw: its variant's intervals (bands and summaries) at the view's own level, inside its
- * world rect. Anything else is residency the view cannot use, so it is the first thing a refused reservation reclaims. */
-function usableBitmaps(variant: string, view: ViewState): (interval: string, address: TileAddress) => boolean {
-    const demand = chooseTileScale(view.camera.z * view.viewport.dpr);
+/** The world rect a view shows. */
+function viewWorldRect(view: ViewState): Rect {
+    return { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+}
+/** The world rect a plan covers, at its own scale. A zoomed-out plan draws a coarser level than the view's own, so the
+ * rect, not the level, says which bitmaps a plan needs. */
+function planWorldRect(p: Pick<Plan, 'x0' | 'x1' | 'y0' | 'y1' | 'scale'>): Rect {
+    const side = EDGE / p.scale;
+    return { x: p.x0 * side, y: p.y0 * side, width: (p.x1 - p.x0) * side, height: (p.y1 - p.y0) * side };
+}
+/** The session bitmaps of a variant (bands and summaries) whose tile meets one of `rects`. Only the others may be reclaimed:
+ * a bitmap a live plan or the shown view draws is pinned, whatever its level. */
+function usableBitmaps(variant: string, rects: readonly Rect[]): (interval: string, address: TileAddress) => boolean {
     const intervals = new Set(BANDS.flatMap(band => [bandInterval(variant, band), summaryInterval(variant, band)]));
-    const left = view.camera.x, top = view.camera.y;
-    const right = left + view.viewport.width / view.camera.z, bottom = top + view.viewport.height / view.camera.z;
     return (interval, address) => {
-        if (!intervals.has(interval) || address.pyramid !== demand.pyramid || address.level !== demand.level) return false;
-        const rect = tileRectWorld(address);
-        return rect.x < right && rect.x + rect.width > left && rect.y < bottom && rect.y + rect.height > top;
+        if (!intervals.has(interval)) return false;
+        const tile = tileRectWorld(address);
+        return rects.some(rect => tile.x < rect.x + rect.width && tile.x + tile.width > rect.x
+            && tile.y < rect.y + rect.height && tile.y + tile.height > rect.y);
     };
 }
 
@@ -174,6 +182,12 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased + (p.windowLease?.bytes ?? 0);
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
+    /** Pinned residency: every live plan's tiles and the view last prepared. */
+    const pinnedRects = (view: ViewState | null): Rect[] => {
+        const rects = [...plans].map(planWorldRect);
+        if (view) rects.push(viewWorldRect(view));
+        return rects;
+    };
     // Retiring a plan stops its work at once; the resources a retainPrepared borrow reads outlive it.
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
@@ -688,14 +702,14 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         reclaim(bytes) {
             const view = lastView, session = !disposed && view ? sessionOf() : null;
-            if (session && view && session.cache.evictUnused(usableBitmaps(session.variant, view), bytes) > 0) host.demandChanged?.();
+            if (session && view && session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), bytes) > 0) host.demandChanged?.();
         },
         dropUnused(view) {
             if (disposed) return false;
             lastView = view;
             const session = sessionOf();
             if (!session) return false;
-            if (session.cache.evictUnused(usableBitmaps(session.variant, view), Number.MAX_SAFE_INTEGER) > 0) host.demandChanged?.();
+            if (session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), Number.MAX_SAFE_INTEGER) > 0) host.demandChanged?.();
             return true;
         },
         dispose() { if (!disposed) { disposed = true; drop(staged); drop(ready); staged = ready = null; } },

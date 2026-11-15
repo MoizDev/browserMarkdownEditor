@@ -414,6 +414,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const mode = frame.openTile ? observed : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
+                denied = false;
                 if (useDense) {
                     direct!.release('pressure');
                     for (const old of [...reservations.keys()]) releaseFrame(old);
@@ -433,7 +434,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 const bytes = estimate!.bytes;
                 if (bytes) {
                     const lease = allocatorHost!.allocator.cpu.reserve(bytes);
-                    if (!lease) { denied = true; return; }
+                    if (!lease) { denied = true; allocatorHost?.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory')); return; }
                     reservations.set(frame, [lease]); reserved += lease.bytes;
                 } else reservations.set(frame, []);
             }

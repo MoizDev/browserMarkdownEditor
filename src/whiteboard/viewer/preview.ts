@@ -123,7 +123,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     type StartArgs = Parameters<typeof start>;
     let deferred: StartArgs | null = null, driving = false, resuming = false;
     // One overlay is in flight at a time: a newer request is held (latest wins) until the layer presents the last one.
-    let inFlight = false, queued: StartArgs | null = null;
+    let inFlight = false, inFlightSeq = -1, queued: StartArgs | null = null;
     const driveScene = async () => {
         if (driving) return;
         driving = true;
@@ -143,7 +143,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         } catch (error) { deferred = null; report(error); } finally { driving = false; }
     };
     const clearNow = () => {
-        deferred = null; queued = null; inFlight = false;
+        deferred = null; queued = null; inFlight = false; inFlightSeq = -1;
         generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
         const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
@@ -159,8 +159,13 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     };
     const unbind = engine.bindPreviewClear(clear);
     // The layer presented the overlay in flight: the held request, if any, is the next one built.
+    // Only the in-flight job's own frame releases the gate. The layer acknowledges every drawn frame, and a frame of an
+    // older request released it at once: each new start then replaced the staging before the frame was built (measured:
+    // no overlay frame ever built while the pointer moved; the screencast showed the old spot until release).
     const presentedOverlay = () => {
-        if (disposed || !inFlight) return;
+        if (disposed || !inFlight || !pair) return;
+        const ready = pair.readyFrame();
+        if (!ready || frameGenerations.get(ready) !== inFlightSeq) return;
         inFlight = false;
         const next = queued; queued = null;
         if (!next) return;
@@ -180,6 +185,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         if (!scene) throw new Error('Preview scene is not available');
         if (!scene.ready || scene.revision !== live.rev) { deferred = [changes, textOverlay, paper]; void driveScene(); return; }
         deferred = null;
+        // One overlay is built and presented at a time: a request made meanwhile is held (latest wins).
+        if (inFlight) { queued = [changes, textOverlay, paper]; return; }
         if (pin && pin.revision !== live.rev) clear();
         if (!pin) { pin = scene.pin(); document = pin.readDocument(); }
         // Captured before any await: this job's overlay uses the paint binding of its own start,
@@ -189,7 +196,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
         if (!resuming) settle(interrupted()); if (!controllerHandedOff) controller?.abort(); pendingRelease?.(); pendingRelease = null;
-        controller = job; controllerHandedOff = false; inFlight = true;
+        controller = job; controllerHandedOff = false; inFlight = true; inFlightSeq = seq;
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -327,7 +334,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         }
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay });
+                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay,
+                        // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
+                        // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
+                        onPrepared: () => queueMicrotask(presentedOverlay) });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {

@@ -105,10 +105,20 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return had;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
-    // A transform preview draws the moving shape; the committed selection box must not stay behind it.
-    let transformPreview = false;
-    const showTransform = (ops: readonly Op[]) => { transformPreview = true; options.preview.showOps(ops); requestFrame(); };
-    const clearTransform = () => { transformPreview = false; options.preview.clear(); requestFrame(); };
+    // A transform preview draws the moving shape. The committed selection box must not stay behind it, and it follows
+    // a translation by the offset its ops carry (every node moves by the same amount); other transforms hide it.
+    let transformPreview = false, transformOffset: Vec2 | null = null;
+    const translationOf = (ops: readonly Op[]): Vec2 | null => {
+        let dx = 0, dy = 0;
+        for (const op of ops) {
+            if (op.t !== 'set' || (op.key !== 'x' && op.key !== 'y') || typeof op.value !== 'number') return null;
+            const node = runtime.session.doc.nodes.get(op.id); if (!node) return null;
+            if (op.key === 'x') dx = op.value - node.x; else dy = op.value - node.y;
+        }
+        return ops.length ? { x: dx, y: dy } : null;
+    };
+    const showTransform = (ops: readonly Op[]) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops); requestFrame(); };
+    const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
@@ -405,7 +415,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         drawGrid(frame);
-        navigation.present(frame); selectionHandles.write(frame, transformPreview); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';

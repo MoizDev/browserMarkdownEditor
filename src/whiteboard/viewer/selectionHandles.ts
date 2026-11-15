@@ -103,17 +103,19 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
                 return { kind: 'rotate', centre: point(box, box.width / 2, box.height / 2), orientation: box.rotation };
             return null;
         },
-        /** `moving`: a transform preview shows the shape elsewhere, so the box at the committed place is hidden. */
-        write(frame: ScheduledFrame, moving = false) {
+        /** `moving`: a translation preview moves the box by its offset, so it follows the drag; `'hidden'` (a transform that
+         * is not a plain translation) hides the box while the preview shows the shape elsewhere. */
+        write(frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) {
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
-            if (moving) { if (svg) svg.style.display = 'none'; return; }
+            if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
             if (svg) svg.style.display = '';
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
             }
-            const geometry = projected(box, frame.view), path = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            const shown: OrientedBox = moving ? { ...box, origin: { x: box.origin.x + moving.x, y: box.origin.y + moving.y } } : box;
+            const geometry = projected(shown, frame.view), path = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
             path.setAttribute('points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
             path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
             const stem = document.createElementNS('http://www.w3.org/2000/svg', 'line');

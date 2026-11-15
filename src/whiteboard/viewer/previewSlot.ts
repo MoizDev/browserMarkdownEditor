@@ -43,7 +43,13 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         releaseGpu(reason: Parameters<Layer['releaseGpu']>[0]) { this.inner?.releaseGpu(reason); }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }
         needsFrame() { return this.innerEpoch !== epoch || (this.inner?.needsFrame() ?? false); }
-        onFramePresented(...args: Parameters<NonNullable<Layer['onFramePresented']>>) { this.inner?.onFramePresented?.(...args); }
+        // The revision the slot reports carries its epoch; the inner layer acknowledges the revision it reported itself.
+        // Forwarding the packed value never matched (measured: acknowledged 4294967299 against a revision of 3), so no
+        // overlay presentation completed. An acknowledgement from an earlier epoch belongs to the replaced preview.
+        onFramePresented(revision: number, token: Parameters<NonNullable<Layer['onFramePresented']>>[1]) {
+            if (Math.floor(revision / 2 ** 32) !== epoch) return;
+            this.inner?.onFramePresented?.(revision % 2 ** 32, token);
+        }
         dispose() { instances.delete(this); const old = this.inner; this.inner = null; this.innerDef = null; old?.dispose(); }
     }
     const slot = (layer: Layer): SlotLayer => {

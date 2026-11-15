@@ -37,7 +37,7 @@ export interface PrepareNativeRuntimeOptions {
     onHistoryLimit(): void;
 }
 
-let legacyMemorySerial = 0, inkLodMemorySerial = 0;
+let legacyMemorySerial = 0, derivedMemorySerial = 0;
 
 /** Preparation owns admission and creator leases until take transfers one runtime. */
 export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions) {
@@ -145,12 +145,12 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
             session: identity.session, bytesGeneration: identity.bytesGeneration };
-        // Stroke LOD levels are rebuildable from the samples, so the governor may reclaim them first (`redundant-level`).
-        services = createBoardRenderServices({ doc, samples, media: store, token, inkLodMemory: evict => {
+        // Stroke LOD levels and idle geometry are rebuildable from the samples and document, so the governor may reclaim them first (`redundant-level`).
+        services = createBoardRenderServices({ doc, samples, media: store, token, derivedMemory: evict => {
             // The governor reads `memory()` while publishing its readout, so the live count is kept here, not read back.
             let live = 0;
             const now = performance.now();
-            const cache = getPlatformRuntime().governor.register({ id: `ink-lod:${identity.documentId}:${++inkLodMemorySerial}`,
+            const cache = getPlatformRuntime().governor.register({ id: `derived:${identity.documentId}:${++derivedMemorySerial}`,
                 owner: token, pool: 'cpu', kind: 'working', class: 'redundant-level', hiddenAt: null,
                 lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict });
             return {

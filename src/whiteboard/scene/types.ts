@@ -9,6 +9,7 @@ import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import type { ScenePaintNodeStream } from '../render/scenePaintStream';
+import type { ResolvedNodeCache } from '../render/resolvedNodeCache';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
@@ -45,7 +46,7 @@ export interface ScenePaintRequest {
 export interface ScenePaintBinding {
     readonly token: RenderToken;
     readonly preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => Promise<PaintNodeSource>;
-    readonly preparePaintStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => ScenePaintNodeStream;
+    readonly preparePaintStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache) => ScenePaintNodeStream;
     readonly retainRenderer?: () => { release(): void };
 }
 
@@ -69,7 +70,7 @@ export interface SceneSnapshot {
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
-    paintStream?(request: ScenePaintRequest, signal?: AbortSignal): Promise<ScenePaintNodeStream>;
+    paintStream?(request: ScenePaintRequest, signal?: AbortSignal, resolved?: ResolvedNodeCache): Promise<ScenePaintNodeStream>;
     /** Upper-bound node count of a built sheet index over `world`; null while that index is still building. */
     countCandidates?(sheetId: SheetId, world: Readonly<Rect>): number | null;
     release(): void | Promise<void>;

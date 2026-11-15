@@ -7,6 +7,7 @@ import { boardPageStack } from '../model/pages';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
 import type { ScenePaintNodeStream } from '../render/scenePaintStream';
+import type { ResolvedNodeCache } from '../render/resolvedNodeCache';
 import type { SpatialCursor, SpatialRef } from '../pick';
 import { BoundsQuality, type BoundsProvider, type LocalGeometryBounds } from './bounds';
 import { SceneBootstrapJob, type BootstrappedScene } from './bootstrap';
@@ -31,7 +32,7 @@ export interface SessionSceneOptions {
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
     preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder): Promise<PaintNodeSource>;
-    preparePaintStream?(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder): ScenePaintNodeStream;
+    preparePaintStream?(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache): ScenePaintNodeStream;
     /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;

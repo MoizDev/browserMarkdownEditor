@@ -3,6 +3,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PaintNodeSource, PaintSource } from './paintStream';
 import type { PaintFrameSource } from './resources';
 import type { ScenePaintNodeStream } from './scenePaintStream';
+import type { ResolvedNodeCache } from './resolvedNodeCache';
 import type { Rect } from '../../platform/types';
 
 /** A scene supplies a pinned source and owns its leases until release. The assembler never reads
@@ -21,7 +22,7 @@ export interface PinnedPaintStream {
     release(): void | Promise<void>;
     /** Opens another bounded stream of this same pin over `world`, with this frame's request
      * identity (precision, sensitivity). Dense tiles use it; the pin stays owned by the frame. */
-    open?(world: Readonly<Rect>, signal: AbortSignal): Promise<ScenePaintNodeStream>;
+    open?(world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache): Promise<ScenePaintNodeStream>;
     /** The frame holds only the live nodes named by `sensitiveNodes` (a dense frame). */
     readonly liveOnly?: true;
 }

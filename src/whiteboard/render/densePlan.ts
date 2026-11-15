@@ -9,6 +9,7 @@ import type { PaintLayerResources } from './resources';
 import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type TilePyramid, type TileAddress, type TileScale } from './tileHierarchy';
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
+import { ResolvedNodeCache } from './resolvedNodeCache';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { bandItemsOf, PaintWindowBuilder, refBytesOf, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
@@ -124,6 +125,8 @@ type Plan = {
     /** Open retainPrepared borrows. A retired plan frees its bitmaps, leases and direct adapter only
      * when the last borrow ends; `freed` makes that one-shot. */
     borrows: number; closing: boolean; freed: boolean;
+    /** Resolved nodes its tiles and bands share; disposed when the plan completes or retires. */
+    resolved: ResolvedNodeCache;
 };
 const projection = (view: ViewState) => [view.camera.x, view.camera.y, view.camera.z,
     view.viewport.width, view.viewport.height, view.viewport.dpr].join(':');
@@ -149,6 +152,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
         p.retired = true;
+        p.resolved.dispose();
         p.job?.cancel(); p.job = null;
         if (p.cache) { p.cache.cache.cancel(p.cache.ticket); p.cache = null; }
         if (p.summaryCache) { p.summaryCache.cache.cancel(p.summaryCache.ticket); p.summaryCache = null; }
@@ -179,6 +183,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const free = (p: Plan) => {
         if (p.freed) return;
         p.freed = true;
+        p.resolved.dispose();
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.owned.splice(0)) bitmap.release();
         p.bitmaps.clear(); p.bitmapBytes = 0;
@@ -208,7 +213,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
                 job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowBytes: 0,
                 directAdapter: null, directLeases: [], directLeased: 0,
-                pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false };
+                pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false,
+                resolved: new ResolvedNodeCache(host.allocator.cpu) };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
                 p.pending++;
                 let promise;
@@ -339,7 +345,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 // Memory denied the summary: skip it, since tiles then stand in with whatever is cached.
                 if (!ticket) { p.summaryIndex++; continue; }
                 p.summaryCache = { cache, ticket };
-                p.job = createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal),
+                p.job = createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal, p.resolved),
                     rect: target.rect, scale: target.scale, band: target.band, barriers: NO_LIVE, token: p.source.token,
                     revision: p.source.sceneRevision, isCurrent: () => !p.retired && resources.frames.isCurrent(p.source),
                     images: p.resources.images, host, onError: report });
@@ -402,7 +408,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 p.cache = { cache, ticket };
             }
         }
-        p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal),
+        p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal, p.resolved),
             rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
@@ -481,7 +487,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         } };
         if (ready !== p) drop(ready);
         ready = p;
-        if (final) { p.phase = 'complete'; if (staged === p) staged = null; }
+        if (final) { p.phase = 'complete'; p.resolved.dispose(); if (staged === p) staged = null; }
         else { p.phase = 'refine'; staged = p; }
         resources.invalidate();
     };

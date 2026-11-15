@@ -536,7 +536,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         // Reopening the outer renderer cannot revoke a tagged read-only role
         // or turn a refused edit into an annotation capability.
         setRetryEpoch(epoch => epoch + 1);
-    }, [annotationMode, isDirty, flushing, disk, renderDelayIssue]);
+    }, [annotationMode, isDirty, flushing, disk]);
 
     /* Read the file's role only once annotating is actually wanted.
        Every PDF can be annotated now, so this can no longer be gated on the

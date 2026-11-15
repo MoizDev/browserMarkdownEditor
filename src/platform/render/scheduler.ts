@@ -744,10 +744,17 @@ export class FrameScheduler {
 
     private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
         meter: UploadMeter, criticalPending: () => boolean): number {
-        if (performance.now() >= deadline) return 0;
         let overshoot = 0;
         this.call(item.entry, () => {
-            const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= deadline ||
+            // A layer that reports needsFrame() must be prepared in THIS frame, or its pump keeps running with nothing
+            // advancing. The window is shared with the pane's platform preparation, which can spend all of it before a
+            // layer is reached (every layer waits behind it), so a requesting layer past an exhausted window gets one
+            // progress slice. A healthy frame keeps the window as it was; the overrun is still reported as overshoot.
+            const requesting = meta !== null ? meta.layer.needsFrame() : item.entry.layers.some(layer => layer.needsFrame());
+            const exhausted = performance.now() >= deadline;
+            if (exhausted && !requesting) return;
+            const limit = exhausted ? performance.now() + meter.sliceMs : deadline;
+            const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
@@ -761,7 +768,7 @@ export class FrameScheduler {
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
             const budget: FrameBudget = {
                 frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
-                prepareDeadline: deadline, upload, shouldYield,
+                prepareDeadline: limit, upload, shouldYield,
                 claimUpload: bytes => {
                     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Upload claim must be nonnegative safe bytes');
                     if (shouldYield() || performance.now() >= meter.deadline) return false;

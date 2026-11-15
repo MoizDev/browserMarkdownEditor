@@ -424,10 +424,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (returnedFromHide && dense?.dropUnused(view)) { returnedFromHide = false; deniedDirectSegments = null; }
             options.frames.prepare(withFirstUnit(budget));
             const frame = options.frames.readFrame();
-            if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) return;
+            // The two returns below leave this layer reporting needsFrame() over a frame that cannot draw, and nothing
+            // else asks for its replacement. Each asks ONCE per frame object, as the missing-live-node case does, so a
+            // frame that never changes cannot keep the pump running with no progress.
+            if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) {
+                if (frame && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
+                return;
+            }
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
             // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
-            if (!!frame.liveOnly !== useDense && frame.openTile) return;
+            if (!!frame.liveOnly !== useDense && frame.openTile) {
+                if (!replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
+                return;
+            }
             if (useDense && frame.liveOnly) {
                 const live = liveFor(frame);
                 let missing = false;

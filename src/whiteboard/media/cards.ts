@@ -61,13 +61,12 @@ export function fetchCardPreview(options: {
             signal: context.signal, current: live });
         check();
         await session.enqueueAfterGesture(context.signal, () => {
-            check(); session.history.open('Fetch preview');
-            try {
-                const applied = session.apply({ origin: 'host', label: 'Fetch preview', ops: [{ t: 'set', id: options.id, key: 'preview',
-                    value: { title: metadata.title ?? node.preview?.title ?? null, description: metadata.description ?? node.preview?.description ?? null,
-                        image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
-                applied.release();
-            } finally { session.history.close(); }
+            check();
+            // History-silent by policy (DERIVED_TEXT): a completed fetch is not a step, so it cannot clear the redo branch.
+            const applied = session.apply({ origin: 'host', label: 'Fetch preview', ops: [{ t: 'set', id: options.id, key: 'preview',
+                value: { title: metadata.title ?? node.preview?.title ?? null, description: metadata.description ?? node.preview?.description ?? null,
+                    image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
+            applied.release();
         });
     }, { signal: options.signal, deadlineMs: 5000 });
 }

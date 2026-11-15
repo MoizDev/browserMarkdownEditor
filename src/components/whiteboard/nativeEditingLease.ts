@@ -219,7 +219,9 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            disposeTools();
+            // A layer-topology seal cancels input, not its connected DOM services. Removing
+            // the embed/preview layers here changes that topology again and loops synchronously.
+            if (!options.visible() || !options.current(options.token)) disposeTools();
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {
             const detach = input.attachInput(surface, overlay);

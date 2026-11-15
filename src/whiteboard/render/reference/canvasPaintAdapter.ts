@@ -195,7 +195,9 @@ export function createCanvasPaintAdapter(
             requestImage(s, item.imageKey);
         } else if (item.kind !== 'text') {
             const itemScale = scaleFor(item, s.scale);
-            const key = `${item.kind}:${item.geometryKey}:${item.kind === 'ink' ? itemScale : ''}`;
+            // One geometry serves several items (a figure's outline and its marks; a highlight's two bands), so
+            // the item's own key is part of the identity: sharing by geometry alone paints the first path again.
+            const key = `${item.kind}:${item.geometryKey}:${item.key}:${item.kind === 'ink' ? itemScale : ''}`;
             const cached = s.geometry.get(key) ?? (presented && sameToken(s.frame, presented.frame) ? presented.geometry.get(key) : undefined);
             if (cached) {
                 if (!s.geometry.has(key)) { s.geometry.set(key, cached); s.bytes += cached.bytes; }

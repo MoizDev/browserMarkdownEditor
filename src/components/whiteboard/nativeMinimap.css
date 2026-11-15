@@ -9,8 +9,9 @@
     box-sizing: content-box;
     border: 1px solid var(--background-modifier-border);
     border-radius: 6px;
-    /* C4 previews use light ink; a dark panel erased the captured frame title. */
-    background: #f9fafb;
+    /* The board's own surface, so the map reads as part of the chrome in both themes. The captured board
+       picture is always the light palette, so it stays a light sheet inside the dark panel. */
+    background: var(--background-primary);
     box-shadow: 0 2px 10px color-mix(in srgb, black 25%, transparent);
     cursor: crosshair;
     touch-action: none;

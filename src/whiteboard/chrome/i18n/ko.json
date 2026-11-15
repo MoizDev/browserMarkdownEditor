@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "빛",
     "chrome.system": "시스템",
     "chrome.language": "언어",
+    "chrome.print": "인쇄",
     "chrome.uploadMedia": "미디어 업로드…",
     "chrome.insertEmbed": "삽입 삽입…",
     "chrome.unlockAll": "모두 잠금해제",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "페이지 삭제",
     "paper.cancel": "취소",
     "paper.keepProtected": "잠긴 콘텐츠는 보관됩니다.",
-    "chrome.readOnly": "이 보드는 읽기 전용입니다."
+    "chrome.readOnly": "이 보드는 읽기 전용입니다.",
+    "shortcuts.file.print": "인쇄",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

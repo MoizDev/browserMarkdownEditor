@@ -122,7 +122,7 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
                 ? [{ blob: new Blob([classification.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }] : [];
             return pasteClipboardMediaInJob({ runtime, ingestor: host.ingestor, target: captured, intent, files,
                 privatePng: classification.kind === 'private-png' ? classification.blob : null,
-                current: host.current, noticeRefused: host.noticeRefused }, context);
+                current: host.current, noticeRefused: host.noticeRefused, notice: host.notice }, context);
         }
         if (classification.kind === 'empty') { host.notice('The clipboard has no supported content.'); return []; }
         let legacy: LegacyClipboardDecodeLease | undefined, draft: FinalExcalidrawDraft | undefined;

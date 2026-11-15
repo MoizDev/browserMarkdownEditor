@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Licht",
     "chrome.system": "Systeem",
     "chrome.language": "Taal",
+    "chrome.print": "Afdrukken",
     "chrome.uploadMedia": "Media uploaden...",
     "chrome.insertEmbed": "Insluiting invoegen...",
     "chrome.unlockAll": "Ontgrendel alles",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Pagina verwijderen",
     "paper.cancel": "Annuleer",
     "paper.keepProtected": "Vergrendelde inhoud blijft behouden.",
-    "chrome.readOnly": "Dit bord is alleen-lezen."
+    "chrome.readOnly": "Dit bord is alleen-lezen.",
+    "shortcuts.file.print": "Afdrukken",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

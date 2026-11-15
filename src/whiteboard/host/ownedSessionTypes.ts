@@ -8,6 +8,6 @@ export interface OwnedBoardSessionOptions {
 }
 export interface OwnedBoardSession {
     readonly board: ComposedBoardSession;
-    /** App session release only, never pane detach or hide. */
-    dispose(): void;
+    /** App session release only, never pane detach or hide. Resolves after the board and its pinned builds retire. */
+    dispose(): Promise<void>;
 }

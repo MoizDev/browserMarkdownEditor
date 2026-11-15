@@ -11,8 +11,9 @@ import type { NodeRecord } from '../model/nodes';
 import { isValidKey } from '../model/orderKey';
 import type { OrderKey } from '../model/orderKey';
 import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS } from '../model/styles';
+import { resolveDrawnSwatch } from '../model/swatchColours';
 import type { UiBlock } from '../model/styles';
-import { normalizeRichText, type Block, type BlockCarrier, type Marks, type RichText, type Run } from '../text/richText';
+import { normalizeRichText, normalizeRichTextCooperative, type Block, type BlockCarrier, type Marks, type RichText, type Run } from '../text/richText';
 import { projectBlockCarrier } from '../model/projectCarrierRanges';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
@@ -123,14 +124,6 @@ function hasExtras(fields: ReadonlyMap<string, JsonSpan>, known: readonly string
     for (const key of fields.keys()) if (!known.includes(key)) return true;
     return false;
 }
-function swatch(value: string, fallback: string): string {
-    if (value.length > 64) return fallback;
-    const name = value.toLowerCase();
-    const prefix = ['light-', 'pale-', 'dark-'].find(item => name.startsWith(item));
-    const base = prefix ? name.slice(prefix.length) : name;
-    const variants = (prefix === 'light-' || prefix === 'pale-') ? [`light-${base}`, base] : [base, `light-${base}`];
-    return variants.find(item => (SWATCHES as readonly string[]).includes(item)) ?? fallback;
-}
 async function enumeration(span: JsonSpan, allowed: readonly string[], fallback: string, context: ModelReadContext,
     preserve: () => void | Promise<void>, colour = false): Promise<string> {
     const cooperate = context.options.cooperate;
@@ -138,7 +131,8 @@ async function enumeration(span: JsonSpan, allowed: readonly string[], fallback:
     if (allowed.includes(value)) return value;
     await preserve();
     note(context, 'approximation', colour ? 'A newer colour is shown approximately' : 'A newer style is shown with a known fallback');
-    return colour ? swatch(value, fallback) : fallback;
+    // The stored name is preserved above (ext.raw); only the drawn colour is resolved (owner ruling, §9.3).
+    return colour ? resolveDrawnSwatch(value) : fallback;
 }
 async function prefix(span: JsonSpan, count: number, cooperate?: () => Promise<void>): Promise<{ values: JsonSpan[]; tail?: RawJson; }> {
     const values: JsonSpan[] = [];
@@ -315,7 +309,8 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
     }
     if (sourceCarriers) await readBlockCarriers(sourceCarriers, blocks, ranges, starts, lengths, cooperate);
     if (!blocks.length) { blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); repaired = true; }
-    const value = normalizeRichText({ blocks });
+    // A large loaded value is normalized in host-yielding slices, like the rest of its incremental read.
+    const value = cooperate ? await normalizeRichTextCooperative({ blocks }, { cooperate }) : normalizeRichText({ blocks });
     if (value.blocks !== blocks) repaired = true;
     if (repaired) note(context, 'repair', 'Normalized rich text while retaining its unknown content');
     return { value, unknown, repaired };

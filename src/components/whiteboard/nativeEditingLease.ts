@@ -96,6 +96,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             keyboardCursor(point, gesture) { accessible?.a11y.keyboardCursor?.(point, gesture); },
         },
         services(surface, overlay) {
+            // These services belong to the DOM view, not each enable/disable pulse.
             if (tools && toolSurface === surface && toolOverlay === overlay) return tools.services;
             disposeTools();
             toolSurface = surface; toolOverlay = overlay;

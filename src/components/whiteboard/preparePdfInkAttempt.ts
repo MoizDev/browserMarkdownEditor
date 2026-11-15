@@ -3,6 +3,7 @@ import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { preparePdfInkSession } from '../../whiteboard/host/preparePdfInkSession';
 import { prepareLegacyPdfInkSession } from '../../whiteboard/host/prepareLegacyPdfInkSession';
+import { createNotebookCopyOnlyRole, NotebookCopyOnlyRefusal } from '../../whiteboard/host/notebookCopyOnlyRole';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import type { PreparedNativeBoard } from './nativeBoardAcquisitionTypes';
 
@@ -57,14 +58,20 @@ export async function preparePdfInkAttempt(input: PdfInkAttemptInput, signal: Ab
         currentReadOnly: () => null, onReadOnly: reason => input.onNotice(reason), onError: input.onError,
         onHistoryLimit: input.onHistoryLimit });
     if (result.kind === 'read-only') {
+        // A notebook-backed PDF is copy-only: the refusal carries the role, granting no write to the export.
+        const { notebookSource, outerFingerprint, isCurrent } = result;
+        const role = notebookSource && outerFingerprint && isCurrent
+            ? createNotebookCopyOnlyRole({ notebookPath: notebookSource.path, outerFingerprint, isCurrent: () => isCurrent() })
+            : undefined;
         try {
             signal.throwIfAborted();
             const handoff = input.notebookHandoff;
-            if (handoff && result.notebookSource && result.isCurrent?.() && handoff.canHandOff()) {
-                await handoff.open(result.notebookSource.path);
+            if (handoff && notebookSource && isCurrent?.() && handoff.canHandOff()) {
+                await handoff.open(notebookSource.path);
                 signal.throwIfAborted();
-                if (!result.isCurrent() || !handoff.canHandOff()) throw new DOMException('PDF notebook handoff ended', 'AbortError');
+                if (!isCurrent?.() || !handoff.canHandOff()) throw new DOMException('PDF notebook handoff ended', 'AbortError');
             }
+            if (role) throw new NotebookCopyOnlyRefusal(result.reason, role);
             throw new Error(result.reason);
         } finally { await result.dispose(); }
     }

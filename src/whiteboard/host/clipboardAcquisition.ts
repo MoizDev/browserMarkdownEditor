@@ -28,7 +28,8 @@ export interface BoardClipboardAcquisition {
     readonly cachedSamples?: ReadonlyMap<NodeId, SampleRef>;
     readonly report: NativeLoadReply;
     readonly originalSourceKind: BoardPayload['from']['kind'];
-    dispose(): void;
+    /** Resolves once the owned acquisition has retired; its builds may still read the admitted sources. */
+    dispose(): void | Promise<void>;
 }
 export interface BoardClipboardAcquisitionOptions {
     readonly decoded: DecodedBoardClipboard;
@@ -214,6 +215,6 @@ async function acquireClipboardSource(source: BoardPayload, inline: readonly Rea
         let disposed = false;
         return { payload: source, load: owned.load, samples: owned.samples, inline, externalBindings, cachedSamples, report: owned.report,
             originalSourceKind: result.originalSourceKind,
-            dispose() { if (!disposed) { disposed = true; owned.dispose(); } } };
+            dispose() { if (!disposed) { disposed = true; return owned.dispose(); } } };
     } catch (error) { acquisition?.dispose(); throw error; }
 }

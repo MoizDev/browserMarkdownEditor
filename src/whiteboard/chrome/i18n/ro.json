@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Lumină",
     "chrome.system": "Sistem",
     "chrome.language": "Limba",
+    "chrome.print": "Imprimă",
     "chrome.uploadMedia": "Încărcați conținut media...",
     "chrome.insertEmbed": "Inserați încorporarea...",
     "chrome.unlockAll": "Deblochează toate",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Șterge pagina",
     "paper.cancel": "Anulează",
     "paper.keepProtected": "Conținutul blocat va fi păstrat.",
-    "chrome.readOnly": "Această placă este doar pentru citire."
+    "chrome.readOnly": "Această placă este doar pentru citire.",
+    "shortcuts.file.print": "Imprimă",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -30,6 +30,16 @@
       "key": "paper.a4",
       "text": "A4",
       "reason": "International paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Claro",
     "chrome.system": "Sistema",
     "chrome.language": "Idioma",
+    "chrome.print": "Imprimir",
     "chrome.uploadMedia": "Subir medios…",
     "chrome.insertEmbed": "Insertar contenido incrustado…",
     "chrome.unlockAll": "Desbloquear todo",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Eliminar página",
     "paper.cancel": "Cancelar",
     "paper.keepProtected": "El contenido bloqueado se mantendrá.",
-    "chrome.readOnly": "Este tablero es de sólo lectura."
+    "chrome.readOnly": "Este tablero es de sólo lectura.",
+    "shortcuts.file.print": "Imprimir",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

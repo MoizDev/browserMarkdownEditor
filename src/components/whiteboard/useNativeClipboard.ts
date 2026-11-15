@@ -49,6 +49,8 @@ export interface NativeClipboardService {
     theme(): 'light' | 'dark';
     /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
     print(): boolean;
+    /** One page's preview from the pinned all-sheet print source, no longer than `maxSide` pixels (the notebook thumbnails). */
+    pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
     exportPdf(): boolean;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
@@ -125,7 +127,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         : restoreMedia;
     // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
     // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
@@ -181,10 +183,35 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         void work(controller.signal).catch(fail).finally(() => { if (focusedTask === controller) focusedTask = undefined; });
         return true;
     };
+    // Thumbnails share one pinned print job per revision, so every page of a revision reads one all-sheet source. The pin lets
+    // go when the revision moves on (a stale pin would hold the scene and any PDF backdrop) and when the document ends.
+    let pagePin: { readonly revision: number; readonly controller: AbortController; readonly job: ReturnType<typeof prepareExport>;
+        readonly unsubscribe: () => void } | undefined;
+    const releasePagePin = () => {
+        const held = pagePin; pagePin = undefined;
+        if (!held) return;
+        held.unsubscribe(); held.controller.abort();
+    };
+    const pinPagePrint = (): ReturnType<typeof prepareExport> => {
+        const revision = runtime.session.doc.rev;
+        if (pagePin?.revision === revision) return pagePin.job;
+        releasePagePin();
+        const controller = new AbortController();
+        const job = prepareExport('print', controller.signal);
+        // A refused pin reaches the thumbnail that awaited it; a pin nobody awaits must not raise an unhandled rejection.
+        job.catch(() => undefined);
+        const unsubscribe = runtime.session.subscribe(() => { if (runtime.session.doc.rev !== revision) releasePagePin(); });
+        pagePin = { revision, controller, job, unsubscribe };
+        return job;
+    };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
         print: () => startFocusedTask(signal => focusedPdf(signal, true)),
+        pagePng: async (page, maxSide, signal) => {
+            if (disposed || !current()) throw new Error('The board is no longer open.');
+            return (await pinPagePrint()).print.pngPage(page, signal, maxSide);
+        },
         exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
@@ -276,6 +303,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     try {
         runtime.registerOwned(() => {
             if (disposed) return; disposed = true; services.delete(runtime); active = undefined; bindings.clear();
+            releasePagePin();
             preferenceLifetime.abort(); stopPreferences();
             try { commands.dispose(); } finally {
                 try { for (const controller of controllers) controller.dispose(); } finally {
@@ -288,15 +316,21 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     } catch (error) { preferenceLifetime.abort(); stopPreferences(); commands.dispose(); ingestor.dispose(); cache.close(); throw error; }
 }
 
+/** The document's command service for this runtime, or null until it is ready; a failure to start it is reported. */
+export function useDocumentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identity: NativeCanvasIdentity,
+    notice: (message: string) => void): NativeClipboardService | null {
+    const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
+    useEffect(() => {
+        try { setState({ runtime, service: documentClipboard(runtime, host, identity) }); }
+        catch (error) { notice(error instanceof Error ? error.message : String(error)); }
+    }, [runtime, host, identity, notice]);
+    return state?.runtime === runtime ? state.service : null;
+}
+
 /** Only event listeners and camera belong to a pane; the command service belongs to the document. */
 export function useNativeClipboard(lease: NativeViewLease, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     theme: () => 'light' | 'dark', notice: (message: string) => void): ViewerViewHandle {
-    const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
-    const service = state?.runtime === lease.runtime ? state.service : null;
-    useEffect(() => {
-        try { setState({ runtime: lease.runtime, service: documentClipboard(lease.runtime, host, identity) }); }
-        catch (error) { notice(error instanceof Error ? error.message : String(error)); }
-    }, [lease.runtime, host, identity, notice]);
+    const service = useDocumentClipboard(lease.runtime, host, identity, notice);
     return useMemo(() => ({ ...lease.view, attachInput(surface: HTMLElement, overlay: HTMLElement) {
         const detach = lease.view.attachInput(surface, overlay);
         if (!service) return detach;

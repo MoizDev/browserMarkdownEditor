@@ -2,6 +2,14 @@ import type { EmbedFrameManifest } from './embedContainment.types';
 
 export const EMBED_PROFILE = 'embed-v1' as const;
 
+/** Every provider origin the app's registry can frame. The whiteboard maps links to these, and the frame CSP allows only these. */
+export const EMBED_PROVIDER_ORIGINS: readonly string[] = Object.freeze([
+    'https://www.youtube-nocookie.com', 'https://player.vimeo.com', 'https://www.figma.com', 'https://www.canva.com',
+    'https://www.google.com', 'https://www.val.town', 'https://codesandbox.io', 'https://codepen.io', 'https://scratch.mit.edu',
+    'https://calendar.google.com', 'https://docs.google.com', 'https://replit.com', 'https://felt.com',
+    'https://open.spotify.com', 'https://observablehq.com', 'https://www.desmos.com', 'https://www.tldraw.com',
+]);
+
 /** Applied to both containment frames; providers receive no delegated browser capabilities. */
 export const EMBED_PERMISSIONS = [
     'clipboard-read', 'clipboard-write', 'camera', 'microphone', 'geolocation', 'accelerometer', 'gyroscope',

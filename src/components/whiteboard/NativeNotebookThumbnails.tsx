@@ -9,7 +9,8 @@ interface NativeNotebookThumbnailsBaseProps {
     readonly isVisible: boolean;
     current(): boolean;
     currentRevision(): number;
-    capturePng(rect: PageRect, maxSide: number, signal: AbortSignal): Promise<Blob>;
+    /** The preview of page `index`, no longer than `maxSide` pixels on its longer side. */
+    capturePage(index: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     jump(page: number): void;
     onError(error: unknown): void;
     /** Moves page `from` so it ends at index `to`. Absent when the view cannot write. */
@@ -25,7 +26,7 @@ type Image = { readonly page: number; readonly revision: number; readonly url: s
 
 /** Captures only the displayed page window, one pinned source at a time. */
 export default function NativeNotebookThumbnails(props: NativeNotebookThumbnailsProps) {
-    const { pages, revision, page, isVisible, current, currentRevision, capturePng, jump, onError, reorder } = props;
+    const { pages, revision, page, isVisible, current, currentRevision, capturePage, jump, onError, reorder } = props;
     const [ownOpen, setOwnOpen] = useState(false), [offset, setOffset] = useState(0);
     const controlled = props.open !== undefined, open = props.open ?? ownOpen;
     const setOpen = (value: boolean) => { if (controlled) props.onOpenChange(value); else setOwnOpen(value); };
@@ -40,7 +41,7 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
         void (async () => {
             for (let index = start; index < Math.min(pages.length, start + WINDOW); index++) {
                 try {
-                    const blob = await capturePng(pages[index], 192, controller.signal);
+                    const blob = await capturePage(index, 192, controller.signal);
                     if (controller.signal.aborted || !current() || currentRevision() !== revision) return;
                     const url = URL.createObjectURL(blob); urls.push(url);
                     setImages(previous => [...previous, { page: index, revision, url }]);
@@ -51,7 +52,7 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
             }
         })();
         return () => { controller.abort(); for (const url of urls) URL.revokeObjectURL(url); };
-    }, [open, isVisible, current, currentRevision, capturePng, pages, revision, start, onError]);
+    }, [open, isVisible, current, currentRevision, capturePage, pages, revision, start, onError]);
     if (!isVisible) return null;
     return <>
         {!controlled && <button type="button" aria-expanded={open} onClick={() => {

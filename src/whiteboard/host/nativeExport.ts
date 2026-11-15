@@ -26,6 +26,7 @@ import type { PaintImageProvider } from '../render/resources';
 import type { PaintImageItem, PaintNodeSource } from '../render/paintStream';
 import { measureBoardPaintBounds } from '../render/worldBounds';
 import { notebookBackdrop } from './notebookBackdrop';
+import { concatPaintSources } from './allSheetPaint';
 import { inspectPdfVisualDoc } from './pdfVisualPreflight';
 import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 import type { BoardRuntime } from './runtime';
@@ -249,15 +250,29 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         const scope = region ? { kind: 'sheet' as const, ids: [], bounds: region, includeBackdrop: meta.kind !== 'whiteboard' }
             : resolveExportScope({ selection: selectedRoots, paged: meta.kind !== 'whiteboard',
                 selectionBounds: () => inkBounds, sheetBounds: () => pageBounds ?? inkBounds }, route);
-        let source = filtered;
-        if (scope.includeBackdrop && meta.host.kind === 'notebook' && pages) {
-            const paper = meta.host.paper, base = filtered;
-            source = { token: base.token, sceneRevision: base.sceneRevision, nodeCount: pages.length + base.nodeCount,
+        // A notebook's paper goes under its pages when the scope carries it; `base` is the ink on those pages.
+        const withBackdrop = (base: PaintNodeSource): PaintNodeSource => {
+            if (!scope.includeBackdrop || meta.host.kind !== 'notebook' || !pages) return base;
+            const paper = meta.host.paper;
+            return { token: base.token, sceneRevision: base.sceneRevision, nodeCount: pages.length + base.nodeCount,
                 isCurrent: () => base.isCurrent(), readNode(index) {
                     if (index < pages.length) return { underlay: [...notebookBackdrop(paper, index, pages[index])], content: [] };
                     return base.readNode(index - pages.length);
                 } };
-        }
+        };
+        const source = withBackdrop(filtered);
+        // Paged print and PDF output carry every sheet's ink on its physical page, first sheet lowest (R-12); PNG and SVG stay
+        // on the current sheet. Only print reads the joined sheets, so they are pinned the first time print needs them.
+        const sheetPaints = async (paintSignal: AbortSignal): Promise<PaintNodeSource[]> => {
+            const parts: PaintNodeSource[] = [];
+            for (const sheet of doc.sheetOrder) parts.push(await pin.paintSource({ sheetId: sheet.id, theme: 'light', deviceScale: 2 }, paintSignal));
+            return parts;
+        };
+        let pagedPaint: Promise<PaintNodeSource> | undefined;
+        const pagedSource = (): Promise<PaintNodeSource> => {
+            pagedPaint ??= sheetPaints(operationSignal).then(parts => withBackdrop(concatPaintSources(parts)));
+            return pagedPaint;
+        };
         // An explicit viewport may contain only page gaps/outside space; agent
         // captures still show real empty paper-white pixels, not transparent ink.
         const background = region ? DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background
@@ -476,23 +491,29 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pageCount: printPages.length,
             pdf: requestSignal => run(requestSignal, async combined => {
                 if (pdfLease) return new Blob([(await pdfInkPrint(pdfLease, combined)).slice().buffer], { type: 'application/pdf' });
+                const content = meta.kind === 'whiteboard' ? (paperSource ?? source) : await pagedSource();
                 const bytes = await streamIncrementalPdf({ revision, pageCount: printPages.length,
                     async page(index, pageSignal) {
                         pageSignal.throwIfAborted();
-                        return { source: paperSource ?? source, world: printPages[index]!, outputScale: printScale };
+                        return { source: content, world: printPages[index]!, outputScale: printScale };
                     } }, printScale, createExportImageResolver(token, capturedImages, readImage, combined), createLazyIncrementalPdfWriter(), combined);
                 combined.throwIfAborted();
                 return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
             }),
-            pngPage: (page, requestSignal) => run(requestSignal, combined => {
+            pngPage: (page, requestSignal, maxSide) => run(requestSignal, async combined => {
                 const world = printPages[page];
                 if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                if (maxSide !== undefined && (!Number.isSafeInteger(maxSide) || maxSide < 1 || maxSide > 8192)) throw new RangeError('Invalid print page maximum side');
                 // A print page is decoded by the print viewer in this renderer, so it keeps the clipboard's budget: a
                 // download may be far larger, but a 200 dpi page past this bound would crash the page instead of printing.
-                const raster = Math.min(printRaster, pngScaleLimit(world, true));
-                // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows.
+                // A thumbnail names its longer side in pixels, and the raster stops at that many.
+                const sideLimit = maxSide === undefined ? Infinity : (maxSide - 1e-9) / Math.max(world.width, world.height);
+                const raster = Math.min(printRaster, pngScaleLimit(world, true), sideLimit);
+                // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows. Its board
+                // layers are still the current sheet's only, because the PDF capturer draws them; the PDF print is all-sheet.
                 if (pdfBackdrop) return pdfCaptureBlob(world, raster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
-                return streamRasterPng(paperSource ?? source, capturedImages, world, raster, combined, { background: '#ffffff' });
+                const content = meta.kind === 'whiteboard' ? (paperSource ?? source) : await pagedSource();
+                return streamRasterPng(content, capturedImages, world, raster, combined, { background: '#ffffff' });
             }),
             release,
         };

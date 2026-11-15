@@ -22,11 +22,21 @@ export interface MainMenuSource extends BoardCommandSource {
     toggleTransparent(): void;
 }
 
+/** The main menu writes its chords as '⌘ I' (the context menus keep '⌘I'). */
+function spacedChord(chord: string | undefined): string | undefined {
+    return chord?.replace(/([⌘⇧⌥⌃])(?=\S)/gu, '$1 ');
+}
+
 export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
-    const command = (id: Parameters<BoardCommandSource['run']>[0]) => commandRow(source, id);
+    const command = (id: Parameters<BoardCommandSource['run']>[0]): ContextMenuCommand => {
+        const row = commandRow(source, id);
+        return { ...row, shortcut: spacedChord(row.shortcut) };
+    };
     const action = (id: MainAction): ContextMenuCommand => {
         const state = source.actionState(id);
-        return { kind: 'command', id, label: source.actionLabel(id), shortcut: source.actionShortcut(id),
+        // Keyboard shortcuts… is an opener, not a command with a chord of its own: it keeps the ellipsis and no chord.
+        const shortcut = id === 'keyboardShortcuts' ? undefined : spacedChord(source.actionShortcut(id));
+        return { kind: 'command', id, label: source.actionLabel(id), shortcut,
             disabled: !state.enabled, reason: state.enabled ? undefined : state.reason, run: () => source.runAction(id) };
     };
     const section = (id: MainSection, entries: ContextMenuSubmenu['entries']): ContextMenuSubmenu => ({

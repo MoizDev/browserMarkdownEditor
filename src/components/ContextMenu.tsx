@@ -407,7 +407,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         <>
             <div
                 ref={menuRef}
-                className="context-menu"
+                className={request.className ? `context-menu ${request.className}` : 'context-menu'}
                 role="menu"
                 aria-label={request.label}
                 lang={request.lang}
@@ -524,7 +524,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 return (
                     <div
                         ref={panelRef}
-                        className="context-menu-panel"
+                        className={request.className ? `context-menu-panel ${request.className}` : 'context-menu-panel'}
                         lang={request.lang}
                         dir={request.dir}
                         style={{

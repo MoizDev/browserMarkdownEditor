@@ -39,13 +39,12 @@ export interface CaptureRequest {
     readonly theme: 'light';
     readonly inverted: false;
     readonly policy: 'exact' | 'allow-standin';
-    readonly predictions: false;
     readonly chrome: false;
     readonly unsealedInput: false;
 }
 
 /** Uses the stream's ordinary layer paint path, bound to one leased revision.
- * The source adapter removes predictions, selection/chrome and unsealed input,
+ * The source adapter removes selection/chrome and unsealed input,
  * but retains document effects (including per-image inversion). No undo is sealed here.
  */
 export interface CapturedLayer {
@@ -173,7 +172,7 @@ function requestFor(rect: Rect, maxSidePx: number, options: CaptureOptions,
     return Object.freeze({
         worldRect: Object.freeze({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }),
         view, layers: Object.freeze([...options.layers]), theme: 'light', inverted: false,
-        policy: options.policy ?? 'exact', predictions: false, chrome: false, unsealedInput: false,
+        policy: options.policy ?? 'exact', chrome: false, unsealedInput: false,
     });
 }
 

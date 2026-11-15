@@ -67,7 +67,6 @@ export interface PointerSink {
   cancel(pointerId: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void
   hover?(event: PointerEvent): void
   captured?(pointerId: number): void
-  prediction?(pointerId: number, event: PointerEvent | null): void
   contextMenu?(event: MouseEvent): void
   error?(error: unknown, pointerId: number): void
 }
@@ -180,12 +179,7 @@ export class PointerAcquisition {
     return result
   }
 
-  private predict(id: number, event: PointerEvent | null): void {
-    try { this.sink.prediction?.(id, event) } catch (error) { try { this.sink.error?.(error, id) } catch { /* Prediction never owns real input. */ } }
-  }
-
   private down = (event: PointerEvent): void => {
-    this.predict(event.pointerId, null)
     if (this.contacts.has(event.pointerId)) return
     try {
       const sample = this.sample(event)
@@ -200,11 +194,9 @@ export class PointerAcquisition {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) { if (!raw) this.sink.hover?.(event); return }
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return
-    this.predict(event.pointerId, null)
     try {
       const samples = this.batch(contact, event, raw)
       if (samples.length) this.sink.move(event.pointerId, samples, modifiers(event, this.mac), event)
-      if (!raw) this.predict(event.pointerId, event)
     } catch (error) {
       try {
         if (error instanceof PartialPointerBatchError && error.samples.length)
@@ -220,7 +212,6 @@ export class PointerAcquisition {
   private up = (event: PointerEvent): void => {
     const contact = this.contacts.get(event.pointerId)
     if (!contact) return
-    this.predict(event.pointerId, null)
     try {
       const samples = this.batch(contact, event, false)
       this.sink.up(event.pointerId, samples, modifiers(event, this.mac), event)
@@ -237,7 +228,6 @@ export class PointerAcquisition {
   }
   private end(id: number, reason: 'cancel' | 'capture-lost' | 'capture-failed'): void {
     if (!this.contacts.delete(id)) return
-    this.predict(id, null)
     try { this.sink.cancel(id, reason) }
     finally { try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ } }
   }

@@ -15,22 +15,27 @@
     pointer-events: auto;
 }
 
+/* The tool bar is centred on the pane's bottom edge and the zoom controls keep the corner: the
+   outer columns take the free width, so the centred bar never moves when zoom's label grows. */
 .board-chrome-bottom {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+    align-items: end;
     gap: 8px;
     min-width: 0;
 }
 
 .board-chrome-bottom > .board-chrome-tools {
+    grid-column: 2;
+    justify-self: center;
     min-width: 0;
 }
 
 .board-chrome-zoom {
-    flex: 0 1 auto;
+    grid-column: 3;
+    justify-self: end;
     min-width: 0;
-    max-width: 40%;
+    max-width: 100%;
 }
 
 .board-chrome-zoom .board-chrome-tool-row {
@@ -62,39 +67,121 @@
     max-width: 100%;
 }
 
+/* The top bar sits flush in the pane's corner. The overlay is inset 8px for its floating bars, so the header
+   takes that inset back; the page controls and the pen panel still start from the overlay's edge. */
 .board-chrome-header {
     display: flex;
-    justify-content: space-between;
-    gap: 8px;
+    align-self: flex-start;
     min-width: 0;
+    margin: -8px 0 0 -8px;
 }
 
 .board-chrome-header > * {
     min-width: 0;
 }
 
-.board-chrome-header .board-chrome-tool-row {
-    overflow-x: auto;
-}
-
-.board-chrome-action-popup {
-    position: absolute;
-    z-index: 1;
-    inset-inline-end: 0;
-    top: calc(100% + 6px);
-    width: min(400px, 90vw);
-    max-height: min(50vh, 400px);
-    overflow: auto;
+/* One grey strip; its bottom-right corner is the only rounded one. Its popups are absolutely placed, so the strip
+   must not clip (no overflow): a long sheet name truncates instead. */
+.board-chrome-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
     padding: 4px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    background: var(--background-primary);
+    border-radius: 0 0 12px 0;
+    background: color-mix(in srgb, var(--background-primary) 92%, var(--text-normal));
     color: var(--text-normal);
 }
 
-.board-chrome-action-popup [role='toolbar'] {
-    display: flex;
-    flex-wrap: wrap;
+.board-chrome-strip-button {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.board-chrome-strip-button:not(:disabled):hover,
+.board-chrome-strip-button[aria-expanded='true'],
+.board-chrome-sheet:hover {
+    background: color-mix(in srgb, var(--text-normal) 12%, transparent);
+}
+
+.board-chrome-strip-button:disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+.board-chrome-sheet {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 32px;
+    padding: 0 4px 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.board-chrome-sheet > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A white card centred under the Actions button (as drawn), four 36px cells to a row, five rows. */
+.board-chrome-action-popup {
+    position: absolute;
+    z-index: 1;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 2px;
+    border-radius: 12px;
+    background: var(--background-primary);
+    color: var(--text-muted);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%);
+}
+
+.board-chrome-action-popup > [role='toolbar'] {
+    display: grid;
+    grid-template-columns: repeat(4, 36px);
+    grid-auto-rows: 36px;
+}
+
+.board-chrome-action {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.board-chrome-action:not(:disabled):hover {
+    background: color-mix(in srgb, var(--text-normal) 10%, transparent);
+}
+
+.board-chrome-action:disabled {
+    color: var(--text-faint);
+    cursor: default;
 }
 
 .board-chrome-tool-row,
@@ -118,13 +205,20 @@
     overflow-x: auto;
 }
 
+/* Opens above the bar, flush with its right end where the chevron sits: five icons to a row. */
 .board-chrome-more {
     position: absolute;
     z-index: 1;
-    bottom: calc(100% + 6px);
-    inset-inline-start: 0;
-    flex-wrap: wrap;
-    width: min(360px, 90vw);
+    bottom: calc(100% + 8px);
+    inset-inline-end: 0;
+    display: grid;
+    grid-template-columns: repeat(5, 40px);
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
     max-height: min(50vh, 360px);
     overflow: auto;
 }
@@ -161,6 +255,46 @@
 .board-chrome-tool:disabled {
     cursor: default;
     opacity: .45;
+}
+
+/* The board's tool bar: one floating rounded bar of 40px icon buttons, measured off the owner's pictures.
+   Its colours are the board theme's (index.css); a notebook or PDF pane has no board theme, so it falls back
+   to the app's own surfaces. */
+.board-chrome-tool-strip {
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
+}
+
+.board-chrome-tool-strip .board-chrome-primary-tools {
+    gap: 4px;
+}
+
+.board-chrome-tool-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 40px;
+    height: 40px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 8px;
+    color: var(--text-normal);
+}
+
+/* The same blue whichever pane hosts the bar, so a notebook's active tool matches a drawing's. */
+.board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true'],
+.board-chrome-tool-strip .board-chrome-tool-more[data-current] {
+    background: var(--board-tool-active, #4a7fe8);
+    color: var(--board-tool-active-fg, #fff);
+}
+
+.board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true']:hover,
+.board-chrome-tool-strip .board-chrome-tool-more[data-current]:hover {
+    background: var(--board-tool-active, #4a7fe8);
 }
 
 /* Native select and text input, dressed as the chrome's own controls. Options carry their own

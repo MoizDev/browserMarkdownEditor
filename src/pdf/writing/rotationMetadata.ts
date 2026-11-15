@@ -1,4 +1,4 @@
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, PDFRef, PDFString } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, decodePDFRawStream, PDFHexString, PDFName, PDFRawStream, PDFRef, PDFString } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
 import { inventoryAttachments } from '../../utils/pdfAttachmentTree';
 import { Sha256 } from '../../utils/sha256';
@@ -6,6 +6,10 @@ import type { WorkerContext } from '../../platform/workers/serve';
 import { PdfInkInspector } from './inkInspection';
 
 const key = PDFName.of, MAX = 100_000;
+const ENCODING = new Set(['/Filter', '/DecodeParms', '/Length']);
+function decodedStream(stream: PDFRawStream): Uint8Array | undefined {
+    try { return decodePDFRawStream(stream).decode(); } catch { return undefined; }
+}
 const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 async function streamHash(bytes: Uint8Array, ctx: WorkerContext): Promise<string> {
     const hash = new Sha256();
@@ -94,10 +98,15 @@ export async function rotationAttachmentInventory(blob: Blob, ctx: WorkerContext
                     return ['array', parts];
                 }
                 const dict = obj instanceof PDFRawStream ? obj.dict : obj;
-                const pairs = [...dict.entries()].sort((a, b) => a[0].toString().localeCompare(b[0].toString()));
+                // PDFium's save Flate-compresses a stream it read uncompressed (measured: a hand-made page's
+                // 38-byte plain /Contents came back /FlateDecode, 46 bytes), so a stream is compared by its
+                // DECODED bytes and the encoding keys are left out. A filter pdf-lib cannot decode keeps the raw form.
+                const decoded = obj instanceof PDFRawStream ? decodedStream(obj) : undefined;
+                const pairs = [...dict.entries()].filter(([name]) => !decoded || !ENCODING.has(name.toString()))
+                    .sort((a, b) => a[0].toString().localeCompare(b[0].toString()));
                 const parts: unknown[] = [];
                 for (const [name, child] of pairs) parts.push([name.toString(), await value(child, depth + 1)]);
-                return obj instanceof PDFRawStream ? ['stream', parts, await streamHash(obj.contents, ctx)] : ['dict', parts];
+                return obj instanceof PDFRawStream ? ['stream', parts, decoded ? 'decoded' : 'raw', await streamHash(decoded ?? obj.contents, ctx)] : ['dict', parts];
             } finally { active.delete(obj); }
         }
         return [obj.constructor.name, obj.toString()];

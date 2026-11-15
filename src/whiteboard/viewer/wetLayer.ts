@@ -331,7 +331,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const layers = Object.freeze({ underlay: make('underlay'), content: make('content') });
     return {
         layers,
-        attach(value) { if (disposed) throw new Error('Wet layer disposed'); handover = value; invalidate(); return () => { if (handover === value) { handover = null; clear(); invalidate(); } }; },
+        attach(value) { if (disposed) throw new Error('Wet layer disposed'); handover = value; value.onPublish(invalidate); invalidate(); return () => { if (handover === value) { value.onPublish(null); handover = null; clear(); invalidate(); } }; },
         onInputFrame(callback) { callbacks.add(callback); return () => { callbacks.delete(callback); }; },
         invalidate,
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },

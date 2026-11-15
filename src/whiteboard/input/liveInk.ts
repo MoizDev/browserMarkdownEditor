@@ -50,10 +50,14 @@ export interface WetInkSnapshot {
 // of wet versus dry is made once per frame, not by independent layer callbacks.
 export class WetInkHandover {
   private readonly pending = new Map<number, WetInkSnapshot>()
+  private listener: (() => void) | null = null
+  // The wet layer subscribes so a publication (the pen-up that seals the stroke tail included) asks for a frame.
+  onPublish(listener: (() => void) | null): void { this.listener = listener }
   publish(snapshot: WetInkSnapshot): void {
     const previous = this.pending.get(snapshot.identity.gestureSequence)
     if (previous?.dry && previous.dry !== snapshot.dry) previous.dry.release?.()
     this.pending.set(snapshot.identity.gestureSequence, snapshot)
+    this.listener?.()
   }
   clear(identity: InkIdentity): void {
     const existing = this.pending.get(identity.gestureSequence)

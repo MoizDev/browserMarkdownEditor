@@ -55,7 +55,7 @@ function sameGeometry(a: EmbedPresentedNode, b: EmbedPresentedNode): boolean {
     return a.laterPaint.length === b.laterPaint.length && a.laterPaint.every((item, i) => {
         const other = b.laterPaint[i];
         if (item.opacity !== other.opacity) return false;
-        if (item.opacity === 'translucent' || other.opacity === 'translucent') return true;
+        if (item.opacity !== 'opaque' || other.opacity !== 'opaque') return true;
         return sameCoverage(item.coverage, other.coverage);
     });
 }
@@ -204,6 +204,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             const node = slot.node, cap = slot.containment;
             if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { hide(slot); continue; }
             // Owner adopted the plan's translucent-above interaction exception; its old extra confirmation step is cut.
+            // Unknown facts never show live content: the true-order poster stands, and nothing is claimed.
+            if (node.laterPaint.some(item => item.opacity === 'unknown')) { hide(slot); continue; }
             const interaction = node.laterPaint.some(item => item.opacity === 'translucent');
             const omitted = witness.omittedNodeIds?.has(slot.id) ?? false;
             const shown = interaction ? node.poster === 'painted' && !omitted && !!slot.interaction : node.poster === 'omitted' && omitted;
@@ -284,7 +286,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         inlineNodeIds(sceneRevision) {
             if (!packet || (sceneRevision !== undefined && packet.sceneRevision !== sceneRevision)) return EMPTY_INLINE;
             const eligible = (slot: Slot) => !!slot.node && !!slot.clips && !!slot.containment && isEmbedContainmentApproved(slot.containment) &&
-                !slot.node.laterPaint.some(item => item.opacity === 'translucent');
+                !slot.node.laterPaint.some(item => item.opacity === 'translucent' || item.opacity === 'unknown');
             let count = 0, unchanged = inlineRevision === packet.sceneRevision;
             for (const slot of slots.values()) if (eligible(slot)) { count++; if (!inlineCache.has(slot.id)) unchanged = false; }
             if (unchanged && count === inlineCache.size) return inlineCache;

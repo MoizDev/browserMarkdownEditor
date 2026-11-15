@@ -22,7 +22,10 @@ export interface EmbedClippedCoverage {
 export type EmbedLaterPaint =
     | Readonly<{ opacity: 'opaque'; coverage: EmbedClippedCoverage }>
     /** Only include an item whose actual clipped coverage intersects the live surface. */
-    | Readonly<{ opacity: 'translucent' }>;
+    | Readonly<{ opacity: 'translucent' }>
+    /** The facts for this later paint cannot be proven. The embed keeps its true-order poster: no live
+     * surface, no outside interaction, and no claim that anything above it is opaque or translucent. */
+    | Readonly<{ opacity: 'unknown' }>;
 
 export interface EmbedPresentedNode {
     readonly nodeId: string;

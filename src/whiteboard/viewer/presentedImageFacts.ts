@@ -3,9 +3,10 @@ import type { PathCommand, Affine } from '../../platform/types';
 import { classifyImageFootprint, texturedQuad, type AlphaPlane, type DeviceRect } from '../render/imageSampling';
 import type { PresentedImage } from '../render/paintPresentation';
 
-/** `null` when the image puts nothing inside the region; 'unavailable' when its facts cannot be
- * proven, which callers answer with the true-order poster rather than a guessed translucence. */
-export type LaterPaintFact = EmbedLaterPaint | null | 'unavailable';
+/** `null` when the image puts nothing inside the region; `unknown` when its facts cannot be proven,
+ * which keeps the true-order poster rather than a guessed translucence. */
+export type LaterPaintFact = EmbedLaterPaint | null;
+const UNKNOWN: EmbedLaterPaint = Object.freeze({ opacity: 'unknown' });
 
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 const MAX_RUNS = 16_384;
@@ -17,19 +18,22 @@ const MAX_RUNS = 16_384;
 export function imageLaterPaint(image: PresentedImage, paneTransform: Affine | null, dpr: number,
     region: DeviceRect, alpha: AlphaPlane): LaterPaintFact {
     const { item } = image;
-    if (!paneTransform || !(dpr > 0) || item.clips.length) return 'unavailable';
-    if (!item.sourceRect || alpha.width !== image.source.width || alpha.height !== image.source.height) return 'unavailable';
-    if (item.localToWorld.some((value, index) => value !== IDENTITY[index])) return 'unavailable';
+    // Only retained dense tiles have the GPU gutter quad modelled here. Ordinary pictures take the
+    // CPU drawImage path with a different window, so they stay unknown (the poster) until classified.
+    if (!item.retainedTile || !paneTransform || !(dpr > 0) || item.clips.length) return UNKNOWN;
+    if (!item.sourceRect || alpha.width !== image.source.width || alpha.height !== image.source.height) return UNKNOWN;
+    if (item.localToWorld.some((value, index) => value !== IDENTITY[index])) return UNKNOWN;
     const [a, b, c, d, e, f] = paneTransform;
-    if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return 'unavailable';
+    if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return UNKNOWN;
     const { rect } = item;
     const dest = { x: (a * rect.x + e) * dpr, y: (d * rect.y + f) * dpr, width: rect.width * a * dpr, height: rect.height * d * dpr };
     if (!(dest.width > 0) || !(dest.height > 0)) return null;
+    let quad;
+    try { quad = texturedQuad(dest, alpha.width, item.sourceRect); } catch { return UNKNOWN; }
     const facts = classifyImageFootprint({
-        plane: alpha, window: { x: 0, y: 0, width: alpha.width, height: alpha.height },
-        quad: texturedQuad(dest, alpha.width, item.sourceRect), within: region, maxRuns: MAX_RUNS,
+        plane: alpha, window: { x: 0, y: 0, width: alpha.width, height: alpha.height }, quad, within: region, maxRuns: MAX_RUNS,
     });
-    if (facts.status === 'unavailable') return 'unavailable';
+    if (facts.status === 'unavailable') return UNKNOWN;
     if (facts.status === 'translucent') return { opacity: 'translucent' };
     // Opacity below one or a non-normal blend turns every covered pixel into a translucent contribution.
     if (item.opacity !== 1 || item.blend !== 'normal') return facts.runs.length ? { opacity: 'translucent' } : null;

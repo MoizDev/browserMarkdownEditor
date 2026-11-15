@@ -247,7 +247,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const progressNow = (): PaintProgress => {
         if (lastError !== null) return { kind: 'failed', message: lastError };
         const blocked = !!options.frames.blocked?.() || denied || !!dense?.memoryBlocked();
-        const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || !!adapter?.needsFrame()
+        // An idle ancestor pass runs while the view is already sharp: it is not work the board is waiting on.
+        const idleOnly = useDense && !!dense?.idleOnly();
+        const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || (!idleOnly && !!adapter?.needsFrame())
             || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
         if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented)) return { kind: 'current' };
         const drawn = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
@@ -453,7 +455,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // instead (seen: 160+ strokes stayed 'waiting for memory' forever, frozen picture, no redraw).
             // It returns to direct once the scene's estimate is well under what was refused.
             // Measured on the index count, which a live-only dense frame shares with a direct one (its own estimate is tiny).
-            if (deniedDirectSegments !== null && !frame.liveOnly && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
+            // The view's own count (candidates) is valid for a live-only dense frame too, so a dense latch can release.
+            // Without it, only a whole-scene estimate can judge, which a live-only frame never is.
+            if (deniedDirectSegments !== null && (candidates !== null || !frame.liveOnly) && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
             // A live-only frame is the kind dense mode itself requests; it carries no tile stream of its own.
             const mode = useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';

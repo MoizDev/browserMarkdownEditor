@@ -112,6 +112,8 @@ type Plan = {
     source: PaintSource; // the source's windows, read once when the plan starts
     windows: readonly PaintWindow[]; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
     phase: 'summary' | 'tiles' | 'direct' | 'refine' | 'complete';
+    /** An idle ancestor pass: it builds summaries for a later zoom-out and is never visible work. */
+    idle: boolean;
     /** Summaries are decided once, when the summary phase starts; null until then. */
     summaries: SummaryTarget[] | null; summaryIndex: number; summaryCache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
     /** Set on a sharp plan once its idle ancestor pass has been asked for, and on that pass itself: one pass per plan. */
@@ -246,7 +248,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
                 // The view's own tiles come first; ancestors are built only by an idle pass, once the view is sharp.
                 phase: summarized && idle ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
-                summaries: null, summaryIndex: 0, summaryCache: null, ancestorsTried: idle,
+                summaries: null, summaryIndex: 0, summaryCache: null, ancestorsTried: idle, idle,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
                 job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowLease: null,
                 directAdapter: null, directLeases: [], directLeased: 0,
@@ -533,6 +535,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         memoryBlocked(): boolean;
         /** Work for the requested revision is outstanding: staged, or a provisional frame still refining. */
         pending(): boolean;
+        /** Only an idle ancestor pass is staged, over a sharp plan. */
+        idleOnly(): boolean;
         cpuWorkingSet(nativePathUpperBound?: number): number;
         /** Frees up to `bytes` of session bitmaps the last view cannot draw; a borrowed bitmap is never freed. */
         reclaim(bytes: number): void;
@@ -656,7 +660,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),
         memoryBlocked: () => !disposed && (denied || !!staged?.blocked || !!staged?.job?.blocked),
-        pending: () => !disposed && (!!staged || (!!ready && !ready.sharp)),
+        pending: () => !disposed && ((!!staged && !staged.idle) || (!!ready && !ready.sharp)),
+        idleOnly: () => !disposed && !!staged?.idle && !(!!ready && !ready.sharp),
         cpuWorkingSet(nativePathUpperBound = 0) {
             let held = 0; for (const p of plans) held += working(p);
             // The session bitmaps the view keeps are its working set, and two tile runs are the next ones it reserves.

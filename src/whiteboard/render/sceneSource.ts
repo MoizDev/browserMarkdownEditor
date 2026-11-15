@@ -168,7 +168,7 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         }
     }
     check();
-    return { sourceDoc: doc, token: pinnedToken, sceneRevision: revision, sensitiveNodes: scope.sensitiveNodes, nodeCount: nodes.length,
+    return { sourceDoc: doc, token: pinnedToken, theme: request.theme, sceneRevision: revision, sensitiveNodes: scope.sensitiveNodes, nodeCount: nodes.length,
         readNode(index) { if (!Number.isSafeInteger(index) || index < 0 || index >= nodes.length) throw new RangeError('Invalid paint node index'); return nodes[index]; },
         isCurrent: () => !signal.aborted && doc.rev === revision };
 }
@@ -196,7 +196,7 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
     return {
-        token: pinnedToken, sceneRevision: revision, sourceDoc: doc, sensitiveNodes,
+        token: pinnedToken, theme: request.theme, sceneRevision: revision, sourceDoc: doc, sensitiveNodes,
         isCurrent: () => !controller.signal.aborted && doc.rev === revision,
         next() {
             if (ended || releasePromise) return Promise.resolve(null);

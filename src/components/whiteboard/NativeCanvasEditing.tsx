@@ -191,7 +191,8 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
-            embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });
+            embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice,
+            mediaEntries: () => lease.editing?.getBinding()?.mediaEntries() ?? [] });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };

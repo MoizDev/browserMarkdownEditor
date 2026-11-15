@@ -314,18 +314,17 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 ## 5. Notebooks, Drawings, and PDFs
 
-Three kinds of file open on a canvas instead of in the text editor. The existing
-editable canvases offer pen, highlighter, shapes and text, and save themselves a
-second after you stop. Native drawings and notebooks open on the native board described
-below, and are editable whenever their file can be written.
+Three kinds of file open on a canvas instead of in the text editor. All three use
+the same board: pen, highlighter, eraser, shapes, arrows, text, notes, pictures and
+frames, saved a second after you stop. A board is editable whenever its file can be
+written.
 
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
 here to a paper pad, and what to reach for when you are doing an assignment by
 hand rather than taking notes in Markdown. Make one with **New Notebook**, in
-the pencil button's menu at the top of the sidebar. The paper and editing controls
-below describe editable legacy notebooks; native notebooks use the native
-board described under *Drawings*.
+the pencil button's menu at the top of the sidebar. Its drawing tools are the
+board's, described under *Drawings*.
 
 A notebook has the same dark pages a PDF does: the button beside the thumbnails
 one turns the paper black and the writing light, for working at night. It only
@@ -342,13 +341,14 @@ annotation sheets similarly share the original PDF pages.
 
 The bar across the top of a notebook is its paper:
 
-- **Lined / Grid / Dotted / Blank** — the ruling. Changing it re-papers what you
+- **Paper ruling** — lined, grid, dotted or blank. Changing it re-papers what you
   have already written; nothing you have drawn moves.
-- **Letter / A4 / Legal** and **Portrait / Landscape** — the page size.
-- **+ Page** adds a page at the bottom. You rarely need it: writing near the
+- **Paper size** and **Portrait / Landscape** — the page size.
+- **Add page** adds a page at the bottom. You rarely need it: writing near the
   bottom of the last page adds the next one for you, before you run out of room.
-- **− Page** removes the last one. An empty page just goes; one with writing on
-  it asks first and says how much, because that writing goes with it.
+- **Delete last page** removes the last one. An empty page just goes; one with
+  writing on it asks first, because that writing goes with it.
+- **Page thumbnails**, **Invert page colours** and the page box (jump to a page).
 
 ### Exporting a notebook to PDF
 Choose **⋯ → Export to PDF** in the notebook pane (or use its download button) to
@@ -393,8 +393,8 @@ want again.
 ### Drawings
 A **drawing** is a canvas with no pages at all — an endless sheet in every
 direction, for diagrams and thinking rather than for a page you intend to hand
-in. New drawings use \`.drawing\` when the new whiteboard engine is selected;
-otherwise they use \`.tldraw\`. Existing drawings keep their names.
+in. New drawings are \`.drawing\` files. An older \`.tldraw\` drawing is converted
+when opened: the original is kept in the folder's Trash before the first save.
 
 Native drawings and notebooks open on the native board: you can
 pan the canvas, select a sheet when there is more than one, use the page box to

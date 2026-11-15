@@ -78,6 +78,8 @@ export interface NativeClipboardBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
     readonly commands: ReturnType<typeof createNativeClipboardCommands>;
     openMenu(event: MouseEvent): void;
+    /** The picture/card rows (replace, crop, invert, playback) for the board's own context menu. */
+    mediaEntries(): ContextMenuEntry[];
     focus(): void;
     detach(): void;
 }
@@ -290,8 +292,14 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     { kind: 'command', id: 'export-svg', label: 'Export SVG', run: () => commands.exportSvg('context') },
                     { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
                 ];
-                const media = mediaActions.selection(!readonly);
-                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, mediaActions, fail, chooseReplacementImage));
+                const media = mediaEntries();
+                if (media.length) entries.push({ kind: 'separator', id: 'media-separator' }, ...media);
+                openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
+            };
+            const mediaEntries = (): ContextMenuEntry[] => {
+                const media = mediaActions.selection(canWriteView());
+                if (!media) return [];
+                const entries = mediaRows(media, mediaActions, fail, chooseReplacementImage);
                 // A video's or an animated picture's start row exists only after its image has been drawn in this view, or while it
                 // plays (so it can stop). Each is named for what it plays.
                 if ((media?.video || media?.animated) && (lease.video.shown(media.id) || lease.video.playing(media.id))) {
@@ -299,7 +307,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     entries.push({ kind: 'command', id: 'media-playback', label: playing ? `Pause ${noun}` : `Play ${noun}`,
                         run: () => { try { if (playing) lease.video.pause(media.id); else lease.video.play(media.id); } catch (error) { fail(error); } } });
                 }
-                openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
+                return entries;
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
             surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);
@@ -307,7 +315,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
             }
-            return { controller, commands, openMenu: menu, focus, detach() {
+            return { controller, commands, openMenu: menu, mediaEntries, focus, detach() {
                 if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 controller.retire(() => controllers.delete(controller));

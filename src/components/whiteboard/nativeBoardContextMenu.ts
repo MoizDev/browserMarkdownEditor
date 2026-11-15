@@ -17,6 +17,8 @@ export function createNativeBoardContextMenu(options: {
     readonly language: BoardLanguageState;
     readonly preferences: BoardPreferenceState;
     readonly embed: () => NativeEmbedController | null;
+    /** Picture/card rows for the selection; the board menu is the only one a mounted board raises. */
+    readonly mediaEntries: () => ContextMenuEntry[];
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly notice: (message: string) => void;
@@ -45,6 +47,7 @@ export function createNativeBoardContextMenu(options: {
                     void pending.catch(error => options.notice(error instanceof Error ? error.message : String(error)));
                 } });
         }
+        extra.push(...options.mediaEntries());
         const pages = backend.targets().map(page => ({ id: page.id, label: page.label,
             enabled: page.enabled && options.canWrite(), ...(!page.enabled || !options.canWrite() ? { reason: page.reason ?? 'Board view is read-only' } : {}) }));
         const source = { ...options.commands, run: safeRun, sectionLabel: labels.contextSectionLabel,

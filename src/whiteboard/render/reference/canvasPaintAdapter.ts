@@ -2,6 +2,7 @@ import type { PathCommand, ViewState } from '../../../platform/types';
 import type { FrameBudget, GpuReleaseReason } from '../../../platform/render/types';
 import type { PaintBand } from '../material';
 import type { PaintFrame, PaintItem } from '../paintStream';
+import { rootOf, windowsOf, type PaintRoot, type PaintWindow } from '../paintWindows';
 import type { PaintImageLease, PaintLayerResources } from '../resources';
 import { InkCoverageUnionPath2dJob, Path2dJob } from './coverage2d';
 import type { PathOrigin2d } from './coverage2d';
@@ -25,13 +26,23 @@ export interface CanvasPaintAdapter {
     dispose(): void;
 }
 
+/** A prepared paint: its canonical source, the root metadata, and the ordered bounded windows consumers iterate.
+ * The object is the identity of one published version: a consumer compares it, never its windows. */
 export interface PreparedPaint2d {
-    readonly frame: PaintFrame;
-    /** Canonical source whose pin and presentation acknowledgement own a derived frame. */
-    readonly sourceFrame?: PaintFrame;
+    /** Canonical source whose pin and presentation acknowledgement own this paint. */
+    readonly sourceFrame: PaintFrame;
+    /** Token, revision and sets of the source, without items. */
+    readonly root: PaintRoot;
+    /** Every underlay window, then every content window; each holds at most PAINT_WINDOW_ITEMS items. */
+    readonly windows: readonly PaintWindow[];
     /** A derived stand-in can be complete without carrying full requested detail. */
     readonly sharp?: boolean;
     readonly resources: PaintResources2d;
+}
+
+/** A prepared paint of a whole canonical frame, for layers that prepare their own frames directly. */
+export function preparedOfFrame(frame: PaintFrame, resources: PaintResources2d, sharp?: boolean): PreparedPaint2d {
+    return { sourceFrame: frame, root: rootOf(frame), windows: windowsOf(frame), resources, ...(sharp === undefined ? {} : { sharp }) };
 }
 
 export interface PreparedRetain {
@@ -55,6 +66,8 @@ type Snapshot = {
     clips: Map<string, PreparedPath2d>;
     geometry: Map<string, { prepared: PreparedPath2d; bytes: number }>;
     images: Map<string, PaintImageLease | null>;
+    /** Built once, on first borrow, so every borrow of this snapshot is the same identity. */
+    prepared: PreparedPaint2d | null;
     /** Open retainPrepared borrows; a release that arrives meanwhile is applied when the last one ends. */
     borrows: number;
     closing: boolean;
@@ -106,6 +119,8 @@ function finishSnapshot(s: Snapshot): void {
 /** Both bands share a snapshot and become visible together, never by separate commits. */
 export function createCanvasPaintAdapter(
     resources: PaintLayerResources, project: PaintProjection2d, onError: (error: unknown) => void,
+    /** Items this adapter prepares; an excluded item is skipped in place, so a frame never needs a filtered copy. */
+    include?: (item: PaintItem) => boolean,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
     // Snapshots kept alive only by retainPrepared borrows: their memory is still held and counted.
@@ -114,7 +129,7 @@ export function createCanvasPaintAdapter(
     let lastFrameId: number | null = null;
 
     function start(frame: PaintFrame, scale: number): Snapshot {
-        return { frame, scale, band: 'underlay', finished: false, index: 0, clipIndex: 0, paths: new WeakMap(),
+        return { frame, scale, band: 'underlay', finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
             clips: new Map(), geometry: new Map(), images: new Map(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false, bytes: 0, job: null };
     }
@@ -163,6 +178,7 @@ export function createCanvasPaintAdapter(
             return;
         }
         const item = items[s.index];
+        if (include && !include(item)) { s.index++; s.clipIndex = 0; return; }
         if (s.clipIndex < item.clips.length) {
             const clip = item.clips[s.clipIndex++];
             if (!s.clips.has(clip.key)) {
@@ -193,11 +209,12 @@ export function createCanvasPaintAdapter(
         s.clipIndex = 0;
     }
     function preparedOf(s: Snapshot): PreparedPaint2d {
-        return { frame: s.frame, resources: {
+        s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows: windowsOf(s.frame, include), resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
             image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
         } };
+        return s.prepared;
     }
     function borrowPrepared(): PreparedPaint2d | null {
         const s = presented;
@@ -251,7 +268,12 @@ export function createCanvasPaintAdapter(
         draw2d(ctx, view, band, omitNodes) {
             const prepared = borrowPrepared();
             if (!prepared) return;
-            project(ctx, view, () => { for (const item of prepared.frame[band]) if (!omitNodes?.has(item.nodeId)) paintItem2d(ctx, item, prepared.resources); });
+            project(ctx, view, () => {
+                for (const window of prepared.windows) {
+                    if (window.band !== band) continue;
+                    for (const item of window.items) if (!omitNodes?.has(item.nodeId)) paintItem2d(ctx, item, prepared.resources);
+                }
+            });
         },
         release(reason) {
             if (reason === 'context-lost') return;

@@ -80,7 +80,8 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         const offset = 16 / cameraZoom;
         centre = { x: sourceCentre.x + offset, y: sourceCentre.y + offset };
     } else if (cursor) centre = target.pointer ?? viewportCentre;
-    else if (same && inside) { centre = sourceCentre; preserve = true; }
+    // Plain paste lands in the view, never over its source: in place is the inverted (⌥) paste's own result.
+    else if (inverted && same && inside) { centre = sourceCentre; preserve = true; }
     else centre = viewportCentre;
     // In-place is exact even when existing content straddles a physical page gap.
     if (!preserve) centre = clampPoint(doc, centre);

@@ -3396,7 +3396,9 @@ export default function App() {
     const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
-      if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
+      // 'skipped' with clean bytes is a finished save: the combined dirty flag also counts
+      // background session work, which refused every print after an annotation save.
+      if (outcome !== 'written' && (outcome !== 'skipped' || documentBuffers.isDirty(id))) throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
     }
     if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()
         || documentSessions.hasPendingEdits(id)) throw new Error('The document changed while preparing to print.');

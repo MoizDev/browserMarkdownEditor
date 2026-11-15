@@ -196,15 +196,21 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         operationSignal.throwIfAborted();
         if (runtime.render.text.fonts.epoch !== fontEpoch) throw new Error('Board fonts changed while preparing the export; retry.');
         let topmostRoot: NodeId | null = null, topmostIndex = -1;
-        const filtered: PaintNodeSource = selectionOnly ? {
-            token: raw.token, sceneRevision: raw.sceneRevision, nodeCount: raw.nodeCount, isCurrent: () => raw.isCurrent(),
+        const selectOnly = (input: PaintNodeSource): PaintNodeSource => selectionOnly ? {
+            token: input.token, sceneRevision: input.sceneRevision, nodeCount: input.nodeCount, isCurrent: () => input.isCurrent(),
             readNode(index) {
-                const node = raw.readNode(index);
+                const node = input.readNode(index);
                 const underlay = node.underlay?.filter(item => selected.has(item.nodeId as NodeId));
                 const content = node.content.filter(item => selected.has(item.nodeId as NodeId));
                 return { underlay, content };
             },
-        } : raw;
+        } : input;
+        const filtered = selectOnly(raw);
+        // PDF and print land on white paper with no background: a dark-theme paint
+        // put near-white ink on it (seen: dark-mode Export → PDF was blank).
+        const paperSource = meta.kind === 'whiteboard' && theme !== 'light'
+            ? selectOnly(await pin.paintSource({ sheetId: selection.sheet, theme: 'light', deviceScale: 2 }, operationSignal)) : null;
+        operationSignal.throwIfAborted();
         const now = performance.now();
         let live = 0;
         const cache = getPlatformRuntime().governor.register({ id: `board-export-bounds:${token.documentId}:${++serial}`,
@@ -474,7 +480,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 const bytes = await streamIncrementalPdf({ revision, pageCount: printPages.length,
                     async page(index, pageSignal) {
                         pageSignal.throwIfAborted();
-                        return { source, world: printPages[index]!, outputScale: printScale };
+                        return { source: paperSource ?? source, world: printPages[index]!, outputScale: printScale };
                     } }, printScale, createExportImageResolver(token, capturedImages, readImage, combined), createLazyIncrementalPdfWriter(), combined);
                 combined.throwIfAborted();
                 return new Blob([bytes.slice().buffer], { type: 'application/pdf' });
@@ -482,9 +488,12 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pngPage: (page, requestSignal) => run(requestSignal, combined => {
                 const world = printPages[page];
                 if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                // A print page is decoded by the print viewer in this renderer, so it keeps the clipboard's budget: a
+                // download may be far larger, but a 200 dpi page past this bound would crash the page instead of printing.
+                const raster = Math.min(printRaster, pngScaleLimit(world, true));
                 // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows.
-                if (pdfBackdrop) return pdfCaptureBlob(world, printRaster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
-                return streamRasterPng(source, capturedImages, world, printRaster, combined, { background: '#ffffff' });
+                if (pdfBackdrop) return pdfCaptureBlob(world, raster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
+                return streamRasterPng(paperSource ?? source, capturedImages, world, raster, combined, { background: '#ffffff' });
             }),
             release,
         };

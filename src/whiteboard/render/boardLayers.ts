@@ -13,7 +13,7 @@ import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
 import { DensityController, type DensityMode } from './density';
 import { FilteredInk, LiveNodeUnion } from './nodeSets';
-import type { ViewerPaintPresentation } from './paintPresentation';
+import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } from './paintPresentation';
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
@@ -205,6 +205,31 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         reservations.delete(frame);
         for (const lease of leases) { allocatorHost!.allocator.cpu.release(lease); reserved -= lease.bytes; }
     };
+    // Facts borrow the exact prepared plan this draw read, never the raw provider: the 2D snapshot
+    // or dense plan keeps its image leases and bitmaps alive until the lease is released.
+    const presentedImages = (frame: PaintFrame, omit: ReadonlySet<string> | null) => (): PresentedImageLease | null => {
+        const borrow = adapter?.retainPrepared() ?? null;
+        if (!borrow) return null;
+        const { prepared } = borrow;
+        let usable = prepared.frame.sceneRevision === frame.sceneRevision && sameToken(prepared.frame.token, frame.token);
+        const images: PresentedImage[] = [];
+        if (usable) {
+            try {
+                for (const band of ['underlay', 'content'] as const) {
+                    for (const item of prepared.frame[band]) {
+                        if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
+                        const source = prepared.resources.image(item.imageKey);
+                        if (!(source instanceof ImageBitmap)) { usable = false; break; }
+                        images.push({ nodeId: item.nodeId, item, source });
+                    }
+                    if (!usable) break;
+                }
+            } catch { usable = false; }
+        }
+        if (!usable) { borrow.release(); return null; }
+        let released = false;
+        return Object.freeze({ frame: prepared.frame, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
+    };
     const retainedByDense = (): ReadonlySet<PaintFrame> => {
         const retained = new Set(dense?.retainedFrames());
         for (const old of retiringDense) {
@@ -250,6 +275,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     else direct!.prepare(view, budget);
                 },
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
+                retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
                 release: reason => { direct!.release(reason); dense!.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
@@ -383,7 +409,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
-                        retain: () => options.frames.retain(frame) });
+                        retain: () => options.frames.retain(frame), retainImages: presentedImages(frame, omit) });
                     gpu!.drawGpu(pass, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },
@@ -397,7 +423,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
-                        retain: () => options.frames.retain(frame) });
+                        retain: () => options.frames.retain(frame), retainImages: presentedImages(frame, omit) });
                     adapter!.draw2d(ctx, view, band, omit ?? undefined);
                     recordDraw(band, { frame, omit, ink, context });
                 },

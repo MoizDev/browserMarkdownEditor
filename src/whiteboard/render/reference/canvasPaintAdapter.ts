@@ -14,6 +14,10 @@ export interface CanvasPaintAdapter {
     readyFrame(): PaintFrame | null;
     /** Borrow is valid only until the next prepare, release or dispose. */
     borrowPrepared(): PreparedPaint2d | null;
+    /** Physical retention for asynchronous fact work: the returned prepared resources, their image
+     * leases and (for dense plans) their bitmaps stay alive until release, even after the adapter has
+     * moved on. Null when nothing is presented. */
+    retainPrepared(): PreparedRetain | null;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
@@ -30,6 +34,11 @@ export interface PreparedPaint2d {
     readonly resources: PaintResources2d;
 }
 
+export interface PreparedRetain {
+    readonly prepared: PreparedPaint2d;
+    release(): void;
+}
+
 export type PaintProjection2d = (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => void;
 
 type PathJob = Path2dJob | InkCoverageUnionPath2dJob;
@@ -44,6 +53,9 @@ type Snapshot = {
     clips: Map<string, PreparedPath2d>;
     geometry: Map<string, { prepared: PreparedPath2d; bytes: number }>;
     images: Map<string, PaintImageLease | null>;
+    /** Open retainPrepared borrows; a release that arrives meanwhile is applied when the last one ends. */
+    borrows: number;
+    closing: boolean;
     abort: AbortController;
     pending: number;
     failure: unknown;
@@ -73,6 +85,12 @@ function sameToken(a: PaintFrame, b: PaintFrame): boolean {
 
 function releaseSnapshot(s: Snapshot): void {
     if (s.disposed) return;
+    if (s.borrows) { s.closing = true; return; }
+    finishSnapshot(s);
+}
+
+function finishSnapshot(s: Snapshot): void {
+    if (s.disposed) return;
     s.disposed = true;
     s.abort.abort();
     s.job?.path.cancel();
@@ -88,12 +106,14 @@ export function createCanvasPaintAdapter(
     resources: PaintLayerResources, project: PaintProjection2d, onError: (error: unknown) => void,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
+    // Snapshots kept alive only by retainPrepared borrows: their memory is still held and counted.
+    const borrowed = new Set<Snapshot>();
     let disposed = false;
     let lastFrameId: number | null = null;
 
     function start(frame: PaintFrame, scale: number): Snapshot {
         return { frame, scale, band: 'underlay', finished: false, index: 0, clipIndex: 0, paths: new WeakMap(),
-            clips: new Map(), geometry: new Map(), images: new Map(), abort: new AbortController(),
+            clips: new Map(), geometry: new Map(), images: new Map(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false, bytes: 0, job: null };
     }
     function requestImage(s: Snapshot, key: string): void {
@@ -170,14 +190,17 @@ export function createCanvasPaintAdapter(
         s.index++;
         s.clipIndex = 0;
     }
-    function borrowPrepared(): PreparedPaint2d | null {
-        const s = presented;
-        if (disposed || !s) return null;
+    function preparedOf(s: Snapshot): PreparedPaint2d {
         return { frame: s.frame, resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
             image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
         } };
+    }
+    function borrowPrepared(): PreparedPaint2d | null {
+        const s = presented;
+        if (disposed || !s || s.closing) return null;
+        return preparedOf(s);
     }
     return {
         prepare(view, budget) {
@@ -208,6 +231,18 @@ export function createCanvasPaintAdapter(
         },
         readyFrame() { return disposed ? null : presented?.frame ?? null; },
         borrowPrepared,
+        retainPrepared() {
+            const s = presented;
+            if (disposed || !s || s.closing) return null;
+            const prepared = preparedOf(s);
+            s.borrows++; borrowed.add(s);
+            let released = false;
+            return { prepared, release() {
+                if (released) return;
+                released = true;
+                if (--s.borrows === 0) { borrowed.delete(s); if (s.closing) finishSnapshot(s); }
+            } };
+        },
         draw2d(ctx, view, band, omitNodes) {
             const prepared = borrowPrepared();
             if (!prepared) return;
@@ -226,7 +261,11 @@ export function createCanvasPaintAdapter(
             if (staged && staged.frame === frame) return !staged.complete && !staged.failed && !(!staged.job && staged.finished && staged.pending > 0);
             return !presented || presented.frame !== frame;
         },
-        memory() { return { gpuBytes: 0, cpuBytes: (staged?.bytes ?? 0) + (presented?.bytes ?? 0) }; },
+        memory() {
+            let cpuBytes = (staged?.bytes ?? 0) + (presented?.bytes ?? 0);
+            for (const s of borrowed) if (s !== presented) cpuBytes += s.bytes;
+            return { gpuBytes: 0, cpuBytes };
+        },
         dispose() {
             if (disposed) return;
             disposed = true;

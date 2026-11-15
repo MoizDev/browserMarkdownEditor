@@ -77,6 +77,8 @@ export interface ViewerEngine {
     connectEmbeds(port: EmbedPresentationPort | null): void;
     /** The platform's acceptance of a presented frame; the embed producer builds only after this matches its draw. */
     presentationAccepted(presentation: PlatformPresentation | null): void;
+    /** The requested or accepted embed set changed: repaint with the live barriers that set implies. */
+    embedsChanged(): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,

@@ -116,8 +116,10 @@ export const attachView: AttachView = options => {
         }
         return result;
     };
-    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(
-        selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
+    // Requested embeds are live barriers too: a card the user asked for is drawn at its real paint position
+    // before its facts exist, so it is never baked into a tile or omitted early.
+    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
+        view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         liveNodeIds, candidates: () => lastCandidates,
@@ -300,6 +302,10 @@ export const attachView: AttachView = options => {
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
         cancelReveal,
+        embedsChanged() {
+            if (disposed) return;
+            requestPaint();
+        },
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;

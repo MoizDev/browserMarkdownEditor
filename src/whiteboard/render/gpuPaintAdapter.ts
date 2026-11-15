@@ -9,6 +9,7 @@ import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
+import { texturedQuad } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
 import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
@@ -427,9 +428,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (right <= left || bottom <= top) continue;
                     const clip = pass.pushClip({ x: left, y: top, width: right - left, height: bottom - top });
                     try {
-                        const apron = GUTTER * width / EDGE;
+                        // The same quad the presentation facts classify (imageSampling.texturedQuad), gutter included.
+                        const quad = texturedQuad({ x: x, y: y, width, height }, SIZE, { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
                         host.drawTexturedQuad(pass, tile.cached.texture, { x: 0, y: 0, width: SIZE, height: SIZE },
-                            { x: x - apron, y: y - apron, width: width + 2 * apron, height: height + 2 * apron },
+                            { x: quad.x0, y: quad.y0, width: quad.x1 - quad.x0, height: quad.y1 - quad.y0 },
                             { opacity: 1, sampling: 'linear', coverage: 'none' });
                     } finally { pass.popClip(clip); }
                     continue;

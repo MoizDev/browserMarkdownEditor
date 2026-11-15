@@ -105,11 +105,11 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             binding = options.bindClipboard(surface);
             try {
                 if (!embed) {
-                const port = createEmbedPresentationPort({ overlay, onError: options.onError });
+                // A real request (acquire or its release) changes which embeds are live barriers: repaint the board for it.
+                const port = createEmbedPresentationPort({ overlay, onError: options.onError, invalidate: () => options.engine.embedsChanged() });
                 let next: NativeEmbedPresentationProducer | null = null;
                 try {
-                    next = createNativeEmbedPresentationProducer({ port, images: options.toolOptions.images,
-                        memory: options.clipboard.memory, onError: options.onError });
+                    next = createNativeEmbedPresentationProducer({ port, memory: options.clipboard.memory, onError: options.onError });
                     const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
                         manifest: options.host.embeds.manifest, containment: options.host.embeds.create, environment: { appOrigin: location.origin },
                         current: () => options.current(options.token), visible: options.visible, onError: options.onError });

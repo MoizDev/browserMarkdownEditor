@@ -13,22 +13,21 @@ import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode } from '../model/nodes';
 import type { PathMaterial, StrokeMaterial } from '../render/material';
-import type { ViewerPaintPresentation } from '../render/paintPresentation';
 import { inkCoverageChunks, type PaintClip, type PaintFrame, type PaintImageItem, type PaintItem, type PaintNodeSource,
     type PaintTextItem } from '../render/paintStream';
-import type { PaintImageLease, PaintImageProvider } from '../render/resources';
+import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation as Presentation } from '../render/paintPresentation';
+import { imageLaterPaint } from '../render/presentedImageFacts';
+import { readAlphaPlane, type DeviceRect } from '../render/imageSampling';
 import { boardWorker } from '../workers/client';
 import type { BoardJobIdentity } from '../workers/protocol';
 
 // Provenance: embed presentation facts from this repository's own paint stream,
 // canonical ink, glyph, raster and path coverage and compositor contracts; independent composition.
 
-export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) => void;
+export type NativeEmbedPresented = (revision: number, token: RenderToken, frame?: PaintFrame, context?: Presentation) => void;
 
 export interface NativeEmbedPresentationOptions {
     readonly port: EmbedPresentationPort;
-    /** Decodes the exact image keys of the accepted paint. Each lease is held until the port retires the packet. */
-    readonly images: PaintImageProvider;
     /** The canonical allocator: every owned copy and worker buffer is reserved here before it is made. */
     readonly memory: MemoryAllocator;
     readonly onError: (error: unknown) => void;
@@ -45,9 +44,12 @@ export interface NativeEmbedPresentationProducer {
 interface Pending {
     readonly revision: number;
     readonly token: RenderToken;
+    /** The raw source frame: sourceDoc is its immutable metadata authority. */
     readonly frame: PaintFrame;
-    readonly context: ViewerPaintPresentation;
+    readonly context: Presentation;
     readonly releaseRaw: () => void;
+    /** The exact backings this draw read, borrowed at the draw itself; null when they cannot be proven. */
+    readonly drawn: PresentedImageLease | null;
 }
 interface Building {
     readonly pending: Pending;
@@ -66,29 +68,32 @@ const sameRender = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultE
 
 /** Everything one embed presentation has borrowed or reserved. Released only after every request has retired. */
 interface Holds {
-    readonly leases: PaintImageLease[];
     readonly reservations: ByteLease[];
     readonly requests: Promise<unknown>[];
 }
 interface Coverage {
-    readonly frame: PaintFrame;
     readonly pane: Affine;
+    /** Device pixels per pane CSS pixel of the retained draw. */
+    readonly dpr: number;
     readonly signal: AbortSignal;
-    readonly images: PaintImageProvider;
     readonly memory: MemoryAllocator;
     readonly owner: BoardJobIdentity;
     readonly holds: Holds;
     readonly live: () => boolean;
     /** Device pixels per world unit: the presented scale that sizes one device pixel of cover inset. */
     readonly deviceScale: number;
+    /** The drawn image items, each with the exact accepted bitmap the draw sampled. */
+    readonly drawn: ReadonlyMap<PaintItem, PresentedImage>;
 }
-/** One later paint item's contribution: exact opaque coverage, and the world regions it may paint non-occluding alpha in,
- * already cut by its real clips. A translucent entry is emitted only for a region that reaches an embed. */
+/** One later paint item's contribution: opaque or unknown entries (emitted as they are), and the world regions it may
+ * paint non-occluding alpha in, already cut by its real clips. A translucent entry is emitted only for a region that
+ * reaches an embed. */
 interface LaterCoverage {
     readonly opaque: EmbedLaterPaint[];
     readonly partial: Rect[];
 }
 const emptyCoverage = (): LaterCoverage => ({ opaque: [], partial: [] });
+const UNKNOWN_LATER: EmbedLaterPaint = Object.freeze({ opacity: 'unknown' });
 
 function quadBounds(localToWorld: Affine, w: number, h: number): Rect {
     return rectWorld(0, 0, w, h, localToWorld);
@@ -252,12 +257,12 @@ function send(cx: Coverage, payload: Omit<AlphaTraceRequest, 'maxRects'>, transf
     cx.holds.requests.push(request);
     return request;
 }
-/** A copy of the enclosing pixels of a held decoded frame, so the worker only ever owns the copy and the lease never leaves the producer. */
-async function traceImage(cx: Coverage, lease: PaintImageLease, region: Rect, opaqueAlpha: boolean): Promise<AlphaTraceReply | null> {
+/** A copy of the enclosing pixels of the exact accepted bitmap, never a fresh provider frame. */
+async function traceImage(cx: Coverage, source: ImageBitmap, region: Rect, opaqueAlpha: boolean): Promise<AlphaTraceReply | null> {
     const reservation = cx.memory.reserve(region.width * region.height * 5 + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
-    const copy = await createImageBitmap(lease.source, region.x, region.y, region.width, region.height);
+    const copy = await createImageBitmap(source, region.x, region.y, region.width, region.height);
     return send(cx, { bitmap: copy, opaqueAlpha }, [copy]);
 }
 async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceReply | null> {
@@ -289,28 +294,22 @@ function addTraced(acc: LaterCoverage, reply: AlphaTraceReply | null, pixelToLoc
     }
 }
 
-/** An image's decoded alpha, traced in the worker from the frame's own imageKey. Opaque coverage is certified by the bilinear
- * cover rule; partial alpha is real translucency. A non-normal blend is translucent over the whole picture. */
-async function imageCoverage(item: PaintImageItem, cx: Coverage): Promise<LaterCoverage> {
-    const acc = emptyCoverage(), rect = item.rect;
+/** The accepted bitmap supplies alpha; a later animation frame can never stand in for it. */
+async function imageCoverage(item: PaintImageItem, drawn: PresentedImage, cx: Coverage): Promise<LaterCoverage> {
+    const acc = emptyCoverage(), rect = item.rect, source = drawn.source;
     const whole = rectWorld(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, item.localToWorld);
     if (item.blend !== 'normal') { pushPartial(acc, whole, item.clips); return acc; }
-    const lease = await cx.images.acquire(item.imageKey, cx.frame.token, cx.signal);
-    cx.holds.leases.push(lease);
-    cx.signal.throwIfAborted();
-    const crop = item.sourceRect ?? { x: 0, y: 0, width: lease.width, height: lease.height };
-    if (!wholePixels(crop, lease.width, lease.height)) return acc;
+    const crop = item.sourceRect ?? { x: 0, y: 0, width: source.width, height: source.height };
+    if (!wholePixels(crop, source.width, source.height)) return unknownCoverage();
     const kind = item.retainedTile ? 'dense' : 'picture';
-    const region = enclosing(crop, lease.width, lease.height);
-    const reply = await traceImage(cx, lease, region, item.opacity >= 1);
+    const region = enclosing(crop, source.width, source.height);
+    const reply = await traceImage(cx, source, region, item.opacity >= 1);
     const texel = { x: rect.width / crop.width, y: rect.height / crop.height };
-    const cover = pictureCover(rect, texel, devicePixel(item.localToWorld, cx.deviceScale), imageSeams(crop, lease.width, lease.height, kind));
+    const cover = pictureCover(rect, texel, devicePixel(item.localToWorld, cx.deviceScale), imageSeams(crop, source.width, source.height, kind));
     addTraced(acc, reply, maskMatrix(rect, crop, region), cover, rect, item.localToWorld, cx, item.clips, whole);
     return acc;
 }
 
-/** Glyph coverage: each streamed glyph path is one canonical fill, each stroked path its exact stroke, and each raster
- * fallback tile its traced alpha, all in the item's own local frame and in the stream's paint order. */
 async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, cx: Coverage, pageScale: number): Promise<LaterCoverage> {
     const acc = emptyCoverage(), resolve = createStreamingExportTextPieces(source, cx.signal);
     let open: { fill: NonNullable<PathMaterial['fill']>; blend: PathMaterial['blend']; d: PathCommand[] } | null = null;
@@ -352,16 +351,16 @@ async function glyphCoverage(item: PaintTextItem, source: PaintNodeSource, cx: C
 }
 
 function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<string> | null, pane: Affine,
-    later: ReadonlyMap<number, LaterCoverage>): readonly EmbedPresentedNode[] {
+    later: ReadonlyMap<number | string, LaterCoverage>): readonly EmbedPresentedNode[] {
     const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
     const presented: EmbedPresentedNode[] = [];
     for (const card of embedCards(doc, items)) {
         const laterPaint: EmbedLaterPaint[] = [];
         for (let j = card.index + 1; j < items.length; j++) {
             const item = items[j];
-            if (item.nodeId === card.nodeId) continue;
+            if (item.nodeId === card.nodeId || omitted?.has(item.nodeId)) continue;
             if (!overlaps(laterItemBounds(item, card.nodeId), card.world)) continue;
-            const coverage = later.get(j);
+            const coverage = later.get(j) ?? later.get(`${j}|${card.nodeId}`);
             if (!coverage) throw new Error(`Later coverage for ${item.nodeId} was not prepared`);
             laterPaint.push(...coverage.opaque);
             if (coverage.partial.some(region => overlaps(region, card.world))) laterPaint.push({ opacity: 'translucent' });
@@ -374,24 +373,49 @@ function presentedEmbeds(doc: BoardDoc, frame: PaintFrame, omitted: ReadonlySet<
     return Object.freeze(presented);
 }
 
-/** Coverage for every later item that overlaps an embed is prepared before the synchronous node build. Glyph, raster and
- * image items resolve asynchronously; each item is resolved once for all the embeds it overlaps. */
+/** Coverage for every later item that overlaps an embed is prepared before the synchronous node build, from the DRAWN frame
+ * in paint order. A retained dense tile is classified per card by its own alpha footprint (its real draw), and an item whose
+ * backing is not in the draw resolves to unknown, which keeps the card on its poster. */
 async function prepareLater(doc: BoardDoc, frame: PaintFrame, source: PaintNodeSource, cx: Coverage,
-    deviceScale: number): Promise<ReadonlyMap<number, LaterCoverage>> {
+    deviceScale: number, omitted: ReadonlySet<string> | null): Promise<ReadonlyMap<number | string, LaterCoverage>> {
     const items: readonly PaintItem[] = [...frame.underlay, ...frame.content];
-    const cards = embedCards(doc, items), later = new Map<number, LaterCoverage>();
+    const cards = embedCards(doc, items), later = new Map<number | string, LaterCoverage>();
     for (let j = 0; j < items.length; j++) {
         const item = items[j];
+        // An omitted item is not painted by this draw, so it is no later paint at all (presentedEmbeds skips it too).
+        if (omitted?.has(item.nodeId)) continue;
         if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j)) continue;
         const bounds = laterItemBounds(item, item.nodeId);
-        if (!cards.some(card => card.nodeId !== item.nodeId && card.index < j && overlaps(bounds, card.world))) continue;
+        const overlapping = cards.filter(card => card.nodeId !== item.nodeId && card.index < j && overlaps(bounds, card.world));
+        if (!overlapping.length) continue;
+        if (item.kind === 'image' && item.retainedTile) {
+            const drawn = cx.drawn.get(item);
+            const read = drawn ? readAlphaPlane(drawn.source, drawn.source.width, drawn.source.height, cx.memory) : null;
+            if (read) cx.holds.reservations.push(read.lease);
+            for (const card of overlapping) {
+                const entries = !drawn || !read ? [UNKNOWN_LATER] : [imageLaterPaint(drawn, cx.pane, cx.dpr, deviceRect(card.world, cx), read.plane) ?? null];
+                const acc = emptyCoverage();
+                for (const entry of entries) if (entry) acc.opaque.push(entry);
+                later.set(`${j}|${card.nodeId}`, acc);
+            }
+            cx.signal.throwIfAborted();
+            continue;
+        }
+        const drawn = item.kind === 'image' ? cx.drawn.get(item) : undefined;
         const coverage = item.kind === 'text' ? await glyphCoverage(item, source, cx, deviceScale)
-            : item.kind === 'image' ? await imageCoverage(item, cx)
+            : item.kind === 'image' ? (drawn ? await imageCoverage(item, drawn, cx) : unknownCoverage())
             : syncCoverage(item, item.nodeId, cx.pane, deviceScale);
         cx.signal.throwIfAborted();
         later.set(j, coverage);
     }
     return later;
+}
+/** A later item whose drawn backing is missing: the card keeps its poster and claims nothing. */
+function unknownCoverage(): LaterCoverage { return { opaque: [UNKNOWN_LATER], partial: [] }; }
+/** The device-pixel rectangle of a card's world quad, through the retained draw's pane transform. */
+function deviceRect(world: Rect, cx: Coverage): DeviceRect {
+    const pane = rectWorld(world.x, world.y, world.x + world.width, world.y + world.height, cx.pane);
+    return { x0: pane.x * cx.dpr, y0: pane.y * cx.dpr, x1: (pane.x + pane.width) * cx.dpr, y1: (pane.y + pane.height) * cx.dpr };
 }
 
 /** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
@@ -402,43 +426,50 @@ function frameSource(frame: PaintFrame, live: () => boolean): PaintNodeSource {
 
 /**
  * Two-phase producer. The drawn callback can run before the platform accepts the presentation, so
- * the latest drawn frame is held, retain included, and built only when the matching acceptance
- * arrives. A newer draw supersedes a held frame and releases it at once, since it never reached the
- * port; a newer draw also aborts a build in flight, whose retain is released only after its glyph
- * streams have settled. dispose releases the held frame and aborts the build. A presented packet
- * holds the raw frame until the port retires it; decoded leases and budget reservations are released
- * only after every worker request they served has physically retired.
+ * the latest draw is held, its raw source and its exact drawn backings retained at the draw itself,
+ * and it is built only when the matching acceptance arrives. A newer draw supersedes a held draw and
+ * releases it at once, since it never reached the port; a newer draw also aborts a build in flight,
+ * whose holds are released only after its glyph streams have settled. dispose releases the held draw
+ * and aborts the build. A presented packet holds the raw frame and the drawn backings until the port
+ * retires it; decoded copies and budget reservations are released only after every worker request
+ * they served has physically retired. A draw whose backings cannot be proven presents nothing, so the
+ * cards keep their true-order poster.
  */
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
     let pending: Pending | null = null, building: Building | null = null, accepted: PlatformPresentation | null = null, disposed = false;
-    const releaseQuietly = (value: Pending) => { try { value.releaseRaw(); } catch (error) { options.onError(error); } };
+    const releaseQuietly = (value: Pending) => {
+        try { value.releaseRaw(); } catch (error) { options.onError(error); }
+        try { value.drawn?.release(); } catch (error) { options.onError(error); }
+    };
     const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController): Promise<void> => {
-        const { frame, context } = value, signal = controller.signal;
-        const holds: Holds = { leases: [], reservations: [], requests: [] };
+        const { frame, context, drawn } = value, signal = controller.signal;
+        const holds: Holds = { reservations: [], requests: [] };
         const releaseHeld = () => {
             releaseQuietly(value);
             void Promise.allSettled(holds.requests).then(() => {
-                for (const lease of holds.leases) { try { lease.release(); } catch (error) { options.onError(error); } }
                 for (const reservation of holds.reservations) options.memory.release(reservation);
             });
         };
         let handed = false;
         try {
+            // The raw source frame is the immutable metadata authority (document and identity); geometry and paint
+            // order come from the frame that was actually drawn.
             const doc = frame.sourceDoc;
             if (!doc) throw new Error('Embed presentation needs the pinned source document of the presented frame');
-            // The retained draw's own matrix: the exact world-to-pane transform the band painted, never a later camera lookup.
             const pane = context.paneTransform;
             if (!pane) throw new Error('Embed presentation needs the pane transform of the retained draw');
-            const deviceScale = context.view.camera.z * context.view.viewport.dpr;
-            const source = frameSource(frame, () => !signal.aborted && !disposed);
-            const cx: Coverage = { frame, pane, signal, images: options.images, memory: options.memory, holds,
+            if (!drawn) { releaseHeld(); return; }
+            const drawnFrame = drawn.frame, dpr = context.view.viewport.dpr;
+            const deviceScale = context.view.camera.z * dpr;
+            const source = frameSource(drawnFrame, () => !signal.aborted && !disposed);
+            const cx: Coverage = { pane, dpr, signal, memory: options.memory, holds, drawn: new Map(drawn.images.map(image => [image.item, image])),
                 owner: { session: crypto.randomUUID(), epoch: frame.token.vaultEpoch, revision: frame.sceneRevision },
                 live: () => !signal.aborted && !disposed, deviceScale };
-            const later = await prepareLater(doc, frame, source, cx, deviceScale);
+            const later = await prepareLater(doc, drawnFrame, source, cx, deviceScale, context.omittedNodeIds);
             signal.throwIfAborted();
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
-                nodes: presentedEmbeds(doc, frame, context.omittedNodeIds, pane, later), release: releaseHeld };
+                nodes: presentedEmbeds(doc, drawnFrame, context.omittedNodeIds, pane, later), release: releaseHeld };
             handed = true;
             options.port.present(packet);
         } catch (error) {
@@ -462,9 +493,11 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
     return {
         presented(revision, token, frame, context) {
             if (!frame || !context || disposed) return;
+            // Both borrows are taken at the draw itself: a later draw can replace the presented backings at any time.
             const releaseRaw = context.retain();
-            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) { releaseRaw(); return; }
-            const next: Pending = { revision, token, frame, context, releaseRaw };
+            const drawn = context.retainImages();
+            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) { releaseRaw(); drawn?.release(); return; }
+            const next: Pending = { revision, token, frame, context, releaseRaw, drawn };
             if (pending) releaseQuietly(pending);
             pending = next;
             building?.controller.abort();

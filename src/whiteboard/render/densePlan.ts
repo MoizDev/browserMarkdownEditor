@@ -74,6 +74,9 @@ type Plan = {
     pending: number;
     lease: ByteLease | null;
     retired: boolean; blocked: boolean; prepared: PreparedPaint2d | null; resources: PaintLayerResources;
+    /** Open retainPrepared borrows. A retired plan frees its bitmaps, leases and direct adapter only
+     * when the last borrow ends; `freed` makes that one-shot. */
+    borrows: number; closing: boolean; freed: boolean;
 };
 const projection = (view: ViewState) => [view.camera.x, view.camera.y, view.camera.z,
     view.viewport.width, view.viewport.height, view.viewport.dpr].join(':');
@@ -94,16 +97,23 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + (p.directLease?.bytes ?? 0);
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
+    // Retiring a plan stops its work at once; the resources a retainPrepared borrow reads outlive it.
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
         p.retired = true;
         p.job?.cancel(); p.job = null;
         if (p.cache) { p.cache.cache.cancel(p.cache.ticket); p.cache = null; }
         if (p.summaryCache) { p.summaryCache.cache.cancel(p.summaryCache.ticket); p.summaryCache = null; }
+        p.entries.underlay = []; p.entries.content = [];
+        if (p.borrows) { p.closing = true; return; }
+        free(p);
+    };
+    const free = (p: Plan) => {
+        if (p.freed) return;
+        p.freed = true;
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.owned.splice(0)) bitmap.release();
         p.bitmaps.clear(); p.bitmapBytes = 0;
-        p.entries.underlay = []; p.entries.content = [];
         if (p.directLease) { host.allocator.cpu.release(p.directLease); p.directLease = null; }
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
         finishRetirement(p);
@@ -128,7 +138,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 job: null, cache: null, summaries, summaryIndex: 0, summaryCache: null,
                 entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0,
                 directAdapter: null, directLease: null, directEstimate: 0, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
-                pending: 0, lease, retired: false, blocked: false, prepared: null, resources };
+                pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
                 p.pending++;
                 let promise;
@@ -324,7 +334,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const key = `dense/${++serial}`;
             p.bitmaps.set(key, entry.bitmap);
             const item: PaintImageItem = { kind: 'image', key, geometryKey: key, imageKey: key, nodeId: key,
-                localToWorld: [1, 0, 0, 1, 0, 0], clips: [], rect: entry.bitmap.rect,
+                localToWorld: [1, 0, 0, 1, 0, 0], clips: [], rect: entry.bitmap.rect, allocationBounds: entry.bitmap.rect,
                 sourceRect: { x: 2, y: 2, width: EDGE, height: EDGE }, opacity: 1, blend: entry.blend, inverted: false, retainedTile: true };
             return item;
         };
@@ -411,6 +421,17 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         readyFrame: () => disposed ? null : ready?.source ?? null,
         borrowPrepared: () => disposed ? null : ready?.prepared ?? null,
+        retainPrepared() {
+            const p = ready, prepared = p?.prepared;
+            if (disposed || !p || !prepared || p.retired) return null;
+            p.borrows++;
+            let released = false;
+            return { prepared, release() {
+                if (released) return;
+                released = true;
+                if (--p.borrows === 0 && p.closing) free(p);
+            } };
+        },
         draw2d(ctx, view, band, omitNodes) {
             const p = ready, prepared = p?.prepared;
             if (!p || !prepared) return;

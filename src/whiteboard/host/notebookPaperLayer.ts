@@ -75,7 +75,7 @@ class NotebookPaperLayer implements Layer {
     private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.frame ?? null,
-        borrowPrepared: () => this.gpuPrepared, draw2d: () => {}, release: () => {},
+        borrowPrepared: () => this.gpuPrepared, retainPrepared: () => null, draw2d: () => {}, release: () => {},
         needsFrame: () => false, memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;

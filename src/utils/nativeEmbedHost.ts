@@ -1,10 +1,11 @@
 import type { NativeEmbedHost } from '../types/nativeCanvas';
 import type { EmbedContainment, EmbedContainmentApproval, EmbedContainmentOptions } from '../platform/embedContainment.types';
+import { EMBED_PROVIDER_ORIGINS } from '../platform/embedPolicy';
 
 /** App-lifetime registry and lazy platform binding; documents cannot grant origins or consent. */
 export function createNativeEmbedHost(): NativeEmbedHost {
     const manifest = Object.freeze({ version: 1 as const,
-        origins: Object.freeze(['https://www.youtube-nocookie.com', 'https://player.vimeo.com']),
+        origins: EMBED_PROVIDER_ORIGINS,
     });
     let approval: EmbedContainmentApproval | undefined;
     return Object.freeze({

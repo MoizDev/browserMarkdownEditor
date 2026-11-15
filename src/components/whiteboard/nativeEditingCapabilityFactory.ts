@@ -44,9 +44,9 @@ export function createNativeEditingCapabilities(context: NativeEditingCapability
             if (!binding) throw new Error('Canvas input is not attached');
             const captured = binding.controller.captureInsertionTarget();
             const value = await context.requestText({ title: 'Insert embed',
-                body: 'Enter a YouTube or Vimeo link. The embed stays unloaded until you choose Load.', confirmLabel: 'Insert',
+                body: 'Enter a link from a supported embed provider. The embed stays unloaded until you choose Load.', confirmLabel: 'Insert',
                 input: { label: 'URL', initialValue: '', placeholder: 'https://…',
-                    validate: input => resolveEmbedCandidate(input, environment, manifest) ? null : 'Enter a supported YouTube or Vimeo URL.' } });
+                    validate: input => resolveEmbedCandidate(input, environment, manifest) ? null : 'Enter a link from a supported embed provider.' } });
             if (value === null) return;
             if (!writable() || !captured.current()) throw new DOMException('Embed insertion target changed', 'AbortError');
             await runtime.jobs.run(async job => {

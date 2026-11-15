@@ -3,6 +3,9 @@ import type { SheetId } from '../model/ids';
 import type { SelectionSnapshot } from '../selection';
 import { createStructureCommands, type StructureCommandsOptions } from './structureCommands';
 
+/** The name every new sheet gets, whether created from the menu or by the keyboard's forward step. */
+export const NEW_SHEET_NAME = 'Untitled sheet';
+
 export interface StructureControlsOptions extends Omit<StructureCommandsOptions, 'geometry'> {
     readonly newSheetName: () => string;
     /** The attached view may be less privileged than its shared document session. */

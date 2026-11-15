@@ -398,7 +398,10 @@ otherwise they use \`.tldraw\`. Existing drawings keep their names.
 
 Native drawings and notebooks open on the native board: you can
 pan the canvas, select a sheet when there is more than one, use the page box to
-jump through a notebook, zoom with − / +, and invert the view. **Thumbnails**
+jump through a notebook, zoom with − / +, and invert the view. With the canvas
+focused, **Alt/Option+←** or **↑** goes to the previous sheet and **Alt/Option+→**
+or **↓** to the next; on the last sheet, a forward step adds a new sheet once that
+sheet has content. **Thumbnails**
 opens a notebook's page strip; click a preview to jump to that page. A drawing's
 **Minimap** shows its artwork and your current viewport. Click or drag in it to
 navigate; with the minimap focused, arrow keys move a quarter viewport (a full

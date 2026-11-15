@@ -39,7 +39,6 @@ export type CurvePublication = Readonly<{
     replaceableTail: CurveGeometry;
     endpointX: number; endpointY: number;
     packingErrorWorld: number;
-    prediction: Readonly<{ sequence: number; phase: 'prediction'; geometry: CurveGeometry; }> | null;
 }>;
 
 export function curveParameters(declaredMaxScale: number, fairingToleranceWorld?: number, maxDpr = 3): CurveParameters {
@@ -152,23 +151,6 @@ export function materializeCurveRange(samples: SampleSequence, range: CurveRange
     });
 }
 
-function predictionGeometry(real: SampleSequence, predicted: SampleSequence, p: CurveParameters): CurveGeometry | null {
-    if (!predicted.count || !real.count) return null;
-    if (predicted.count > CURVE_CHUNK_SPANS) throw new RangeError('Prediction tail exceeds its bounded window');
-    const count = predicted.count + 1, xy = new Float64Array(2 * count);
-    xy[0] = real.x(real.count - 1); xy[1] = real.y(real.count - 1);
-    for (let i = 1; i < count; i++) {
-        const x = predicted.x(i - 1), y = predicted.y(i - 1);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Prediction must be finite');
-        xy[2 * i] = x; xy[2 * i + 1] = y;
-    }
-    const separate: SampleSequence = {
-        count, x: i => xy[2 * i], y: i => xy[2 * i + 1],
-        pressure: () => undefined, segmentKind: () => 'freehand'
-    };
-    return materializeCurveRange(separate, { firstSpan: 0, spanCount: count - 1 }, p);
-}
-
 function packingDisplacement(before: SampleSequence, after: SampleSequence, firstSpan: number,
     spanCount: number, p: CurveParameters): number {
     const original = new Float64Array(8), packed = new Float64Array(8);
@@ -200,18 +182,17 @@ export class LocalCurveBuilder {
         if (this.completed) throw new Error('Completed ink cannot be extended by a later release event');
         this.samples.append(x, y, pressure, incomingKind, pins);
     }
-    publish(predicted?: SampleSequence): CurvePublication {
+    publish(): CurvePublication {
         if (this.completed) throw new Error('Completed ink has already published its final prefix');
         const samples = this.samples.snapshot();
-        const packet = this.publication(samples, predicted);
+        const packet = this.publication(samples);
         this.samples.markPublished();
         return packet;
     }
-    private publication(samples: SampleSequence, predicted?: SampleSequence): CurvePublication {
+    private publication(samples: SampleSequence): CurvePublication {
         if (!samples.count) throw new Error('Empty ink has no geometry publication');
         const spanCount = samples.count - 1;
         const finalizedSpanCount = Math.max(0, spanCount - 3);
-        const prediction = predicted ? predictionGeometry(samples, predicted, this.parameters) : null;
         const sequence = ++this.sequence;
         return Object.freeze({
             sequence, phase: 'wet-real', parameters: this.parameters, samples,
@@ -219,12 +200,11 @@ export class LocalCurveBuilder {
             replaceableTail: materializeCurveRange(samples, { firstSpan: finalizedSpanCount, spanCount: spanCount - finalizedSpanCount }, this.parameters),
             endpointX: samples.x(samples.count - 1), endpointY: samples.y(samples.count - 1),
             packingErrorWorld: this.samples.packingErrorWorld,
-            prediction: prediction ? Object.freeze({ sequence, phase: 'prediction' as const, geometry: prediction }) : null,
         });
     }
     finish(): Readonly<{ samples: SampleBuilder; publication: CurvePublication; }> {
         if (this.completed) throw new Error('Ink has already completed');
-        // Capture exactly what was displayed. No predicted point, final fitting or omission runs here.
+        // Capture exactly what was displayed. No final fitting or omission runs here.
         const canonical = this.samples.snapshot(), publication = this.publication(canonical);
         const samples = this.samples.finish();
         this.completed = true;

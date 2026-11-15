@@ -1,4 +1,4 @@
-import { surfaceToWorld, worldToSurface, type CameraController, type Point } from '../../platform/render/camera';
+import { worldToSurface, type CameraController, type Point } from '../../platform/render/camera';
 import type { PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
@@ -121,13 +121,6 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
                 && value.sessionGeneration === inputToken.sessionGeneration && value.viewGeneration === inputToken.viewGeneration && current(),
             bindFlush(callback) { flush = callback; return () => { if (flush === callback) flush = null; }; },
             sampleToSurface, clientToSurface,
-            predictionMapping() {
-                const camera = { ...options.camera.camera }, viewport = { ...options.viewport() }, rect = surface.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new RangeError('Input surface has no prediction viewport');
-                return { clientToSurface: (x, y) => ({ x: (x - rect.left) * viewport.width / rect.width, y: (y - rect.top) * viewport.height / rect.height }),
-                    surfaceToWorld: (x, y) => surfaceToWorld({ x, y }, camera),
-                    permits: (x, y) => x >= 0 && y >= 0 && x <= viewport.width && y <= viewport.height };
-            },
         };
         const rememberPointer = (event: PointerEvent) => {
             if (!enabled || !current() || !event.isPrimary || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;

@@ -1,5 +1,5 @@
 import type { InkIdentity, InkPresentation } from './liveInk';
-import { DelegatedInk } from './prediction';
+import { DelegatedInk } from './delegatedInk';
 import type { MappingHistory, PresentedMapping } from './pointer';
 import type { RealSample } from './tool';
 
@@ -13,7 +13,7 @@ export interface DelegatedBridgeOptions {
     onRealPresented(callback: (sample: PresentedWetSample) => void): () => void;
 }
 interface InkState { readonly identity: InkIdentity; readonly presentation: InkPresentation; readonly sample: RealSample }
-interface Candidate extends InkState { readonly curveSequence: number; readonly predicted: boolean }
+interface Candidate extends InkState { readonly curveSequence: number }
 interface EventRecord { readonly event: PointerEvent; readonly sample: RealSample; readonly mapping: readonly number[]; readonly camera: readonly number[] }
 interface Submitted { readonly identity: InkIdentity; readonly curveSequence: number; readonly record: EventRecord; readonly presentation: InkPresentation }
 
@@ -34,7 +34,6 @@ export class DelegatedInkBridge {
     private readonly unsubscribe: () => void;
     private event: EventRecord | null = null;
     private submitted: Submitted | null = null;
-    private delegatedPointer: number | null = null;
     private lastSent: { readonly pointerId: number; readonly sequence: number } | null = null;
     private disposed = false;
     constructor(private readonly options: DelegatedBridgeOptions) {
@@ -45,12 +44,11 @@ export class DelegatedInkBridge {
     observe(event: PointerEvent, sample: RealSample): void {
         if (this.disposed || !this.options.current() || !event.isTrusted || sample.source !== 'pen'
             || event.pointerId !== sample.pointerId || event.timeStamp !== sample.time || !event.buttons) {
-            this.event = null; this.delegatedPointer = null; return;
+            this.event = null; return;
         }
         const mapping = this.options.mappings.latest(), values = mapping && mappingValues(mapping), camera = this.options.camera();
         const cameraValues = [camera.x, camera.y, camera.z];
-        if (!values || !cameraValues.every(Number.isFinite) || camera.z <= 0) { this.event = null; this.delegatedPointer = null; return; }
-        if (this.event && (!sameMapping(this.event.mapping, values) || !sameMapping(this.event.camera, cameraValues))) this.delegatedPointer = null;
+        if (!values || !cameraValues.every(Number.isFinite) || camera.z <= 0) { this.event = null; return; }
         this.event = { event, sample, mapping: values, camera: cameraValues };
     }
     private eligible(candidate: InkState | null): candidate is InkState {
@@ -68,7 +66,7 @@ export class DelegatedInkBridge {
     }
     wantsExclusive(candidate: InkState | null): boolean { return this.eligible(candidate); }
     submittedCurve(candidate: Candidate | null): void {
-        if (!this.eligible(candidate) || candidate.predicted) { this.submitted = null; this.delegatedPointer = null; return; }
+        if (!this.eligible(candidate)) { this.submitted = null; return; }
         const record = this.event!;
         if (this.lastSent?.pointerId === record.sample.pointerId && this.lastSent.sequence === record.sample.sequence) {
             this.submitted = null; return;
@@ -82,22 +80,16 @@ export class DelegatedInkBridge {
             || this.event !== submitted.record) return;
         const mapping = this.options.mappings.latest(), values = mapping && mappingValues(mapping), camera = this.options.camera();
         if (!values || !sameMapping(values, submitted.record.mapping)
-            || !sameMapping(submitted.record.camera, [camera.x, camera.y, camera.z])) { this.delegatedPointer = null; return; }
+            || !sameMapping(submitted.record.camera, [camera.x, camera.y, camera.z])) return;
         // The two mappings yield world units and CSS-surface units for one client pixel.
         const worldPerClient = Math.hypot(values[2] - values[0], values[3] - values[1]);
         const surfacePerClient = Math.hypot(values[8] - values[6], values[9] - values[7]);
         const m = submitted.presentation.localToWorld, localScale = Math.hypot(m[0], m[1]);
         const diameter = submitted.presentation.width * localScale * surfacePerClient / worldPerClient;
-        const accepted = this.delegated.update(submitted.record.event, diameter, submitted.presentation.color, true);
+        this.delegated.update(submitted.record.event, diameter, submitted.presentation.color, true);
         this.lastSent = { pointerId: submitted.record.sample.pointerId, sequence: submitted.record.sample.sequence };
-        this.delegatedPointer = accepted ? submitted.record.sample.pointerId : null;
         this.submitted = null;
     }
-    ownsPrediction(pointerId: number): boolean {
-        if (this.disposed || !this.options.current() || this.delegatedPointer !== pointerId || !this.event) return false;
-        const camera = this.options.camera(), mapping = this.options.mappings.latest(), values = mapping && mappingValues(mapping);
-        return !!values && sameMapping(this.event.camera, [camera.x, camera.y, camera.z]) && sameMapping(this.event.mapping, values);
-    }
-    clear(): void { this.event = null; this.submitted = null; this.delegatedPointer = null; this.lastSent = null; }
+    clear(): void { this.event = null; this.submitted = null; this.lastSent = null; }
     dispose(): void { if (!this.disposed) { this.disposed = true; this.clear(); this.unsubscribe(); this.delegated.detach(); } }
 }

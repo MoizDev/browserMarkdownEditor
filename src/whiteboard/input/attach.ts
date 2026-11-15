@@ -16,7 +16,6 @@ import { PointerRouter, type PointerRoute } from './pointerRouter'
 import { EdgeScroll } from './edgeScroll'
 import { TouchDoubleTap } from './touchDoubleTap'
 import { DelegatedInkBridge, type PresentedWetSample } from './delegatedBridge'
-import { predictedTail, type PredictedPoint, type PredictionMapping } from './prediction'
 import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
@@ -44,7 +43,6 @@ export interface BoardInputView {
   readonly bindFlush?: (flush: () => void) => Detach
   readonly sampleToSurface: (sample: RealSample) => Point
   readonly clientToSurface: (x: number, y: number) => Point
-  readonly predictionMapping: () => PredictionMapping
   readonly current: (token: InputToken) => boolean
   readonly visible: () => boolean
   readonly paged: boolean
@@ -118,7 +116,6 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (held) { if (!router.activeOwner) overview.enter() } else overview.leave()
   }
   let temporaryPan = false
-  let pendingPrediction: readonly PredictedPoint[] | undefined
   /** A right (or Ctrl) press in progress: its native menu is the app's to decide, on release, once it is known to be a click (F-INPUT-012). */
   let rightPressActive = false
   const touchAdmission = new Map<number, boolean>()
@@ -271,15 +268,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (restoreTool !== null && editable() && services.tools.getRegistration(restoreTool)) services.tools.setTool(restoreTool)
       restoreTool = null
       temporaryPan = false
-      pendingPrediction = undefined
       start = null
       activeSource = null
-    },
-    prediction(id, event) {
-      if (!current() || router.inkSuspended || !(router.activeOwner instanceof LiveInk)
-        || !router.activeOwner.allowsPrediction || !router.activeOwner.pointerIds.has(id)) return
-      pendingPrediction = event && !delegated?.ownsPrediction(id) ? predictedTail(event, view.predictionMapping(), 16) : []
-      view.wet.invalidate()
     },
     // The native menu is always replaced. A mouse-originated one (a right or Ctrl press) is decided by the press itself;
     // only a keyboard-raised one opens the board menu directly.
@@ -406,10 +396,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
     if (current() && router.activeOwner instanceof LiveInk) {
       const owner = router.activeOwner
-      // Delegate only after a real-only frame replaces any local prediction.
-      if (delegated?.wantsExclusive(owner.delegatedState)) owner.publishPrediction([])
-      else if (pendingPrediction && owner.allowsPrediction) owner.publishPrediction(pendingPrediction)
-      else owner.publish()
+      // A delegated stroke republishes even when clean, so its newest sample gets a curve to present.
+      owner.publish(!!delegated?.wantsExclusive(owner.delegatedState))
       delegated?.submittedCurve(owner.delegatedCandidate)
     } else if (current() && router.activeOwner instanceof InkContinuationGesture) {
       const owner = router.activeOwner
@@ -419,14 +407,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         services.error(error)
       }
     }
-    pendingPrediction = undefined
   })
   const stopWheel = installWheel(view.surface, {
     camera: view.camera, paged: view.paged, toSurface: view.clientToSurface, invertZoom: () => services.invertMouseZoom?.() ?? false,
     owns: event => current() && services.ownsWheel(event),
     changed: () => {
       cancelForCamera()
-      if (router.activeOwner instanceof LiveInk) { pendingPrediction = []; view.wet.invalidate() }
       services.cameraChanged()
     },
   })

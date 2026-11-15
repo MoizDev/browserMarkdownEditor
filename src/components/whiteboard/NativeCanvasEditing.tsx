@@ -19,6 +19,7 @@ import { createNativeBoardOperations } from './nativeBoardOperations';
 import { createNativeCameraOperations } from './nativeCameraOperations';
 import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } from './nativeCommandSource';
 import { createNativeEditingKeyboard } from './nativeEditingKeyboard';
+import { chooseReplacementImage } from './nativeMediaRows';
 import type { NativeEditingCapabilities, NativeEditingCapabilityFactory } from './nativeEditingCapabilities';
 import { createNativeLinkOperations } from './nativeLinkOperations';
 import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
@@ -188,14 +189,25 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const { commands, camera } = owned;
         const extra = createNativeEditingKeyboard({ runtime, lease, commands, camera, preferences: clipboard.preferences,
             openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
+            // I inverts the one picture selected, and does nothing when no picture is (it is never a page command).
+            invertPicture: () => {
+                const picture = clipboard.media.selection(canWrite());
+                if (!picture || picture.kind !== 'picture' || picture.blocked !== null || picture.video) return false;
+                try { clipboard.media.invert(picture.id); } catch (error) { report(error); }
+                return true;
+            },
             current, canWrite, report });
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
-            embed: () => embedPort ? embedControllerRef.current : null, current, canWrite, notice: setNotice });
+            embed: () => embedPort ? embedControllerRef.current : null,
+            media: () => ({ actions: clipboard.media, selection: writable => clipboard.media.selection(writable), fail: report,
+                pick: chooseReplacementImage, requestText: dialogs.requestText, playback: lease.video }),
+            current, canWrite, notice: setNotice });
         contextMenuRef.current = openMenu;
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
-    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice]);
+    }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice,
+        dialogs.requestText]);
     const registerShortcuts = useCallback((open: () => void) => {
         shortcutRef.current = open; refreshServices(value => value + 1);
         return () => { if (shortcutRef.current === open) shortcutRef.current = null; };

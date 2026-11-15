@@ -13,13 +13,13 @@ export function subscribePdfSessionRoute(listener: () => void): () => void {
 
 function routeValue(value: RouteSlot | PdfViewer | undefined): PdfViewer | undefined {
     const viewer = typeof value === 'string' ? value : value?.viewer;
-    return viewer === 'classic' || viewer === 'tiled' ? viewer : undefined;
+    return viewer === 'tiled' ? viewer : undefined;
 }
 
 /** App chooses once when the session is created; graph/pane remounts only read it (C7.3). */
 export function ensurePdfSessionRoute(session: PdfRouteSession, inherited?: PdfViewer): PdfViewer {
     const existing = session.getSlot<RouteSlot | PdfViewer>(pdfRouteSlot);
-    const route = routeValue(existing) ?? inherited ?? routeEngines().pdfViewer;
+    const route = routeValue(existing) ?? routeValue(inherited) ?? routeEngines().pdfViewer;
     if (typeof existing === 'string' || !existing) session.setSlot(pdfRouteSlot, { viewer: route });
     else if (!routeValue(existing)) existing.viewer = route;
     return route;
@@ -31,7 +31,7 @@ export function readPdfSessionRoute(session: PdfRouteSession): PdfViewer | undef
 
 /** The caller must bind this explicit choice to the live App session. */
 export function choosePdfSessionRoute(session: PdfRouteSession, viewer: PdfViewer): void {
-    if (viewer !== 'classic' && viewer !== 'tiled') throw new RangeError('Invalid PDF viewer');
+    if (viewer !== 'tiled') throw new RangeError('The Classic PDF engine is no longer available');
     const existing = session.getSlot<RouteSlot | PdfViewer>(pdfRouteSlot);
     const previous = routeValue(existing);
     if (existing && typeof existing === 'object') existing.viewer = viewer;

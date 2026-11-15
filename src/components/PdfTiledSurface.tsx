@@ -19,7 +19,6 @@ interface Props {
     searchVault(query: string): void;
     rotate(delta: number, page?: number, picture?: PdfRotationPicture): void;
     openText(page?: number): void;
-    openClassic(): void;
     onSource(source: PdfTiledSource): void;
     onPresentation?(presentation: PdfTiledPresentation): void;
     onCapabilities(source: PdfTiledSource, capabilities: ReaderCapabilities): void;
@@ -90,7 +89,7 @@ export default function PdfTiledSurface(props: Props) {
     const passwordPrompt = passwords ? <PdfPasswordCoordinator identity={reading.identity} store={passwords} visible={props.visible && props.focused} /> : null;
     if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
-        <button className="pdf-pane-action" onClick={props.openClassic}>Open in Classic</button></div></>;
+        </div></>;
     if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
@@ -98,5 +97,5 @@ export default function PdfTiledSurface(props: Props) {
         filePath={props.filePath} isVisible={props.visible} isFocused={props.focused} sourceHash={version?.source === source ? version.hash : undefined} onPresentation={props.onPresentation}
         findMemory={props.findMemory} onSearchVault={props.searchVault} onRotate={props.rotate}
         onCapabilities={reportCapabilities}
-        onOpenTextView={props.openText} onNotice={props.notify} onOpenClassic={props.openClassic} />;
+        onOpenTextView={props.openText} onNotice={props.notify} />;
 }

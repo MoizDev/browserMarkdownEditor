@@ -1,9 +1,8 @@
 import { writeStoredValue } from './storage';
-import { pdfEngineAvailableInBuild } from './pdfEngineAvailability';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
 export type CanvasEngine = 'tldraw' | 'viewer' | 'board';
-export type PdfViewer = 'classic' | 'tiled';
+export type PdfViewer = 'tiled';
 
 // Add an engine here only when its host and lazy import are in this build.
 // The same availability list drives the controls and the synchronous router.
@@ -11,7 +10,8 @@ export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw', 'boa
 // This lazy host reads native drawing/notebook bytes only. Do not offer it as
 // a legacy converter or as a PDF-ink/edit engine before those hosts are wired.
 const NATIVE_VIEWER_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook'];
-export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['classic', 'tiled'] : ['classic'];
+// Missing production engine assets fail closed in this host, never into an old parser.
+export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['tiled'];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;
@@ -44,6 +44,6 @@ export function routeEngines(nativeKind?: CanvasEngineKind) {
         return [kind, { engine, emergencyReadOnly: enabled && stored(emergencyKey(kind)) === 'true' }];
     })) as Record<CanvasEngineKind, { engine: CanvasEngine | 'unavailable'; emergencyReadOnly: boolean }>;
     const pdfValue = enabled ? stored('bme.pdf.viewer') : null;
-    const pdfViewer = AVAILABLE_PDF_VIEWERS.find(candidate => candidate === pdfValue) ?? 'classic';
+    const pdfViewer = AVAILABLE_PDF_VIEWERS.find(candidate => candidate === pdfValue) ?? 'tiled';
     return { canvas, pdfViewer, platformLayer: enabled && PLATFORM_LAYER_AVAILABLE && stored('bme.pdf.platformLayer') === 'true' };
 }

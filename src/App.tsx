@@ -3550,7 +3550,7 @@ export default function App() {
           check();
         } else {
           const bytes = await readFileBytes(handle);
-          const { readPdfRole } = await import('./utils/pdfAnnotation');
+          const { readPdfRole } = await import('./utils/pdfRoleRead');
           const role = await readPdfRole(bytes);
           if (!canRotatePdfRole(role)) {
             notifyRef.current(role.kind === 'annotated'

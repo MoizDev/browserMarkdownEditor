@@ -88,13 +88,12 @@ interface Props {
     readonly onNotice: (message: string) => void;
     readonly onCapabilities: (capabilities: ReaderCapabilities) => void;
     /** App owns this explicit route switch; it must retain the current document and ink. */
-    readonly onOpenClassic?: () => void;
 }
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
-    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities, onOpenClassic }: Props) {
+    mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
     const [contentHost, setContentHost] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
@@ -783,10 +782,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
                 <button onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
-                <button onClick={() => { if (session.isCurrent()) onOpenClassic?.(); }} disabled={!onOpenClassic}>Open in Classic</button>
                 {!pageNotice && <button onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
             </div>
-            {(!retryDocument || !onOpenClassic) && <div className="pdf-tiled-notice-hint">{!retryDocument && 'Retry is unavailable. '}{!onOpenClassic && 'Classic switching is unavailable.'}</div>}
+            {!retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}
         {thumbs && isVisible && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
         <div className="pdf-tiled-content" ref={setContentHost}><div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />

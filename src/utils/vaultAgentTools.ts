@@ -24,7 +24,7 @@
 // folder first"), because a thrown error would reach it as an opaque failure.
 //
 // Bundle discipline: this module is on the agent panel's lazy path and imports
-// no renderer. pdf.js is reached only through `import('./pdfText')` for a PDF
+// no renderer. PDF access is supplied by the App-owned contained source for a PDF
 // that is not open; open documents are read through their panes' reporters
 // (utils/viewRegistry.ts); tldraw is never imported — closed canvases are read
 // from their JSON (canvasFileSummary.ts), and changes go through the live
@@ -48,7 +48,6 @@ import { isGitName } from './vaultEntries';
 import { ENTRY_STYLE_FILE, LEGACY_STYLE_FILE } from './entryStyle';
 import { VAULT_AGENT_DIR } from './vaultAgentStore';
 import { parentVaultPath } from './paths';
-import { routeEngines } from './engineRouting';
 import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
@@ -517,12 +516,9 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
     } else {
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
-        const tiled = routeEngines().pdfViewer === 'tiled';
-        const access = tiled ? ctx.host.closedPdfAgent?.() : null;
-        if (tiled && !access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
-        const r = access
-            ? await withClosedPdfDeadline(ctx, signal => access.read(path, bytes, first, maxPages, budget, signal))
-            : await (await import('./pdfText')).readPdfText(bytes, first, maxPages, budget);
+        const access = ctx.host.closedPdfAgent?.();
+        if (!access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
+        const r = await withClosedPdfDeadline(ctx, signal => access.read(path, bytes, first, maxPages, budget, signal));
         pageCount = r.pageCount;
         if (first > pageCount) throw new ToolError(`page ${first} is past the end of "${path}", which has ${pageCount} page${pageCount === 1 ? '' : 's'}.`);
         pages = r.pages;
@@ -759,12 +755,9 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
         const target = page ?? 1;
-        const tiled = routeEngines().pdfViewer === 'tiled';
-        const access = tiled ? ctx.host.closedPdfAgent?.() : null;
-        if (tiled && !access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
-        const r = access
-            ? await withClosedPdfDeadline(ctx, signal => access.render(path, bytes, target, max, signal))
-            : await (await import('./pdfText')).renderPdfPage(bytes, target, max);
+        const access = ctx.host.closedPdfAgent?.();
+        if (!access) throw new ToolError('The PDF engine is unavailable. Open the PDF in the app and try again.');
+        const r = await withClosedPdfDeadline(ctx, signal => access.render(path, bytes, target, max, signal));
         ctx.ensureLive();
         if (!r.png) throw new ToolError(`page ${target} is past the end of "${path}", which has ${r.pageCount} page${r.pageCount === 1 ? '' : 's'}.`);
         const emphasis = 'emphasis' in r ? r.emphasis : undefined;

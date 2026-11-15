@@ -27,7 +27,7 @@ A local-first, Obsidian-style Markdown editor that runs **entirely in the browse
 database. Optional fonts use Google; the local VaultAgent helper serves AI and terminal. It reads and
 writes the user's real files through the **File System Access API**, so it is **Chromium-only by
 design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
-TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas/PDF engines, tldraw (Classic), pdf.js + pdf-lib, idb-keyval, xterm.js.
+TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas + native PDFium, legacy tldraw canvases, lazy pdf-lib metadata/writers, idb-keyval, xterm.js.
 
 ## Commands
 
@@ -116,7 +116,7 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
 - **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
-  there is no manual chunking, so one new import silently pulls pdf-lib (~400kB), pdf.js or tldraw into
+  there is no manual chunking, so one new import silently pulls pdf-lib (~400kB), an engine or tldraw into
   the main bundle; load `pdf-and-drawings` (notebooks and drawings too) before adding one. The chunks
   warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does

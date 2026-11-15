@@ -1,5 +1,3 @@
-import type { PDFDocumentProxy } from 'pdfjs-dist';
-
 /** Permission state is deliberately tri-state: an unavailable result is not
  * evidence that extraction or mutation is allowed. */
 export interface PdfCapabilities {
@@ -54,24 +52,6 @@ export function assertPdfPrintAllowed(policy: Pick<PdfCapabilities, 'print'>): v
 
 export function assertPdfCopyAllowed(policy: Pick<PdfCapabilities, 'copy'>): void {
     if (policy.copy !== true) throw new Error(policy.copy === false ? PDF_COPY_RESTRICTED : PDF_COPY_UNKNOWN);
-}
-
-/** pdf.js exposes an array of permitted operations rather than /P itself. */
-export async function classicPdfCapabilities(doc: PDFDocumentProxy): Promise<PdfCapabilities> {
-    const [metadata, permissions] = await Promise.allSettled([doc.getMetadata(), doc.getPermissions()]);
-    const info = metadata.status === 'fulfilled' ? metadata.value.info as Record<string, unknown> : undefined;
-    const encrypted = info?.EncryptFilterName === null ? false
-        : typeof info?.EncryptFilterName === 'string' ? true : 'unknown';
-    const flag = (name: string): boolean | 'unknown' => typeof info?.[name] === 'boolean' ? info[name] as boolean : 'unknown';
-    const copy = permissions.status !== 'fulfilled' ? 'unknown'
-        : permissions.value === null ? encrypted === false ? true : 'unknown' : permissions.value.includes(COPY_FLAG);
-    // Same null rule as copy: an unencrypted file carries no restriction flags.
-    const print = permissions.status !== 'fulfilled' ? 'unknown'
-        : permissions.value === null ? encrypted === false ? true : 'unknown' : permissions.value.includes(PRINT_FLAG);
-    const forms = flag('IsAcroFormPresent'), xfa = flag('IsXFAPresent');
-    return { encrypted, copy, print, forms, xfa, javascript: 'unknown', render: true,
-        capture: copy === false || xfa === true ? false : copy === true && xfa === false ? true : 'unknown',
-        write: encrypted === true || xfa === true ? false : 'unknown', actions: 'unknown', repairStatus: 'unknown', signed: 'unknown' };
 }
 
 /** Unknown native flags are displayed as unknown, never advertised as clean. */

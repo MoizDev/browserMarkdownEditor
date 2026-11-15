@@ -28,13 +28,13 @@
 }
 
 /* Bottom-right is the chrome's zoom and minimap corner. With chrome mounted the notice
-   stands above the bottom row (54px up, 8px clear), and above a visible minimap (16px up,
-   142px tall, 8px clear) when one is open; the minimap rule comes later and wins. The same
+   stands above the bottom row (54px up, 8px clear), and above a visible minimap (62px up,
+   142px tall, so 212px with 8px clear) when one is open; the minimap rule comes later and wins. The same
    numbers as EditorPane's lifted status pill. */
 .board-viewer-host:has(.board-chrome-overlay) .board-viewer-notice {
     bottom: 62px;
 }
 
 .board-viewer-host:has(.native-minimap) .board-viewer-notice {
-    bottom: 166px;
+    bottom: 212px;
 }

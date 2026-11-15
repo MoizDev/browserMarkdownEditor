@@ -1,6 +1,13 @@
 // The mark travels with the PDF: a second browser needs no local ledger.
 // This module is pure bytes/WebCrypto, shared by worker inspection and writing.
-import { hashBytes } from './diskVersion';
+import { hashBytes as hashDiskBytes } from './diskVersion';
+import { Sha256 } from './sha256';
+
+// Native PDF sealing also runs in opaque workers: they expose CSPRNGs but
+// no SubtleCrypto. Use the same SHA-256 there, not an unverified write mark.
+async function hashBytes(bytes: Uint8Array): Promise<string> {
+    return crypto.subtle ? hashDiskBytes(bytes) : new Sha256().update(bytes).digest();
+}
 
 const encoder = new TextEncoder();
 const namespace = encoder.encode('VaultWriteMark/');

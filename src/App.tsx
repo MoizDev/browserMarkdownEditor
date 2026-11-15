@@ -2904,6 +2904,10 @@ export default function App() {
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && hasWritableHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     if (nativeSource && !nativeAuthorized) return 'skipped';
+    // Native pending work includes the own-save source rebind, not just new
+    // content. Rewriting an already-acknowledged checkpoint bumps PDF bytes
+    // without a second checkpoint acknowledgement, stranding that live source.
+    if (nativeSource && !documentBuffers.isDirty(tab.id)) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
     if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';

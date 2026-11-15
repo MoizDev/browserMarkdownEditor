@@ -223,7 +223,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [updating, setUpdating] = useState(false), [viewGeneration, setViewGeneration] = useState(0);
-    const [awaitingPresentation, setAwaitingPresentation] = useState(false), [inverted, setInverted] = useState(false);
+    const [awaitingPresentation, setAwaitingPresentation] = useState(true), [inverted, setInverted] = useState(false);
     const invertedRef = useRef(inverted);
     useLayoutEffect(() => { invertedRef.current = inverted; }, [inverted]);
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
@@ -262,11 +262,17 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
         const token = source.source.token, paint = lease.runtime.paintToken, old = lease.view.sourceToken;
         const same = (a: typeof token, b: typeof token) => a.documentId === b.documentId && a.session === b.session
             && a.vaultEpoch === b.vaultEpoch && a.bytesGeneration === b.bytesGeneration;
-        if (handoff.current || !value.isVisible || state.status !== 'ready' || state.source !== source || !source.isCurrent()
-            || !value.host.isCurrent(value.identity) || !value.host.canWriteSource(value.identity) || !outer || !value.host.isCurrent(outer)
-            || outer.documentId !== token.documentId || outer.session !== token.session || outer.vaultActivation !== token.vaultEpoch
+        if (handoff.current || !value.isVisible || state.source !== source || !old
+            || !value.host.isCurrent(value.identity) || !outer || !value.host.isCurrent(outer)
+            || outer.documentId !== token.documentId || outer.session !== token.session || outer.vaultActivation !== token.vaultEpoch) return;
+        if (state.status === 'rebinding') {
+            // Retire the physically detached old view before preparing the new
+            // source: its backdrop pins otherwise block the PDF disposal queue.
+            // Only the camera moves here; createLease still waits for verified ready.
+            if (!same(old, token) || outer.bytesGeneration <= old.bytesGeneration) return;
+        } else if (state.status !== 'ready' || !source.isCurrent() || !value.host.canWriteSource(value.identity)
             || outer.bytesGeneration !== token.bytesGeneration || !same(paint, token) || !same(lease.runtime.paintBinding.token, token)
-            || !old || same(old, token)) return;
+            || same(old, token)) return;
         const captured = lease.takeCameraForRebind();
         handoff.current = captured;
         setAwaitingPresentation(true); setUpdating(false);
@@ -304,7 +310,7 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
     }, [lease, cover, source, props.isVisible]);
     const { onError } = props;
     useEffect(() => {
-        if (!paired && source.status === 'ready' && sourceAuthorized) {
+        if (!paired && (source.status === 'rebinding' || source.status === 'ready' && sourceAuthorized)) {
             try { rebind(lease, source.source); }
             catch (error) { onError(error); }
         }
@@ -322,13 +328,18 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
 export default function NativePdfViewer(props: NativePdfViewerProps) {
     // This is the view route, not write authority; a rebind must not unmount
     // the editing view and discard its camera while its source is covered.
-    const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk' && props.host.canWriteSource(props.identity)
+    const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk'
         && typeof props.adapter.activateEditing === 'function');
-    const [unavailable, setUnavailable] = useState(false), { onNotice } = props;
+    const [unavailable, setUnavailable] = useState(false);
+    const noticeRef = useRef(props.onNotice);
+    useLayoutEffect(() => { noticeRef.current = props.onNotice; }, [props.onNotice]);
+    // Reading bindings change on focus and own-save. They must not tear down
+    // the input lease in the middle of a stroke or a covered source handoff.
     const onUnavailable = useCallback((error: unknown) => {
+        console.error('Native PDF editing failed:', error);
         setUnavailable(true);
-        if (!(error instanceof DOMException && error.name === 'AbortError')) onNotice(error instanceof Error ? error.message : String(error));
-    }, [onNotice]);
+        if (!(error instanceof DOMException && error.name === 'AbortError')) noticeRef.current(error instanceof Error ? error.message : String(error));
+    }, []);
     if (props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
     if (!unavailable && openedAsEditing) {
         return <PdfEditingView props={props} onUnavailable={onUnavailable} />;

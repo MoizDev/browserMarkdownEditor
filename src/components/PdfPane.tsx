@@ -343,7 +343,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
     const legacyOffer = tiled && mode === 'edit' && source?.kind === 'annotated';
     const plainNativeOffer = tiled && mode === 'edit' && source?.kind === 'plain';
-    const liveNativeIdentity = legacyOffer || plainNativeOffer ? nativeCanvasHost?.identity(documentId) : undefined;
+    const nativeRoute = useRef<import('../types/nativeCanvas').NativeCanvasIdentity | undefined>(undefined);
+    const liveNativeIdentity = nativeCanvasHost?.identity(documentId);
     const canConvertLegacy = !!(legacyOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
         && pdfEngineAvailableInBuild() && nativeCanvasHost && attachCanvasSession && reading && appSession && liveNativeIdentity
         && liveNativeIdentity.kind === 'pdfInk' && liveNativeIdentity.documentId === documentId
@@ -358,9 +359,17 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch
         && reading.identity.documentId === documentId && reading.identity.path === file.path
         && reading.identity.byteGeneration === appSession.bytesGeneration && nativeCanvasHost.isCurrent(liveNativeIdentity));
-    const nativeCandidate = mode === 'edit' && !disk && (source?.kind === 'notebookExport' ||
+    // An own-save invalidates the role read while the existing native source
+    // rebinds. Keep its view/camera mounted; a route is not write authority.
+    const retainedNative = nativeRoute.current;
+    const keepNativeRoute = !!(retainedNative && liveNativeIdentity && nativeCanvasHost
+        && retainedNative.documentId === liveNativeIdentity.documentId && retainedNative.session === liveNativeIdentity.session
+        && retainedNative.vaultActivation === liveNativeIdentity.vaultActivation
+        && retainedNative.bytesGeneration === liveNativeIdentity.bytesGeneration && nativeCanvasHost.isCurrent(retainedNative));
+    const nativeCandidate = mode === 'edit' && !disk && (keepNativeRoute || source?.kind === 'notebookExport' ||
         source?.kind === 'newer' && source.attachments.includes('board.json') || legacyConversion || nativePlain) &&
         pdfEngineAvailableInBuild() && !!nativeCanvasHost && !!attachCanvasSession && !!reading;
+    nativeRoute.current = nativeCandidate ? liveNativeIdentity : undefined;
     const roleNotice = (source && !nativeCandidate && pdfRoleNotice(source)) || (!disk && !pdfRebuild ? foreignNotice : undefined)
         || (inspectedWriteRefused ? 'This PDF’s inspected permissions require read-only annotation. The original has not been changed.' : undefined);
     const readOnly = mode === 'edit' && (legacyOffer || plainNativeOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
@@ -897,7 +906,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             body = documentRenderIssue ? <div className="pdf-render-failed"><PdfRenderNotice issue={documentRenderIssue} annotation={annotationMode}
                 onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>
                 : <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
-        } else if (mode === 'edit' && !source) {
+        } else if (mode === 'edit' && !source && !nativeCandidate) {
             /* Waiting on the ROLE read, which is lazy — only annotating needs
                it. Gating every branch on it (as this did) left a PDF opened for
                reading stuck on "Loading PDF…" forever, waiting for a read that

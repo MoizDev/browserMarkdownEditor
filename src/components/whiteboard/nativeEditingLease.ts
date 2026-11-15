@@ -206,7 +206,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            disposeTools();
+            // A layer-set seal cancels contacts, not the DOM view that owns the
+            // very layers being installed. Actual detach/hide/source retirement
+            // still drops providers and every per-view controller.
+            if (reason === 'platform-detach' || !options.visible() || !options.current(options.token)) disposeTools();
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {
             const detach = input.attachInput(surface, overlay);

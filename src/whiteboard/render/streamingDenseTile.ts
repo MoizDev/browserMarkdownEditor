@@ -279,8 +279,9 @@ export class StreamingDenseTileJob {
         const stream = this.stream!; this.pumping = true;
         const started = performance.now();
         const slice = (async () => {
-            // Bounded read-ahead: the queue holds at most eight nodes, and a slice ends after 4 ms.
-            while (!this.controller.signal.aborted && !this.readerEnded && this.queue.length < 8 && performance.now() - started < 4) {
+            // Bounded read-ahead: the queue holds at most 64 nodes, and a slice ends after 4 ms. Eight refilled once per
+            // frame, so a tile meeting ~1,800 nodes needed over 200 frames before it could finish.
+            while (!this.controller.signal.aborted && !this.readerEnded && this.queue.length < 64 && performance.now() - started < 4) {
                 const node = await stream.next();
                 if (this.controller.signal.aborted) return;
                 if (!this.options.isCurrent()) { this.stop(false); return; }
@@ -357,8 +358,8 @@ export class StreamingDenseTileJob {
     prepare(view: ViewState, budget: FrameBudget): void {
         if (!this.needsFrame() && !this.blockedValue) return;
         this.blockedValue = false;
-        const deadline = performance.now() + 0.25;
-        const sliced: FrameBudget = { ...budget, shouldYield: () => budget.shouldYield() || performance.now() >= deadline,
+        // The frame budget alone bounds a slice: a fixed 0.25 ms cap left a tile over ~1,800 nodes hundreds of frames long.
+        const sliced: FrameBudget = { ...budget, shouldYield: () => budget.shouldYield(),
             claimUpload: bytes => budget.claimUpload(bytes) };
         try {
             while (!sliced.shouldYield()) {

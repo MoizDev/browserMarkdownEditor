@@ -194,6 +194,8 @@ const minIntervalMs = 1000 / 240;
 const maxIntervalMs = 1000 / 30;
 const initialIntervalMs = 16.67;
 const frameGapMs = 250;
+/** Share of the frame target preparation always gets, however long the last presentation took. */
+const PREPARE_FLOOR_FRACTION = 0.25;
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -617,7 +619,10 @@ export class FrameScheduler {
             const elapsedInput = performance.now() - started;
             // Prior encode/submit/overlay cost is mandatory; overrunning it cannot buy optional work.
             const presentationReserve = Math.max(targetMs * 0.35 + Math.max(0, targetMs * 0.30 - elapsedInput), this.presentationMs);
-            const prepareMs = Math.max(0, Math.min(targetMs * 0.35,
+            // Prepare always keeps a floor. Presentation of an uncached board is what prepared tiles make cheap, so a
+            // slice derived from the last presentation alone fell to zero and stayed there: measured on ~3,600 strokes,
+            // presentation took the whole 4 ms target, prepare never ran and the board showed "Updating..." for good.
+            const prepareMs = Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
                 targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
             const prepareDeadline = performance.now() + prepareMs;
             meter.deadline = performance.now() + meter.sliceMs;

@@ -211,7 +211,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             options.preview.armCommit();
             try { commit(); options.preview.finishCommit(); }
             catch (error) { options.preview.cancelCommit(); throw error; }
-        } finally { options.preview.clear(); }
+        } finally { clearTransform(); }
     };
     const nudge = (key: string, coarse: boolean): boolean => {
         const direction: Record<string, Vec2> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },

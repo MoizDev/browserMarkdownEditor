@@ -38,24 +38,32 @@
     color: var(--text-muted);
 }
 .board-paint-status-pending {
+    /* The app's status pill (index.css .status-bar): raised surface, hairline border, muted 12px text. */
     right: 12px;
-    bottom: 12px;
-    padding: 4px 8px;
-    border-radius: 6px;
-    background: var(--background-secondary);
+    bottom: 10px;
+    padding: 4px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary-alt);
     color: var(--text-muted);
     font-size: 12px;
+    line-height: 1.5;
+    white-space: nowrap;
 }
 .board-paint-status-failed {
-    top: 12px;
-    left: 16px;
-    right: 16px;
+    inset: auto 16px 16px;
     padding: 9px 12px;
     border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    background: var(--background-secondary);
+    border-radius: var(--radius-m);
+    background: var(--background-primary-alt);
     color: var(--text-error, var(--text-normal));
+    font-size: 12px;
 }
+/* Lifted clear of the board's bottom row and an open minimap: the same steps as the notice and status pill. */
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-pending { right: 16px; bottom: 62px; }
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 62px; }
+.board-viewer-host:has(.native-minimap) .board-paint-status-pending,
+.board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 212px; }
 
 /* Bottom-right is the chrome's zoom and minimap corner. With chrome mounted the notice
    stands above the bottom row (54px up, 8px clear), and above a visible minimap (62px up,

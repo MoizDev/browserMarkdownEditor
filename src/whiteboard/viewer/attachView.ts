@@ -50,7 +50,7 @@ export const attachView: AttachView = options => {
     let lastSensitive: ReadonlySet<string> | undefined;
     // Density mode and the index's candidate count drive which frame kind is requested; both are read
     // by the layers, which never own a frame request of their own.
-    let densityMode: DensityMode = 'direct', lastCandidates: number | null = null;
+    let densityMode: DensityMode = 'direct', lastCandidates: number | null = null, paintWhenReady = false;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -140,6 +140,7 @@ export const attachView: AttachView = options => {
                 runtime.scene.step(8, budget.prepareDeadline);
                 if (!runtime.scene.ready) layers.invalidate('board-scene-step');
             }
+            if (paintWhenReady && runtime.scene?.ready) requestPaint();
             const sensitive = interaction?.sensitiveNodeIds?.();
             const changed = sensitive !== lastSensitive;
             if (!lastView || current.epoch !== lastView.epoch || changed) {
@@ -204,7 +205,11 @@ export const attachView: AttachView = options => {
         for (const listener of listeners) listener();
     }
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
+        // A request made while the Scene is still catching up is kept and sent once it is ready: the dense
+        // path asks once per missing live set, so a dropped request froze a large board (seen at 3,500 items).
+        if (!disposed && view.visible && runtime.scene && !runtime.scene.ready) { paintWhenReady = true; return; }
         if (disposed || !view.visible || !runtime.scene?.ready) return;
+        paintWhenReady = false;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
         paintJob = controller;

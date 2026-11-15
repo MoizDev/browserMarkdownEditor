@@ -114,8 +114,9 @@ type Plan = {
     owned: TileBitmap[];
     bitmaps: Map<string, TileBitmap>;
     bitmapBytes: number;
-    /** Reference bytes of the published window list: a copy of the source's items, charged to this plan. */
-    windowBytes: number;
+    /** Covers the published window list's references (a copy of the source's items). They were once only counted, not
+     * reserved: ~32 KB over the layer's reservation for 1,792 live items made the governor refuse its readout. */
+    windowLease: ByteLease | null;
     directAdapter: CanvasPaintAdapter | null;
     /** CPU leases that cover the direct adapter as it grows, one chunk at a time; `directLeased` is their sum. */
     directLeases: ByteLease[]; directLeased: number;
@@ -146,7 +147,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
     let failedFrame: PaintSource | null = null;
     const plans = new Set<Plan>();
-    const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased + p.windowBytes;
+    const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased + (p.windowLease?.bytes ?? 0);
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
     // Retiring a plan stops its work at once; the resources a retainPrepared borrow reads outlive it.
     const drop = (p: Plan | null) => {
@@ -190,6 +191,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         for (const lease of p.directLeases.splice(0)) host.allocator.cpu.release(lease);
         p.directLeased = 0;
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
+        if (p.windowLease) { host.allocator.cpu.release(p.windowLease); p.windowLease = null; }
         finishRetirement(p);
     };
     const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
@@ -204,6 +206,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) / side);
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const lease = host.allocator.cpu.reserve(BLOCK);
+        // A denied plan start waits for a real capacity change: the wake re-runs the frame, nothing polls.
         if (!lease) { denied = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
@@ -211,7 +214,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 phase: summarized ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
                 summaries: null, summaryIndex: 0, summaryCache: null,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
-                job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowBytes: 0,
+                job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowLease: null,
                 directAdapter: null, directLeases: [], directLeased: 0,
                 pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false,
                 resolved: new ResolvedNodeCache(host.allocator.cpu) };
@@ -478,8 +481,14 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const root: PaintRoot = { ...rootOf(p.source), inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
         const final = p.standins === 0;
         const finished = windows.finish();
-        // The published window list holds its own references; they are charged to this plan, not left unaccounted.
-        p.windowBytes = refBytesOf(finished);
+        const windowBytes = refBytesOf(finished);
+        if (windowBytes > (p.windowLease?.bytes ?? 0)) {
+            // A denied reservation keeps the current picture and waits for a real capacity change.
+            const lease = host.allocator.cpu.reserve(windowBytes);
+            if (!lease) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+            if (p.windowLease) host.allocator.cpu.release(p.windowLease);
+            p.windowLease = lease;
+        }
         p.prepared = { sourceFrame: p.source, root, windows: finished, sharp: p.sharp && final, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
@@ -554,8 +563,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                             p.directLeases.push(lease); p.directLeased += lease.bytes;
                         }
                         // Stops at the covered boundary; the next frame reserves the following chunk before it resumes.
-                        const directBudget = Object.create(budget, { shouldYield: { value: (): boolean =>
-                            budget.shouldYield() || adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased } }) as FrameBudget;
+                        const directBudget: FrameBudget = { ...budget, shouldYield: (): boolean =>
+                            budget.shouldYield() || adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased };
                         adapter.prepare(view, directBudget);
                         if (adapter.borrowPrepared()) publish(p);
                         return;

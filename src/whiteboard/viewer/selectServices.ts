@@ -19,7 +19,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { EraserContext } from '../input/basicTools';
 import type { SweptSelectionCursor, SweepPoint, SweepQueueServices } from '../input/sweepQueue';
 import type { NodeId } from '../model/ids';
-import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
+import { CLICK_SLOP_CSS, sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import { prepareFrameDrop } from '../input/frameDrop';
 import { prepareNotebookTransform, prepareNotebookTranslation } from '../input/notebookTranslation';
@@ -174,7 +174,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
     });
     const select: SelectToolContext = {
-        selection: runtime.selection, dragThresholdCss: 4, scribble: sweep(false),
+        selection: runtime.selection, dragThresholdCss: CLICK_SLOP_CSS, scribble: sweep(false),
         hold: () => session.beginGesture(), registerPending, toSurface, isCurrent: mutable,
         async hit(sample, signal) {
             check(signal); const revision = doc.rev;

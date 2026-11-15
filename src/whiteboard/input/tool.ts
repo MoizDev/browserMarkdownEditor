@@ -65,3 +65,8 @@ export function sameInputToken(a: InputToken, b: InputToken): boolean {
   return a.vaultEpoch === b.vaultEpoch && a.tabId === b.tabId &&
     a.sessionGeneration === b.sessionGeneration && a.viewGeneration === b.viewGeneration
 }
+
+/** How far a press may drift and still be a click, in CSS px. A person's click is never still:
+ * measured, trackpad and mouse clicks drift 1-8 px over an 80-300 ms press, and at the old 4 px a
+ * Note or Text click became a 2 px drag-created note and a click inside a selection became a move. */
+export const CLICK_SLOP_CSS = 8

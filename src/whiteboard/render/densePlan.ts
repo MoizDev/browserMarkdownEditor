@@ -28,6 +28,9 @@ type Plan = {
     bitmaps: Map<string, DenseTileBitmap>; bitmapBytes: number; blocks: ByteLease[]; used: number; pending: number;
     cacheTicket: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
     retired: boolean; blocked: boolean; prepared: PreparedPaint2d | null; resources: PaintLayerResources;
+    /** Open retainPrepared borrows. A retired plan frees its bitmaps, direct adapter and arrays only
+     * when the last borrow ends; `freed` makes that one-shot. */
+    borrows: number; closing: boolean; freed: boolean;
 };
 const projection = (view: ViewState) => [view.camera.x, view.camera.y, view.camera.z,
     view.viewport.width, view.viewport.height, view.viewport.dpr].join(':');
@@ -48,17 +51,24 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     const working = (p: Plan) => p.blocks.length * BLOCK + (p.directLease?.bytes ?? 0)
         + p.bitmapBytes + (p.tile?.memoryBytes ?? 0) + p.bounds.memoryBytes;
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
+    // Retiring a plan stops its work at once; its resources outlive any retainPrepared borrow.
     const drop = (p: Plan | null) => {
         if (!p || p.retired) return;
         p.retired = true;
         p.tile?.cancel(); p.tile = null;
         if (p.cacheTicket) { p.cacheTicket.cache.cancel(p.cacheTicket.ticket); p.cacheTicket = null; }
         p.bounds.dispose();
-        p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
-        for (const bitmap of p.bitmaps.values()) bitmap.release(); p.bitmaps.clear(); p.bitmapBytes = 0;
         p.commands.length = 0;
         // Published arrays are immutable and may still be borrowed by the preceding GPU plan.
         p.outputs = { underlay: [], content: [] };
+        if (p.borrows) { p.closing = true; return; }
+        free(p);
+    };
+    const free = (p: Plan) => {
+        if (p.freed) return;
+        p.freed = true;
+        p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
+        for (const bitmap of p.bitmaps.values()) bitmap.release(); p.bitmaps.clear(); p.bitmapBytes = 0;
         p.direct.underlay.length = p.direct.content.length = 0;
         if (p.directLease) { host.allocator.cpu.release(p.directLease); p.directLease = null; }
         for (const block of p.blocks) host.allocator.cpu.release(block); p.blocks.length = 0;
@@ -89,7 +99,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 commands: [], command: 0, outputs: { underlay: [], content: [] }, direct: { underlay: [], content: [] },
                 directAdapter: null, directLease: null, directEstimate: 0, directDemandPublished: false, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
                 tile: null, tileX: x0, tileY: y0, x0, x1, y0, y1, bitmaps: new Map(), bitmapBytes: 0, cacheTicket: null, blocks: [lease], used: 512, pending: 0,
-                retired: false, blocked: false, prepared: null, resources };
+                retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
                 p.pending++;
                 let promise;
@@ -287,6 +297,17 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         readyFrame: () => disposed ? null : ready?.source ?? null,
         borrowPrepared: () => disposed ? null : ready?.prepared ?? null,
+        retainPrepared() {
+            const p = ready, prepared = p?.prepared;
+            if (disposed || !p || !prepared || p.retired) return null;
+            p.borrows++;
+            let released = false;
+            return { prepared, release() {
+                if (released) return;
+                released = true;
+                if (--p.borrows === 0 && p.closing) free(p);
+            } };
+        },
         draw2d(ctx, view, band, omitNodes) {
             const p = ready, prepared = p?.prepared;
             if (!p || !prepared) return;

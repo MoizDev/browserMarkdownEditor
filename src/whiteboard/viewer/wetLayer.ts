@@ -94,7 +94,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     let gpuPrepared: PreparedPaint2d | null = null, gpuToken: FrameToken | null = null;
     let gpu: ReturnType<typeof createGpuPaintAdapter> | null = null;
     const gpuReference: CanvasPaintAdapter = {
-        prepare: () => {}, readyFrame: () => gpuPrepared?.frame ?? null, borrowPrepared: () => gpuPrepared,
+        prepare: () => {}, readyFrame: () => gpuPrepared?.frame ?? null, borrowPrepared: () => gpuPrepared, retainPrepared: () => null,
         draw2d: () => {}, release: () => {}, needsFrame: () => false,
         memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };

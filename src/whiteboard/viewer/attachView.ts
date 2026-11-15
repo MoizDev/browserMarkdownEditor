@@ -132,7 +132,12 @@ export const attachView: AttachView = options => {
         },
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
-            if (runtime.scene && !runtime.scene.ready) runtime.scene.step(8, budget.prepareDeadline);
+            // A Scene still behind the document is stepped one slice per frame: without another invalidation
+            // nothing would wake the view once the frame that began the work has been drawn.
+            if (runtime.scene && !runtime.scene.ready) {
+                runtime.scene.step(8, budget.prepareDeadline);
+                if (!runtime.scene.ready) layers.invalidate('board-scene-step');
+            }
             const sensitive = interaction?.sensitiveNodeIds?.();
             const changed = sensitive !== lastSensitive;
             if (!lastView || current.epoch !== lastView.epoch || changed) {

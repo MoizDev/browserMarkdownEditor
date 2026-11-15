@@ -762,6 +762,15 @@ export class MemoryGovernor {
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
+        // Demand is reported from what layers already hold, so a grant of exactly that had no room for the next tile: the
+        // committed board layers were refused with the pool half empty and a finished stroke never drew (measured: 1 MB
+        // tiles refused at 33 of 64 MB). The plannable remainder is shared by weight; the total stays inside the plan.
+        const cacheCapacity = Math.max(0, remaining - assignedSurface);
+        const spare = cacheCapacity - [...cache.values()].reduce((sum, value) => sum + value, 0);
+        const totalWeight = supported.reduce((sum, pane) => sum + weight(pane), 0);
+        if (spare > 0 && totalWeight > 0) {
+            for (const pane of supported) cache.set(pane.paneId, (cache.get(pane.paneId) ?? 0) + Math.floor(spare * weight(pane) / totalWeight));
+        }
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
         const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);

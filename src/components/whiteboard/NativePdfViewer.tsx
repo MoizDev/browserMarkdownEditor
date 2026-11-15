@@ -312,8 +312,9 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
     const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
     const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
-    const chrome = context.chrome({ minimapOpen, setMinimapOpen, inverted: context.inverted,
-        setInverted: context.setInverted, zoom: navigation.zoom });
+    const chrome = <>{context.chrome({ minimapOpen, setMinimapOpen, inverted: context.inverted,
+        setInverted: context.setInverted, zoom: navigation.zoom })}
+        {context.notice && <span className="board-viewer-notice" role="status">{context.notice}</span>}</>;
     return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
         inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
         readOnly={!context.editable} editingChrome={chrome} detach={!paired} />;

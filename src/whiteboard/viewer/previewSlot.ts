@@ -23,6 +23,19 @@ const EMPTY_COVERAGE = Object.freeze({ complete: true, sharp: true });
 export function createPreviewSlot(id: string, base: PlatformLayerDefinition): PreviewSlot {
     let target: PlatformLayerDefinition | null = null, epoch = 0;
     const instances = new Set<SlotLayer>();
+    // The revision the slot schedules by is a small key, one per distinct (epoch, inner revision, draw version): the
+    // inner layer's own revision is what it acknowledges, and a draw version changes the picture without changing it.
+    // A key of an earlier epoch is never acknowledged into a replaced preview.
+    const keys = new Map<number, { epoch: number; revision: number }>();
+    let lastKey = -1, lastTuple = '';
+    const keyFor = (currentEpoch: number, innerRevision: number, draw: number): number => {
+        const tuple = `${currentEpoch}:${innerRevision}:${draw}`;
+        if (tuple === lastTuple) return lastKey;
+        lastTuple = tuple; lastKey = lastKey + 1;
+        keys.set(lastKey, { epoch: currentEpoch, revision: innerRevision });
+        if (keys.size > 64) for (const old of keys.keys()) { if (keys.size <= 64) break; keys.delete(old); }
+        return lastKey;
+    };
     class SlotLayer implements Layer {
         inner: Layer | null = null;
         innerDef: PlatformLayerDefinition | null = null;
@@ -47,8 +60,9 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         // Forwarding the packed value never matched (measured: acknowledged 4294967299 against a revision of 3), so no
         // overlay presentation completed. An acknowledgement from an earlier epoch belongs to the replaced preview.
         onFramePresented(revision: number, token: Parameters<NonNullable<Layer['onFramePresented']>>[1]) {
-            if (Math.floor(revision / 2 ** 32) !== epoch) return;
-            this.inner?.onFramePresented?.(revision % 2 ** 32, token);
+            const entry = keys.get(revision);
+            if (!entry || entry.epoch !== epoch) return;
+            this.inner?.onFramePresented?.(entry.revision, token);
         }
         dispose() { instances.delete(this); const old = this.inner; this.inner = null; this.innerDef = null; old?.dispose(); }
     }
@@ -60,7 +74,12 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         id, group: base.group, ...(base.isolation ? { isolation: base.isolation } : {}),
         create(host) { const layer = new SlotLayer(host); instances.add(layer); return layer; },
         // The epoch keeps a swapped-in preview from reusing the revision its predecessor reported.
-        revision(layer) { const s = slot(layer), inner = s.sync(); return epoch * 2 ** 32 + (inner && s.innerDef ? s.innerDef.revision(inner) : 0); },
+        revision(layer) {
+            const s = slot(layer), inner = s.sync();
+            const innerRevision = inner && s.innerDef ? s.innerDef.revision(inner) : 0;
+            const draw = inner && s.innerDef?.drawVersion ? s.innerDef.drawVersion(inner) : 0;
+            return keyFor(epoch, innerRevision, draw);
+        },
         cpuWorkingSet(layer, viewport) {
             const s = slot(layer), inner = s.sync();
             return inner && s.innerDef?.cpuWorkingSet ? s.innerDef.cpuWorkingSet(inner, viewport) : { mandatoryBytes: 0, prefetchBytes: 0 };

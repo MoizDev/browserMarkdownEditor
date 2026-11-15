@@ -18,7 +18,8 @@ export function createNativeMediaRestore(
             || live.vaultActivation !== identity.vaultActivation || live.bytesGeneration !== identity.bytesGeneration
             || live.kind !== identity.kind || !board || board.isReadOnly
             || board.owner.documentId !== identity.documentId || board.owner.session !== identity.session) return undefined;
-        return board.doc.rev === revision ? board : undefined;
+        // Non-dirtying commits (tool and UI state) advance doc.rev without changing the saved content, so the fence is content.
+        return board.contentRevision === revision ? board : undefined;
     };
     return createMediaRestorePin(store, {
         referenced() {

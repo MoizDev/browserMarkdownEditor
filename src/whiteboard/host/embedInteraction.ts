@@ -15,7 +15,7 @@ export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => 
     // Slot admission already covers the constant-size hosting chrome; no geometry-sized DOM allocation.
     Object.assign(header.style, { position: 'absolute', display: 'none', height: '32px', boxSizing: 'border-box',
         alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '4px 8px',
-        color: 'var(--text-primary)', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
+        color: 'var(--text-normal)', background: 'var(--background-secondary)', border: '1px solid var(--background-modifier-border)',
         pointerEvents: 'auto', fontSize: '12px', overflow: 'hidden' });
     let disposed = false, width = 0, height = 0, key = '', stopEscape: (() => void) | undefined;
     const unload = () => { if (!disposed) close(); };

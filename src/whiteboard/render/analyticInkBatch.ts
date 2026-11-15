@@ -40,6 +40,11 @@ function union(a: RectI | null, b: RectI): RectI {
 
 /** Immutable uploaded slabs are never overwritten while a submitted frame can still read them. */
 export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown) => void) {
+    // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
+    const awaitCapacity = (): void => {
+        const wake = () => host.invalidate('analytic-batch-capacity');
+        host.allocator.cpu.whenAvailable?.(wake); host.allocator.gpu.whenAvailable?.(wake);
+    };
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pendingPipeline = false, failed = false, incarnation = 0;
     let building: Build | null = null, disposed = false, denied = false, gpuBytes = 0, cpuBytes = 0;
     let currentToken: FrameToken | null = null, currentCameraEpoch = -1;
@@ -111,7 +116,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
             try {
                 if (!build.mapLease) {
                     const lease = host.allocator.cpu.reserve(mapBytes(paints.length));
-                    if (!lease) { denied = true; return null; }
+                    if (!lease) { denied = true; awaitCapacity(); return null; }
                     cpuBytes += lease.bytes; build.mapLease = lease; build.nodeIndices = new Map();
                 }
                 if (!build.pending && build.index < paints.length) {
@@ -119,7 +124,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     const remaining = paints.length - build.index;
                     const size = SLABS.find(bytes => Math.floor(bytes / STRIDE) >= remaining) ?? SLABS[2];
                     const lease = host.allocator.cpu.reserve(size);
-                    if (!lease) { denied = true; return null; }
+                    if (!lease) { denied = true; awaitCapacity(); return null; }
                     cpuBytes += lease.bytes;
                     try { build.pending = { data: new Float32Array(size / 4), lease, size,
                         count: Math.min(remaining, Math.floor(size / STRIDE)), index: 0, bounds: null }; }
@@ -139,7 +144,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     }
                     if (slab.index < slab.count) return null;
                     const gpuLease = host.allocator.gpu.reserve(slab.size);
-                    if (!gpuLease) { denied = true; return null; }
+                    if (!gpuLease) { denied = true; awaitCapacity(); return null; }
                     const bytes = slab.count * STRIDE;
                     if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(gpuLease); return null; }
                     let buffer: BufferHandle | null = null, attached = false;
@@ -156,7 +161,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     if (build.index < paints.length) return null;
                 }
                 const lease = host.allocator.cpu.reserve(16);
-                if (!lease) { denied = true; return null; }
+                if (!lease) { denied = true; awaitCapacity(); return null; }
                 cpuBytes += lease.bytes;
                 try {
                     const viewport = new Float32Array([Math.round(view.viewport.width * view.viewport.dpr), Math.round(view.viewport.height * view.viewport.dpr), 0, 0]);

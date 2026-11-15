@@ -150,7 +150,8 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             // The governor reads `memory()` while publishing its readout, so the live count is kept here, not read back.
             let live = 0;
             const now = performance.now();
-            const cache = getPlatformRuntime().governor.register({ id: `derived:${identity.documentId}:${++derivedMemorySerial}`,
+            // Named for what it holds (idle geometry and stroke LOD levels). It has no pane, so it is charged to the pool only.
+            const cache = getPlatformRuntime().governor.register({ id: `derived-geometry:${identity.documentId}:${++derivedMemorySerial}`,
                 owner: token, pool: 'cpu', kind: 'working', class: 'redundant-level', hiddenAt: null,
                 lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict });
             return {

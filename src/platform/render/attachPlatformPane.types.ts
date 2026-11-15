@@ -20,6 +20,8 @@ export interface PlatformLayerDefinition {
         mandatoryBytes: number;
         prefetchBytes: number;
     }>;
+    /** Gives back up to `bytes` of the layer's own redundant CPU residency when the pane grant refuses a reservation. */
+    cpuEvict?(layer: Layer, bytes: number): void;
     critical(layer: Layer, view: ViewState): boolean;
     /** Optional raster document denominator; compiled out with its benchmark-only provider. */
     benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];

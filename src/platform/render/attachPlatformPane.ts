@@ -115,7 +115,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             lastVisibleAt: now, lastUsedAt: now, class: 'scene-cache' as const };
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
-            memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }), evict: () => {} });
+            memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
+            // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable.
+            evict: bytes => { const layer = current(); if (layer) layerSet.definition(layer)?.cpuEvict?.(layer, bytes); } });
         let gpuCache: MemoryCacheHandle;
         try {
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',

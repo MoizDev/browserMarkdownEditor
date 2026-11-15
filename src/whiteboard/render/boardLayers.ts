@@ -20,7 +20,9 @@ import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } fro
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
 /** Cadence of the retry while a memory reservation is refused: a demand refresh runs before each attempt. */
-const MEMORY_RETRY_MS = 250;
+// A refused reservation is retried at 250 ms, doubling to 2 s while the refusal lasts: a stalled board is a few retries
+// a second, not one per frame.
+const MEMORY_RETRY_MS = 250, MEMORY_RETRY_MAX_MS = 2000;
 /** What the renderer holds for the current revision. `pending` keeps the last coherent presented pixels on screen;
  * `current` needs a presented frame of the requested revision with nothing outstanding; `failed` is a real error. */
 export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
@@ -184,7 +186,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     /** Segment count at which a direct cache was refused; null while direct drawing fits. */
     let deniedDirectSegments: number | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
-    let memoryRetry: ReturnType<typeof setTimeout> | null = null;
+    let memoryRetry: ReturnType<typeof setTimeout> | null = null, memoryRetryMs = MEMORY_RETRY_MS;
+    // The first prepare after a hide drops the session bitmaps the returned view cannot draw, before it plans.
+    let returnedFromHide = false;
     const replacementAsked = new WeakSet<PaintSource>();
     let presented: PaintSource | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
@@ -254,10 +258,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const armMemoryRetry = (waiting: boolean) => {
         if (!waiting || disposed) {
             if (memoryRetry !== null) { clearTimeout(memoryRetry); memoryRetry = null; }
+            memoryRetryMs = MEMORY_RETRY_MS;
             return;
         }
         if (memoryRetry !== null) return;
-        memoryRetry = setTimeout(() => { memoryRetry = null; allocatorHost?.invalidate('board-memory-retry'); }, MEMORY_RETRY_MS);
+        const delay = memoryRetryMs;
+        memoryRetryMs = Math.min(MEMORY_RETRY_MAX_MS, delay * 2);
+        memoryRetry = setTimeout(() => { memoryRetry = null; allocatorHost?.invalidate('board-memory-retry'); }, delay);
     };
     const refreshProgress = () => {
         const next = progressNow();
@@ -361,7 +368,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
-            density.reset(); useDense = false;
+            density.reset(); useDense = false; returnedFromHide = true;
         }
     };
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
@@ -411,6 +418,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);
+            if (returnedFromHide && dense?.dropUnused(view)) returnedFromHide = false;
             options.frames.prepare(withFirstUnit(budget));
             const frame = options.frames.readFrame();
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) return;
@@ -602,6 +610,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             return layer;
         },
         revision() { return options.requestedRevision(); },
+        cpuEvict(_layer, bytes) {
+            // Only the band that holds the session's memory reclaims it; the other band's grant has nothing of the dense plan.
+            if (hosts.get(band) === allocatorHost) dense?.reclaim(bytes);
+        },
         cpuWorkingSet() {
             const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;
             const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;

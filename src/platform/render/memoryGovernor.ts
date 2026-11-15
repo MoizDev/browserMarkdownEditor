@@ -182,6 +182,9 @@ function waterFill(items: readonly Share[], capacity: number): Map<string, numbe
 
 function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
+/** Residency a pane grant may reclaim before it refuses a reservation: never critical, hidden, surface or context. */
+const RECLAIMABLE: readonly MemoryClass[] = ['redundant-level', 'prefetch', 'scene-cache'];
+
 /** No navigator/DOM/timers: the app passes the coarsened hint once and advances the clock explicitly. */
 export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
@@ -197,6 +200,8 @@ export class MemoryGovernor {
     private grants = new Map<string, PaneMemoryGrant>();
     private nextLease = 1;
     private trimming = false;
+    // A run of refused reservations in one pool is one episode: it degrades the governor once, and its retries only wait.
+    private readonly refusing: Record<MemoryPool, boolean> = { gpu: false, cpu: false };
     private state: Exclude<MemoryPressureState, 'cpu-pinned'> = 'normal';
     private lastTrouble: MemoryTrouble | null = null;
     private qualityLimit = 1;
@@ -279,6 +284,7 @@ export class MemoryGovernor {
         this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
             POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
         this.plan();
+        this.notifyCapacity();
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool]) this.trimPool(pool, this.target[pool]);
@@ -414,6 +420,7 @@ export class MemoryGovernor {
             if (this.state === 'normal') this.lastTrouble = null;
             this.belowRecoverySince = now;
             this.plan();
+            this.notifyCapacity();
         }
     }
 
@@ -503,16 +510,18 @@ export class MemoryGovernor {
         if (!allowed()) {
             this.state = 'trimming';
             this.belowRecoverySince = null;
-            this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
+            // A pane grant refuses only its own residency, so that is reclaimed first; the pool's idle residency
+            // (redundant levels, idle geometry) goes only when the reclaim did not make room.
+            this.reclaimPane(cache, bytes);
+            if (!allowed()) this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
             if (!allowed()) {
-                this.lastTrouble = 'allocation';
-                this.degrade();
-                this.onPressureChange?.();
+                this.refuseReservation(pool);
                 return null;
             }
         }
+        this.refusing[pool] = false;
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });
         this.leases.set(lease, { cache, bytes, returned: false });
@@ -546,16 +555,56 @@ export class MemoryGovernor {
         if (!grant) return false;
         const limit = kind === 'surface' ? grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel :
             pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes;
-        const used = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
-            other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
-                !['surface', 'program', 'context'].includes(other.registration.kind)))
-            .reduce((sum, other) => sum + other.bytes, 0);
+        const used = this.paneUsed(paneId, pool, kind);
         if (pool === 'gpu' && kind === 'capture') {
             const captures = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
                 other.registration.kind === 'capture' && other.activity.hiddenAt === null).reduce((sum, other) => sum + other.bytes, 0);
             if (captures + bytes > Math.max(0, grant.gpuCacheBytes - this.minimumProgressBytes())) return false;
         }
         return used + bytes <= limit;
+    }
+
+    /** The bytes a pane's grant counts against a new cache of this kind: its visible, non-surface residency. */
+    private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
+        return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
+            other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
+                !['surface', 'program', 'context'].includes(other.registration.kind)))
+            .reduce((sum, other) => sum + other.bytes, 0);
+    }
+
+    /** A refused CPU reservation inside a pane asks the pane's own owners to give back what they can rebuild: the owner
+     * decides what that is (a layer drops session bitmaps its view cannot draw). Borrowed or live residency is never asked. */
+    private reclaimPane(cache: CacheRecord, bytes: number): void {
+        const { paneId, pool, kind } = cache.registration;
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        if (paneId === undefined || !grant || pool !== 'cpu' || this.trimming) return;
+        let excess = this.paneUsed(paneId, pool, kind) + bytes - grant.cpuBytes;
+        if (excess <= 0) return;
+        const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
+            other.registration.pool === pool && other.bytes > 0 && other.activity.hiddenAt === null &&
+            RECLAIMABLE.includes(other.registration.class) &&
+            !['surface', 'program', 'context', 'mirror', 'mirror-retiring'].includes(other.registration.kind))
+            .sort((a, b) => RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
+                a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
+                stableId(a.registration.id, b.registration.id));
+        this.trimming = true;
+        try {
+            for (const other of candidates) {
+                if (excess <= 0) break;
+                const before = other.bytes;
+                other.registration.evict(excess);
+                excess -= before - other.bytes;
+            }
+        } finally { this.trimming = false; }
+    }
+
+    /** One refusal episode degrades the governor once; the retries of that episode only wait for capacity. */
+    private refuseReservation(pool: MemoryPool): void {
+        if (this.refusing[pool]) return;
+        this.refusing[pool] = true;
+        this.lastTrouble = 'allocation';
+        this.degrade();
+        this.onPressureChange?.();
     }
 
     private notifyCapacity(): void {
@@ -649,8 +698,9 @@ export class MemoryGovernor {
         return POLICY.minPaneTileCredits * edge * edge * POLICY.decodedRgbaBytesPerPixel + POLICY.liveVectorScratchBytes;
     }
 
+    /** Recomputes grants. Waiters are woken only by a real capacity change (a release or a new pane demand), never by
+     * a plan that a refusal caused: that wake re-ran the refused owner each frame and refused it again. */
     private plan(): void {
-        this.notifyCapacity();
         const visible = this.panes.filter(pane => pane.visible && pane.requestedPixels > 0);
         const weight = (pane: PaneMemoryDemand) => pane.focused ? POLICY.focusedPaneWeight : POLICY.unfocusedPaneWeight;
         const minimum = this.minimumProgressBytes();

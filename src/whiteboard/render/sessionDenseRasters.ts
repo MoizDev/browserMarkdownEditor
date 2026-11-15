@@ -139,6 +139,19 @@ export class SessionDenseRasters {
         }
         return removed;
     }
+    /** Retires least-recently used entries that `keep` rejects, until `bytes` are freed. Borrowed entries are never
+     * retired here; a kept entry is one the current view can draw, so it stays for the next draw. */
+    evictUnused(keep: (interval: string, address: TileAddress) => boolean, bytes: number): number {
+        if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Invalid dense raster eviction budget');
+        let removed = 0;
+        for (const entry of [...this.lru.keys()]) {
+            if (removed >= bytes) break;
+            if (entry.borrows || keep(entry.interval, entry.address)) continue;
+            removed += entry.metadata.bytes + entry.input.bytesLease.bytes;
+            this.hierarchy.retire(entry.interval, entry.address);
+        }
+        return removed;
+    }
     memory(): Readonly<{ live: number; retiring: number }> { return { live: this.liveBytes, retiring: this.retiringBytes }; }
     get memoryBytes(): number { return this.liveBytes + this.retiringBytes; }
     clear(): void { this.hierarchy.clear(); this.retireTickets(); this.intervals.clear(); this.currentRevision = null; }

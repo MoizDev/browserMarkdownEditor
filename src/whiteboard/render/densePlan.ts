@@ -27,6 +27,19 @@ interface SummaryTarget { readonly band: PaintBand; readonly address: TileAddres
 const summaryInterval = (variant: string, band: PaintBand) => JSON.stringify([variant, band, 'summary']);
 const bandInterval = (variant: string, band: PaintBand) => JSON.stringify([variant, band]);
 const sameAddress = (a: TileAddress, b: TileAddress) => a.pyramid === b.pyramid && a.level === b.level && a.x === b.x && a.y === b.y;
+/** The session bitmaps a view can draw: its variant's intervals (bands and summaries) at the view's own level, inside its
+ * world rect. Anything else is residency the view cannot use, so it is the first thing a refused reservation reclaims. */
+function usableBitmaps(variant: string, view: ViewState): (interval: string, address: TileAddress) => boolean {
+    const demand = chooseTileScale(view.camera.z * view.viewport.dpr);
+    const intervals = new Set(BANDS.flatMap(band => [bandInterval(variant, band), summaryInterval(variant, band)]));
+    const left = view.camera.x, top = view.camera.y;
+    const right = left + view.viewport.width / view.camera.z, bottom = top + view.viewport.height / view.camera.z;
+    return (interval, address) => {
+        if (!intervals.has(interval) || address.pyramid !== demand.pyramid || address.level !== demand.level) return false;
+        const rect = tileRectWorld(address);
+        return rect.x < right && rect.x + rect.width > left && rect.y < bottom && rect.y + rect.height > top;
+    };
+}
 
 /** The finest level coarser than the viewport's at which the occupied root spans at most 2×2 tiles. The walk
  * starts one level above the viewport and only gets coarser, so the result always lies above the viewport. */
@@ -143,6 +156,12 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
  * its nearest cached ancestor, and the exact tile replaces that standin later, in place. */
 export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
+    // The view last prepared: what a reclaim must keep is what this view can draw.
+    let lastView: ViewState | null = null;
+    const sessionOf = () => {
+        const frame = resources.frames.readFrame();
+        return frame?.sessionRasters && frame.rasterVariant ? { cache: frame.sessionRasters, variant: frame.rasterVariant } : null;
+    };
     let lastFrame = -1;
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
     let failedFrame: PaintSource | null = null;
@@ -509,10 +528,15 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         /** Work for the requested revision is outstanding: staged, or a provisional frame still refining. */
         pending(): boolean;
         cpuWorkingSet(nativePathUpperBound?: number): number;
+        /** Frees up to `bytes` of session bitmaps the last view cannot draw; a borrowed bitmap is never freed. */
+        reclaim(bytes: number): void;
+        /** On return from a hidden pane: drops the bitmaps the view cannot draw before any plan is made. False when
+         * the frame has no session to drop from yet, so the caller asks again on a later prepare. */
+        dropUnused(view: ViewState): boolean;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {
             if (disposed || lastFrame === budget.frameId) return;
-            lastFrame = budget.frameId; denied = false;
+            lastFrame = budget.frameId; denied = false; lastView = view;
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) { retire(staged); staged = null; return; }
             if (frame !== failedFrame) failedFrame = null;
@@ -638,6 +662,18 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         release(reason: GpuReleaseReason) {
             if (reason === 'context-lost') return;
             drop(staged); drop(ready); staged = ready = null; lastFrame = -1; denied = false;
+        },
+        reclaim(bytes) {
+            const view = lastView, session = !disposed && view ? sessionOf() : null;
+            if (session && view) session.cache.evictUnused(usableBitmaps(session.variant, view), bytes);
+        },
+        dropUnused(view) {
+            if (disposed) return false;
+            lastView = view;
+            const session = sessionOf();
+            if (!session) return false;
+            session.cache.evictUnused(usableBitmaps(session.variant, view), Number.MAX_SAFE_INTEGER);
+            return true;
         },
         dispose() { if (!disposed) { disposed = true; drop(staged); drop(ready); staged = ready = null; } },
     };

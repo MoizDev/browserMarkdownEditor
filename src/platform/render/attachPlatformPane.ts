@@ -119,7 +119,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     };
     // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
     const heldBytes = (cache: MemoryCacheHandle | undefined): number => { try { return cache?.readout().reservedBytes ?? 0; } catch { return 0; } };
-    const layerSet = new PaneLayerSet((id, current) => {
+    const layerSet = new PaneLayerSet((id, current, definition) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
             lastVisibleAt: now, lastUsedAt: now, class: 'scene-cache' as const };
@@ -130,7 +130,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             evict: bytes => { const layer = current(); if (layer) layerSet.definition(layer)?.cpuEvict?.(layer, bytes); } });
         let gpuCache: MemoryCacheHandle;
         try {
-            gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu', kind: 'working',
+            gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu',
+                kind: definition.liveInput ? 'live-input' : 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
                 evict: queueTrim });
         } catch (error) { cpu.close(); throw error; }

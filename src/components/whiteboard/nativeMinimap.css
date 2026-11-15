@@ -28,6 +28,13 @@
     position: absolute;
 }
 
+/* The picture is always the light palette: dark ink on a transparent sheet. On the dark theme that ink
+   would vanish into the panel, so the picture is inverted there, which turns it into the board's own
+   light-ink look. Hues rotate back so a coloured stroke keeps its family. */
+:root:not([data-theme="light"]) .native-minimap img {
+    filter: invert(1) hue-rotate(180deg);
+}
+
 .native-minimap img {
     position: absolute;
     display: block;

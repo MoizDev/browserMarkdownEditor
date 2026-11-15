@@ -1,4 +1,4 @@
-import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
+import type { PlatformLayerDefinition, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
@@ -6,6 +6,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
 import type { PaintFrame } from '../render/paintStream';
+import type { VideoFrameOverlay } from '../media/videoFrames';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 export type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { PaintPalette } from '../render/colour';
@@ -65,6 +66,8 @@ export interface ViewerEngine {
     readonly scene: SceneSpatial;
     readonly accessibility: ViewerAccessibilitySource;
     getSnapshot(): ViewerSnapshot;
+    /** The layers' own deadline: a wake invalidates the view and nothing else. Picture animation schedules through it. */
+    wakeAt(deadlineMs: number | null): void;
     getView(): ViewerViewParams;
     subscribe(listener: () => void): () => void;
     setView(params: ViewerViewParams): void;
@@ -72,6 +75,8 @@ export interface ViewerEngine {
     cancelReveal(): void;
     bindInteractions(ports: ViewerInteractionPorts): () => void;
     connectEmbeds(port: EmbedPresentationPort | null): void;
+    /** The platform's acceptance of a presented frame; the embed producer builds only after this matches its draw. */
+    presentationAccepted(presentation: PlatformPresentation | null): void;
     readyPaintFrame(): PaintFrame | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
@@ -88,6 +93,8 @@ export interface AttachViewOptions {
     readonly view: ViewerViewParams;
     readonly palette?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly images?: PaintImageProvider;
+    /** A view's playing video frames, served by their own image keys. Absent for any view with no video to play. */
+    readonly liveFrames?: VideoFrameOverlay;
     readonly signal?: AbortSignal;
     readonly reveal: (world: Readonly<{ x: number; y: number; width: number; height: number }>) => void;
     readonly onError: (error: Error) => void;

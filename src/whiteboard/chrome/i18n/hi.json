@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "रोशनी",
     "chrome.system": "सिस्टम",
     "chrome.language": "भाषा",
+    "chrome.print": "प्रिंट करें",
     "chrome.uploadMedia": "मीडिया अपलोड करें...",
     "chrome.insertEmbed": "एंबेड डालें...",
     "chrome.unlockAll": "सभी को अनलॉक करें",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "पृष्ठ हटाएँ",
     "paper.cancel": "रद्द करें",
     "paper.keepProtected": "लॉक की गई सामग्री रखी जाएगी.",
-    "chrome.readOnly": "यह बोर्ड केवल पढ़ने के लिए है."
+    "chrome.readOnly": "यह बोर्ड केवल पढ़ने के लिए है.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

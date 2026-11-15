@@ -58,12 +58,36 @@ export interface NativePdfViewerProps {
 }
 
 function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceState: NativePdfViewerSource }) {
+    const [generation, setGeneration] = useState(0), [awaitingPresentation, setAwaitingPresentation] = useState(false);
+    const [inverted, setInverted] = useState(false);
+    const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
+    useEffect(() => {
+        if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
+    }, [props.isVisible]);
+    useEffect(() => () => { handoff.current?.dispose(); handoff.current = null; }, []);
+    const rebind = useCallback((lease: NativeViewLease) => {
+        if (handoff.current) return;
+        handoff.current = lease.takeCameraForRebind();
+        setAwaitingPresentation(true);
+        setGeneration(value => value + 1);
+    }, []);
+    const presented = useCallback(() => setAwaitingPresentation(false), []);
+    return <PdfViewLease key={generation} props={props} sourceState={sourceState} handoff={handoff} inverted={inverted} setInverted={setInverted}
+        awaitingPresentation={awaitingPresentation} rebind={rebind} presented={presented} />;
+}
+
+function PdfViewLease({ props, sourceState, handoff, awaitingPresentation, rebind, presented, inverted, setInverted }: {
+    props: NativePdfViewerProps; sourceState: NativePdfViewerSource;
+    handoff: { current: ReturnType<NativeViewLease['takeCameraForRebind']> | null };
+    inverted: boolean; setInverted(value: boolean): void;
+    awaitingPresentation: boolean; rebind(lease: NativeViewLease): void; presented(): void;
+}) {
     const sourceSnapshot = useSyncExternalStore(sourceState.subscribe, sourceState.getSnapshot, sourceState.getSnapshot);
-    const latest = useRef(props);
-    useLayoutEffect(() => { latest.current = props; }, [props]);
+    const latest = useRef(props), latestInverted = useRef(inverted);
+    useLayoutEffect(() => { latest.current = props; latestInverted.current = inverted; }, [props, inverted]);
     const [lease, setLease] = useState<NativeViewLease | null>(null);
     const [loading, setLoading] = useState(true), [updating, setUpdating] = useState(false);
-    const [error, setError] = useState<string | null>(null), [inverted, setInverted] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const installed = useRef<typeof sourceSnapshot.source | null>(null), sequence = useRef(0);
     const { board, host, identity, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
     const { documentId, session, vaultActivation, bytesGeneration } = identity;
@@ -104,59 +128,59 @@ function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceSt
                     const current = latest.current;
                     const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
                         ...backdrop, sourceToken: source.source.token, isCurrentSource: () => currentSource(source),
+                        notePresentation() {
+                            if (!alive || abort.signal.aborted || !currentSource(source)) return;
+                            backdrop.notePresentation?.(); presented();
+                        },
                         assertCaptureCurrent() { if (!currentSource(source)) throw new Error('PDF backdrop source is updating'); },
                     };
+                    const cameraHandoff = handoff.current;
                     try {
                         view = createNativeViewLease({ board, host, identity: current.identity, pdfBackdrop: paired, readPdfMedia,
-                            parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
+                            ...(cameraHandoff ? { cameraHandoff } : {}),
+                            parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: latestInverted.current },
                             limits: { min, max }, insets: { left, right, top, bottom }, onError: report, onNotice: message => latest.current.onNotice(message) });
                     } catch (cause) { backdrop.dispose(); throw cause; }
+                    if (handoff.current === cameraHandoff) handoff.current = null;
                     installed.current = source; setLease(view); setLoading(false); return;
                 } catch (cause) {
                     if (!alive || abort.signal.aborted) return;
                     if (sourceState.getSnapshot().source !== source) continue;
+                    handoff.current?.dispose(); handoff.current = null;
                     report(cause); return;
                 }
             }
         })().catch(cause => { if (alive && !abort.signal.aborted) report(cause); });
         return () => { alive = false; abort.abort(); installed.current = null;
             if (view) { setLease(previous => previous === view ? null : previous); view.dispose(); } };
-    }, [board, host, documentId, session, vaultActivation, bytesGeneration, min, max, left, right, top, bottom, sourceState, readPdfMedia, report, currentSource]);
+    }, [board, host, documentId, session, vaultActivation, bytesGeneration, min, max, left, right, top, bottom, sourceState, readPdfMedia, report, currentSource, handoff, presented]);
+    const source = sourceSnapshot.source, token = source.source.token, old = lease?.view.sourceToken;
+    const paired = !!lease && installed.current === source && currentSource(source) && !!old && old.documentId === token.documentId
+        && old.session === token.session && old.vaultEpoch === token.vaultEpoch && old.bytesGeneration === token.bytesGeneration;
     useEffect(() => {
-        const source = sourceSnapshot.source;
-        if (!lease || sourceSnapshot.status !== 'ready' || installed.current === source) return;
-        let alive = true, adopted = false;
-        const abort = new AbortController(), generation = ++sequence.current;
-        setLoading(true); setUpdating(false); setError(null);
-        void source.createBackdrop({ readOnly: true,
-            isVisible: () => alive && latest.current.isVisible,
-            isFocused: () => alive && latest.current.isVisible && latest.current.isFocused,
-            emphasisEnabled: () => latest.current.emphasisEnabled,
-            onError: report, onUpdating: value => { if (alive && sequence.current === generation) setUpdating(value); }, signal: abort.signal,
-        }).then(backdrop => {
-            if (!alive || abort.signal.aborted || !currentSource(source)) { backdrop.dispose(); return; }
-            const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
-                ...backdrop, sourceToken: source.source.token, isCurrentSource: () => currentSource(source),
-                assertCaptureCurrent() { if (!currentSource(source)) throw new Error('PDF backdrop source is updating'); },
-            };
-            try { lease.replaceBackdrop(paired); adopted = true; installed.current = source; setLoading(false); }
-            catch (cause) { backdrop.dispose(); report(cause); }
-        }, cause => { if (alive && !abort.signal.aborted) report(cause); });
-        return () => { alive = false; if (!adopted) abort.abort(); };
-    }, [lease, sourceSnapshot.source, sourceSnapshot.status, sourceState, host, report, currentSource]);
+        if (!lease || paired || !props.isVisible || sourceSnapshot.status !== 'ready' || !currentSource(source)) return;
+        const paint = lease.runtime.paintToken, binding = lease.runtime.paintBinding.token;
+        const same = (value: typeof token) => value.documentId === token.documentId && value.session === token.session
+            && value.vaultEpoch === token.vaultEpoch && value.bytesGeneration === token.bytesGeneration;
+        if (!same(paint) || !same(binding) || !old || same(old)) return;
+        try { rebind(lease); } catch (cause) { report(cause); }
+    }, [lease, paired, props.isVisible, sourceSnapshot.status, source, token, old, currentSource, rebind, report]);
     useLayoutEffect(() => { lease?.refreshAuthority(); }, [lease, sourceSnapshot.status, sourceSnapshot.source]);
     useEffect(() => { lease?.changed(); }, [lease, props.emphasisEnabled]);
     const path = props.file.path, { onFocusPane, registerKeyboardTarget } = props;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
     const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
-    if (!lease) return <div role={error ? 'alert' : 'status'}>{error ?? 'Preparing PDF view…'}</div>;
+    if (!lease) return <div role={error ? 'alert' : 'status'} style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center',
+        background: props.theme === 'dark' ? '#181818' : '#fff', color: props.theme === 'dark' ? '#fff' : '#111' }}>
+        {error ?? 'Preparing PDF view…'}</div>;
     return <PdfAttached props={props} lease={lease} onFocus={onFocus} register={register} inverted={inverted} setInverted={setInverted}
-        cover={loading || updating || sourceSnapshot.status !== 'ready'} reason={error ?? sourceSnapshot.reason} />;
+        cover={loading || updating || awaitingPresentation || !paired || sourceSnapshot.status !== 'ready'} detach={!paired}
+        reason={error ?? sourceSnapshot.reason} />;
 }
 
-function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, cover, reason }: {
+function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, cover, reason, detach }: {
     props: NativePdfViewerProps; lease: NativeViewLease; onFocus(): void; register(focus: () => void): () => void;
-    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null;
+    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; detach: boolean;
 }) {
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
@@ -164,7 +188,7 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
     const notice = useCallback((message: string) => latest.current.onNotice(message), []);
     const viewer = useNativeClipboard(lease, props.host, props.identity, theme, notice);
     return <PdfAttachedFrame props={props} lease={lease} viewer={viewer} onFocus={onFocus} register={register}
-        inverted={inverted} setInverted={setInverted} cover={cover} reason={reason} readOnly />;
+        inverted={inverted} setInverted={setInverted} cover={cover} reason={reason} readOnly detach={detach} />;
 }
 
 function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, editingChrome, detach }: {
@@ -199,7 +223,9 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [updating, setUpdating] = useState(false), [viewGeneration, setViewGeneration] = useState(0);
-    const [awaitingPresentation, setAwaitingPresentation] = useState(false);
+    const [awaitingPresentation, setAwaitingPresentation] = useState(true), [inverted, setInverted] = useState(false);
+    const invertedRef = useRef(inverted);
+    useLayoutEffect(() => { invertedRef.current = inverted; }, [inverted]);
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
     useEffect(() => {
         if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
@@ -217,7 +243,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
                 const view = await createNativePdfEditingLease({ board: value.board, host: value.host, identity: value.identity,
                     sourceState: value.sourceState, editing, signal, ...(capturedHandoff ? { cameraHandoff: capturedHandoff } : {}),
                     limits: value.zoomLimits, insets: value.insets,
-                    parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: false },
+                    parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: invertedRef.current },
                     isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
                     emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
                     onPresented: () => setAwaitingPresentation(false), onError: value.onError, onNotice: notice });
@@ -236,11 +262,17 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
         const token = source.source.token, paint = lease.runtime.paintToken, old = lease.view.sourceToken;
         const same = (a: typeof token, b: typeof token) => a.documentId === b.documentId && a.session === b.session
             && a.vaultEpoch === b.vaultEpoch && a.bytesGeneration === b.bytesGeneration;
-        if (handoff.current || !value.isVisible || state.status !== 'ready' || state.source !== source || !source.isCurrent()
-            || !value.host.isCurrent(value.identity) || !value.host.canWriteSource(value.identity) || !outer || !value.host.isCurrent(outer)
-            || outer.documentId !== token.documentId || outer.session !== token.session || outer.vaultActivation !== token.vaultEpoch
+        if (handoff.current || !value.isVisible || state.source !== source || !old
+            || !value.host.isCurrent(value.identity) || !outer || !value.host.isCurrent(outer)
+            || outer.documentId !== token.documentId || outer.session !== token.session || outer.vaultActivation !== token.vaultEpoch) return;
+        if (state.status === 'rebinding') {
+            // Retire the physically detached old view before preparing the new
+            // source: its backdrop pins otherwise block the PDF disposal queue.
+            // Only the camera moves here; createLease still waits for verified ready.
+            if (!same(old, token) || outer.bytesGeneration <= old.bytesGeneration) return;
+        } else if (state.status !== 'ready' || !source.isCurrent() || !value.host.canWriteSource(value.identity)
             || outer.bytesGeneration !== token.bytesGeneration || !same(paint, token) || !same(lease.runtime.paintBinding.token, token)
-            || !old || same(old, token)) return;
+            || same(old, token)) return;
         const captured = lease.takeCameraForRebind();
         handoff.current = captured;
         setAwaitingPresentation(true); setUpdating(false);
@@ -255,7 +287,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     return <NativeCanvasEditing key={viewGeneration} props={{ identity: props.identity, nativeCanvasHost: props.host, isVisible: props.isVisible,
         isFocused: props.isFocused, theme: props.theme }} board={props.board} adapter={props.adapter}
         factory={props.host.createEditingCapabilities} createLease={createLease} renderView={renderView}
-        onError={props.onError} onUnavailable={editingUnavailable} />;
+        inversion={{ value: inverted, set: setInverted }} onError={props.onError} onUnavailable={editingUnavailable} />;
 }
 
 function PdfEditingAttached({ props, context, updating, rebind }: { props: NativePdfViewerProps; context: NativeEditingRenderContext;
@@ -278,7 +310,7 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
     }, [lease, cover, source, props.isVisible]);
     const { onError } = props;
     useEffect(() => {
-        if (!paired && source.status === 'ready' && sourceAuthorized) {
+        if (!paired && (source.status === 'rebinding' || source.status === 'ready' && sourceAuthorized)) {
             try { rebind(lease, source.source); }
             catch (error) { onError(error); }
         }
@@ -296,13 +328,18 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
 export default function NativePdfViewer(props: NativePdfViewerProps) {
     // This is the view route, not write authority; a rebind must not unmount
     // the editing view and discard its camera while its source is covered.
-    const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk' && props.host.canWriteSource(props.identity)
+    const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk'
         && typeof props.adapter.activateEditing === 'function');
-    const [unavailable, setUnavailable] = useState(false), { onNotice } = props;
+    const [unavailable, setUnavailable] = useState(false);
+    const noticeRef = useRef(props.onNotice);
+    useLayoutEffect(() => { noticeRef.current = props.onNotice; }, [props.onNotice]);
+    // Reading bindings change on focus and own-save. They must not tear down
+    // the input lease in the middle of a stroke or a covered source handoff.
     const onUnavailable = useCallback((error: unknown) => {
+        console.error('Native PDF editing failed:', error);
         setUnavailable(true);
-        if (!(error instanceof DOMException && error.name === 'AbortError')) onNotice(error instanceof Error ? error.message : String(error));
-    }, [onNotice]);
+        if (!(error instanceof DOMException && error.name === 'AbortError')) noticeRef.current(error instanceof Error ? error.message : String(error));
+    }, []);
     if (props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
     if (!unavailable && openedAsEditing) {
         return <PdfEditingView props={props} onUnavailable={onUnavailable} />;

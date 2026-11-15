@@ -7,6 +7,7 @@ import { boardPageStack } from '../../whiteboard/model/pages';
 import { NotebookControls } from './NotebookControls';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import { useNativeSheetControls } from './useNativeSheetControls';
+import './boardHost.css';
 
 export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps, 'sheetName' | 'openSheets'> {
     readonly lease: NativeViewLease;

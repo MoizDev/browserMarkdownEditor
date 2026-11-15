@@ -17,6 +17,7 @@ import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import { isNativeDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { routeEngines } from '../utils/engineRouting';
+import { BOARD_Z_MAX } from '../utils/boardZMax';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
 import { canvasReadOnlyReason, sniffCanvas } from '../utils/canvasFormat';
 import CanvasReadOnlyNotice from './CanvasReadOnlyNotice';
@@ -122,7 +123,7 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
                             isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={route.emergencyReadOnly}
                             zoomLimits={isNotebook ? PAGED_VIEW_LIMITS : DRAWING_VIEW_LIMITS}
                             insets={isNotebook ? PAGED_VIEW_INSETS : DRAWING_VIEW_INSETS}
-                            zMax={100} deadlineMs={30_000} registerKeyboardTarget={registerKeyboardTarget} onFocusPane={onFocusPane} />
+                            zMax={BOARD_Z_MAX} deadlineMs={30_000} registerKeyboardTarget={registerKeyboardTarget} onFocusPane={onFocusPane} />
                     </Suspense>
                 )}
                 {activated && !blocked && (nativeSelected ? !identity || !attachCanvasSession : !legacyAllowed || route.engine !== 'tldraw') && <div role="status">The selected whiteboard engine is unavailable.</div>}

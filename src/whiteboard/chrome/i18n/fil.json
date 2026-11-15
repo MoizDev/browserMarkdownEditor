@@ -30,6 +30,16 @@
       "key": "commands.exportPng",
       "text": "PNG",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Liwanag",
     "chrome.system": "Sistema",
     "chrome.language": "Wika",
+    "chrome.print": "I-print",
     "chrome.uploadMedia": "Mag-upload ng media…",
     "chrome.insertEmbed": "Ipasok ang embed...",
     "chrome.unlockAll": "I-unlock ang lahat",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Tanggalin ang pahina",
     "paper.cancel": "Kanselahin",
     "paper.keepProtected": "Itatago ang naka-lock na nilalaman.",
-    "chrome.readOnly": "Ang board na ito ay read-only."
+    "chrome.readOnly": "Ang board na ito ay read-only.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

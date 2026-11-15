@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Fény",
     "chrome.system": "Rendszer",
     "chrome.language": "Nyelv",
+    "chrome.print": "Nyomtatás",
     "chrome.uploadMedia": "Média feltöltése…",
     "chrome.insertEmbed": "Beágyazás beszúrása…",
     "chrome.unlockAll": "Az összes feloldása",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "Oldal törlése",
     "paper.cancel": "Mégsem",
     "paper.keepProtected": "A zárolt tartalom megmarad.",
-    "chrome.readOnly": "Ez a tábla csak olvasható."
+    "chrome.readOnly": "Ez a tábla csak olvasható.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

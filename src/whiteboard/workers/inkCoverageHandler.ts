@@ -3,7 +3,7 @@ import { CURVE_CHUNK_SPANS, materializeCurveRange } from '../ink/curve';
 import { InkCoverageJob } from '../ink/outline';
 import type { SampleSequence } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL } from '../ink/width';
-import { reportGeometryMemory } from './geometryHandler';
+import { reportBoardMemory } from './boardMemory';
 import type { InkCoverageRequest } from './geometryProtocol';
 
 export async function inkCoverage(payload: unknown, context: WorkerContext): Promise<unknown> {
@@ -37,11 +37,11 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
     const owner = {}, inputBuffers = new Set([samples.xy.buffer, samples.kinds.buffer, ...(samples.pressure ? [samples.pressure.buffer] : [])]);
     let inputBytes = 0;
     for (const buffer of inputBuffers) inputBytes += buffer.byteLength;
-    reportGeometryMemory(context, owner, inputBytes);
+    reportBoardMemory(context, owner, inputBytes);
     try {
         const geometry = materializeCurveRange(sequence, range, parameters);
         const job = new InkCoverageJob(sequence, geometry, style, { ...options, dotMetric: DOT_METRIC_PROVISIONAL });
-        reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+        reportBoardMemory(context, owner, inputBytes + job.byteLength);
         try {
             let started = performance.now(), work = 0;
             for (;;) {
@@ -57,15 +57,15 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
                         for (const child of Object.values(value)) collect(child);
                     };
                     collect(result);
-                    reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+                    reportBoardMemory(context, owner, inputBytes + job.byteLength);
                     context.transfer(...buffers);
                     return result;
                 }
                 if (++work >= 256 || performance.now() - started >= 3) {
-                    reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+                    reportBoardMemory(context, owner, inputBytes + job.byteLength);
                     await context.slice(); work = 0; started = performance.now();
                 }
             }
         } finally { job.cancel(); }
-    } finally { reportGeometryMemory(context, owner, null); }
+    } finally { reportBoardMemory(context, owner, null); }
 }

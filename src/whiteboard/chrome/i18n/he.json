@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "אור",
     "chrome.system": "מערכת",
     "chrome.language": "שפה",
+    "chrome.print": "הדפסה",
     "chrome.uploadMedia": "העלה מדיה...",
     "chrome.insertEmbed": "הוסף הטמעה...",
     "chrome.unlockAll": "פתח הכל",
@@ -378,6 +389,8 @@
     "paper.deleteConfirm": "מחק עמוד",
     "paper.cancel": "בטל",
     "paper.keepProtected": "תוכן נעול יישמר.",
-    "chrome.readOnly": "לוח זה הוא לקריאה בלבד."
+    "chrome.readOnly": "לוח זה הוא לקריאה בלבד.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -100,6 +100,16 @@
       "key": "paper.portrait",
       "text": "Portrait",
       "reason": "Mot français identique."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -251,6 +261,7 @@
     "chrome.light": "Clair",
     "chrome.system": "Système",
     "chrome.language": "Langue",
+    "chrome.print": "Imprimer",
     "chrome.uploadMedia": "Importer un média…",
     "chrome.insertEmbed": "Insérer un contenu intégré…",
     "chrome.unlockAll": "Tout déverrouiller",
@@ -448,6 +459,8 @@
     "paper.deleteConfirm": "Supprimer la page",
     "paper.cancel": "Annuler",
     "paper.keepProtected": "Le contenu verrouillé sera conservé.",
-    "chrome.readOnly": "Ce forum est en lecture seule."
+    "chrome.readOnly": "Ce forum est en lecture seule.",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

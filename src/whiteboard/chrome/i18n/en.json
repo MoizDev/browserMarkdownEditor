@@ -131,6 +131,7 @@
     "chrome.light": "Light",
     "chrome.system": "System",
     "chrome.language": "Language",
+    "chrome.print": "Print",
     "chrome.uploadMedia": "Upload media…",
     "chrome.insertEmbed": "Insert embed…",
     "chrome.unlockAll": "Unlock all",
@@ -347,6 +348,8 @@
     "kinds.embed.one": "{count} embed",
     "kinds.embed.other": "{count} embeds",
     "kinds.unsupported.one": "{count} unsupported item",
-    "kinds.unsupported.other": "{count} unsupported items"
+    "kinds.unsupported.other": "{count} unsupported items",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

@@ -13,7 +13,7 @@ import type { OrderKey } from '../model/orderKey';
 import { ARROWHEADS, DASHES, FIGURE_SHAPES, FILLS, FONTS, H_ALIGNS, SIZES, SWATCHES, TOOLS, V_ALIGNS } from '../model/styles';
 import { resolveDrawnSwatch } from '../model/swatchColours';
 import type { UiBlock } from '../model/styles';
-import { normalizeRichText, type Block, type BlockCarrier, type Marks, type RichText, type Run } from '../text/richText';
+import { normalizeRichText, normalizeRichTextCooperative, type Block, type BlockCarrier, type Marks, type RichText, type Run } from '../text/richText';
 import { projectBlockCarrier } from '../model/projectCarrierRanges';
 import { COMPATIBILITY_FENCE, isCompatibilityFence } from './fence';
 import { NATIVE_FORMAT_ID } from './identity';
@@ -309,7 +309,8 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
     }
     if (sourceCarriers) await readBlockCarriers(sourceCarriers, blocks, ranges, starts, lengths, cooperate);
     if (!blocks.length) { blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); repaired = true; }
-    const value = normalizeRichText({ blocks });
+    // A large loaded value is normalized in host-yielding slices, like the rest of its incremental read.
+    const value = cooperate ? await normalizeRichTextCooperative({ blocks }, { cooperate }) : normalizeRichText({ blocks });
     if (value.blocks !== blocks) repaired = true;
     if (repaired) note(context, 'repair', 'Normalized rich text while retaining its unknown content');
     return { value, unknown, repaired };

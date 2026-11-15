@@ -1,5 +1,6 @@
+import { coverageTargetBytes } from './api';
 import type {
-    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, GfxDevice, GfxError,
+    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
     Samples, ShaderLayout, ShaderModule, TargetHandle, TargetLease, TextureFormat, TextureHandle, TextureUse, UniformSlice,
 } from './api';
@@ -705,6 +706,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             } finally { this.#reset(); }
         }
         return handle;
+    }
+
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget {
+        this.#usable();
+        if (lease.bytes < coverageTargetBytes(width, height, samples)) throw new ArenaError('out-of-budget');
+        const texture = this.createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        try {
+            const target = this.createTarget(texture, { samples, stencil: true }, lease);
+            return { target, texture, width, height, samples };
+        } catch (error) {
+            this.destroy(texture);
+            throw error;
+        }
     }
 
     async readTexture(src: TextureHandle, rect: RectI, signal: AbortSignal): Promise<ImageBitmap> {

@@ -1,20 +1,28 @@
-import { isTextGraphemeBoundary, blockTextLength } from '../model/textOffsets';
+import { textBoundaries } from './boundaries';
 import { projectionLength as indexedLength, projectionPosition, projectionText } from './projection';
-import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
-import { normalizeRichText, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
+import { normalizePlainInsertion, normalizePlainInsertionCooperative, type PlainTextOptions } from './plainText';
+import { normalizeRichText, normalizeRichTextCooperative, sliceRichText, spliceRichText, type Block, type Marks, type RichFragment, type RichText } from './richText';
 import type { RichEdit, RichMark, RichSelection, RichTextOperations } from './rich';
-import { trackBlock } from './carriers';
+import { carrierForTail, trackBlock, trackRun } from './carriers';
+import { firstRunAt, runContaining, runIndex } from './runIndex';
+import { linkRangeAtBlock } from './linkIndex';
+import { applyRichTransaction, applyRichTransactionCooperative, validateRichFragment } from './richTransaction';
 
 const position = projectionPosition;
+const blockTextLength = (block: Block): number => runIndex(block).length;
 function check(text: RichText, from: number, to = from): void {
-    if (to < from || !isTextGraphemeBoundary(text, from) || !isTextGraphemeBoundary(text, to))
+    if (to < from || !textBoundaries.isBoundary(text, from) || !textBoundaries.isBoundary(text, to))
         throw new RangeError('Text range must have grapheme boundaries');
 }
-function withoutStart(block: Block): Block {
-    // The native tuple's dormant start slot remains attached to an opaque future tail.
-    if (block.tail !== undefined && block.tail !== '[]') return block;
-    const { start: _start, ...rest } = block;
-    return rest;
+export function reformatRichBlock(block: Block, kind: Block['kind'], level: number, start: number | undefined): Block {
+    if (kind === block.kind && level === block.level && start === block.start) return block;
+    const { start: _start, tail, carriers, ...rest } = block;
+    // A future tuple tail was authored against the old tuple attributes. Move it
+    // to its own range carrier before changing those attributes or removing start.
+    const displaced = tail !== undefined && tail !== '[]' ? carrierForTail(block, 0, blockTextLength(block)) : undefined;
+    const preserved = displaced ? [...(carriers ?? []), displaced] : carriers;
+    return trackBlock({ ...rest, kind, level, ...(start !== undefined ? { start } : {}),
+        ...(tail === '[]' ? { tail } : {}), ...(preserved?.length ? { carriers: preserved } : {}) }, block);
 }
 function insertionBlock(block: Block): Block {
     const { tail: _tail, carriers: _carriers, ...rest } = block;
@@ -28,68 +36,80 @@ export function plain(value: RichText): string {
     return projectionText(value);
 }
 export function fromPlain(value: string): RichText {
-    if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
-    const normalized = value.replace(/\r\n?/g, '\n');
-    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
-    const lines = normalized.split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
+    const lines = normalizePlainInsertion(value).split('\n');
     return { blocks: lines.map(text => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text, marks: {} }] })) };
+}
+export async function fromPlainCooperative(value: string, options: PlainTextOptions): Promise<RichText> {
+    const normalized = await normalizePlainInsertionCooperative(value, options), blocks: Block[] = [];
+    const budget = options.sliceMilliseconds ?? 3;
+    let first = 0, started = performance.now();
+    for (let index = 0; index <= normalized.length; index++) {
+        if (index === normalized.length || normalized.charCodeAt(index) === 10) {
+            blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: normalized.slice(first, index), marks: {} }] });
+            first = index + 1;
+        }
+        if ((index & 4095) === 4095) {
+            options.signal?.throwIfAborted();
+            if (performance.now() - started >= budget) {
+                await options.cooperate();
+                options.signal?.throwIfAborted();
+                started = performance.now();
+            }
+        }
+    }
+    options.signal?.throwIfAborted();
+    return { blocks };
 }
 export function marksAt(value: RichText, offset: number): Marks {
     check(value, offset);
     const { block, offset: local } = position(value, offset);
-    let at = 0;
-    for (let i = 0; i < block.runs.length; i++) {
-        const run = block.runs[i], end = at + run.text.length;
-        if (local < end || (local === end && (i === block.runs.length - 1 || end > at))) {
-            const { x: _x, link, ...marks } = run.marks;
-            return link && local < end ? { ...marks, link } : marks;
-        }
-        at = end;
-    }
-    return {};
+    const indexed = runIndex(block);
+    if (!indexed.count) return {};
+    const i = indexed.length ? runContaining(indexed, local ? local - 1 : 0) : indexed.count - 1;
+    const run = block.runs[i], end = indexed.starts[i + 1];
+    const { x: _x, link, ...marks } = run.marks;
+    if (!link) return marks;
+    if (local < end) return { ...marks, link };
+    // Formatting may split one link into adjacent runs; only its true end stops extension.
+    const range = linkRangeAtBlock(block, local);
+    return range && range.url === link && local < range.to ? { ...marks, link } : marks;
 }
 export function linkRangeAt(value: RichText, offset: number): { readonly from: number; readonly to: number; readonly url: string } | null {
     check(value, offset);
-    const found = position(value, offset), runs = found.block.runs;
-    let at = 0, chosen = -1;
-    for (let index = 0; index < runs.length; index++) {
-        const end = at + runs[index].text.length;
-        if ((found.offset > at && found.offset <= end) || (found.offset === 0 && at === 0 && end > 0)) { chosen = index; break; }
-        at = end;
-    }
-    if (chosen < 0 || !runs[chosen].marks.link) return null;
-    const url = runs[chosen].marks.link!;
-    let first = chosen, last = chosen;
-    while (first > 0 && runs[first - 1].marks.link === url) first--;
-    while (last + 1 < runs.length && runs[last + 1].marks.link === url) last++;
-    let from = found.start;
-    for (let index = 0; index < first; index++) from += runs[index].text.length;
-    let to = from;
-    for (let index = first; index <= last; index++) to += runs[index].text.length;
-    return from < to && isTextGraphemeBoundary(value, from) && isTextGraphemeBoundary(value, to) ? { from, to, url } : null;
+    const found = position(value, offset), range = linkRangeAtBlock(found.block, found.offset);
+    if (!range) return null;
+    const from = found.start + range.from, to = found.start + range.to;
+    return from < to && textBoundaries.isBoundary(value, from) && textBoundaries.isBoundary(value, to) ? { from, to, url: range.url } : null;
 }
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
     const { block } = position(value, from);
-    const marks = storedMarks ?? marksAt(value, from);
-    if (inserted.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
-    const normalized = inserted.replace(/\r\n?/g, '\n');
-    if (normalized.length > MAX_TEXT_LENGTH) throw new RangeError('Rich text exceeds limits');
-    const lines = normalized.split('\n');
-    if (lines.length > MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds limits');
+    // Unknown marks belong to their original run; their semantics cannot be
+    // inferred for freshly typed characters, even through a stored-mark value.
+    const { x: _x, ...marks } = storedMarks ?? marksAt(value, from);
+    const lines = normalizePlainInsertion(inserted).split('\n');
     return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
 }
 function mapMarks(value: RichText, from: number, to: number, map: (marks: Marks) => Marks): RichFragment {
     check(value, from, to);
     const fragment = sliceRichText(value, from, to, true);
-    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => ({ ...run, marks: map(run.marks) })) }, block)) });
+    return normalizeRichText({ blocks: fragment.blocks.map(block => trackBlock({ ...block, runs: block.runs.map(run => trackRun({ ...run, marks: map(run.marks) }, run)) }, block)) });
 }
 export function toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment {
     check(value, from, to);
-    const fragment = sliceRichText(value, from, to);
-    const runs = fragment.blocks.flatMap(block => block.runs).filter(run => run.text.length > 0);
-    const remove = runs.length > 0 && runs.every(run => run.marks[mark] === true);
+    const first = position(value, from), last = position(value, to);
+    let seen = false, remove = true;
+    outer: for (let block = first.index; block <= last.index; block++) {
+        const current = value.blocks[block], indexed = runIndex(current);
+        const low = block === first.index ? first.offset : 0, high = block === last.index ? last.offset : indexed.length;
+        if (low === high) continue;
+        for (let run = firstRunAt(indexed, low); run < indexed.count && indexed.starts[run] < high; run++) {
+            if (indexed.starts[run] === indexed.starts[run + 1] || indexed.starts[run + 1] <= low) continue;
+            seen = true;
+            if (current.runs[run].marks[mark] !== true) { remove = false; break outer; }
+        }
+    }
+    remove &&= seen;
     return mapMarks(value, from, to, marks => {
         const next = { ...marks };
         if (remove) delete next[mark]; else next[mark] = true;
@@ -114,7 +134,7 @@ export function enter(value: RichText, selection: RichSelection): RichEdit {
     check(value, from, to);
     const found = position(value, from), block = found.block;
     if (from === to && (block.kind === 'ul' || block.kind === 'ol') && blockTextLength(block) === 0) {
-        const replacement = { ...withoutStart(block), kind: 'p' as const, level: 0 };
+        const replacement = reformatRichBlock(block, 'p', 0, undefined);
         return { from: found.start, to: found.start, insert: normalizeRichText({ blocks: [replacement] }), selection: { anchor: from, focus: from }, replaceBlocks: true };
     }
     const next = continuation(block);
@@ -133,12 +153,19 @@ export function blocks(value: RichText, from: number, to: number, kind: Block['k
     const changed = selected.map(block => {
         if (effective === 'indent' || effective === 'outdent') {
             if (block.kind !== 'ul' && block.kind !== 'ol') return block;
-            return { ...block, level: Math.min(7, Math.max(0, block.level + (effective === 'indent' ? 1 : -1))) };
+            return reformatRichBlock(block, block.kind, Math.min(7, Math.max(0, block.level + (effective === 'indent' ? 1 : -1))), block.start);
         }
-        const clean = effective === 'ol' ? block : withoutStart(block);
-        return { ...clean, kind: effective, level: effective === 'ul' || effective === 'ol' ? block.level : 0 };
+        return reformatRichBlock(block, effective, effective === 'ul' || effective === 'ol' ? block.level : 0,
+            effective === 'ol' && block.kind === 'ol' ? block.start : undefined);
     });
     return { from: first.start, to: end, insert: normalizeRichText({ blocks: changed }), selection: { anchor: from, focus: to }, replaceBlocks: true };
 }
-export const richTextOperations: RichTextOperations = { plain, fromPlain, normalize: normalizeRichText, splice: spliceRichText, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
+function checkedSplice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks = false) {
+    check(value, from, to);
+    validateRichFragment(insert);
+    return spliceRichText(value, from, to, insert, wholeBlocks);
+}
+export const richTextOperations: RichTextOperations = { plain, fromPlain, fromPlainCooperative, normalize: normalizeRichText,
+    normalizeCooperative: normalizeRichTextCooperative, splice: checkedSplice,
+    transaction: applyRichTransaction, transactionCooperative: applyRichTransactionCooperative, marksAt, insertionFragment, toggleMark, applyLink, enter, blocks };
 export function projectionLength(text: RichText): number { return indexedLength(text); }

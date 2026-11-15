@@ -2,6 +2,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { Op } from '../change/ops';
 import type { MediaLocationWriter } from '../media/ingest';
 import type { MediaStore } from '../media/store';
+import { isSafeMediaFile } from '../model/media';
 import type { BoardSession } from '../session/BoardSession';
 import { createNativeMediaPorts } from './mediaPorts';
 import { createMediaRestorePin } from './pinMediaRestore';
@@ -12,11 +13,13 @@ export function createNativeMediaRestore(
     currentBoard: () => BoardSession | undefined, locations: MediaLocationWriter,
 ) {
     const media = createNativeMediaPorts(host, identity);
+    // Admission captures R0 while sealed read-only. Pin identity/revision here;
+    // only restore and location edits require the separate live write permission.
     const current = (revision: number): BoardSession | undefined => {
         const live = host.identity(identity.documentId), board = currentBoard();
         if (!host.isCurrent(identity) || !live || live.session !== identity.session
             || live.vaultActivation !== identity.vaultActivation || live.bytesGeneration !== identity.bytesGeneration
-            || live.kind !== identity.kind || !board || board.isReadOnly
+            || live.kind !== identity.kind || !board
             || board.owner.documentId !== identity.documentId || board.owner.session !== identity.session) return undefined;
         return board.doc.rev === revision ? board : undefined;
     };
@@ -39,7 +42,8 @@ export function createNativeMediaRestore(
         },
         updateFiles(changes, revision) {
             const board = current(revision);
-            if (!board || changes.some(change => board.doc.media.get(change.id)?.file !== change.expected)) return false;
+            if (!board || board.isReadOnly || !host.canWrite(identity)
+                || changes.some(change => !isSafeMediaFile(change.next) || board.doc.media.get(change.id)?.file !== change.expected)) return false;
             const ops: Op[] = changes.map(change => ({ t: 'media', op: 'set-file', id: change.id, file: change.next }));
             const applied = board.apply({ origin: 'host', label: 'Restore media', ops });
             applied.release();

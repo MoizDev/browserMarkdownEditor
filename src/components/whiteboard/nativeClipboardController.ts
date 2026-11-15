@@ -1,16 +1,14 @@
 import type { CameraController } from '../../platform/render/camera';
 import { surfaceToWorld } from '../../platform/render/camera';
-import { pageAt } from '../../platform/render/pageStack';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
-import { worldPose } from '../../whiteboard/change/coordinates';
-import { classifyClipboard } from '../../whiteboard/clipboard/classify';
-import { decodeBoardClipboard } from '../../whiteboard/host/clipboardDecode';
-import { acquireBoardClipboard, acquireCopiedBoardClipboard, type BoardClipboardAcquisition } from '../../whiteboard/host/clipboardAcquisition';
+import { pasteBoardClipboardInJob } from '../../whiteboard/clipboard/paste';
+import { acquireCopiedBoardClipboard, type BoardClipboardAcquisition } from '../../whiteboard/host/clipboardAcquisition';
+import { createBoardClipboardPasteHost } from '../../whiteboard/host/clipboardPasteHost';
+import { BOARD_Z_MAX } from '../../utils/boardZMax';
 import { readNativeClipboardMedia } from '../../whiteboard/host/clipboardCommands';
 import { classifyClipboardJson } from '../../whiteboard/host/clipboardJsonKind';
 import { createClipboardHtmlFrameHost } from '../../whiteboard/clipboard/htmlFrameHost';
-import { insertClipboardText } from '../../whiteboard/clipboard/insertText';
 import { insertNativeClipboard } from '../../whiteboard/clipboard/insertNative';
 import { planBoardClipboardPlacement } from '../../whiteboard/clipboard/placement';
 import { prepareBoardClipboardMediaInJob } from '../../whiteboard/clipboard/prepareMedia';
@@ -20,12 +18,8 @@ import type { CopySnapshot } from '../../whiteboard/clipboard/snapshot';
 import type { ClipboardInput, ClipboardIntent, ClipboardPoint, ClipboardTarget } from '../../whiteboard/clipboard/types';
 import type { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
-import { isSheetParent } from '../../whiteboard/model/doc';
 import type { MediaEntry, MediaId } from '../../whiteboard/model/media';
-import type { MediaSource } from '../../whiteboard/media/ingest';
 import type { StoreMedia } from '../../whiteboard/media/storage.types';
-import { readPrivatePngDensity } from '../../whiteboard/media/privatePng';
-import { boardPageStack } from '../../whiteboard/model/pages';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
 
 export interface NativeClipboardControllerOptions {
@@ -124,72 +118,21 @@ export function createNativeClipboardController(options: NativeClipboardControll
             }
             if (!input) throw new Error('Clipboard input is unavailable');
             const capturedInput = await input; check();
+            // Image files on the clipboard may carry a private PNG that only the image read can see. Supplying
+            // it as the input's privatePng makes classification choose the private-PNG path before files.
+            const privatePng = imageRead ? (await imageRead)?.privatePng ?? null : null; check();
+            const pasteInput: ClipboardInput = privatePng && capturedInput.files.length && !capturedInput.privatePng
+                ? { ...capturedInput, privatePng } : capturedInput;
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
-            let classified = await classifyClipboard(capturedInput, intent, { appOrigin: location.origin,
-                markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({ bytes: new Blob([text]), identity: workerIdentity,
-                    memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) }, context.signal);
-            check();
-            if (classified.kind === 'files' && imageRead) {
-                const read = await imageRead; check();
-                if (read?.privatePng) classified = { kind: 'private-png', blob: read.privatePng };
-            }
-            if (classified.kind === 'private') {
-                const decoded = await decodeBoardClipboard({ encoded: new Blob([classified.encoded]), identity: workerIdentity,
-                    memory: options.memory, isCurrent: workerCurrent, signal: context.signal });
-                try {
-                    check();
-                    const plain = capturedInput.text ?? '', candidate = pin?.match(classified.encoded, plain) ?? null;
-                    const match = candidate?.plain === plain ? candidate : null;
-                    const acquired = await acquireBoardClipboard({ decoded, identity: workerIdentity, isCurrent: workerCurrent, signal: context.signal,
-                        ...(match ? { cache: { match, encoded: classified.encoded, plain } } : {}) });
-                    await insertAcquisition(acquired, match ?? undefined);
-                } finally { decoded.release(); }
-                return;
-            }
-            if (classified.kind === 'text' || classified.kind === 'url' || classified.kind === 'html') {
-                let projection: Awaited<ReturnType<typeof html.projectHTML>> | undefined;
-                try {
-                    const content = classified.kind === 'text' ? { kind: 'plain' as const, text: classified.text }
-                        : classified.kind === 'url' ? { kind: 'url' as const, url: classified.url }
-                            : (projection = await html.projectHTML(classified.html, context.signal), { kind: 'rich' as const, fragment: projection.rich });
-                    check();
-                    if (projection?.dataImages.length) throw new Error('Pasting HTML with embedded images is not yet available');
-                    await insertClipboardText({ runtime, target, current: targetCurrent, receivingBoardId: identity.documentId,
-                        cameraZoom: zoom, intent, content, signal: context.signal });
-                } finally { projection?.release(); }
-                return;
-            }
-            if (classified.kind === 'files' || classified.kind === 'svg' || classified.kind === 'private-png') {
-                const files = classified.kind === 'files' ? classified.files : classified.kind === 'svg'
-                    ? [{ blob: new Blob([classified.text], { type: 'image/svg+xml' }), name: 'clipboard.svg', directory: false }]
-                    : [{ blob: classified.blob, name: 'clipboard.png', directory: false }];
-                const rejected = files.filter(file => file.directory);
-                if (rejected.length) options.notice('Folders cannot be pasted onto a board.');
-                const sources: MediaSource[] = files.filter(file => !file.directory).map(file => ({ blob: file.blob, name: file.name }));
-                if (classified.kind === 'private-png') {
-                    const density = await readPrivatePngDensity({ blob: classified.blob, signal: context.signal,
-                        identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent }); check();
-                    if (density !== null) sources[0] = { ...sources[0], pixelsPerWorldUnit: density };
-                    else options.notice('Clipboard PNG has no usable density; using ordinary image size.');
-                }
-                if (!sources.length) return;
-                const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: { from: null, bounds: { x: 0, y: 0, w: 0, h: 0 } },
-                    containsFrame: false, doc, cameraZoom: zoom, intent });
-                const centre = placement.worldCentre, stack = boardPageStack(doc.host);
-                let page = -1, x = centre.x, y = centre.y, rotation = 0;
-                if (isSheetParent(doc, placement.parent)) {
-                    if (stack) { page = pageAt(stack, y); const box = stack.rects[page]; if (!box) throw new Error('Target page is unavailable'); x -= box.x; y -= box.y; }
-                } else {
-                    const pose = worldPose(doc, placement.parent), dx = x - pose.x, dy = y - pose.y;
-                    const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-                    x = c * dx + s * dy; y = -s * dx + c * dy; rotation = -pose.rotation;
-                }
-                check();
-                await options.ingestor.ingestInJob(sources, { origin: 'paste', placement: { parent: placement.parent, page, x, y, rotation }, signal: context.signal }, context);
-                return;
-            }
-            if (classified.kind !== 'empty') throw new Error(`Clipboard ${classified.kind} conversion is not yet available`);
-            options.notice('The clipboard has no supported board content.');
+            const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token: runtime.paintToken, zMax: BOARD_Z_MAX,
+                classifier: { appOrigin: location.origin, markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({
+                    bytes: new Blob([text]), identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) },
+                html, ingestor: options.ingestor, receivingBoardId: identity.documentId, cameraZoom: zoom,
+                embedEnvironment: { appOrigin: location.origin }, embedManifest: host.embeds.manifest,
+                current: targetCurrent, readBlob: options.readMedia, storeMedia: options.storeMedia,
+                notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')),
+                isCurrent: workerCurrent });
+            await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
         }, { signal, deadlineMs: 120_000 });
         return work.finally(() => {
             try { stop(); } finally {

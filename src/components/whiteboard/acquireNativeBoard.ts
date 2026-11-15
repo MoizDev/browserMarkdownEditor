@@ -52,7 +52,8 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                 const emergency = policy.emergencyReadOnly;
                 const hosted = createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
                 return { ...hosted, activateEditing() {
-                    if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId) !== identity) throw new DOMException('Board session ended', 'AbortError');
+                    // A versioned PDF save advances bytes, not the retained board/undo owner.
+                    if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId)?.serial !== owner.session) throw new DOMException('Board session ended', 'AbortError');
                     if (sealed) throw new Error(sealed);
                     if (activated) {
                         try { if (!editingAuthorized()) throw new Error('Canvas editing is no longer authorized.'); }

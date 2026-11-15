@@ -8,6 +8,7 @@ import type { SceneMetadata } from './snapshotDoc';
 import type { SpatialCursor } from '../pick';
 import type { PaintNodeSource } from '../render/paintStream';
 import type { PaintNodeOrder } from '../render/paintOrder';
+import type { ScenePaintNodeStream } from '../render/scenePaintStream';
 import type { BoundsQuality, Box } from './bounds';
 import type { NearestVisitor, QueryBuffer, QueryRequest, SpatialQuery } from './query';
 
@@ -37,11 +38,14 @@ export interface ScenePaintRequest {
     readonly deviceScale?: number;
     readonly sensitiveNodes?: ReadonlySet<NodeId>;
     readonly allowInkLod?: boolean;
+    /** Only these nodes are resolved and emitted; a live-only frame carries no other geometry. */
+    readonly only?: ReadonlySet<NodeId>;
 }
 
 export interface ScenePaintBinding {
     readonly token: RenderToken;
     readonly preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => Promise<PaintNodeSource>;
+    readonly preparePaintStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => ScenePaintNodeStream;
     readonly retainRenderer?: () => { release(): void };
 }
 
@@ -50,6 +54,8 @@ export interface ScenePaintBinding {
  * isCurrent on the resulting source means "this lease remains valid", NOT live-doc equality.
  */
 export interface SceneSnapshot {
+    /** The immutable root is still owned, independently of any exhausted paint cursor. */
+    isCurrent(): boolean;
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
@@ -63,6 +69,9 @@ export interface SceneSnapshot {
     /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
+    paintStream?(request: ScenePaintRequest, signal?: AbortSignal): Promise<ScenePaintNodeStream>;
+    /** Upper-bound node count of a built sheet index over `world`; null while that index is still building. */
+    countCandidates?(sheetId: SheetId, world: Readonly<Rect>): number | null;
     release(): void | Promise<void>;
 }
 export interface SceneSpatial {

@@ -59,7 +59,8 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
             setOpen(!open);
         }}>Thumbnails</button>}
         {open && <div className="native-notebook-thumbnails" role="region" aria-label="Notebook page thumbnails"
-            style={{ position: 'absolute', top: '100%', right: 0, maxHeight: 'min(70vh, 600px)', overflowY: 'auto',
+            // From the bar's left edge: at its right edge the style panel (colours, pen width) covered it.
+            style={{ position: 'absolute', top: '100%', left: 0, maxHeight: 'min(70vh, 600px)', overflowY: 'auto',
                 display: 'grid', gap: 6, padding: 8, background: 'var(--background-secondary)',
                 border: '1px solid var(--background-modifier-border)', borderRadius: 6 }}>
             <div><button type="button" className="board-chrome-tool" disabled={start === 0} onClick={() => setOffset(Math.max(0, start - WINDOW))}>Previous pages</button>{' '}

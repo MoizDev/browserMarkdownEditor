@@ -37,7 +37,7 @@ export interface PrepareNativeRuntimeOptions {
     onHistoryLimit(): void;
 }
 
-let legacyMemorySerial = 0;
+let legacyMemorySerial = 0, inkLodMemorySerial = 0;
 
 /** Preparation owns admission and creator leases until take transfers one runtime. */
 export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions) {
@@ -145,7 +145,20 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
             session: identity.session, bytesGeneration: identity.bytesGeneration };
-        services = createBoardRenderServices({ doc, samples, media: store, token });
+        // Stroke LOD levels are rebuildable from the samples, so the governor may reclaim them first (`redundant-level`).
+        services = createBoardRenderServices({ doc, samples, media: store, token, inkLodMemory: evict => {
+            // The governor reads `memory()` while publishing its readout, so the live count is kept here, not read back.
+            let live = 0;
+            const now = performance.now();
+            const cache = getPlatformRuntime().governor.register({ id: `ink-lod:${identity.documentId}:${++inkLodMemorySerial}`,
+                owner: token, pool: 'cpu', kind: 'working', class: 'redundant-level', hiddenAt: null,
+                lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict });
+            return {
+                reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
+                release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
+                close: () => cache.close(),
+            };
+        } });
         const render = services;
         // Post-layout admission (document-model §9.2): an elbow connector with no valid route opens the board
         // read-only, on the real layout, before any editable transfer. A layout gap throws and fails closed.

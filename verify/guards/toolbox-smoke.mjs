@@ -136,7 +136,10 @@ try {
     await fontsReady(page);
     await assert('opened A through the tree', true, (await editor.innerText()).includes('Original A.'));
     if (options.mode !== 'dev') {
-        const style = app.identity.files.find(file => /^assets\/index-[^/]+\.css$/.test(file.path));
+        // The ENTRY stylesheet, as index.html links it: lazy panes emit index-*.css chunks of their own,
+        // and picking whichever came first measured a chunk the page never loads as a stylesheet.
+        const html = await readFile(resolve(app.distDir, 'index.html'), 'utf8');
+        const style = app.identity.files.find(file => /^assets\/index-[^/]+\.css$/.test(file.path) && html.includes(file.path));
         if (!style) throw new Error('CSS initiator control requires the emitted app stylesheet');
         const styleUrl = new URL(style.path, app.url).href;
         const fetchedBytes = await page.evaluate(async url => (await (await fetch(url)).arrayBuffer()).byteLength, styleUrl);

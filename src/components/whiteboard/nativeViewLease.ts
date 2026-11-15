@@ -1,4 +1,4 @@
-import { getBoardPreferences } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -341,7 +341,7 @@ export function createNativeViewLease(options: {
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
-        mac: /Mac|iPhone|iPad/.test(navigator.platform) });
+        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
     const paneId = `native-${identity.documentId}-${viewLease}`;
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));

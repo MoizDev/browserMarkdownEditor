@@ -59,6 +59,9 @@ export interface BoardToolServicesOptions {
         modalOpen(): boolean;
         isDirectPen(event: PointerEvent): boolean;
         ownsWheel(event: WheelEvent): boolean;
+        /** Preferences: the local Edge scrolling flag, and whether the mouse wheel's zoom turn is inverted. */
+        edgeScrolling(): boolean;
+        invertMouseZoom(): boolean;
         error(error: unknown): void;
         contextMenu(event: MouseEvent): void;
         persistToolLock?(locked: boolean): void;
@@ -213,6 +216,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     options.surface.addEventListener('paste', paste);
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
+        edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
         commands: { run: (id, event) => {
             if (select.command(id)) return true;

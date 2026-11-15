@@ -122,6 +122,8 @@ export interface WheelAdapterOptions {
   readonly toSurface: (x: number, y: number) => Point
   readonly owns: (event: WheelEvent) => boolean
   readonly changed: () => void
+  /** Preferences: a mouse wheel's zoom turn reverses. Panning never reverses. */
+  readonly invertZoom?: () => boolean
 }
 
 export function installWheel(root: HTMLElement, options: WheelAdapterOptions): () => void {
@@ -130,7 +132,8 @@ export function installWheel(root: HTMLElement, options: WheelAdapterOptions): (
     const mode = event.deltaMode === 1 ? 'line' : event.deltaMode === 2 ? 'page' : 'pixel'
     if (event.ctrlKey || event.metaKey) {
       const unit = mode === 'line' ? 16 : mode === 'page' ? options.camera.viewport.height : 1
-      options.camera.zoomWheel(event.deltaY * unit, options.toSurface(event.clientX, event.clientY))
+      const direction = options.invertZoom?.() ? -1 : 1
+      options.camera.zoomWheel(direction * event.deltaY * unit, options.toSurface(event.clientX, event.clientY))
     } else {
       options.camera.panWheel({ deltaX: options.paged ? 0 : event.deltaX, deltaY: event.deltaY, deltaMode: mode, shift: !options.paged && event.shiftKey })
     }

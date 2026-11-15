@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { getBoardPreferences } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
 import { getContextMenu } from '../../utils/contextMenu';
 import { translateBoard } from '../../whiteboard/chrome/language';
+import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { localizeBoardChrome } from './chrome/localize';
 import type { CommandState } from './chrome/boardCommands';
 import type { createBoardStyleControls } from '../../whiteboard/host/styleControls';
@@ -72,6 +73,9 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
     const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
+    // The per-session view preferences live with the clipboard service; the input layer reads them live through this ref.
+    const sessionPreferencesRef = useRef<BoardPreferenceState | null>(null);
+    useEffect(() => { sessionPreferencesRef.current = clipboard?.preferences ?? null; }, [clipboard]);
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!styleRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
@@ -93,6 +97,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                 onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
+                        edgeScrolling: () => sessionPreferencesRef.current?.getSnapshot().session.edgeScrolling ?? true, invertMouseZoom: mouseZoomInverted,
                         modalOpen: () => !!getContextMenu() || !!document.querySelector('[aria-modal="true"]'),
                         isDirectPen: event => event.pointerType === 'pen' && navigator.maxTouchPoints > 0,
                         ownsWheel: event => !event.composedPath().some(target => target instanceof Element &&

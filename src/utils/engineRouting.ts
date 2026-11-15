@@ -2,9 +2,8 @@ import { writeStoredValue } from './storage';
 import { pdfEngineAvailableInBuild } from './pdfEngineAvailability';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
-// Retired names remain readable while existing host contracts migrate; the
-// router never selects them, including for an old stored developer preference.
-export type CanvasEngine = 'tldraw' | 'viewer' | 'board';
+// Old stored engine preferences never select a removed implementation.
+export type CanvasEngine = 'board';
 export type PdfViewer = 'classic' | 'tiled';
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['board'];
 export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['tiled'] : [];

@@ -409,8 +409,7 @@ export class MemoryGovernor {
             }
         }
         if (this.charged.gpu > this.target.gpu || this.charged.cpu > this.target.cpu) this.degrade();
-        const cool = this.charged.gpu < this.target.gpu * POLICY.memoryRecoveryRatio &&
-            this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio && !liveGesture;
+        const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
@@ -519,7 +518,10 @@ export class MemoryGovernor {
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
             if (!allowed()) {
-                this.refuseReservation(pool);
+                // Only a pool that cannot hold the request is pressure. A refusal at the pane's own grant is that
+                // pane's back-pressure: degrading the whole app for it held the GPU quality at 0.51-0.8 for good,
+                // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
+                if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
                 return null;
             }
         }
@@ -700,6 +702,14 @@ export class MemoryGovernor {
         let bytes = 0;
         for (const cache of this.caches.values()) if (cache.registration.kind === kind) bytes += cache.bytes;
         return bytes;
+    }
+
+    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
+     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
+     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
+    cool(): boolean {
+        return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
+            this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
     }
 
     private degrade(): void {

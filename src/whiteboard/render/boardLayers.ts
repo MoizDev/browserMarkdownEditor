@@ -19,6 +19,8 @@ import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } fro
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
+/** Cadence of the retry while a memory reservation is refused: a demand refresh runs before each attempt. */
+const MEMORY_RETRY_MS = 250;
 /** What the renderer holds for the current revision. `pending` keeps the last coherent presented pixels on screen;
  * `current` needs a presented frame of the requested revision with nothing outstanding; `failed` is a real error. */
 export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
@@ -168,6 +170,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         liveSets.set(frame, { omit, wet, live }); return live;
     };
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
+    // A frame whose whole-frame reservation was refused draws as dense tiles for as long as it is the frame.
+    let deniedDirect: PaintSource | null = null, memoryRetry: ReturnType<typeof setTimeout> | null = null;
     let missingKey: string | null = null;
     let presented: PaintSource | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
@@ -232,8 +236,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented)) return { kind: 'current' };
         return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building' };
     };
+    // A refused reservation is retried on a bounded cadence while it is outstanding. A capacity wake alone can wait
+    // forever: the governor notifies only on a release or a plan, and a stale grant is refreshed only by a prepare.
+    const armMemoryRetry = (waiting: boolean) => {
+        if (!waiting || disposed) {
+            if (memoryRetry !== null) { clearTimeout(memoryRetry); memoryRetry = null; }
+            return;
+        }
+        if (memoryRetry !== null) return;
+        memoryRetry = setTimeout(() => { memoryRetry = null; allocatorHost?.invalidate('board-memory-retry'); }, MEMORY_RETRY_MS);
+    };
     const refreshProgress = () => {
         const next = progressNow();
+        armMemoryRetry(next.kind === 'pending' && next.reason === 'waiting-memory');
         if (lastProgress && sameProgress(lastProgress, next)) return;
         lastProgress = next; options.onPaintProgress?.();
     };
@@ -329,7 +344,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
+        estimate = null; denied = false; deniedDirect = null; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
@@ -366,7 +381,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const startEstimate = (frame: PaintSource) => {
         if (estimate?.frame === frame) return;
         known.add(frame);
-        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false }; denied = false;
+        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false };
+        denied = false; deniedDirect = null;
     };
     const prune = (requested: PaintSource, ready: PaintSource | null) => {
         const retained = retainedByDense();
@@ -411,7 +427,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const observed = density.observe({ frameId: budget.frameId, now: performance.now(),
                 candidateSegments: segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
                 estimatedGpuMs: segments * .00004 + items * .0001 });
-            const mode = frame.openTile ? observed : 'direct';
+            const mode = !frame.openTile ? 'direct' : deniedDirect === frame ? 'dense' : observed;
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
                 denied = false;
@@ -434,7 +450,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 const bytes = estimate!.bytes;
                 if (bytes) {
                     const lease = allocatorHost!.allocator.cpu.reserve(bytes);
-                    if (!lease) { denied = true; allocatorHost?.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory')); return; }
+                    if (!lease) {
+                        // The whole-frame estimate may never fit the pane's grant: a reopenable frame then draws as bounded tiles.
+                        denied = true; if (frame.openTile) deniedDirect = frame;
+                        allocatorHost?.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                        return;
+                    }
                     reservations.set(frame, [lease]); reserved += lease.bytes;
                 } else reservations.set(frame, []);
             }
@@ -542,6 +563,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 dispose() {
                     if (ended) return;
                     ended = true;
+                    armMemoryRetry(false);
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);
                     if (!hosts.size) {

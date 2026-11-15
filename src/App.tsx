@@ -103,9 +103,8 @@ import {
 } from './utils/expandedPaths';
 import { setTableNotify } from './editor/tableEdit';
 import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
-// Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
-// (~1.3MB) into the main bundle, which a markdown-only session never needs.
-// The builder itself is import()ed at the two points that actually write a PDF.
+// Cache only — the PDF writing machinery stays behind its lazy imports so a
+// markdown-only session never downloads it.
 import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
 import { authorizeKeptPdfRole, canRebuildAnnotatedPdf, canRotatePdfRole, pdfRoleNotice, revokePdfRole } from './utils/pdfRole';
 import type { PdfAnnotationPreflight } from './utils/pdfRole';
@@ -2174,9 +2173,8 @@ export default function App() {
         return true;
       }
 
-      // A PDF's bytes are read by PdfPane itself; its tab buffer holds the
-      // tldraw snapshot instead (empty until the canvas loads and reports one).
-      // readFile() must not touch it — decoding a PDF as UTF-8 corrupts it.
+      // A PDF's (or drawing's) bytes are read by its own pane, never as text:
+      // its tab buffer is not the file, and decoding a PDF as UTF-8 corrupts it.
       // Read WITH the version of exactly those bytes — the baseline every later
       // save of this document is checked against (writeFileVersioned) and every
       // outside change is compared with (checkOpenDocs).
@@ -2954,7 +2952,7 @@ export default function App() {
     const { id, file } = tab;
     const handle = tab.file.handle as FileSystemFileHandle;
     const isPdf = tab.representation.status === 'ready' && tab.representation.loadedKind === 'pdf';
-    // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk is a
+    // An annotated PDF tab's buffer is not the file; the file on disk is a
     // real PDF, rebuilt from the pristine original + the overlays the canvas
     // parked for us. No render data yet means the canvas has not reported a
     // change — which is also every PDF only ever read.
@@ -4394,9 +4392,8 @@ export default function App() {
             // re-pointed the entry, and the old node's handle names an entry
             // that no longer exists.
             const path = entry.path;
-            // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
-            // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
-            // fill the buffer with garbage.
+            // Mirror handleFileClick: a PDF's bytes are read by its own pane —
+            // decoding a PDF as UTF-8 would fill the buffer with garbage.
             if (isPdfFile(path) || isEpubFile(path) || isNativeDrawingFile(path)) {
               entry.content = '';
               break;
@@ -6636,9 +6633,8 @@ export default function App() {
   }, [handleNewNote, flushTab, toggleTabMode]);
 
   // ⌘⇧X — the AI agent panel. Chosen because nothing else claims it: ⌘⇧K is
-  // CodeMirror's deleteLine (and tldraw's link), ⌘⇧L/⌘⇧U/⌘⇧\ are CodeMirror's,
-  // ⌘⇧A/B/C/D/H/I/J/M/N/O/R/T/W are Chrome's, ⌘⇧E/P/S/Y/. are Edge's, ⌘⇧S/H/7/8
-  // tldraw's. In the CAPTURE phase so a focused editor or canvas never sees it.
+  // CodeMirror's deleteLine, ⌘⇧L/⌘⇧U/⌘⇧\ are CodeMirror's,
+  // ⌘⇧A/B/C/D/H/I/J/M/N/O/R/T/W are Chrome's, ⌘⇧E/P/S/Y/. are Edge's. In the CAPTURE phase so a focused editor or canvas never sees it.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'x') return;

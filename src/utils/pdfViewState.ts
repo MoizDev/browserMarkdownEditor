@@ -86,7 +86,7 @@ const INVERT_KEY = 'pdfInverted';
  * a value read at mount: two PDFs can be on screen side by side, and the reader
  * and the annotate canvas hand one document back and forth, so a toggle in one
  * has to show in the others at once. A view preference only; nothing about a
- * file or its exported PDF changes (see the .is-inverted rules in index.css).
+ * file or its exported PDF changes; the renderer applies it per paint.
  */
 let inverted = (() => {
     try {

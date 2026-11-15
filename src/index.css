@@ -145,12 +145,6 @@
    behaviour, where the board's Dark/Light recolours its toolbars and panels too). Only the colour variables the
    light theme overrides are re-scoped; accent and settings-driven variables stay the app's. */
 .canvas-pane[data-board-theme="dark"] {
-  --canvas-surround: var(--background-primary);
-  --canvas-chrome-bg: var(--background-secondary);
-  --canvas-chrome-border: var(--background-modifier-border);
-  --canvas-chrome-text: var(--text-normal);
-  --canvas-chrome-muted: var(--text-muted);
-  --canvas-chrome-hover: var(--background-modifier-hover);
   --background-primary: #1e1e1e;
   --background-primary-alt: #252525;
   --background-secondary: #202020;
@@ -175,12 +169,6 @@
   --tab-text-color-active: #dadada;
 }
 .canvas-pane[data-board-theme="light"] {
-  --canvas-surround: #f7f7f9;
-  --canvas-chrome-bg: #ffffff;
-  --canvas-chrome-border: #e4e4e7;
-  --canvas-chrome-text: #1d1d1d;
-  --canvas-chrome-muted: #6b6b70;
-  --canvas-chrome-hover: #f1f1f3;
   --background-primary: #ffffff;
   --background-primary-alt: #f2f3f5;
   --background-secondary: #f2f3f5;
@@ -2119,7 +2107,7 @@ body.is-resizing-panes * {
    Obsidian's is — with panes it would have to pick a column to sit in, and it
    already picks one by being about the focused document.
 
-   z-index 7, between the panes' 5 (a PDF or a tldraw canvas would otherwise
+   z-index 7, between the panes' 5 (a PDF or a drawing would otherwise
    paint straight over it) and .editor-split-dropzone's 20, which exists only
    while a tab is in flight and has to keep winning while it is. The divider at
    6 stays grabbable where the pill overlaps it because the pill takes no
@@ -3489,210 +3477,17 @@ body.is-resizing-panes * {
   height: 100%;
 }
 
-/* ── PDF view mode (pdf.js) ──
-   A continuous scroll of canvas-rendered pages with a selectable text layer.
-   Replaced the browser's viewer in an <iframe> because that viewer can't be
-   asked what page it's on — which is what page persistence needs. */
+/* ── PDF reader ──
+   The tiled view's root; its pages are painted by the platform renderer, which also
+   applies the inverted-page view preference, so no page or text-layer rules live here. */
 .pdf-viewer {
   position: relative;
   width: 100%;
   height: 100%;
 }
 
-.pdf-viewer-scroll {
-  position: absolute;
-  inset: 0;
-  /* Air between the pane header and the first page. Not padding on
-     .pdf-viewer-inner and NOT a margin on the first page: the re-anchor effect
-     scrolls to layout.tops[page], so anything inside the scrollable content is
-     scrolled straight past (PAD_V = 20 already is). Insetting the scroll BOX
-     puts the air outside the content, leaving tops[], PAD_V, PAGE_GAP, the
-     windowing math and the {page, offset} persistence untouched. After inset,
-     so it wins. */
-  top: var(--pdf-top-gap);
-  overflow: auto;
-  outline: none;
-  overscroll-behavior: contain;
-}
-
-/* The temporary platform preview stays underneath the reader's selectable DOM. */
-.pdf-platform-preview-surface {
-  position: absolute;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
-  visibility: hidden;
-}
-.pdf-platform-preview-surface > canvas { width: 100%; height: 100%; display: block; }
-.pdf-platform-preview-live .pdf-platform-preview-surface { visibility: visible; }
-.pdf-platform-preview-live .pdf-viewer-inner { position: relative; z-index: 2; }
-/* The inverted reader's black page box is above this canvas too. Its more specific
-   background must not conceal otherwise complete page+ink pixels on a tab return. */
-.pdf-viewer.pdf-platform-preview-live .pdf-viewer-page,
-.pdf-viewer.pdf-platform-preview-live.is-inverted .pdf-viewer-page { background: transparent; }
-.pdf-platform-preview-live .pdf-viewer-page > canvas { visibility: hidden; }
-
-/* The CSS-variable contract pdf.js text layers size themselves by:
-   --scale-factor is set inline to the live render scale; the rest are the
-   companion defaults the library's own viewer defines. */
-.pdf-viewer-inner {
-  --scale-factor: 1;
-  --user-unit: 1;
-  --total-scale-factor: calc(var(--scale-factor) * var(--user-unit));
-  --scale-round-x: 1px;
-  --scale-round-y: 1px;
-  box-sizing: border-box;
-  width: fit-content;
-  min-width: 100%;
-  margin: 0 auto;
-}
-
-.pdf-viewer-page {
-  position: relative;
-  margin-left: auto;
-  margin-right: auto;
-  background: #fff;
-  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
-  /* Skip the pages nobody is looking at. A zoom step restyles every text-layer
-     span and repaints the whole column, so a 40-page document paid 40 pages of
-     style, layout and compositor commit to change what two of them show —
-     measured at 61ms of Commit plus 68ms in the keydown, per step. No
-     contain-intrinsic-size: each page carries an explicit width/height from the
-     layout, so a skipped one still reserves exactly the right box, and
-     find-in-page still reaches the text inside it. */
-  content-visibility: auto;
-}
-
-/* Top/left rather than `inset: 0`, because at high zoom the canvas holds one
-   BAND of the page and is pinned over it with inline left/top/width/height
-   (see MAX_CANVAS_PIXELS); a `right`/`bottom` here would only be ignored. */
-.pdf-viewer-page > canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-/* Selectable-text overlay, trimmed from pdf.js's own text_layer styles.
-   Span geometry is emitted by the library (percent positions + CSS-variable
-   font sizing), so these rules are load-bearing for selection accuracy. */
-.textLayer {
-  color-scheme: only light;
-  position: absolute;
-  text-align: initial;
-  inset: 0;
-  overflow: clip;
-  opacity: 1;
-  line-height: 1;
-  letter-spacing: normal;
-  word-spacing: normal;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  transform-origin: 0 0;
-  caret-color: CanvasText;
-  z-index: 2;
-  --min-font-size: 1;
-  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
-  --min-font-size-inv: calc(1 / var(--min-font-size));
-}
-
-.textLayer :is(span, br) {
-  color: transparent;
-  position: absolute;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
-  user-select: text;
-}
-
-.textLayer > :not(.markedContent),
-.textLayer .markedContent span:not(.markedContent) {
-  z-index: 1;
-  --font-height: 0;
-  font-size: calc(var(--text-scale-factor) * var(--font-height));
-  --scale-x: 1;
-  --rotate: 0deg;
-  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
-}
-
-.textLayer .markedContent {
-  display: contents;
-}
-
-.textLayer span[role='img'] {
-  user-select: none;
-  cursor: default;
-}
-
-.textLayer ::selection {
-  background: color-mix(in srgb, var(--interactive-accent) 45%, transparent);
-  color: transparent;
-}
-
-.textLayer br::selection {
-  background: transparent;
-}
-
-/* pdf.js sizes a text layer from the page's UNROTATED box and records the
-   page's /Rotate on the container, leaving the turn itself to the host's CSS
-   (its own viewer carries these same three rules). Without them a page with
-   /Rotate 90 gets a portrait text layer over a landscape page, so selection
-   lands nowhere near the glyphs. The link layer needs no equivalent: its
-   percentages already come out of the rotated viewport. */
-.pdf-viewer-page .textLayer[data-main-rotation="90"] {
-  transform: rotate(90deg) translateY(-100%);
-}
-
-.pdf-viewer-page .textLayer[data-main-rotation="180"] {
-  transform: rotate(180deg) translate(-100%, -100%);
-}
-
-.pdf-viewer-page .textLayer[data-main-rotation="270"] {
-  transform: rotate(270deg) translateX(-100%);
-}
-
 ::highlight(pdf-find) { background-color: color-mix(in srgb, #f5c400 40%, transparent); color: transparent; }
 ::highlight(pdf-find-current) { background-color: color-mix(in srgb, #ff8a00 60%, transparent); color: transparent; }
-
-/* ── The PDF's own links ──
-   Above the text layer, or the transparent glyph spans would swallow every
-   click. Only the link boxes themselves take pointer events, so selecting
-   ordinary text is unaffected. */
-.pdf-link-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-}
-
-/* Both an <a> (external URL) and a <button> (in-document jump) wear this, so
-   it resets the chrome of each down to a plain transparent box. */
-.pdf-link {
-  position: absolute;
-  display: block;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  border-radius: 2px;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: background-color 90ms ease-out;
-}
-
-.pdf-link:hover,
-.pdf-link:focus-visible {
-  background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
-  outline: none;
-}
-
-/* Set for the duration of a text-selection drag: the links stand aside so the
-   selection can sweep across them (see PdfViewer's pointerdown handler). */
-.pdf-viewer-scroll.pdf-selecting .pdf-link {
-  pointer-events: none;
-}
 
 /* ── Bottom-right controls: page number, then zoom ── */
 .pdf-pane-print {
@@ -3957,69 +3752,12 @@ body.is-resizing-panes * {
   .pdf-viewer-rotate-btn.is-busy svg { animation: none; }
 }
 
-/* ── Inverted pages (PdfInvertToggle) ──
-   A VIEW preference and nothing more: the file and its exported PDF keep their
-   colours. Done as a CSS filter, so it is instant, costs no re-render, and leaves
-   pdf.js's cached bitmaps alone. A FULL invert: white paper becomes black and
-   black text white. A partial one (0.88) was tried first and read as washed-out
-   grey, not as an inverted page. hue-rotate(180deg) puts colours back near their
-   own hue, so a red figure still reads as red.
-
-   Reader: the page canvases only, never the page box, so the text layer's
-   selection highlight and the link layer keep their real colours.
-   Annotating: tldraw's shapes layer, which holds the pages AND the ink. Inverting
-   the pages alone would leave default black ink invisible on a dark page. The
-   background (the grey around the pages), the selection overlays and tldraw's
-   menus are other layers and stay as they are. */
-.pdf-viewer {
-  --pdf-invert: invert(1) hue-rotate(180deg);
-}
-
-.pdf-viewer.is-inverted .pdf-viewer-page > canvas,
-.is-inverted .pdf-thumb-page img {
-  filter: var(--pdf-invert);
-}
-
-/* What inverted white paper looks like, for the parts of a page not yet drawn
-   (before a render lands, or outside a band at high zoom). The surround is left
-   as the app's own background: against black pages it already separates them,
-   so the page breaks stay visible without darkening it. */
-.pdf-viewer.is-inverted .pdf-viewer-page,
-.is-inverted .pdf-thumb-page {
-  background: #000;
-}
-
 .drawing-pane-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
   font-size: 13px;
-}
-
-/* ── Canvas chrome follows the app theme; the PAGES never do ──────────────
-   A notebook page and a PDF page are white in either theme — that is the paper
-   the export prints on, and tldraw resolves ink COLOURS through its theme, so a
-   dark canvas would draw near-white 'black' onto white paper (the bug the
-   colorScheme pin exists to stop). So the canvases stay pinned to tldraw's light
-   scheme for correctness, and everything AROUND the paper is themed here
-   instead: the surround, this panel, and the notebook's paper bar. */
-:root {
-  --canvas-surround: #f7f7f9;
-  --canvas-chrome-bg: #ffffff;
-  --canvas-chrome-border: #e4e4e7;
-  --canvas-chrome-text: #1d1d1d;
-  --canvas-chrome-muted: #6b6b70;
-  --canvas-chrome-hover: #f1f1f3;
-}
-
-:root:not([data-theme="light"]) {
-  --canvas-surround: var(--background-primary);
-  --canvas-chrome-bg: var(--background-secondary);
-  --canvas-chrome-border: var(--background-modifier-border);
-  --canvas-chrome-text: var(--text-normal);
-  --canvas-chrome-muted: var(--text-muted);
-  --canvas-chrome-hover: var(--background-modifier-hover);
 }
 
 /* The eight folder colours, one value per theme.

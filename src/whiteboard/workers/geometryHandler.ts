@@ -2,14 +2,7 @@ import type { WorkerContext } from '../../platform/workers';
 import { validBox } from '../geom/bounds';
 import { PackedBuildJob, type PackedSnapshot } from '../scene/packedBuild';
 import { SECURITY_LIMITS } from '../security/limits';
-
-const active = new Map<object, number>();
-export function reportGeometryMemory(context: WorkerContext, owner: object, bytes: number | null): void {
-    if (bytes === null) active.delete(owner); else active.set(owner, bytes);
-    let heapBytes = 0;
-    for (const value of active.values()) heapBytes += value;
-    context.emit('mem', { heapBytes });
-}
+import { reportBoardMemory } from './boardMemory';
 
 /** The worker receives only owned numeric slabs; it never reads a live scene. */
 export async function buildPackedWithMemory(payload: unknown, context: WorkerContext): Promise<unknown> {
@@ -34,7 +27,7 @@ export async function buildPackedWithMemory(payload: unknown, context: WorkerCon
     const buffers = new Set([input.slots.buffer, input.generations.buffer, input.versions.buffer, input.bounds.buffer]);
     let inputBytes = 0;
     for (const buffer of buffers) inputBytes += buffer.byteLength;
-    reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+    reportBoardMemory(context, owner, inputBytes + job.byteLength);
     try {
         for (;;) {
             started = performance.now(); work = 0;
@@ -47,8 +40,8 @@ export async function buildPackedWithMemory(payload: unknown, context: WorkerCon
                 return data;
             }
             if (status === 'cancelled') throw new DOMException('Packed scene build cancelled', 'AbortError');
-            reportGeometryMemory(context, owner, inputBytes + job.byteLength);
+            reportBoardMemory(context, owner, inputBytes + job.byteLength);
             await context.slice();
         }
-    } finally { job.cancel(); reportGeometryMemory(context, owner, null); }
+    } finally { job.cancel(); reportBoardMemory(context, owner, null); }
 }

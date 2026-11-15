@@ -85,7 +85,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get regionChangesSince() { return stream.regionChangesSince; },
         openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
         liveOnly: pin.liveOnly,
-        isCurrent: () => stream.isCurrent(),
+        isCurrent: () => pin.isCurrent(),
         // The stream drains its active next() before the snapshot that pins its sources may go.
         async release() {
             try { await stream.release(); } finally { await pin.release(); }
@@ -127,9 +127,10 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
         step() {
             if (failure) { const { error } = failure; failure = null; throw error; }
             if (cancelled) return 'cancelled';
-            if (!stream.isCurrent()) return 'stale';
             if (pumping) return 'waiting';
+            // EOF physically closes the cursor, not the immutable source the finished frame owns.
             if (ended) return 'complete';
+            if (!stream.isCurrent()) return 'stale';
             if (!room()) return 'waiting';
             pumping = true;
             void pump();

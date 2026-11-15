@@ -3,6 +3,10 @@ import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfRoleRead';
 import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
+<<<<<<< HEAD
+=======
+import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
+>>>>>>> feat/in-house-engines
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
 import ConfirmDialog from './ConfirmDialog';
@@ -18,7 +22,7 @@ import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighligh
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
-import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
+import type { ActiveFile, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
 import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
@@ -35,9 +39,15 @@ import type { PdfTiledPresentation } from './PdfTiledView';
 import type { EmphasisAvailability } from '../types/reading';
 import './PdfPane.css';
 
+<<<<<<< HEAD
 // Acquisition/editing and contained rendering stay behind their lazy entries.
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
+=======
+import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
+
+// Native annotation services remain separate from opening a PDF for reading.
+>>>>>>> feat/in-house-engines
 const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
 const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
 const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
@@ -58,12 +68,10 @@ export interface PdfPaneProps {
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
      * open PDF tab and merely hides the ones that aren't, so switching tabs
-     * never reloads the document or loses the reading position. Hidden panes
-     * hold their viewer; only the annotate canvas is torn down (it's a whole
-     * tldraw instance, and unmounting it is also what flushes strokes).
+     * never reloads the document or loses the reading position. Native document
+     * services live in App; hidden views release their rendering/input resources.
      */
     isVisible: boolean;
-    retainClosing?: boolean;
     /**
      * Whether this is the FOCUSED pane, which is a narrower thing than being on
      * screen once tabs can hold several documents: two PDFs may be visible side
@@ -87,11 +95,6 @@ export interface PdfPaneProps {
     onFocusPane: (path: string) => void;
     /** 'read' = view the real PDF, 'edit' = annotate. Reuses the per-tab mode. */
     mode: EditorMode;
-    /** The tab's buffered tldraw snapshot (annotated files only). */
-    content: string;
-    onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
-    /** Writes to disk immediately; used as the canvas hands over to the viewer. */
-    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
@@ -128,7 +131,7 @@ interface PdfSource {
  * and a dirty/rebinding document must keep its actual editing shell mounted. */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
@@ -358,12 +361,20 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const readOnly = mode === 'edit' && (legacyOffer || plainNativeOffer || nativeCandidate || inspectedWriteRefused || !!roleNotice || foreignHeld || !!disk || source !== null && !editableSource && isEditablePdfRole(source));
     const annotationMode = mode === 'edit' && !readOnly;
     const [idleHealth] = useState(createClassicPdfHealth);
+<<<<<<< HEAD
     const [, setRetryEpoch] = useState(0);
     const [retryBusy, setRetryBusy] = useState(false);
     const retryInFlight = useRef(false);
     // Role inspection has its own build worker. A refused edit displays the
     // outer PDF, so its renderer health must belong to that viewer, not a source.
     const renderHealth = idleHealth;
+=======
+    const [retryEpoch, setRetryEpoch] = useState(0);
+    const [retryBusy, setRetryBusy] = useState(false);
+    const retryInFlight = useRef(false);
+    // Native annotation owns its render health; this is the outer PDF reader.
+    const renderHealth = session?.health ?? idleHealth;
+>>>>>>> feat/in-house-engines
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
     const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
     const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
@@ -764,7 +775,10 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
+<<<<<<< HEAD
 
+=======
+>>>>>>> feat/in-house-engines
         } else if (isDirty || flushing) {
             // Between leaving the canvas and the write landing (a few hundred ms)
             // the file on disk still predates the last strokes. Say so rather than

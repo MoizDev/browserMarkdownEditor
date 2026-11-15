@@ -1,6 +1,7 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { PaintFrame, PaintItem } from '../render/paintStream';
+import type { PaintItem, PaintSource } from '../render/paintStream';
+import { paintItemsOf } from '../render/paintWindows';
 import type { PaintFrameAssembler } from '../render/frameTypes';
 import type { PaintImageLease } from '../render/resources';
 import { isMediaTileKey } from './mips';
@@ -51,21 +52,22 @@ export interface VideoFrameRegistry {
      * still resolves to the image it was made for while the frame is retained. Throws if one of them is already gone.
      * The release is idempotent and must run after the holder's own physical work retires.
      */
-    retainFrame(frame: PaintFrame): () => void;
+    retainFrame(frame: PaintSource): () => void;
     /** Node → key of its latest live frame. Identity changes exactly when `version` does. */
     readonly keys: ReadonlyMap<string, string>;
     readonly version: number;
     /** True once a drawn frame has shown this node's image (its poster or a presented frame). */
     drawn(node: string): boolean;
     /** Called with the frame that was actually drawn, so the row that starts playback appears only after an image was shown. */
-    markDrawn(frame: PaintFrame): void;
+    markDrawn(frame: PaintSource): void;
     dispose(): void;
 }
 
 /** The video image keys a frame names, in the order the frame draws them. */
-function videoKeysOf(frame: PaintFrame): string[] {
-    return [...frame.underlay, ...frame.content].flatMap(item =>
-        item.kind === 'image' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX) ? [item.imageKey] : []);
+function videoKeysOf(frame: PaintSource): string[] {
+    const keys: string[] = [];
+    for (const item of paintItemsOf(frame)) if (item.kind === 'image' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX)) keys.push(item.imageKey);
+    return keys;
 }
 
 /**
@@ -154,8 +156,7 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
         get version() { return version; },
         drawn: node => shown.has(node),
         markDrawn(frame) {
-            const visit = (items: readonly PaintItem[]) => { for (const item of items) if (item.kind === 'image') shown.add(item.nodeId); };
-            visit(frame.underlay); visit(frame.content);
+            for (const item of paintItemsOf(frame)) if (item.kind === 'image') shown.add(item.nodeId);
         },
         dispose() {
             if (disposed) return;
@@ -169,12 +170,12 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
 /** The overlay the view's paint pipeline wraps around its frame assembler. */
 export interface VideoFrameOverlay {
     wrap(frames: PaintFrameAssembler): PaintFrameAssembler;
-    drawn(frame: PaintFrame): void;
+    drawn(frame: PaintSource): void;
 }
 /** The tile keys a drawn frame names, so the view can release the rasters it no longer shows. */
-function tileKeysOf(frame: PaintFrame): Set<string> {
+function tileKeysOf(frame: PaintSource): Set<string> {
     const keys = new Set<string>();
-    for (const item of [...frame.underlay, ...frame.content]) if (item.kind === 'image' && isMediaTileKey(item.imageKey)) keys.add(item.imageKey);
+    for (const item of paintItemsOf(frame)) if (item.kind === 'image' && isMediaTileKey(item.imageKey)) keys.add(item.imageKey);
     return keys;
 }
 /**
@@ -194,21 +195,23 @@ export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () =>
  * version of it is still held and it is no longer the newest one.
  */
 export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameRegistry): PaintFrameAssembler {
-    const originals = new WeakMap<PaintFrame, PaintFrame>();
-    const versions = new Map<PaintFrame, Set<PaintFrame>>(), deferred = new Set<PaintFrame>();
-    let newest: PaintFrame | null = null, lastOriginal: PaintFrame | null = null, lastVersion = -1, lastDecorated: PaintFrame | null = null;
-    const original = (frame: PaintFrame) => originals.get(frame) ?? frame;
+    const originals = new WeakMap<PaintSource, PaintSource>();
+    const versions = new Map<PaintSource, Set<PaintSource>>(), deferred = new Set<PaintSource>();
+    let newest: PaintSource | null = null, lastOriginal: PaintSource | null = null, lastVersion = -1, lastDecorated: PaintSource | null = null;
+    const original = (frame: PaintSource) => originals.get(frame) ?? frame;
     const withKeys = (items: readonly PaintItem[], keys: ReadonlyMap<string, string>): readonly PaintItem[] => items.map(item => {
         if (item.kind !== 'image') return item;
         const key = keys.get(item.nodeId);
         return key === undefined ? item : { ...item, imageKey: key };
     });
-    const decorate = (frame: PaintFrame): PaintFrame => {
+    const decorate = (frame: PaintSource): PaintSource => {
         const keys = registry.keys;
         if (keys.size === 0) return frame;
         if (lastOriginal === frame && lastVersion === registry.version && lastDecorated) return lastDecorated;
-        const decorated: PaintFrame = Object.freeze({ ...frame,
-            underlay: Object.freeze(withKeys(frame.underlay, keys)), content: Object.freeze(withKeys(frame.content, keys)) });
+        const decorated: PaintSource = frame.liveOnly
+            ? Object.freeze({ ...frame, windows: Object.freeze(frame.windows.map(window =>
+                Object.freeze({ band: window.band, items: Object.freeze(withKeys(window.items, keys)) }))) })
+            : Object.freeze({ ...frame, underlay: Object.freeze(withKeys(frame.underlay, keys)), content: Object.freeze(withKeys(frame.content, keys)) });
         originals.set(decorated, frame);
         let held = versions.get(frame);
         if (!held) versions.set(frame, held = new Set());

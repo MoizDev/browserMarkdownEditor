@@ -27,7 +27,7 @@ A local-first, Obsidian-style Markdown editor that runs **entirely in the browse
 database. Optional fonts use Google; the local VaultAgent helper serves AI and terminal. It reads and
 writes the user's real files through the **File System Access API**, so it is **Chromium-only by
 design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
-TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas + native PDFium, legacy tldraw canvases, lazy pdf-lib metadata/writers, idb-keyval, xterm.js.
+TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas/PDF engines, idb-keyval, xterm.js.
 
 ## Commands
 
@@ -45,8 +45,6 @@ unit tests, test suites, `.test`/`.spec` files, test runner or `test` script, in
 functions — all were deleted. The ONLY tests are headless-browser runs driving the real app (load
 `verify-in-browser` before claiming anything works); `typecheck` and `lint` are the static gates. **One
 exception:** when the user EXPLICITLY asks for a code-based test, write it — only that test, that task.
-
-**Env:** `VITE_TLDRAW_LICENSE_KEY` — production only; a missing key never shows up in `npm run dev`.
 
 ## Architecture: what every change must respect
 
@@ -108,16 +106,16 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
   that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
   page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
-- **Third-party CDNs are not a dependency of drawing a line.** tldraw fetches fonts, icons and
-  translations from `cdn.tldraw.com` unless given `assetUrls` (37 requests per board). Serve them here.
+- **Third-party CDNs are not a dependency of drawing a line.** Native renderer assets and fonts
+  are local and integrity-checked; optional user-selected note fonts are a separate feature.
 - **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
   identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
-- **The PDF/tldraw module split is bundle-size discipline enforced only by import discipline** —
-  there is no manual chunking, so one new import silently pulls pdf-lib (~400kB), an engine or tldraw into
-  the main bundle; load `pdf-and-drawings` (notebooks and drawings too) before adding one. The chunks
+- **The PDF/canvas module split is bundle-size discipline enforced by import discipline** —
+  native runtimes, worker clients and rendering services stay behind their lazy hosts; load
+  `pdf-and-drawings` (notebooks and drawings too) before adding an import. The chunks
   warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does
   the same, so buffers and search offsets stay in step; a reader that skips it drifts on CRLF.

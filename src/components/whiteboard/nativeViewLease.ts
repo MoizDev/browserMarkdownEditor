@@ -11,7 +11,9 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
-import { recordNativeAgentViewport } from '../../whiteboard/host/nativeAgentView';
+import { recordNativeAgentViewport, snapshotNativeAgentView, type NativeAgentViewInput } from '../../whiteboard/host/nativeAgentView';
+import { captureLiveAgentProjection, describeLiveAgentView } from '../../whiteboard/host/agentProjection';
+import { registerView, type LiveJob, type NativeLiveView, type ViewReporter } from '../../utils/viewRegistry';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
 import { BoardVideoPlayback } from '../../whiteboard/media/playback';
@@ -442,7 +444,7 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                viewer.presentationAccepted(presentation);
+                viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
@@ -469,6 +471,7 @@ export function createNativeViewLease(options: {
     const updateInput = () => {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
+    let unregisterView: (() => void) | null = null;
     const lease: NativeViewLease = {
         runtime, engine: viewer, camera, editing, video: videoPort, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
@@ -555,11 +558,71 @@ export function createNativeViewLease(options: {
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispose() {
             if (disposed) return;
-            recordViewport(); disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
+            recordViewport(); disposed = true; unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
             navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
+    // A mounted board answers the agent from its own live camera, inversion and frame, under the path it shows; dispose withdraws it.
+    // The App's last real view answers only while this view has no measured viewport (see nativeAgentView).
+    const livePath = host.identity(identity.documentId)?.path;
+    if (livePath) {
+        const live = createNativeLiveView({ runtime: boardRuntime,
+            frame() {
+                if (disposed || !current()) return null;
+                refreshViewport();
+                const viewport = camera.viewport;
+                return viewport.width > 0 && viewport.height > 0 ? { camera: camera.camera, viewport, insets, inverted: parameters.inverted } : null;
+            },
+            // The capture contract is canonical light paint only; a view's inversion is reported by describe, never captured.
+            captureRect: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
+            current });
+        const reporter: ViewReporter = { kind: board.doc.kind === 'whiteboard' ? 'drawing' : board.doc.kind === 'notebook' ? 'notebook' : 'pdf-annotate',
+            describe: () => live.describe({ deadlineMs: 30_000 }), live };
+        unregisterView = registerView(livePath, reporter);
+    }
     cameraClaim?.commit();
     return lease;
     } catch (error) { cameraClaim?.rollback(); throw error; }
+}
+
+/** The mounted board's answer to the agent: its own live camera, inversion and source, never a second store. The lease
+ * supplies the frame it shows and its capture; the runtime supplies the document and the jobs. */
+interface NativeLiveSource {
+    readonly runtime: BoardRuntime;
+    /** The camera this view shows now, or null while its pane has no measured viewport. */
+    frame(): NativeAgentViewInput | null;
+    /** This view's own capture of `rect`, at its live inversion, long side ≤ maxSide. */
+    captureRect(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
+    current(): boolean;
+}
+
+function createNativeLiveView(source: NativeLiveSource): NativeLiveView {
+    const { runtime } = source;
+    const live = () => {
+        const frame = source.frame();
+        return frame ? snapshotNativeAgentView(runtime, frame) : null;
+    };
+    const captureAt = (rect: Rect, maxSide: number, job: LiveJob) => captureLiveAgentProjection({ runtime,
+        job: { signal: job.signal, deadlineMs: job.deadlineMs }, maxSide, isCurrent: source.current,
+        pin: () => ({ revision: runtime.session.doc.rev, capture: signal => source.captureRect(rect, maxSide, signal), release() {} }) });
+    const unlaid = () => new Error('This board is not laid out yet');
+    return {
+        measured: () => live() !== null,
+        async describe(job) {
+            const view = live();
+            if (!view) throw unlaid();
+            return describeLiveAgentView({ runtime, job: { signal: job.signal, deadlineMs: job.deadlineMs }, view: view.view,
+                sheet: view.sheet, isCurrent: source.current });
+        },
+        capture(maxSide, job) {
+            const view = live();
+            if (!view) return Promise.reject(unlaid());
+            return captureAt(view.region, maxSide, job);
+        },
+        renderPage(page, maxSide, job) {
+            const stack = boardPageStack(runtime.session.doc.host), box = stack?.rects[page - 1];
+            if (!box || !Number.isSafeInteger(page) || page < 1) return Promise.reject(new RangeError(`page ${page} is not on this board`));
+            return captureAt({ x: box.x, y: box.y, width: box.width, height: box.height }, maxSide, job);
+        },
+    };
 }

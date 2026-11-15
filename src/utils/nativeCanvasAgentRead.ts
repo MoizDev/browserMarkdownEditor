@@ -1,10 +1,9 @@
 import type { AgentHostDeps } from './agentHost';
 import type { NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
-import { isNativeDrawingFile, isNotebookFile, isPdfFile } from './fileTypes';
+import { isNotebookFile, isPdfFile } from './fileTypes';
 import { createNativeAgentReader } from '../whiteboard/host/nativeAgentRead';
 import { readNativeAgentViewport } from '../whiteboard/host/nativeAgentView';
 import { readClosedAgentProjection } from '../whiteboard/host/agentProjection';
-
 import type { PdfInkAcquisition } from '../pdf/session/inkAcquisition.types';
 import type { Rect } from '../platform/types';
 import { MEDIA_MIMES, type MediaEntry, type MediaMime } from '../whiteboard/model/media';
@@ -36,8 +35,7 @@ export async function readNativeCanvasShapePage(options: {
     if (tab) {
         const kind = tab.representation.loadedKind;
         if (kind !== 'drawing' && kind !== 'notebook' && kind !== 'pdf') return null;
-        // Classic is a separate representation, not a recovery path for failed native reads; a PDF has none.
-        if (kind !== 'pdf' && !tab.representation.nativeCanvasKind && !isNativeDrawingFile(path)) return null;
+        // Every loaded canvas is read from its App-owned session, legacy text included; a refusal there throws.
         if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
         // Keep the existing agent readiness bound without imposing that timer
         // on the immutable read after App has returned its actual session.
@@ -57,7 +55,6 @@ export async function readNativeCanvasShapePage(options: {
                 if (pdf.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
                 return pdf.retainSource();
             } } : {}),
-
             isCurrent: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
             onError: error => console.error('Native canvas tool capture failed:', error),
         }).shapes({ ...options.query }, job);

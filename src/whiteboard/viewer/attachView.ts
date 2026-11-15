@@ -3,7 +3,7 @@ import type { RenderToken } from '../../platform/render/types';
 import { getBoardRuntime } from '../host/runtime';
 import { createNotebookPaperLayer, type NotebookPaperSnapshot } from '../host/notebookPaperLayer';
 import type { NodeId } from '../model/ids';
-import type { PaintFrame } from '../render/paintStream';
+import type { PaintSource } from '../render/paintStream';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
@@ -43,7 +43,7 @@ export const attachView: AttachView = options => {
     const runtime = acquiredRuntime;
     let view: ViewerViewParams = { ...options.view }, disposed = false, failed: Error | null = null;
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
-    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
+    let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintSource; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
     let embedProducer: NativeEmbedPresentationProducer | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
@@ -60,7 +60,7 @@ export const attachView: AttachView = options => {
     };
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
-    let previewCoverage: (() => Readonly<{ frame: PaintFrame; nodeIds: ReadonlySet<string> }> | null) | null = null;
+    let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
     const listeners = new Set<() => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
@@ -97,7 +97,7 @@ export const attachView: AttachView = options => {
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
     const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
     const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
-    const previewOmission = (dry: PaintFrame): ReadonlySet<string> | null => {
+    const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
         if (!preview || preview.frame.sceneRevision !== dry.sceneRevision || dry.sceneRevision !== options.session.doc.rev) return null;
@@ -105,7 +105,7 @@ export const attachView: AttachView = options => {
         return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration
             && a.session === b.session ? preview.nodeIds : null;
     };
-    const omitPreview = (dry: PaintFrame) => union(previewOmission(dry), view.visible ? embedPort?.inlineNodeIds(dry.sceneRevision) : null);
+    const omitPreview = (dry: PaintSource) => union(previewOmission(dry), view.visible ? embedPort?.inlineNodeIds(dry.sceneRevision) : null);
     const selections = new WeakMap<readonly NodeId[], ReadonlySet<string>>();
     const selectionIds = (): ReadonlySet<string> => {
         const ids = runtime.selection.getSnapshot().selected;
@@ -116,8 +116,10 @@ export const attachView: AttachView = options => {
         }
         return result;
     };
-    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(
-        selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
+    // Requested embeds are live barriers too: a card the user asked for is drawn at its real paint position
+    // before its facts exist, so it is never baked into a tile or omitted early.
+    const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
+        view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         liveNodeIds, candidates: () => lastCandidates,
@@ -300,13 +302,17 @@ export const attachView: AttachView = options => {
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
         cancelReveal,
+        embedsChanged() {
+            if (disposed) return;
+            requestPaint();
+        },
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
             const old = embedPort; embedPort = port;
             // One port, one producer: the producer presents only through the same port the per-node Load/Unload uses.
             const oldProducer = embedProducer;
-            embedProducer = port ? createNativeEmbedPresentationProducer({ port, images, memory: embedMemory, onError: report }) : null;
+            embedProducer = port ? createNativeEmbedPresentationProducer({ port, memory: embedMemory, onError: report }) : null;
             oldProducer?.dispose();
             if (old) { old.setVisible(false); void old.dispose().catch(report); }
             port?.setVisible(view.visible);

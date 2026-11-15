@@ -8,7 +8,7 @@ import { compareOrder } from '../model/orderKey';
 import type { BoardRuntime } from '../host/runtime';
 import { createBoardLayers, type BoardLayerPair } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
-import type { PaintClip, PaintFrame, PaintNodeSource, PaintTextItem } from '../render/paintStream';
+import type { PaintClip, PaintSource, PaintNodeSource, PaintTextItem } from '../render/paintStream';
 import { textPaintMaterial } from '../render/textGeometry';
 import type { FaceTable, TextPaint } from '../text/paint';
 import type { PaintImageProvider } from '../render/resources';
@@ -33,7 +33,7 @@ export interface BoardPreview {
     armCommit(): void;
     finishCommit(): void;
     cancelCommit(): void;
-    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintFrame): void;
+    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
     dispose(): void;
@@ -95,7 +95,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
     let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1;
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
-    const frameIds = new WeakMap<PaintFrame, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintFrame, number>();
+    const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
     const idleWaiters = new Set<{ resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
     const settleIdle = () => {

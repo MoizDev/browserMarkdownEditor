@@ -1,26 +1,6 @@
-// Warm the heavy panes before they are clicked.
-//
-// Dynamic imports keep pdf.js (~450kB) and tldraw (~1.7MB) out of a markdown-only
-// session's bundle. PDF demand and prefetch also share the resolved component,
-// avoiding a separate React.lazy payload after the import has already finished.
-// Measured cold cost: ~0.8s for a PDF and ~1.2s for a drawing, nearly all of it
-// fetching and parsing the chunk rather than doing anything with the document.
-//
-// So fetch them while nothing is happening instead. Two rules keep this from
-// undoing the split it is built on top of:
-//
-//   · ONLY WHAT THE VAULT ACTUALLY CONTAINS. A vault of pure markdown fetches
-//     nothing, which is the case the code splitting exists for. Opening a vault
-//     with one `.pdf` in it warms pdf.js and leaves tldraw alone.
-//   · ONLY WHEN IDLE, and never before the app has drawn. `requestIdleCallback`
-//     yields to anything the reader is doing; this is a nice-to-have that must
-//     never compete with a keystroke.
-//
-// The import specifiers must match the ones `EditorPane`/`DocumentPane` use, or
-// the bundler emits a second copy of each chunk instead of warming theirs.
-
+// Warm only the native panes the vault actually needs, after the app has drawn.
+// Markdown-only vaults fetch none of the PDF, canvas or EPUB implementations.
 import { loadPdfPane } from './pdfPaneModule';
-import { routeEngines } from '../utils/engineRouting';
 
 export interface CanvasKinds {
     epub: boolean;
@@ -30,29 +10,19 @@ export interface CanvasKinds {
     notebook: boolean;
 }
 
-/** Each chunk is fetched at most once per session, whatever asks for it. */
 const started = new Set<string>();
-
 function warm(key: string, load: () => Promise<unknown>): void {
     if (started.has(key)) return;
     started.add(key);
-    // Idle failures stay quiet; the demand host supplies the loading error
-    // and explicit Retry rather than letting an idle refresh retry a PDF.
+    // Demand owns the error and explicit Retry, not an idle refresh loop.
     load().catch(() => started.delete(key));
 }
 
-/**
- * Fetch the chunks this vault will need, once the browser is idle.
- *
- * Safe to call repeatedly — on every tree refresh, say. Each chunk is warmed
- * once, and a vault holding none of these kinds does nothing at all.
- */
 export function prefetchPanes(kinds: CanvasKinds): void {
     if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.nativeDrawing && !kinds.notebook) return;
-
     const run = () => {
-        const route = routeEngines();
         if (kinds.epub) warm('epub', () => import('./EpubPane'));
+<<<<<<< HEAD
         // PDF startup no longer warms a second parser. Source acquisition stays
         // with the App-owned contained session when a PDF is actually opened.
         if (kinds.pdf) warm('pdf', loadPdfPane);
@@ -60,13 +30,11 @@ export function prefetchPanes(kinds: CanvasKinds): void {
         if (kinds.drawing && route.canvas.drawing.engine === 'tldraw') warm('drawing', () => import('./DrawingPane'));
         if (kinds.nativeDrawing) warm('native-drawing', () => import('./whiteboard/NativeCanvasEntry'));
         if (kinds.notebook && route.canvas.notebook.engine === 'tldraw') warm('notebook', () => import('./NotebookPane'));
+=======
+        if (kinds.pdf) warm('pdf', loadPdfPane);
+        if (kinds.drawing || kinds.nativeDrawing || kinds.notebook) warm('canvas', () => import('./whiteboard/NativeCanvasEntry'));
+>>>>>>> feat/in-house-engines
     };
-
-    const idle = (window as unknown as {
-        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-    }).requestIdleCallback;
-    // Safari has no requestIdleCallback; a timeout is a fine stand-in for
-    // something whose only requirement is "not right now".
-    if (idle) idle(run, { timeout: 4000 });
+    if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
     else setTimeout(run, 1500);
 }

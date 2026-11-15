@@ -4021,11 +4021,9 @@ export default function App() {
       pendingPdfMode.current.add(tab.id);
       // Native ink reports through its document bridge, not the retired canvas view reporter.
       void Promise.resolve(view?.flushPending?.()).then(async () => {
-        if (nativePdf) await nativeEntry?.adapter.drain?.();
-        const needsSave = tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id);
+        const needsSave = documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty;
         const outcome = await flushTab(path, !!needsSave);
-        if (outcome === 'failed' || outcome === 'skipped' && (tabsRef.current.find(t => t.id === tab.id)?.dirty || documentBuffers.isDirty(tab.id))) return;
-        if (nativePdf) await nativeEntry?.adapter.drain?.();
+        if (outcome === 'failed' || outcome === 'skipped' && (documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty)) return;
         setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
       }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
       return;

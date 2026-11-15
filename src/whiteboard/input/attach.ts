@@ -102,6 +102,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let start: ToolStateSnapshot | null = null
   let activeSource: RealSample['source'] | null = null
   let completeTool = false
+  /** The tool the stylus eraser end displaced; it returns when that end lifts (F-INPUT-009). */
+  let restoreTool: string | null = null
   let spaceHeld = false
   let zoomHeld = false
   let temporaryPan = false
@@ -180,7 +182,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       const choice = start.active
       completeTool = false
       if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
-        return editable() ? services.resolveTool({ id: 'eraser' }, sample, modifiers, event) : null
+        if (!editable()) return null
+        // Eraser-end selects Eraser for as long as it is held, separately from the E key and the right button.
+        if (start.active.id !== 'eraser' && services.tools.getRegistration('eraser')) { restoreTool = start.active.id; services.tools.setTool('eraser') }
+        return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
       }
       if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
       if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) { suppressMenu = false; return { tool: secondaryPan, context: undefined } }
@@ -238,6 +243,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       // A non-editable view must not write the single-use reset: complete() can persist ui.tool to the shared document.
       if (reason === 'up' && start && completeTool && editable()) services.tools.complete(start)
       completeTool = false
+      if (restoreTool !== null && editable() && services.tools.getRegistration(restoreTool)) services.tools.setTool(restoreTool)
+      restoreTool = null
       temporaryPan = false
       pendingPrediction = undefined
       start = null
@@ -274,7 +281,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopSharedPenMode = services.tools.subscribePenMode(onPenMode)
   services.penModeChanged?.(touch.penMode)
   const stopPenContacts = services.tools.subscribePenContacts((id, down, direct, time) => {
-    try { if (down) touch.penDown(id, direct); else touch.penUp(id, time) }
+    try { if (down) touch.penDown(id, direct); else touch.penUp(id) }
     catch (error) { try { services.error(error) } catch { /* Other views must still receive the contact. */ } }
   })
   const stopPenMode = services.bindPenMode?.(() => touch.exitPenMode())
@@ -323,7 +330,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.textInput?.cancelPending()
     if (!current()) return
     if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
-    else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover(event.timeStamp)
+    else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover()
   }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)

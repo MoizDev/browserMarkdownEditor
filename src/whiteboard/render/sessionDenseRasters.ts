@@ -1,6 +1,8 @@
 import type { Rect } from '../../platform/types';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import type { RegionChanges } from '../scene/boundsVersions';
+import { FULL_REGION_CHANGES } from '../scene/boundsVersions';
 import { TileHierarchy, tileRectWorld, tileScale, type TileAddress, type TileRecord, type TileTicket } from './tileHierarchy';
 
 const METADATA_BYTES = 4096;
@@ -40,11 +42,16 @@ export class SessionDenseRasters {
     private currentRevision: number | null = null;
 
     get revision(): number | null { return this.currentRevision; }
-    /** A source revision advance invalidates each interval once for the shared session. */
-    advanceRevision(revision: number): boolean {
+    /** Advances to a newer source revision. Only tiles meeting the changed regions since the cached
+     * revision go stale; unknown changes (or no change source) invalidate every interval. */
+    advanceRevision(revision: number, changes?: (from: number) => RegionChanges): boolean {
         if (this.ended || !Number.isSafeInteger(revision) || revision < 0) return false;
         if (this.currentRevision !== null && revision < this.currentRevision) return false;
-        if (this.currentRevision !== null && revision > this.currentRevision) this.invalidateAll(revision);
+        if (this.currentRevision !== null && revision > this.currentRevision) {
+            const delta = changes?.(this.currentRevision) ?? FULL_REGION_CHANGES;
+            if (delta.full) this.invalidateAll(revision);
+            else for (const interval of [...this.intervals.keys()]) this.invalidateRegions(interval, revision, delta.regions);
+        }
         this.currentRevision = revision; return true;
     }
 
@@ -106,9 +113,9 @@ export class SessionDenseRasters {
             complete: true, stale: record.stale, sourceRevision: record.revision,
             release: () => { if (!held) return; held = false; entry.borrows--; if (entry.retired && !entry.borrows) this.free(entry); } };
     }
-    invalidate(interval: string, revision: number, oldBounds: Readonly<Rect> | null, newBounds: Readonly<Rect> | null): void {
+    invalidateRegions(interval: string, revision: number, regions: readonly Rect[]): void {
         if (this.ended) return;
-        this.hierarchy.invalidate(interval, revision, oldBounds, newBounds); this.retireTickets(interval); this.intervals.set(interval, revision);
+        this.hierarchy.invalidateRegions(interval, revision, regions); this.retireTickets(interval); this.intervals.set(interval, revision);
     }
     invalidateOrder(interval: string, revision: number): void {
         if (this.ended) return;

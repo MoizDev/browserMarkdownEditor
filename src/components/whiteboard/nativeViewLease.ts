@@ -132,7 +132,7 @@ export function createNativeViewLease(options: {
     onNotice(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
-    if (options.parameters.mode === 'edit' && (!options.editing || board.doc.kind === 'pdf-ink')) {
+    if (options.parameters.mode === 'edit' && !options.editing) {
         throw new Error('This canvas does not have an authorized editing host');
     }
     if (board.doc.kind === 'pdf-ink' && (!options.pdfBackdrop || !options.readPdfMedia)) {
@@ -143,6 +143,10 @@ export function createNativeViewLease(options: {
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const boardRuntime = runtime;
     const sourceToken = board.doc.kind === 'pdf-ink' ? options.pdfBackdrop?.sourceToken : undefined;
+    if (board.doc.kind === 'pdf-ink' && options.parameters.mode === 'edit' &&
+        (!sourceToken || !options.pdfBackdrop?.isCurrentSource?.() || !host.canWriteSource(identity))) {
+        throw new Error('PDF editing requires its current acquired source and write policy');
+    }
     if (sourceToken && (sourceToken.documentId !== identity.documentId || sourceToken.session !== identity.session ||
         sourceToken.vaultEpoch !== identity.vaultActivation || !options.pdfBackdrop?.isCurrentSource?.() ||
         sourceToken.documentId !== runtime.paintToken.documentId || sourceToken.session !== runtime.paintToken.session ||
@@ -307,7 +311,7 @@ export function createNativeViewLease(options: {
         images.setVisible(parameters.visible && current());
         video.setVisible(parameters.visible && current());
         animation.setVisible(parameters.visible && current(), performance.now());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation),
+        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null;
@@ -319,13 +323,13 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
-            () => parameters.mode === 'edit' && edit.canMutate()),
+            () => inputPermitted && parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
-            editable: () => parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
+            editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
@@ -428,7 +432,8 @@ export function createNativeViewLease(options: {
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
-            setInputEnabled: enabled => navigation.setInputEnabled(enabled), cancelViewWork: reason => navigation.cancelViewWork(reason),
+            setInputEnabled: enabled => navigation.setInputEnabled(enabled && inputPermitted && sourceCurrent() && parameters.visible),
+            cancelViewWork: reason => navigation.cancelViewWork(reason),
             writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
                 camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); },
             onPresentation: presentation => {
@@ -454,7 +459,8 @@ export function createNativeViewLease(options: {
     };
     function recordViewport() {
         if (!parameters.visible || !current() || !platformPane) return;
-        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
+            inverted: parameters.inverted });
     }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });

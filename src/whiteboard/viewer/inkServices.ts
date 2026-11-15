@@ -40,7 +40,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
             const sheet = runtime.selection.getSnapshot().sheet;
             if (!session.doc.sheets.has(sheet)) throw new Error('Ink target sheet is unavailable');
             const stack = boardPageStack(session.doc.host);
-            const page = stack ? pageAt(stack, first.y) : 0;
+            const page = stack ? pageAt(stack, first.y) : -1;
             const origin = stack?.rects[page];
             if (stack && !origin) throw new Error('Ink target page is unavailable');
             const offset = { x: origin?.x ?? 0, y: origin?.y ?? 0 };

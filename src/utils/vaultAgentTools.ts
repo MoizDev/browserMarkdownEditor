@@ -32,7 +32,7 @@
 
 import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
-import type { AgentChange, ClosedPdfEmphasis, HostResult, VaultToolHost } from '../types/vaultAgent';
+import type { AgentChange, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
 import { getView, type CanvasApplyResult, type CanvasShapePage, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
@@ -261,9 +261,10 @@ function hostFailure(r: Extract<HostResult, { ok: false }>, verb: string, path: 
     }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+/** A timed-out open-view read is also aborted, so it stops consuming the shared PDF pool. */
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string, abort?: AbortController): Promise<T> {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new ToolError(`${what} timed out`)), ms);
+        const timer = setTimeout(() => { abort?.abort(); reject(new ToolError(`${what} timed out`)); }, ms);
         promise.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
     });
 }
@@ -447,6 +448,14 @@ async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution>
     return ok(body.join('\n'));
 }
 
+/** Aborted by the run's own cancellation; a view read adds its timeout on top. */
+function viewReadController(ctx: Ctx): AbortController {
+    const controller = new AbortController();
+    if (ctx.signal?.aborted) controller.abort();
+    else ctx.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    return controller;
+}
+
 async function withClosedPdfDeadline<T>(ctx: Ctx, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     ctx.ensureLive();
     const controller = new AbortController();
@@ -492,7 +501,8 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
         // rather than extracting fifty pages to keep three.
         for (let p = first; p <= pageCount && pages.length < maxPages;) {
             const batch = Array.from({ length: Math.min(5, maxPages - pages.length, pageCount - p + 1) }, (_, i) => p + i);
-            const got = await withTimeout(view.pdfText(batch), REPORTER_TIMEOUT_MS, 'extracting the PDF text');
+            const controller = viewReadController(ctx);
+            const got = await withTimeout(view.pdfText(batch, controller.signal), REPORTER_TIMEOUT_MS, 'extracting the PDF text', controller);
             let full = false;
             for (const g of got.sort((x, y) => x.page - y.page)) {
                 const size = g.text.length + pdfExtractionWarning(g).length + 1;
@@ -692,6 +702,19 @@ function onScreenCaption(viewport: { readonly x: number; readonly y: number; rea
     return ` — the part on screen: x ${Math.round(viewport.x)}…${Math.round(viewport.x + viewport.w)}, y ${Math.round(viewport.y)}…${Math.round(viewport.y + viewport.h)}`;
 }
 
+/** What a native canvas picture shows, said plainly: a recorded view, the whole sheet when the board was never viewed,
+ *  or one page. A hidden or unmounted board is never claimed to be on screen. */
+function nativeViewCaption(path: string, native: NativeCanvasView, page: number | undefined): string {
+    const info = native.info;
+    if (info.kind === 'drawing') return `${path}${native.wholeSheet ? ', the whole sheet' : onScreenCaption(info.viewport)}:`;
+    const count = info.pageCount;
+    const pdf = info.kind === 'pdf-annotate';
+    if (page !== undefined) return `${path}, page ${page} of ${count}${pdf ? ' (with its ink)' : ''}:`;
+    const pages = pdf ? `${count} PDF page${count === 1 ? '' : 's'}` : `${count} page${count === 1 ? '' : 's'}`;
+    if (native.wholeSheet) return `${path}, the whole sheet of its ${pages}:`;
+    return `${path}, pages ${info.visiblePages.join(', ')} of ${pages} on its recorded view:`;
+}
+
 function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
     if (!emphasis) return '';
     if (emphasis.kind === 'active') return ' (word emphasis applied)';
@@ -714,6 +737,20 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
     if (isPdfFile(name)) {
         const view = openPdfView(path);
+        // An OPEN native ink board with no mounted pane is pictured from its own session, at its last real view.
+        if (!view && ctx.host.nativeCanvasView) {
+            const native = await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (native) {
+                const count = native.info.kind === 'pdf-annotate' ? native.info.pageCount : 0;
+                if (page !== undefined && count && page > count) throw new ToolError(`page ${page} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
+                const blob = await withTimeout(native.capture(max, ctx.signal, page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+                ctx.ensureLive();
+                return pngResult(blob, nativeViewCaption(path, native, page), `"${path}"`);
+            }
+        }
         if (view) {
             const info = await describe(view);
             if (info.kind === 'pdf' && info.surface === 'text') throw new ToolError('PDF Text image capture is unavailable. Use vault_read for canonical text or switch to Original to view page images.');
@@ -762,14 +799,31 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {
-        // An open native drawing is read from its session: no mounted pane is waited for or opened.
-        const native = isNativeDrawingFile(name) && ctx.host.nativeCanvasView ? await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+        // An open native canvas is read from its session: no mounted pane is waited for or opened.
+        const native = ctx.host.nativeCanvasView ? await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
         } }) : null;
-        if (native) {
-            const blob = await withTimeout(native.capture(max, ctx.signal), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+        // A CLOSED native drawing or notebook is pictured from its own bytes, without mounting or opening anything.
+        if (!native && !getView(path)?.canvas && ctx.host.nativeClosedPicture) {
+            const closed = await ctx.host.nativeClosedPicture(path, page, max, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
             ctx.ensureLive();
-            return pngResult(blob, native.wholeSheet ? `${path}, the whole sheet:` : `${path}${onScreenCaption(native.info.viewport)}:`, `"${path}"`);
+            if (closed) {
+                const caption = closed.wholeSheet
+                    ? `${path}, the whole ${isNotebookFile(name) ? `notebook of ${closed.count} page${closed.count === 1 ? '' : 's'}` : `drawing (${closed.count} sheet${closed.count === 1 ? '' : 's'}; the first)`}:`
+                    : `${path}, page ${closed.page} of ${closed.count}:`;
+                return pngResult(closed.png, caption, `"${path}"`);
+            }
+        }
+        if (native) {
+            const info = native.info;
+            if (info.kind === 'notebook' && page !== undefined && page > info.pageCount) {
+                throw new ToolError(`page ${page} is past the end of "${path}", which has ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.`);
+            }
+            const blob = await withTimeout(native.capture(max, ctx.signal, info.kind === 'drawing' ? undefined : page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+            ctx.ensureLive();
+            return pngResult(blob, nativeViewCaption(path, native, info.kind === 'drawing' ? undefined : page), `"${path}"`);
         }
         // A closed canvas opens beside the user without taking focus.
         let view = getView(path);

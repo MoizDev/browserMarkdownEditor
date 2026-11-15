@@ -484,7 +484,7 @@ export default function App() {
   } = useFileSystem();
 
   const searchActivation = getVaultActivation();
-  const searchToken = useMemo(() => ({}), [searchActivation]);
+  const searchToken = useMemo(() => ({ activation: searchActivation }), [searchActivation]);
 
   // Every open document, flat — one entry per file, whatever tab it is drawn
   // in. Autosave, the asset diff, search and rename all index this by path.
@@ -2914,6 +2914,10 @@ export default function App() {
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && hasWritableHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     if (nativeSource && !nativeAuthorized) return 'skipped';
+    // Native pending work includes the own-save source rebind, not just new
+    // content. Rewriting an already-acknowledged checkpoint bumps PDF bytes
+    // without a second checkpoint acknowledgement, stranding that live source.
+    if (nativeSource && !documentBuffers.isDirty(tab.id)) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
     if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
@@ -3397,16 +3401,22 @@ export default function App() {
         now.file.handle === handle && now.representation.generation === generation && !diskStateRef.current.get(id);
     };
     if (!current()) throw new Error('Return to this PDF and resolve any disk conflict before printing.');
+    // Native Annotate and classic canvases hold strokes the App cannot see until
+    // they report them; push those into the save funnel before reading any bytes.
+    try { await getView(path)?.flushPending?.(); }
+    catch { throw new Error('The PDF annotations could not be saved. Keep the file open and retry before printing.'); }
     await drain(id);
     await flushChainsRef.current.get(id);
     if (!current()) throw new Error('The document changed while preparing to print.');
     const revision = documentBuffers.revisionForDocument(id)?.revision;
-    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id);
+    // A native ink edit lives in the document session, not the buffer: the buffer can be clean while it is pending.
+    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
       if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
     }
-    if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
+    if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()
+        || documentSessions.hasPendingEdits(id)) throw new Error('The document changed while preparing to print.');
     const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
     let disk: Awaited<ReturnType<typeof readBytesVersioned>>;
     try { disk = await readBytesVersioned(handle as FileSystemFileHandle); }
@@ -3416,9 +3426,9 @@ export default function App() {
     }
     if (current() && baseline && disk.version.hash !== baseline.hash) setDiskState(id, 'conflict');
     if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
-        documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
+        documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.() || documentSessions.hasPendingEdits(id)) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
     const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && documentBuffers.revisionForDocument(id)?.revision === revision &&
-      !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
+      !getView(path)?.hasPendingEdits?.() && !documentSessions.hasPendingEdits(id) && !flushingRef.current.has(id);
     const validate = async () => {
       if (!valid()) return false;
       try {
@@ -3431,7 +3441,7 @@ export default function App() {
       }
     };
     return { bytes: disk.bytes, valid, validate };
-  }, [documentBuffers, flushTab, readBytesVersioned, setDiskState]);
+  }, [documentBuffers, documentSessions, flushTab, readBytesVersioned, setDiskState]);
 
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
@@ -6450,6 +6460,19 @@ export default function App() {
     } catch (error) { closedCanvasReads.current.delete(read); throw error; }
   }, [closedCanvasVersions, documentSessions, getVaultActivation, handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity]);
 
+  /** A closed board's embedded picture, read from its own folder's `.Assets` (the same reader recovery uses). */
+  const readClosedAgentCanvasMedia = useCallback<NonNullable<AgentHostDeps['readClosedCanvasMedia']>>(async (path, handle, entry, signal) => {
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    if (!root) throw new DOMException('Vault is closed', 'AbortError');
+    const isCurrent = () => !signal.aborted && rootHandleRef.current === root && getVaultActivation() === activation;
+    const { parentHandle } = await resolveVaultFile(root, path);
+    if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
+    const found = await readBoardAsset({ root, parent: parentHandle, owner: handle, hash: entry.id.slice(7),
+      preferredName: entry.file, signal, isCurrent });
+    if (!found) return null;
+    return new Response(found.blob.stream()).blob();
+  }, [getVaultActivation, readBoardAsset, resolveVaultFile]);
+
   const agentDepsRef = useRef<AgentHostDeps | null>(null);
   useLayoutEffect(() => {
     const activation = rootHandle ? assetActivationsRef.current.get(rootHandle) ?? -1 : -1;
@@ -6469,6 +6492,7 @@ export default function App() {
       readFileBytes,
       closedPdfAgent: () => routeEngines().pdfViewer === 'tiled' ? closedPdfAccess : null,
       acquireClosedCanvasSource: acquireClosedAgentCanvas,
+      readClosedCanvasMedia: readClosedAgentCanvasMedia,
       ensureNativeAgentRuntime,
       readFileVersioned,
       statFile,

@@ -11,7 +11,7 @@ import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
-import { DensityController } from './density';
+import { DensityController, type DensityMode } from './density';
 import { FilteredInk, LiveNodeUnion } from './nodeSets';
 import type { ViewerPaintPresentation } from './paintPresentation';
 
@@ -28,6 +28,12 @@ export interface BoardLayersOptions {
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintFrame, context?: ViewerPaintPresentation) => void;
     readonly onDrawn?: (revision: number, frame: PaintFrame, context: ViewerPaintPresentation) => void;
+    /** Upper bound on the nodes this view meets, from the sheet index; null while that index builds. */
+    readonly candidates?: () => number | null;
+    /** The density mode changed: the owner requests the matching kind of frame (live-only for dense). */
+    readonly onDensityMode?: (mode: DensityMode) => void;
+    /** A live item the current dense frame does not hold: the owner requests a frame that does. */
+    readonly requestFrame?: () => void;
 }
 interface Estimate {
     readonly frame: PaintFrame;
@@ -145,6 +151,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         liveSets.set(frame, { omit, wet, live }); return live;
     };
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
+    let missingKey: string | null = null;
     let presented: PaintFrame | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
     let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
@@ -274,20 +281,42 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             options.frames.prepare(budget);
             const frame = options.frames.readFrame();
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) return;
+            // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
+            // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
+            if (!!frame.liveOnly !== useDense && frame.openTile) return;
+            if (useDense && frame.liveOnly) {
+                const live = liveFor(frame), missing: string[] = [];
+                if (live) for (const id of live) if (!frame.sensitiveNodes?.has(id)) missing.push(id);
+                if (missing.length) {
+                    // Requested once per distinct missing set; a request is never repeated per prepare.
+                    const key = missing.join('\n');
+                    if (key !== missingKey) { missingKey = key; options.requestFrame?.(); }
+                    return;
+                }
+                missingKey = null;
+            }
             startEstimate(frame);
             while (!estimate!.done && !budget.shouldYield()) estimateStep(estimate!);
             if (!estimate!.done) return;
             // Initial operation-count defaults; the owner defers binding calibration, not the hierarchy.
-            const mode = density.observe({ frameId: budget.frameId, now: performance.now(),
-                candidateSegments: estimate!.segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
-                estimatedGpuMs: estimate!.segments * .00004 + estimate!.items * .0001 });
+            // Dense tiles are streamed from the frame's own pin; a frame that cannot reopen its stream stays direct.
+            // The index count is the same for a dense and a direct frame, so the mode cannot oscillate
+            // with the frame kind it selects; the frame's own estimate stands in only before the index is built.
+            const candidates = options.candidates?.() ?? null;
+            const segments = candidates ?? estimate!.segments, items = candidates ?? estimate!.items;
+            const observed = density.observe({ frameId: budget.frameId, now: performance.now(),
+                candidateSegments: segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
+                estimatedGpuMs: segments * .00004 + items * .0001 });
+            const mode = frame.openTile ? observed : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
                 if (useDense) {
                     direct!.release('pressure');
                     for (const old of [...reservations.keys()]) releaseFrame(old);
                 } else dense!.release('pressure');
-                allocatorHost!.invalidate('board-density-demand-ready'); return;
+                allocatorHost!.invalidate('board-density-demand-ready');
+                options.onDensityMode?.(mode);
+                return;
             }
             // Three actual decision frames avoid allocating a whole-scene Path2D cache just
             // before dense mode would throw it away. No timer or stationary RAF is introduced.
@@ -425,8 +454,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
-    pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
+    pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.readyFrame = () => {
         if (disposed) return null;
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;

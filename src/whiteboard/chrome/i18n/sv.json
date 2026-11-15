@@ -390,7 +390,6 @@
     "paper.cancel": "Avbryt",
     "paper.keepProtected": "Låst innehåll kommer att behållas.",
     "chrome.readOnly": "Denna tavla är skrivskyddad.",
-    "shortcuts.file.print": "Skriv ut",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

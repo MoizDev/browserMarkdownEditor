@@ -14,9 +14,9 @@
 import type { AgentId, CanvasOp, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewInfo, TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewInfo, NotebookViewInfo, PdfViewInfo, TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
-import type { NativePdfPicture } from '../utils/nativeCanvasAgentRead';
+import type { NativeClosedCanvasPicture, NativePdfPicture } from '../utils/nativeCanvasAgentRead';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
 
@@ -108,11 +108,12 @@ export interface ClosedPdfAgentAccess {
  * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
  * '\\', NUL or empty segment. The host may assume it.
  */
-/** A native drawing's view as the agent reads it: the recorded viewport, or the whole sheet when never viewed. */
+/** A native canvas's view as the agent reads it: the recorded viewport, or the whole sheet when never viewed.
+ * `capture` pictures the view, or one page (1-based) of a paged board. */
 export interface NativeCanvasView {
-    readonly info: DrawingViewInfo;
+    readonly info: DrawingViewInfo | NotebookViewInfo | PdfViewInfo;
     readonly wholeSheet: boolean;
-    capture(maxSide: number, signal?: AbortSignal): Promise<Blob>;
+    capture(maxSide: number, signal?: AbortSignal, page?: number): Promise<Blob>;
 }
 
 export interface VaultToolHost {
@@ -147,6 +148,9 @@ export interface VaultToolHost {
     /** A CLOSED admitted native ink PDF's whole-sheet picture. null = not a native ink board (plain, notebook or
      *  ordinary PDFs keep their closed text/view routes); a claimed board that fails admission throws. */
     nativePdfPicture?(path: string, maxSide: number, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativePdfPicture | null>;
+    /** A closed native drawing or notebook pictured from its own bytes (one page of a notebook when `page` is given). */
+    nativeClosedPicture?(path: string, page: number | undefined, maxSide: number,
+        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeClosedCanvasPicture | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands

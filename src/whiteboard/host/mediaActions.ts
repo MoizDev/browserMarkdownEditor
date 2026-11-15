@@ -6,8 +6,8 @@ import { fetchCardPreview } from '../media/cards';
 import type { PictureCropPreset } from '../media/crop';
 import { replacePicture } from '../media/replace';
 import type { NodeId } from '../model/ids';
-import type { MediaEntry } from '../model/media';
 import type { UrlEnvironment } from '../security/urlPolicy';
+import type { StoreMedia } from '../media/storage.types';
 import type { BoardRuntime } from './runtime';
 
 // Provenance: media actions for the one picture or link card a view has selected;
@@ -19,7 +19,7 @@ export interface MediaSelection {
     readonly kind: 'picture' | 'linkcard';
     /** The reason an edit cannot run now (the row shows it), or null when it can. */
     readonly blocked: string | null;
-    /** Replacing needs the document's storage port; a PDF annotation page has none yet, so the row is not offered there. */
+    /** Replacing needs the document's proof-carrying storage port, which every board document now supplies. */
     readonly replaceable: boolean;
     /** A picture whose media is a video: its playback is offered by the view, not by these actions. */
     readonly video: boolean;
@@ -40,8 +40,8 @@ export interface MediaActionOptions {
     readonly memory: MemoryAllocator;
     readonly environment: UrlEnvironment;
     current(): boolean;
-    /** The document's storage port for replacement bytes; absent where replacing is not supported. */
-    readonly restore?: (entry: MediaEntry, blob: Blob, signal: AbortSignal) => Promise<string | null>;
+    /** The document's storage port for replacement bytes (a PDF page's embedded port, or a file board's filesystem port); absent where replacing is not supported. */
+    readonly storeMedia?: StoreMedia;
 }
 
 export function createMediaActions(options: MediaActionOptions): MediaActions {
@@ -60,11 +60,11 @@ export function createMediaActions(options: MediaActionOptions): MediaActions {
             const entry = node.kind === 'picture' && node.media ? runtime.session.doc.media.get(node.media) : undefined;
             const video = !!entry?.mime.startsWith('video/');
             const animated = !!entry && entry.animated && !video && canAnimatePicture(entry.mime);
-            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.restore !== undefined, video, animated });
+            return Object.freeze({ id: node.id, kind: node.kind, blocked, replaceable: node.kind === 'picture' && options.storeMedia !== undefined, video, animated });
         },
         replace(id, file, name) {
-            if (!options.restore) return Promise.reject(new Error('Pictures cannot be replaced on this canvas.'));
-            return replacePicture({ runtime, memory, id, bytes: file, name, current, storeMedia: options.restore });
+            if (!options.storeMedia) return Promise.reject(new Error('Pictures cannot be replaced on this canvas.'));
+            return replacePicture({ runtime, memory, id, bytes: file, name, current, storeMedia: options.storeMedia });
         },
         crop(id, preset) { commands.crop(id, preset); },
         invert(id) { commands.invert(id); },

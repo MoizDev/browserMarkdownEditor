@@ -349,9 +349,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         if (!overlay) return;
         const layer = new PdfLinkOverlay(overlay, navigate);
         links.current = layer;
+        // Both refs are never reassigned: these are the same collections the page loop fills.
+        const tasks = linkTasks.current, loaded = loadedLinks.current;
         return () => {
-            for (const task of linkTasks.current.values()) task.abort();
-            linkTasks.current.clear(); loadedLinks.current.clear();
+            for (const task of tasks.values()) task.abort();
+            tasks.clear(); loaded.clear();
             layer.destroy(); if (links.current === layer) links.current = null;
         };
     }, [overlay, navigate]);
@@ -415,10 +417,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         searchVault: onSearchVault, findPdf: query => find.find.current?.openFind(query),
         readText: index => onOpenTextView(index), notice: onNotice });
     copyRef.current = copyMenu;
+    const { cancelCopy } = copyMenu;
     useEffect(() => {
         selectionState.clear();
-        copyMenu.cancelCopy();
-    }, [fontEpoch, selectionState, copyMenu.cancelCopy]);
+        cancelCopy();
+    }, [fontEpoch, selectionState, cancelCopy]);
     useEffect(() => { paneRef.current?.current?.invalidate('pdf-paint-profile'); }, [fontEpoch, emphasisRevision, reading.emphasisEnabled]);
     const selectionInput = usePdfTiledSelection({ element: contentHost, docKey: pdf.poolDocument.docKey,
         pageCount: pdf.pages.length, selection: selectionState, geometry: find.geometry,
@@ -440,10 +443,14 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         selectionChanged: value => selectionState.set({ docKey: pdf.poolDocument.docKey, wholeDocument: false, granularity: 'char',
             anchor: { ...value.anchor, affinity: 'before' }, focus: { ...value.focus, affinity: 'after' } }),
         openTextView: () => onOpenTextView(), onError: () => onNotice('Accessible PDF text is unavailable on this page.') });
+    const { updateView: updateTextMirrorView } = textMirror;
+    const { onView: onFindView } = find;
+    const { refreshPointer: refreshSelectionPointer } = selectionInput;
+    const { setSelection: setTextMirrorSelection } = textMirror;
     useEffect(() => {
         if (!selection || selection.wholeDocument) return;
-        textMirror.setSelection({ anchor: selection.anchor, focus: selection.focus });
-    }, [selection, textMirror.setSelection]);
+        setTextMirrorSelection({ anchor: selection.anchor, focus: selection.focus });
+    }, [selection, setTextMirrorSelection]);
     const pageLayer = useMemo(() => {
         // Retry must replace the layer's failed-tile set while retaining its mirror.
         void retryGeneration;
@@ -493,7 +500,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     recordPdfNavigation(filePath, 'user-scroll');
                     camera.current = clamp({ ...camera.current, x: camera.current.x + scroll.x * elapsed / camera.current.z,
                         y: camera.current.y + scroll.y * elapsed / camera.current.z });
-                    persist(); selectionInput.refreshPointer();
+                    persist(); refreshSelectionPointer();
                 }
                 paneRef.current?.current?.invalidate('pdf-selection-autoscroll');
             }
@@ -539,8 +546,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     frameId: presented.frameId, viewEpoch: presented.viewEpoch, pages, complete: true, sharp: true, staleVersion: false });
             }
             links.current?.setView(frame.view, stack.rects);
-            textMirror.updateView(frame.view);
-            find.onView(frame.view);
+            updateTextMirrorView(frame.view);
+            onFindView(frame.view);
             const top = frame.view.camera.y, bottom = top + frame.view.viewport.height / frame.view.camera.z;
             const visible = new Set<number>();
             for (let index = Math.max(0, pageAt(stack, top)); index < stack.rects.length; index++) {
@@ -577,7 +584,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         onNotice: message => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
                 : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : 'GPU rendering is unavailable; a compatible mode is in use.'),
-    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, textMirror.updateView, find.onView, filePath, persist, correctReveal, clamp, selectionInput.refreshPointer, capabilities, reportRenderNotice]);
+    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;
@@ -740,9 +747,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         },
         renderPageWithInfo,
         async renderPage(pageNumber, maxSide) { return (await renderPageWithInfo(pageNumber, maxSide)).png; },
-        async pdfText(pages) {
+        async pdfText(pages, signal) {
             assertPdfCopyAllowed(capabilities);
-            const result = await pdfAgentPages(pdf.poolDocument, pages, new AbortController().signal, () => session.isCurrent());
+            const result = await pdfAgentPages(pdf.poolDocument, pages, signal ?? new AbortController().signal, () => session.isCurrent());
             if (!session.isCurrent()) throw new Error('PDF text changed during the request.');
             return result;
         },

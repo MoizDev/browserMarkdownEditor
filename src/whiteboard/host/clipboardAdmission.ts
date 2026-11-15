@@ -127,9 +127,10 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
     } finally {
         // Render services and media are needed only for the measured bounds, never by the acquisition.
         for (const lease of leases) lease.release();
-        try { services?.dispose(); } finally {
+        // Awaited first: the admitted board's builds may still read the media and services until it has retired.
+        try { if (!transferred) await owned.dispose(); } finally {
+            services?.dispose();
             media?.clear();
-            if (!transferred) owned.dispose();
         }
     }
 }

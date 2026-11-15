@@ -390,7 +390,6 @@
     "paper.cancel": "Annulla",
     "paper.keepProtected": "Il contenuto bloccato verrà mantenuto.",
     "chrome.readOnly": "Questa bacheca è di sola lettura.",
-    "shortcuts.file.print": "Stampa",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

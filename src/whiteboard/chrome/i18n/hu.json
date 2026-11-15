@@ -390,7 +390,6 @@
     "paper.cancel": "Mégsem",
     "paper.keepProtected": "A zárolt tartalom megmarad.",
     "chrome.readOnly": "Ez a tábla csak olvasható.",
-    "shortcuts.file.print": "Nyomtatás",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

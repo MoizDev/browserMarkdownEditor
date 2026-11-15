@@ -20,9 +20,11 @@ export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
     readonly viewport: Readonly<Viewport>;
     readonly insets: Readonly<ViewportInsets>;
     readonly focused?: boolean;
+    /** The view's own dark-mode page inversion (a PDF ink board's pages). */
+    readonly inverted?: boolean;
 }): void {
     const { camera, viewport } = input, doc = runtime.session.doc;
-    if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook') return;
+    if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook' && doc.kind !== 'pdf-ink') return;
     if (input.focused === false && recorded.has(runtime)) return;
     if (![camera.x, camera.y, camera.z, viewport.width, viewport.height].every(Number.isFinite)
         || camera.z <= 0 || viewport.width <= 0 || viewport.height <= 0) return;
@@ -37,7 +39,7 @@ export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
             viewport: { x: region.x, y: region.y, w: region.width, h: region.height }, selectedShapeIds };
     } else {
         const stack = boardPageStack(doc.host), position = stack && pagedPosition(camera, viewport, stack, input.insets);
-        if (!stack || !position || doc.host.kind !== 'notebook') return;
+        if (!stack || !position || (doc.host.kind !== 'notebook' && doc.host.kind !== 'pdf-ink')) return;
         const visiblePages: number[] = [];
         const first = Math.max(0, pageAt(stack, region.y)), last = Math.min(stack.rects.length - 1, pageAt(stack, region.y + region.height));
         for (let index = first; index <= last; index++) {
@@ -45,9 +47,15 @@ export function recordNativeAgentViewport(runtime: BoardRuntime, input: {
             if (page.x < region.x + region.width && page.x + page.width > region.x
                 && page.y < region.y + region.height && page.y + page.height > region.y) visiblePages.push(index + 1);
         }
-        const paper = doc.host.paper;
-        view = { kind: 'notebook', pageCount: stack.rects.length, page: position.page + 1, offset: position.offset,
-            zoom: position.zoom, visiblePages, paper: `${paper.ruling} · ${paper.size} · ${paper.orientation}`, selectedShapeIds };
+        if (doc.host.kind === 'pdf-ink') {
+            view = { kind: 'pdf-annotate', surface: 'annotation', pageCount: stack.rects.length, page: position.page + 1,
+                offset: position.offset, zoom: position.zoom, visiblePages, selectedText: null,
+                inverted: input.inverted ?? false, selectedShapeIds };
+        } else {
+            const paper = doc.host.paper;
+            view = { kind: 'notebook', pageCount: stack.rects.length, page: position.page + 1, offset: position.offset,
+                zoom: position.zoom, visiblePages, paper: `${paper.ruling} · ${paper.size} · ${paper.orientation}`, selectedShapeIds };
+        }
     }
     recorded.set(runtime, { sheet: selection.sheet, region, view });
 }

@@ -390,7 +390,6 @@
     "paper.cancel": "Kanselahin",
     "paper.keepProtected": "Itatago ang naka-lock na nilalaman.",
     "chrome.readOnly": "Ang board na ito ay read-only.",
-    "shortcuts.file.print": "I-print",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

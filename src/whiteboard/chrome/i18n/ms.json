@@ -390,7 +390,6 @@
     "paper.cancel": "Batal",
     "paper.keepProtected": "Kandungan berkunci akan disimpan.",
     "chrome.readOnly": "Papan ini adalah baca sahaja.",
-    "shortcuts.file.print": "Cetak",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

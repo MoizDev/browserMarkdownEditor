@@ -390,7 +390,6 @@
     "paper.cancel": "منسوخ کریں۔",
     "paper.keepProtected": "مقفل مواد رکھا جائے گا۔",
     "chrome.readOnly": "یہ بورڈ صرف پڑھنے کے لیے ہے۔",
-    "shortcuts.file.print": "پرنٹ کریں",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

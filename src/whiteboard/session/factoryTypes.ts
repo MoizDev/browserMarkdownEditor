@@ -77,6 +77,7 @@ export type ComposedBoardSession = BoardSession & SessionAdapter & {
     pageHide(): void;
     hidden(): void;
     setComposition(active: boolean): void;
-    dispose(): void;
+    /** Revokes at once; resolves when retirement has settled every build that could read a released source. */
+    dispose(): Promise<void>;
 };
 export type CreateBoardSession = (options: BoardSessionFactoryOptions) => ComposedBoardSession;

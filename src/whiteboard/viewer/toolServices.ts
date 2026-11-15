@@ -24,6 +24,7 @@ import { createBoardPreview } from './preview';
 import { createBoardRegionQuery } from './regionQuery';
 import { createBoardSelectServices } from './selectServices';
 import { createBoardTextEditor, type BoardTextEditorOptions } from './textEditor';
+import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
 
 export interface BoardToolServicesOptions {
@@ -105,9 +106,28 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
         editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu });
+    // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
+    // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.
+    const sensitive = createSensitiveTargets(() => { if (!disposed) options.interaction.invalidate(); });
+    let hoverPick: AbortController | null = null, hoverSeq = 0;
+    const endHoverPick = () => { hoverPick?.abort(); hoverPick = null; };
+    const trackHover = (event: PointerEvent) => {
+        endHoverPick();
+        const tool = runtime.tools.getSnapshot().active.id;
+        if (event.type === 'pointerout' || (tool !== 'select' && tool !== 'eraser') || !current()
+            || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { sensitive.setHovered(null); return; }
+        const input = event.pointerType === 'pen' ? 'pen' : 'mouse';
+        let at: Point;
+        try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); return; }
+        const controller = new AbortController(), seq = ++hoverSeq;
+        hoverPick = controller;
+        point.hit(at, input, controller.signal).then(id => {
+            if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(id);
+        }, error => { if (!controller.signal.aborted) ui.error(error); });
+    };
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
         overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
-        spelling: options.spelling, ui: ui.text, onError: ui.error });
+        spelling: options.spelling, ui: ui.text, onError: ui.error, editingChanged: id => sensitive.setEditing(id) });
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point, camera: options.view, current });
     const ink = createBoardInkServices({ runtime, samples: runtime.samples, token: inputToken, current: t => current()
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration
@@ -201,7 +221,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
-        hover: ui.hover, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
+        hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         keyboardContextMenu: select.keyboardContextMenu,
     };
@@ -236,7 +256,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         scheduleLaser();
     };
     const dispose = () => {
-        if (disposed) return; cancelPending(); disposed = true; options.surface.removeEventListener('paste', paste);
+        if (disposed) return; cancelPending(); disposed = true; endHoverPick(); options.surface.removeEventListener('paste', paste);
         deadline?.(); deadline = null; svg?.remove(); svg = null;
         for (const cleanup of [text.dispose, select.dispose, point.dispose, preview.dispose, options.imports.dispose]) {
             try { cleanup(); } catch (error) { ui.error(error); }
@@ -244,5 +264,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     };
     return { services, writeOverlays, finishComposition: text.finishComposition, captureText: text.captureText,
         restoreText: text.restoreText, beforeHistoryReplay: text.beforeHistoryReplay, cancelPending, dispose,
+        sensitiveNodeIds: () => sensitive.ids(),
         actualsubcontrollers: { ink, point, region, preview, select, text, attachments } };
 }

@@ -19,7 +19,7 @@ export function useNativeBoardAcquisition<S extends BoardSessionPort>(
         void ensureNativeBoard({ documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
             emergencyReadOnlyReason, prepare, existing, acceptConvertedSource, currentOwner, sourceAuthorized, editingAuthorized, onError: cause => error.current(cause) }, abort.signal)
             .then(value => { if (alive) setEntry({ documentId, vaultActivation, bytesGeneration, kind, value }); })
-            .catch(cause => { if (alive && !abort.signal.aborted && !(cause instanceof DOMException && cause.name === 'AbortError')) error.current(cause); });
+            .catch(cause => { if (alive && !abort.signal.aborted) error.current(cause); });
         return () => { alive = false; abort.abort(); };
     }, [documentId, vaultActivation, bytesGeneration, kind, attachCanvasSession, onNativeCanvasReady,
         emergencyReadOnlyReason, prepare, existing, acceptConvertedSource, currentOwner, sourceAuthorized, editingAuthorized]);

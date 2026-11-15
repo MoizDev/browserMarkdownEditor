@@ -390,7 +390,6 @@
     "paper.cancel": "रद्द करा",
     "paper.keepProtected": "लॉक केलेला आशय ठेवला जाईल.",
     "chrome.readOnly": "हा बोर्ड केवळ वाचनीय आहे.",
-    "shortcuts.file.print": "छापा",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

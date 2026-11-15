@@ -1,21 +1,29 @@
-import type { Rect, ViewState } from '../../platform/types';
+import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
+import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageRule, type PreparedPathCoverage } from '../../platform/render/pathCoverage';
+import { pathFillTriangles } from './pathFillTriangles';
+import { pathStrokeTriangles } from './pathStrokeTriangles';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintFrame, PaintItem } from './paintStream';
+import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never }
-    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never }; 
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
+    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
+    | { item: PaintItem; x: number; y: number; path: PreparedPathItem; cached?: never; analytic?: never; multiply?: never; worldRect?: never };
+/** One path item's admitted stencil work, in draw order: clip masks, then fill, then stroke. */
+interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
+/** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
+const PATH_FLATTEN_DEVICE_PX = 0.1;
 interface AnalyticGroup {
     band: PaintBand; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
 }
@@ -69,6 +77,104 @@ function contentKey(item: PaintItem): string {
     return JSON.stringify([common, item.material.blend, item.material.color]);
 }
 
+/** Lower-left corner of the path's control points: local coordinates are rebased here in double
+ * precision before any single-precision upload (a conservative bound: control points included). */
+function pathOrigin(commands: readonly PathCommand[]): { x: number; y: number } {
+    let x = Infinity, y = Infinity;
+    for (const command of commands) {
+        if (command[0] === 'Z') continue;
+        for (let i = 1; i + 1 < command.length; i += 2) {
+            x = Math.min(x, command[i] as number); y = Math.min(y, command[i + 1] as number);
+        }
+    }
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : { x: 0, y: 0 };
+}
+
+/** Local to device-pixel affine: the item's world transform, camera and device scale applied once, with
+ * the origin rebase folded in. Flattening tolerance is divided by the Frobenius norm of the linear
+ * part (at least its spectral norm), so the device error bound holds in every direction. */
+function deviceAffine(localToWorld: Affine, origin: { x: number; y: number }, view: ViewState): { affine: Affine; scale: number; norm: number } | null {
+    const [a, b, c, d, e, f] = localToWorld;
+    const scale = view.camera.z * view.viewport.dpr;
+    const norm = Math.hypot(a, b, c, d);
+    if (!(norm > 0) || !Number.isFinite(scale) || scale <= 0) return null;
+    return { scale, norm, affine: [scale * a, scale * b, scale * c, scale * d,
+        scale * (a * origin.x + c * origin.y + e - view.camera.x), scale * (b * origin.x + d * origin.y + f - view.camera.y)] };
+}
+
+type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
+
+/** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
+ * earlier admissions, and any unsupported part sends the whole item to the exact canonical raster. */
+function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typeof createPathCoverageKit>,
+    budget: FrameBudget): PathAdmission {
+    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    const acquired: PreparedPathCoverage[] = [];
+    const fail = (status: 'empty' | 'denied' | 'unsupported'): PathAdmission => {
+        for (const prepared of acquired) kit.retire(prepared);
+        return { status };
+    };
+    const clips: PreparedPathCoverage[] = [];
+    const place = (result: PathCoverageAdmission): 'ok' | 'empty' | 'denied' | 'unsupported' => {
+        if (result.status === 'ready') { acquired.push(result.value); return 'ok'; }
+        return result.status;
+    };
+    for (const clip of item.clips) {
+        const origin = pathOrigin(clip.d);
+        const frame = deviceAffine(clip.localToWorld, origin, view);
+        if (!frame) return fail('unsupported');
+        const shapes = pathFillTriangles(clip.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
+        if (!shapes) return fail('unsupported');
+        const outcome = place(kit.admit({ shapes, rule: clip.fillRule, affine: frame.affine, viewport, colour: [1, 1, 1, 1],
+            output: { kind: 'mask' } }, budget));
+        if (outcome === 'empty') return fail('empty');  // a clip that excludes the viewport hides the item
+        if (outcome !== 'ok') return fail(outcome as 'denied' | 'unsupported');
+        clips.push(acquired[acquired.length - 1]);
+    }
+    const blend = item.material.blend === 'multiply' ? 'multiply' : 'normal';
+    let fill: PreparedPathCoverage | null = null;
+    if (item.material.fill) {
+        const origin = pathOrigin(item.d);
+        const frame = deviceAffine(item.localToWorld, origin, view);
+        if (!frame) return fail('unsupported');
+        const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
+        if (!shapes) return fail('unsupported');
+        const outcome = place(kit.admit({ shapes: { positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
+            rule: item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
+        if (outcome === 'ok') fill = acquired[acquired.length - 1];
+        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
+    }
+    let stroke: PreparedPathCoverage | null = null;
+    const style = item.material.stroke;
+    if (style && style.width > 0) {
+        const origin = pathOrigin(item.d);
+        const frame = deviceAffine(item.localToWorld, origin, view);
+        if (!frame) return fail('unsupported');
+        const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
+            ...(style.dash ? { dash: style.dash } : {}), tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm),
+            origin: [origin.x, origin.y] });
+        if (!outline) return fail('unsupported');
+        const outcome = place(kit.admit({ shapes: { positive: outline.triangles, negative: new Float64Array(0), edges: 0, bounds: outline.bounds },
+            rule: 'union', affine: frame.affine, viewport, colour: style.color, output: { kind: 'composite', blend } }, budget));
+        if (outcome === 'ok') stroke = acquired[acquired.length - 1];
+        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
+    }
+    if (!fill && !stroke) return fail('empty');
+    return { status: 'ready', value: { clips, fill, stroke } };
+}
+
+/** Draw order inside one item: clip masks render first, then the item's coverage inside the pushed clips. */
+function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typeof createPathCoverageKit>): void {
+    for (const clip of item.clips) kit.drawMask(pass, clip);
+    const tokens = item.clips.map(clip => pass.pushClip(clip.clip!));
+    try {
+        if (item.fill) kit.draw(pass, item.fill);
+        if (item.stroke) kit.draw(pass, item.stroke);
+    } finally {
+        for (let i = tokens.length - 1; i >= 0; i--) pass.popClip(tokens[i]);
+    }
+}
+
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
@@ -76,6 +182,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let movingScale = 0, tileBytes = 0;
     const cache = new Map<string, CachedTile>();
     const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
+    const pathCoverage = createPathCoverageKit(host, report);
+    const retirePathItem = (item: PreparedPathItem) => {
+        for (const clip of item.clips) pathCoverage.retire(clip);
+        if (item.fill) pathCoverage.retire(item.fill);
+        if (item.stroke) pathCoverage.retire(item.stroke);
+    };
     const drop = (plan: Plan | null) => {
         if (!plan) return;
         plan.parts?.return(undefined); plan.parts = null; plan.part = null;
@@ -86,6 +198,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         for (const band of ['underlay', 'content'] as const) {
             for (const tile of plan.tiles[band]) {
                 if (tile.analytic) continue;
+                if (tile.path) { retirePathItem(tile.path); continue; }
                 const entry = tile.cached;
                 if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
             }
@@ -216,6 +329,14 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                             p.cpuUsed += 512; p.part = null; return;
                         }
                     }
+                    if (item.kind === 'path') {
+                        if (!ensurePlanCapacity(p)) return;
+                        const admission = admitPathItem(item, view, pathCoverage, budget);
+                        if (admission.status === 'ready') { p.tiles[p.band].push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'empty') { p.part = null; continue; }
+                        if (admission.status === 'denied') { denied = true; return; }
+                        // 'unsupported': the exact canonical raster route below draws this item.
+                    }
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
                         if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
@@ -295,6 +416,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const tile = ready.tiles[band][index];
                 if (omitNodes?.has(tile.item.nodeId)) continue;
                 if (tile.analytic) throw new Error('Unbatched analytic ink command');
+                if (tile.path) { drawPathItem(pass, tile.path, pathCoverage); continue; }
                 if (tile.worldRect) {
                     const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
                     const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
@@ -324,7 +446,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 if (isolated) pass.endGroup(isolated);
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
@@ -332,7 +454,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const batches = analytic.memory();
-            return { gpuBytes: tileBytes + batches.gpuBytes,
+            return { gpuBytes: tileBytes + batches.gpuBytes + pathCoverage.memory().gpuBytes,
                 cpuBytes: scratch + batches.cpuBytes + ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536 };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
@@ -341,6 +463,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
                 + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
     };
 }

@@ -3,6 +3,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PaintFrame, PaintItem } from '../render/paintStream';
 import type { PaintFrameAssembler } from '../render/frameTypes';
 import type { PaintImageLease } from '../render/resources';
+import { isMediaTileKey } from './mips';
 
 // Provenance: video playback presentation facts for paint leases; independent per-view
 // registry of immutable presented frames, with the frame key as the only paint identity.
@@ -170,9 +171,20 @@ export interface VideoFrameOverlay {
     wrap(frames: PaintFrameAssembler): PaintFrameAssembler;
     drawn(frame: PaintFrame): void;
 }
-/** `afterDraw` runs once per drawn frame, so the view's animation clock sees each frame the view showed. */
-export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () => void = () => {}): VideoFrameOverlay {
-    return { wrap: frames => liveVideoFrames(frames, registry), drawn: frame => { registry.markDrawn(frame); afterDraw(); } };
+/** The tile keys a drawn frame names, so the view can release the rasters it no longer shows. */
+function tileKeysOf(frame: PaintFrame): Set<string> {
+    const keys = new Set<string>();
+    for (const item of [...frame.underlay, ...frame.content]) if (item.kind === 'image' && isMediaTileKey(item.imageKey)) keys.add(item.imageKey);
+    return keys;
+}
+/**
+ * `afterDraw` runs once per drawn frame, so the view's animation clock sees each frame the view showed. `demand` receives the
+ * tile keys that frame drew: the view's picture rasters outside them are released.
+ */
+export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () => void = () => {},
+    demand: (keys: ReadonlySet<string>) => void = () => {}): VideoFrameOverlay {
+    return { wrap: frames => liveVideoFrames(frames, registry),
+        drawn: frame => { registry.markDrawn(frame); demand(tileKeysOf(frame)); afterDraw(); } };
 }
 
 /**
@@ -209,6 +221,7 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
         cpuWorkingSet: base.cpuWorkingSet?.bind(base),
         memoryBytes: base.memoryBytes?.bind(base),
         request: source => base.request(source),
+        requestStream: pin => base.requestStream(pin),
         prepare: budget => base.prepare(budget),
         needsFrame: () => base.needsFrame(),
         readFrame() { const frame = base.readFrame(); newest = frame; return frame ? decorate(frame) : null; },

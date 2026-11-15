@@ -9,13 +9,15 @@ export function createOwnedBoardSession(options: OwnedBoardSessionOptions): Owne
     const builds = createBoardBuildPinning(options.builds);
     try {
         const board = createBoardSession({ ...options.session, pinBuild: builds.pinBuild });
-        let disposed = false;
+        let retiring: Promise<void> | undefined;
         return {
             board,
             dispose() {
-                if (disposed) return;
-                disposed = true;
-                try { board.dispose(); } finally { builds.dispose(); }
+                // Pins stay live until the board's tracked builds have settled; cancelling them first would strand those reads.
+                retiring ??= (async () => {
+                    try { await board.dispose(); } finally { builds.dispose(); }
+                })();
+                return retiring;
             },
         };
     } catch (error) { builds.dispose(); throw error; }

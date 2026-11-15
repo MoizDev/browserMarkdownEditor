@@ -1,6 +1,6 @@
 // The mark travels with the PDF: a second browser needs no local ledger.
-// This module is pure bytes/WebCrypto, shared by worker inspection and writing.
-import { hashBytes } from './diskVersion';
+// The same pure-byte digest works in opaque inspection/writer workers and the host.
+import { artifactHash as hashBytes } from './pdfWriteArtifacts';
 
 const encoder = new TextEncoder();
 const namespace = encoder.encode('VaultWriteMark/');

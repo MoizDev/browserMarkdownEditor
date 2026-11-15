@@ -196,13 +196,13 @@ export default defineConfig([
           // Agent reads load this projection only for a real tool call; its closed
           // source authority is created by App's same canonical session store.
           // These exact editing adapters are reached only from the lazy NativeCanvasEntry.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/nativeCanvasAgentMutation.ts', 'src/utils/closedCanvasSource.ts',
+          // PdfPane reads only the lightweight acquired-source slot to keep its
+          // native child mounted through save; acquisition and editing remain lazy.
+          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfPane.tsx', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/nativeCanvasAgentMutation.ts', 'src/utils/closedCanvasSource.ts',
             'src/components/whiteboard/NativeCanvasEditing.tsx', 'src/components/whiteboard/NativeBoardChrome.tsx', 'src/components/whiteboard/NativeBoardChromeHost.tsx',
             'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
             'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
             'src/components/whiteboard/nativeEditingCapabilityFactory.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
-            // The board's Print action and Mod-P: the editing shell is the switch that pins a print source.
-            'src/components/whiteboard/nativePrint.ts',
             // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
             // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
             'src/components/whiteboard/preparePdfInkAttempt.ts',

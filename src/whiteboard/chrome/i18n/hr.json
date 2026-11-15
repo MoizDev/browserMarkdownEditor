@@ -390,7 +390,6 @@
     "paper.cancel": "Odustani",
     "paper.keepProtected": "Zaključani sadržaj će se zadržati.",
     "chrome.readOnly": "Ova ploča je samo za čitanje.",
-    "shortcuts.file.print": "Ispiši",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

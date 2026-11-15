@@ -1,4 +1,4 @@
-// Provenance: the placeholder an inert embed shows before anyone loads it; pure string work, independent of any
+// Provenance: the placeholder an unloaded embed or link card shows before anyone fetches or loads it; pure string work, independent of any
 // third-party code. It names what the link points at, so the poster and the consent prompt tell one story.
 
 /** Display names for the providers an embed can load. `embed.ts` decides what really loads; this only names it. */
@@ -18,7 +18,7 @@ const PROVIDER_NAMES: readonly { readonly name: string; readonly hosts: readonly
  * The poster's title (the provider's name, or the host when no provider is named) and its address (the host and the
  * path and query the link names). A stored address that does not parse is shown exactly as it was written.
  */
-export function embedPoster(url: string): { readonly title: string; readonly address: string } {
+export function urlPoster(url: string): { readonly title: string; readonly address: string } {
     let host = url, path = '';
     try {
         const source = new URL(url);

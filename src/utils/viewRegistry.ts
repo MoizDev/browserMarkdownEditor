@@ -181,10 +181,30 @@ export interface TextChange {
     insert: string;
 }
 
+/** Bounds one live read or capture of a mounted native board. */
+export interface LiveJob {
+    readonly signal?: AbortSignal;
+    readonly deadlineMs: number;
+}
+
+/** A mounted NATIVE board (drawing, notebook or PDF ink) answers from its own live lease: the camera, inversion and
+ * source on screen now. `measured` is false until the pane has a viewport; the host then reads the App's last real
+ * view instead, so a hidden or unlaid pane is never described from a camera it does not have. */
+export interface NativeLiveView {
+    measured(): boolean;
+    describe(job: LiveJob): Promise<DrawingViewInfo | NotebookViewInfo | PdfViewInfo>;
+    /** The visible region at its live camera, long side ≤ maxSide. */
+    capture(maxSide: number, job: LiveJob): Promise<Blob>;
+    /** One 1-based page of a paged board, long side ≤ maxSide. */
+    renderPage(page: number, maxSide: number, job: LiveJob): Promise<Blob>;
+}
+
 export interface ViewReporter {
     kind: ViewKind;
     /** Where the user is, now. Cheap enough to call once per message. */
     describe(): ViewInfo | Promise<ViewInfo>;
+    /** Set on a mounted native board. The host reads it for the agent; the PDF/canvas readers never use the bare methods. */
+    live?: NativeLiveView;
     /** A PNG of what is on screen, long side ≤ maxSide px. Canvases and PDFs only. */
     capture?(maxSide: number): Promise<Blob | null>;
     /** PDF text of the given 1-based pages from the loaded document. */

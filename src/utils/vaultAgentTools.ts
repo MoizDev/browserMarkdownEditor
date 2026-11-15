@@ -275,7 +275,8 @@ async function describe(view: ViewReporter) {
 /** A PDF's reporter can serve reads only while it is the one showing the file. */
 function openPdfView(path: string): ViewReporter | undefined {
     const view = getView(path);
-    return view && (view.kind === 'pdf' || view.kind === 'pdf-annotate') ? view : undefined;
+    // A mounted native ink board is read through the host's live view, never as a legacy pane.
+    return view && !view.live && (view.kind === 'pdf' || view.kind === 'pdf-annotate') ? view : undefined;
 }
 
 /** Existence as the host sees it; the root always exists. */

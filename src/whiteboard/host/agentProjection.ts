@@ -3,13 +3,12 @@ import { createBoardAgentAdapter, type AgentAdapterHost } from '../agent/adapter
 import { summarizeAgentNode, type AgentGeometry, type ShapePage, type ShapeQuery, type ShapeSummary } from '../agent/shapes';
 import { childrenOf, type BoardDoc, type BoardKind, type Sheet } from '../model/doc';
 import type { SampleStore } from '../ink/samples';
-import type { PngCapture } from '../export/capturePng';
-import type { BoardSession } from '../session/BoardSession';
 import type { SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { EMPTY_RICH_TEXT, type RichText } from '../text/richText';
 import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils/viewRegistry';
 import { acquireNativeBoard } from './nativeAcquisition';
+import type { BoardRuntime } from './runtime';
 import type { AgentApplyResult } from '../agent/transaction';
 import type { JobAuthority, JobOptions } from '../security/admission';
 import type { RenderToken } from '../../platform/render/types';
@@ -210,74 +209,71 @@ export type AgentViewSnapshot = Omit<DrawingViewInfo, 'shapes' | 'shapesTotal'>
     | Omit<NotebookViewInfo, 'shapes' | 'shapesTotal'>
     | (Omit<PdfViewInfo, 'shapes' | 'shapesTotal'> & { kind: 'pdf-annotate'; surface: 'annotation' });
 
-/** The view supplies its actual camera, visible pages and selection, pinned with its lease. */
+/** A mounted board's live view: its camera, visible pages and selection as the view presents them now, read from the
+ * runtime's own live document. The geometry is built inside the job, against that document's revision and samples. */
 export async function describeLiveAgentView(options: {
-    readonly session: BoardSession;
-    readonly authority: JobAuthority;
+    readonly runtime: BoardRuntime;
     readonly job: JobOptions;
-    readonly geometry: AgentGeometry;
     readonly view: AgentViewSnapshot;
     readonly sheet: SheetId;
     isCurrent(): boolean;
 }): Promise<DrawingViewInfo | NotebookViewInfo | PdfViewInfo> {
-    const input = options.view;
+    const input = options.view, runtime = options.runtime;
     const view: AgentViewSnapshot = input.kind === 'drawing'
         ? { ...input, camera: { ...input.camera }, viewport: { ...input.viewport }, selectedShapeIds: [...input.selectedShapeIds] }
         : input.kind === 'notebook'
             ? { ...input, visiblePages: [...input.visiblePages], selectedShapeIds: [...input.selectedShapeIds] }
             : { ...input, visiblePages: [...input.visiblePages], ...(input.selectedShapeIds ? { selectedShapeIds: [...input.selectedShapeIds] } : {}) };
-    return options.authority.run(async context => {
-        const revision = options.session.doc.rev;
+    return runtime.jobs.run(async context => {
+        const revision = runtime.session.doc.rev;
         const guard = () => {
-            options.authority.assertContext(context);
-            if (!options.isCurrent() || options.session.doc.rev !== revision) throw new DOMException('Board view changed', 'AbortError');
+            runtime.jobs.assertContext(context);
+            if (!options.isCurrent() || runtime.session.doc.rev !== revision) throw new DOMException('Board view changed', 'AbortError');
         };
         guard();
-        const sheet = options.session.doc.sheets.get(options.sheet);
+        const doc = runtime.session.doc, sheet = doc.sheets.get(options.sheet);
         if (!sheet) throw new RangeError('Sheet does not exist');
-        const kind = options.session.doc.kind;
-        if ((view.kind === 'drawing' && kind !== 'whiteboard') || (view.kind === 'notebook' && kind !== 'notebook')
-            || (view.kind === 'pdf-annotate' && kind !== 'pdf-ink')) throw new TypeError('View kind does not match the board');
-        const visible = (node: Node, page: number | undefined) => {
-            if (view.kind === 'drawing') {
-                const r = view.viewport, bounds = options.geometry.bounds(node);
-                return bounds.x <= r.x + r.w && bounds.x + bounds.w >= r.x && bounds.y <= r.y + r.h && bounds.y + bounds.h >= r.y;
-            }
-            return page !== undefined && view.visiblePages.includes(page);
-        };
-        const page = await listPinnedShapes(options.session.doc, [sheet], options.geometry, {}, revision, false, guard, visible);
-        guard();
-        return { ...view, shapes: page.shapes, shapesTotal: page.total };
+        if ((view.kind === 'drawing' && doc.kind !== 'whiteboard') || (view.kind === 'notebook' && doc.kind !== 'notebook')
+            || (view.kind === 'pdf-annotate' && doc.kind !== 'pdf-ink')) throw new TypeError('View kind does not match the board');
+        const reader = createAgentGeometryReader({ doc, samples: runtime.samples, token: runtime.paintToken, render: runtime.render,
+            signal: context.signal, isCurrent: () => options.isCurrent() && runtime.session.doc.rev === revision, cooperate: yieldAgentWork });
+        try {
+            const visible = (node: Node, page: number | undefined) => {
+                if (view.kind === 'drawing') {
+                    const r = view.viewport, bounds = reader.geometry.bounds(node);
+                    return bounds.x <= r.x + r.w && bounds.x + bounds.w >= r.x && bounds.y <= r.y + r.h && bounds.y + bounds.h >= r.y;
+                }
+                return page !== undefined && view.visiblePages.includes(page);
+            };
+            const page = await listPinnedShapes(doc, [sheet], reader.geometry, {}, revision, false, guard, visible, reader.prepare);
+            guard();
+            return { ...view, shapes: page.shapes, shapesTotal: page.total } as DrawingViewInfo | NotebookViewInfo | PdfViewInfo;
+        } finally { reader.dispose(); }
     }, options.job);
 }
 
-/** The view pins its real frame and image leases before any asynchronous encoding. */
+/** The live capture of a mounted view: `pin` takes the view's own frame at the current revision, and the job re-checks
+ * that revision and the owner after the encode. The capture size is bounded here, once, for every caller. */
 export async function captureLiveAgentProjection(options: {
-    readonly session: BoardSession;
-    readonly authority: JobAuthority;
+    readonly runtime: BoardRuntime;
     readonly job: JobOptions;
     readonly maxSide: number;
     isCurrent(): boolean;
-    pin(): { readonly revision: number; readonly capture: PngCapture; release(): void };
+    pin(): { readonly revision: number; capture(signal: AbortSignal): Promise<Blob>; release(): void };
 }): Promise<Blob> {
     if (!Number.isSafeInteger(options.maxSide) || options.maxSide < 1 || options.maxSide > 1568) throw new RangeError('Invalid agent capture size');
-    return options.authority.run(async context => {
+    const runtime = options.runtime;
+    return runtime.jobs.run(async context => {
         const guard = (revision: number) => {
-            options.authority.assertContext(context);
-            if (!options.isCurrent() || options.session.doc.rev !== revision) throw new DOMException('Board capture is stale', 'AbortError');
+            runtime.jobs.assertContext(context);
+            if (!options.isCurrent() || runtime.session.doc.rev !== revision) throw new DOMException('Board capture is stale', 'AbortError');
         };
-        options.authority.assertContext(context);
+        runtime.jobs.assertContext(context);
         if (!options.isCurrent()) throw new DOMException('Board session ended', 'AbortError');
         const pin = options.pin();
         try {
             guard(pin.revision);
-            if (pin.capture.frame.sceneRevision !== pin.revision) throw new Error('Capture frame revision does not match the board');
-            const { world, scale } = pin.capture;
-            if (![world.width, world.height, scale].every(Number.isFinite) || world.width <= 0 || world.height <= 0 || scale <= 0
-                || Math.ceil(Math.max(world.width, world.height) * scale) > options.maxSide) throw new RangeError('Capture exceeds the agent image budget');
-            const { capturePng } = await import('../export/capturePng');
-            guard(pin.revision);
-            const blob = await capturePng(pin.capture, context.signal);
+            const blob = await pin.capture(context.signal);
             guard(pin.revision);
             return blob;
         } finally { pin.release(); }

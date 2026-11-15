@@ -259,6 +259,19 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+            // A mounted board that has a viewport answers from its own live camera, inversion and frame.
+            const live = getView(path)?.live;
+            if (live?.measured()) {
+                const base = guard.signal ?? new AbortController().signal;
+                const job = { signal: base, deadlineMs: 30_000 };
+                const info = await live.describe(job);
+                if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+                const withSignal = (captureSignal?: AbortSignal) => ({ signal: captureSignal ? AbortSignal.any([base, captureSignal]) : base, deadlineMs: 30_000 });
+                return { info, wholeSheet: false,
+                    capture: (maxSide, captureSignal, page) => page !== undefined
+                        ? live.renderPage(page, maxSide, withSignal(captureSignal))
+                        : live.capture(maxSide, withSignal(captureSignal)) };
+            }
             // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
             const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
             const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');

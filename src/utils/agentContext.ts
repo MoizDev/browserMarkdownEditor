@@ -391,7 +391,8 @@ export async function buildAgentContext(
     const unreadable = new Map<string, string>();
     await Promise.all(workspace.tabs.map(async tab => {
         const view = getView(tab.path);
-        if (!view) {
+        // A mounted native board is read through the host's live view below, exactly like one with no pane.
+        if (!view || view.live) {
             // An open native canvas with no mounted pane (a drawing, notebook or PDF ink board) is read from its own
             // session, bounded like a view. A failure or a refusal is named on its tab line, never silently skipped.
             // A PDF or notebook that is not native has no session here and keeps its remembered position.

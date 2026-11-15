@@ -26,7 +26,7 @@ export function plainRichText(text: string): RichText {
 
 // F-AGENT-013: growth is staged in the same savepoint as its shape. The caller
 // validates the whole operation before this function can change the paper.
-export function createPage(context: CreateContext, requested: number | undefined): { page: number; clamp(point: Point): Point; notes: string[] } {
+export function createPage(context: CreateContext, requested: number | undefined): { page: number; clamp(point: Point, size?: { w: number; h: number }): Point; notes: string[] } {
     const { doc, builder } = context;
     const notes: string[] = [];
     if (doc.kind === 'whiteboard') return { page: -1, clamp: point => point, notes };
@@ -38,9 +38,11 @@ export function createPage(context: CreateContext, requested: number | undefined
     }
     const rect = boardPageStack(doc.host)?.rects[page];
     if (!rect) throw new AgentOpRefused('page does not exist');
-    return { page, notes, clamp(point) {
-        const x = Math.max(0, Math.min(rect.width, point.x));
-        const y = Math.max(0, Math.min(rect.height, point.y));
+    // With a known size the whole shape stays on its page: clamping only the corner left a shape
+    // hanging into the page gap, and it was then read back on the next page at a negative y.
+    return { page, notes, clamp(point, size = { w: 0, h: 0 }) {
+        const x = Math.max(0, Math.min(Math.max(0, rect.width - size.w), point.x));
+        const y = Math.max(0, Math.min(Math.max(0, rect.height - size.h), point.y));
         if ((x !== point.x || y !== point.y) && !notes.length) notes.push('position clamped to page');
         return { x, y };
     } };
@@ -64,14 +66,14 @@ export function stageSimpleCreate(op: SimpleCreate, context: CreateContext): Cre
             break;
         }
         case 'note': {
-            const point = target.clamp(op);
+            const point = target.clamp(op, { w: 200, h: 200 }); // a new sticky's size (canvas_shapes lists 200×200)
             node = createSticky({ ...base, ...point, text: plainRichText(op.text), color: op.color ?? 'yellow',
                 labelColor: 'black', size: op.size ?? 'm', font: 'draw', align: 'middle', valign: 'middle',
                 growY: 0, fit: null, scale: 1, url: null });
             break;
         }
         case 'geo': {
-            const point = target.clamp(op);
+            const point = target.clamp(op, { w: op.w, h: op.h });
             const rotation = ((((op.rotation ?? 0) % 360) + 360) % 360) * Math.PI / 180;
             // Agent positions name the unrotated top-left; the model rotates its
             // local origin, so translate the origin to keep the centre fixed.

@@ -156,7 +156,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
-    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation; hold: DrawHold | null };
+    type Drawn = { frame: PaintSource; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation; hold: DrawHold | null };
     const drawn = new Map<PaintBand, Drawn>();
     let drawSource: PaintSource | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
     let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
@@ -209,7 +209,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // A draw's exact image backings, borrowed AT the draw: no later prepare, ack or retirement can free the
     // snapshot this draw read. A hold is released when an accepted presentation supersedes it, when its draw is
     // discarded (new source, clearResources, dispose), or when the bounded pending queue drops it.
-    interface DrawHold { readonly frame: PaintFrame; readonly images: readonly PresentedImage[]; borrow: PreparedRetain | null }
+    interface DrawHold { readonly frame: PaintSource; readonly images: readonly PresentedImage[]; borrow: PreparedRetain | null }
     let pendingHolds: DrawHold[] = [], presentedHolds: DrawHold[] = [];
     // Two frames of two bands. Acknowledgements arrive in draw order, so an older unacknowledged draw is dead
     // anyway; a host that never acknowledges therefore cannot pin backings. The dropped draw's facts stay unknown.
@@ -237,7 +237,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     // Takes the draw's borrow right after the draw read its snapshot. A draw whose images cannot be proven (the
     // frame has moved on, or a drawn image is not a live ImageBitmap) has no hold, so its facts stay unknown.
-    const captureDraw = (frame: PaintFrame, omit: ReadonlySet<string> | null): DrawHold | null => {
+    const captureDraw = (frame: PaintSource, omit: ReadonlySet<string> | null): DrawHold | null => {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
         const { prepared } = borrow;

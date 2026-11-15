@@ -11,7 +11,7 @@ import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from '
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
-import { PaintWindowBuilder, rootOf, type PaintRoot } from './paintWindows';
+import { bandItemsOf, PaintWindowBuilder, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;

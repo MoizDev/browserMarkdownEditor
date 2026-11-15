@@ -157,6 +157,8 @@ export function createSceneSnapshot(options: {
         }
         return false;
     };
+    const occupiedRoot: Readonly<Rect> | undefined = occupiedBounds ? Object.freeze({ x: occupiedBounds.bounds[0], y: occupiedBounds.bounds[1],
+        width: occupiedBounds.bounds[2] - occupiedBounds.bounds[0], height: occupiedBounds.bounds[3] - occupiedBounds.bounds[1] }) : undefined;
     const mayPaint = (index: SceneCellIndex, world: Readonly<Rect>): boolean => {
         try { return index.countCandidates(world) > 0; } catch { return true; }
     };
@@ -183,7 +185,7 @@ export function createSceneSnapshot(options: {
             token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
             sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
             sensitiveMayMeet: (world, nodes) => sensitiveMayMeet(index, world, nodes),
-            mayPaint: world => mayPaint(index, world),
+            mayPaint: world => mayPaint(index, world), ...(occupiedRoot ? { occupiedRoot } : {}),
             isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),
             async next() {
                 if (closePromise) throw cancelled();

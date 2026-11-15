@@ -24,7 +24,6 @@ import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 
-
 const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
     { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
     { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
@@ -232,7 +231,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
-
                 if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
                         event.preventDefault(); event.stopPropagation(); void commands.duplicate(); return;

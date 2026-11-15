@@ -581,7 +581,11 @@ export class MemoryGovernor {
     private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
         return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
             other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
-                !['surface', 'program', 'context', 'live-input'].includes(other.registration.kind)))
+                // The 2D compositor's working set and the GPU layer caches are counted apart: a resize bridges through a
+                // detached 2D picture while the kept GPU caches stay charged, and one shared limit refused every bridge
+                // image forever (measured: 3,484 refusals, no frame after a PDF's quality returned to 1).
+                kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
+                !['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(other.registration.kind)))
             .reduce((sum, other) => sum + other.bytes, 0);
     }
 

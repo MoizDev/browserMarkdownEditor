@@ -71,7 +71,7 @@ export function createNativeCameraOperations(options: {
         },
         zoomIn: operation(available, () => lease.zoomStep(1)),
         zoomOut: operation(available, () => lease.zoomStep(-1)),
-        zoomTo100: operation(available, () => lease.zoomBy(1 / lease.getNavigationSnapshot().zoom)),
+        zoomTo100: operation(available, () => lease.resetZoom()),
         zoomToFit: operation(available, () => fit(false)),
         zoomToSelection: operation(selection, () => fit(true)),
         toggleMinimap: operation(() => session.doc.kind === 'whiteboard' ? available() : no('Minimap is available on drawings'),

@@ -198,7 +198,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         finishGesture: options.finishGesture,
         finishComposition: options.finishComposition,
         captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
-        journalError: options.onFailure,
+        // A journal append superseded by a newer revision or a closing session is cancelled work: the next dirty batch journals it.
+        journalError: error => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.onFailure(error); },
     });
     const mediaReferenceSnapshot = () => {
         const names = new Set<string>(), unresolved = new Set<MediaId>();
@@ -219,6 +220,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         mediaReferences() { return mediaReferenceSnapshot().names; },
         mediaReferenceIssues() { return mediaReferenceSnapshot().unresolved; },
         get isReadOnly() { return !!readonlyReason(); },
+        get contentRevision() { return contentRevision; },
         get readOnlyReason() { return readonlyReason(); },
         get isGestureActive() { return queue.isGestureActive; },
         apply(transaction: Transaction) { guard(); return applyController.apply(transaction); },

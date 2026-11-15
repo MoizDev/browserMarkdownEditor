@@ -30,10 +30,12 @@ function messageOf(error: unknown): string { return error instanceof Error ? err
  * build but the next frame, which has no time either. One unit is one bounded step, so a frame costs one step more. */
 function withFirstUnit(budget: FrameBudget): FrameBudget {
     let admitted = false;
-    return Object.create(budget, { shouldYield: { value: (): boolean => {
+    // A plain copy, never a prototype wrapper: a nested `{ ...budget }` keeps only own fields, and an inherited frameId
+    // spread away as undefined left each dense tile's item adapter stepping once and never again (frameId guard).
+    return { ...budget, shouldYield: (): boolean => {
         if (!admitted) { admitted = true; return false; }
         return budget.shouldYield();
-    } } }) as FrameBudget;
+    } };
 }
 export interface BoardLayersOptions {
     readonly frames: PaintFrameAssembler;

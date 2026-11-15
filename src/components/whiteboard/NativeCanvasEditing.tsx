@@ -97,6 +97,13 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                 onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
+                        // The chips on an embed or link card: consent and the controller are the embed host's; the address and preview are the card's own.
+                        cards: { embedState: id => embedControllerRef.current?.state(id) ?? 'inert',
+                            loadEmbed(id) { const target = embedControllerRef.current; return target ? target.load(id) : Promise.reject(new Error('Embeds are unavailable')); },
+                            unloadEmbed(id) { return embedControllerRef.current?.unload(id) ?? Promise.resolve(); },
+                            subscribeEmbeds(listener) { return embedControllerRef.current?.subscribe(listener) ?? (() => {}); },
+                            openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
+                            fetchPreview: id => service.media.cardPreview(id) },
                         modalOpen: () => !!getContextMenu() || !!document.querySelector('[aria-modal="true"]'),
                         isDirectPen: event => event.pointerType === 'pen' && navigator.maxTouchPoints > 0,
                         ownsWheel: event => !event.composedPath().some(target => target instanceof Element &&
@@ -224,6 +231,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
             embed: () => embedPort ? embedControllerRef.current : null,
+            openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
             media: () => ({ actions: clipboard.media, selection: writable => clipboard.media.selection(writable), fail: report,
                 pick: chooseReplacementImage, requestText: dialogs.requestText, playback: lease.video, openCrop }),
             current, canWrite, notice: setNotice });
@@ -231,7 +239,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
     }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice,
-        dialogs.requestText, openCrop]);
+        dialogs.requestText, openCrop, linksRef]);
     const registerShortcuts = useCallback((open: () => void) => {
         shortcutRef.current = open; refreshServices(value => value + 1);
         return () => { if (shortcutRef.current === open) shortcutRef.current = null; };

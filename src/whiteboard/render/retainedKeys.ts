@@ -38,8 +38,12 @@ export function localGeometrySignature(node: Readonly<Node>, fontEpoch: number, 
         case 'clip':
             parts = [node.kind, node.w, node.h, node.media];
             break;
-        case 'linkcard': case 'embed':
-            parts = [node.kind, node.w, node.h];
+        case 'linkcard':
+            // The poster is text: its address, stored preview and the layout's size and font epoch all change what is drawn.
+            parts = [node.kind, node.w, node.h, node.url, node.preview, fontEpoch, zoom];
+            break;
+        case 'embed':
+            parts = [node.kind, node.w, node.h, node.url, fontEpoch, zoom];
             break;
         case 'opaque':
             parts = [node.kind, node.raw];

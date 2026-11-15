@@ -36,16 +36,16 @@ export interface BoardTextGeometry {
 /** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
 function cardPosterPad(zoom: number): number { return 12 / zoom; }
 /**
- * A card's poster while it is not loaded (an embed) or has no fetched preview (a link card): the title (a preview's title,
- * else the provider or domain), a preview's description, the address the link names, and how to get more. It sits at the
- * card's foot in the card's own width, and as many lines as the card's on-screen height holds are kept (the rest end in an ellipsis).
+ * A card's poster: the title (a preview's title, else the provider or domain), a preview's description, and the address the
+ * link names; an embed also says its content is not in the picture. The actions (Load, Stop, Fetch preview, Open link) are
+ * the viewer's controls on the card, so the poster names no instructions. It sits at the card's foot in the card's own width,
+ * and as many lines as the card's on-screen height holds are kept (the rest end in an ellipsis).
  */
 function cardPosterRequest(node: Readonly<EmbedNode | LinkcardNode>, revision: string, fontEpoch: number, zoom: number): TextLayoutRequest {
     const { title, address } = urlPoster(node.url), pad = cardPosterPad(zoom);
     const preview = node.kind === 'linkcard' ? node.preview : null;
     const lines = [preview?.title || title, ...(preview?.description ? [preview.description] : []), address,
-        node.kind === 'embed' ? 'Not loaded: right-click and choose Load embed'
-            : preview ? '' : 'Not fetched: right-click and choose Fetch link preview'].filter(line => line !== '');
+        ...(node.kind === 'embed' ? ['Embedded content not included'] : [])];
     const paragraph = (text: string) => ({ kind: 'p' as const, level: 0 as const, dir: 'auto' as const, runs: [{ text, marks: {} }] });
     const size = 14 / zoom, lineHeight = size * 1.3;
     // Screen height is the world height times zoom; the line count is what that holds at this size, never less than one.

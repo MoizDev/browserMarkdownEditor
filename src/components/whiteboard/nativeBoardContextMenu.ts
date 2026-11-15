@@ -22,6 +22,8 @@ export function createNativeBoardContextMenu(options: {
     readonly language: BoardLanguageState;
     readonly preferences: BoardPreferenceState;
     readonly embed: () => NativeEmbedController | null;
+    /** A link card's or embed's address, opened in a new tab as the card's own Open link. */
+    readonly openLink: (url: string) => void;
     /** The picture or card rows for this view; edit mode's menu is the only one a right-click opens. */
     readonly media: () => MediaMenuSource | null;
     readonly current: () => boolean;
@@ -51,6 +53,13 @@ export function createNativeBoardContextMenu(options: {
                     const pending = state === 'loaded' ? embed.unload(node.id) : embed.load(node.id);
                     void pending.catch(error => options.notice(error instanceof Error ? error.message : String(error)));
                 } });
+        }
+        if (node?.kind === 'linkcard' || node?.kind === 'embed') {
+            const url = node.url;
+            extra.push({ kind: 'command', id: 'card-open-link', label: 'Open link', run() {
+                if (!same()) { options.notice('The selection changed; open the menu again.'); return; }
+                try { options.openLink(url); } catch (error) { options.notice(error instanceof Error ? error.message : String(error)); }
+            } });
         }
         const mediaSource = options.media();
         const picture = mediaSource ? mediaSource.selection(options.canWrite()) : null;

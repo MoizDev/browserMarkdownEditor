@@ -1,6 +1,6 @@
 import type { EmbedLaterPaint } from '../../platform/render/embedPresentation.types';
 import type { PathCommand, Affine } from '../../platform/types';
-import { classifyImageFootprint, texturedQuad, type AlphaPlane, type DeviceRect } from './imageSampling';
+import { classifyImageFootprint, isGutterQuadDraw, texturedQuad, TILE_CROP, TILE_SIZE, type AlphaPlane, type DeviceRect } from './imageSampling';
 import type { PresentedImage } from './paintPresentation';
 
 /** `null` when the image puts nothing inside the region; `unknown` when its facts cannot be proven,
@@ -8,35 +8,29 @@ import type { PresentedImage } from './paintPresentation';
 export type LaterPaintFact = EmbedLaterPaint | null;
 const UNKNOWN: EmbedLaterPaint = Object.freeze({ opacity: 'unknown' });
 
-const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 const MAX_RUNS = 16_384;
 
-/** Later-paint facts of one drawn image over a live embed's device-pixel region. The image is
- * classified on its real GPU draw (the full backing texture on its gutter-grown quad) with each
- * pixel's positive-weight texel footprint. `paneTransform` maps world to pane CSS, `dpr` converts
- * to device pixels, and `alpha` is the exact readback of `image.source`. */
+/** Later-paint facts of one drawn image over a live embed's device-pixel region. Only the gutter quad the draw
+ * takes (imageSampling.isGutterQuadDraw) is classified, on its real positive-weight footprint: `paneTransform`
+ * maps world to pane CSS, `dpr` converts to device pixels, and `alpha` is the exact readback of `image.source`.
+ * Anything else takes the crop path, so it is unknown and the true-order poster stays. */
 export function imageLaterPaint(image: PresentedImage, paneTransform: Affine | null, dpr: number,
     region: DeviceRect, alpha: AlphaPlane): LaterPaintFact {
     const { item } = image;
-    // Only retained dense tiles have the GPU gutter quad modelled here. Ordinary pictures take the
-    // CPU drawImage path with a different window, so they stay unknown (the poster) until classified.
-    if (!item.retainedTile || !paneTransform || !(dpr > 0) || item.clips.length) return UNKNOWN;
-    if (!item.sourceRect || alpha.width !== image.source.width || alpha.height !== image.source.height) return UNKNOWN;
-    if (item.localToWorld.some((value, index) => value !== IDENTITY[index])) return UNKNOWN;
+    if (!isGutterQuadDraw(item, image.source) || !paneTransform || !(dpr > 0)) return UNKNOWN;
+    if (alpha.width !== TILE_SIZE || alpha.height !== TILE_SIZE) return UNKNOWN;
     const [a, b, c, d, e, f] = paneTransform;
     if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return UNKNOWN;
     const { rect } = item;
     const dest = { x: (a * rect.x + e) * dpr, y: (d * rect.y + f) * dpr, width: rect.width * a * dpr, height: rect.height * d * dpr };
     if (!(dest.width > 0) || !(dest.height > 0)) return null;
     let quad;
-    try { quad = texturedQuad(dest, alpha.width, item.sourceRect); } catch { return UNKNOWN; }
+    try { quad = texturedQuad(dest, TILE_SIZE, TILE_CROP); } catch { return UNKNOWN; }
     const facts = classifyImageFootprint({
-        plane: alpha, window: { x: 0, y: 0, width: alpha.width, height: alpha.height }, quad, within: region, maxRuns: MAX_RUNS,
+        plane: alpha, window: { x: 0, y: 0, width: TILE_SIZE, height: TILE_SIZE }, quad, within: region, maxRuns: MAX_RUNS,
     });
     if (facts.status === 'unavailable') return UNKNOWN;
     if (facts.status === 'translucent') return { opacity: 'translucent' };
-    // Opacity below one or a non-normal blend turns every covered pixel into a translucent contribution.
-    if (item.opacity !== 1 || item.blend !== 'normal') return facts.runs.length ? { opacity: 'translucent' } : null;
     if (!facts.runs.length) return null;
     const commands: PathCommand[] = [];
     for (let i = 0; i < facts.runs.length; i += 4) {

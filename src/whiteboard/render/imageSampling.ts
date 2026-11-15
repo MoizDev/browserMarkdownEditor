@@ -1,12 +1,35 @@
 import type { Rect } from '../../platform/types';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import type { PaintImageItem } from './paintStream';
 
 /** The one image sampling profile. GPU: a linear sampler on the full backing texture, drawn onto
  * the destination grown by its gutter, so every sample has real neighbour texels. CPU reference:
  * drawImage with smoothing enabled at 'low' quality, which is bilinear without mip levels. A
  * sample's footprint is the set of texels with POSITIVE bilinear weight; nothing else contributes. */
 export const IMAGE_SAMPLING_PROFILE = Object.freeze({ kernel: 'bilinear', mips: 'none', quality: 'low' } as const);
+
+/** The one retained-tile quad, shared by the GPU draw, the CPU reference draw and the facts. A dense tile is a
+ * TILE_SIZE texture whose EDGE square sits inside a GUTTER of real neighbour texels; the whole texture is drawn
+ * onto that square grown by the gutter. Any other picture takes the crop path and has no quad to classify. */
+export const TILE_EDGE = 512, TILE_GUTTER = 2, TILE_SIZE = TILE_EDGE + 2 * TILE_GUTTER;
+export const TILE_CROP: Readonly<Rect> = Object.freeze({ x: TILE_GUTTER, y: TILE_GUTTER, width: TILE_EDGE, height: TILE_EDGE });
+const IDENTITY_AFFINE = [1, 0, 0, 1, 0, 0] as const;
+
+/** Item-level shape of a gutter-quad tile: normal blend, full opacity, not inverted or clipped, identity local transform. */
+export function isGutterQuadTile(item: PaintImageItem): boolean {
+    const { rect, sourceRect: src } = item;
+    return item.retainedTile === true && item.blend === 'normal' && item.opacity === 1 && !item.inverted && item.clips.length === 0
+        && item.localToWorld.every((value, index) => value === IDENTITY_AFFINE[index])
+        && src?.x === TILE_GUTTER && src.y === TILE_GUTTER && src.width === TILE_EDGE && src.height === TILE_EDGE
+        && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.width === rect.height;
+}
+
+/** Whether the draw takes the quad for this exact backing: the item has the quad shape and the bitmap is a full tile. */
+export function isGutterQuadDraw(item: PaintImageItem, image: CanvasImageSource): boolean {
+    return isGutterQuadTile(item) && typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap
+        && image.width === TILE_SIZE && image.height === TILE_SIZE;
+}
 
 /** Device pixels, half-open: a pixel belongs when its centre lies inside. */
 export interface DeviceRect { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }

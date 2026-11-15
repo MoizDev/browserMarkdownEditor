@@ -93,6 +93,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     if (engine.session !== runtime.session) throw new Error('Preview needs the existing board session');
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
     let controller: AbortController | null = null, pendingRelease: (() => void) | null = null, pair: BoardLayerPair | null = null;
+    // A handed-off job's paint is the one on screen until its replacement is presented, and its source reads its own
+    // abort signal: aborting it at the next launch hid the picture (measured: base omission off in 216 of 392 checks).
+    let controllerHandedOff = false;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
     let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1, handedOffGeneration = -1;
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
@@ -119,6 +122,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     // request waits for the Scene to catch up, driven cooperatively like pointQuery/frameDrop.
     type StartArgs = Parameters<typeof start>;
     let deferred: StartArgs | null = null, driving = false, resuming = false;
+    // One overlay is in flight at a time: a newer request is held (latest wins) until the layer presents the last one.
+    let inFlight = false, queued: StartArgs | null = null;
     const driveScene = async () => {
         if (driving) return;
         driving = true;
@@ -138,8 +143,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         } catch (error) { deferred = null; report(error); } finally { driving = false; }
     };
     const clearNow = () => {
-        deferred = null;
-        generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
+        deferred = null; queued = null; inFlight = false;
+        generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
         const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
@@ -153,6 +158,14 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         clearNow();
     };
     const unbind = engine.bindPreviewClear(clear);
+    // The layer presented the overlay in flight: the held request, if any, is the next one built.
+    const presentedOverlay = () => {
+        if (disposed || !inFlight) return;
+        inFlight = false;
+        const next = queued; queued = null;
+        if (!next) return;
+        try { start(...next); } catch (error) { clear(); report(error); }
+    };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>) => {
         if (disposed) throw new Error('Preview is disposed');
@@ -175,7 +188,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const view = engine.getView(), selection = runtime.selection.getSnapshot();
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
-        if (!resuming) settle(interrupted()); controller?.abort(); pendingRelease?.(); pendingRelease = null; controller = job;
+        if (!resuming) settle(interrupted()); if (!controllerHandedOff) controller?.abort(); pendingRelease?.(); pendingRelease = null;
+        controller = job; controllerHandedOff = false; inFlight = true;
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -183,12 +197,18 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         let handedOff = false;
         const releaseLeases = () => { for (const lease of leases) release(lease); };
         pendingRelease = releaseLeases;
-        const check = () => {
-            job.signal.throwIfAborted();
-            if (disposed || !options.current() || generation !== seq || pin !== pinned
+        // The overlay's own validity: its document, view and sheet are still the ones it was built for. Being
+        // superseded by a newer request is not invalidity; a presented frame stays drawable until its replacement is.
+        const valid = () => {
+            if (disposed || !options.current() || pin !== pinned
                 || (live.rev !== pinned.revision && live.rev !== commitRevision)
                 || !engine.getView().visible || (engine.getView().sheetId ?? runtime.selection.getSnapshot().sheet) !== sheet
                 || engine.getView().theme !== view.theme) throw new DOMException('Preview superseded', 'AbortError');
+        };
+        const check = () => {
+            job.signal.throwIfAborted();
+            if (generation !== seq) throw new DOMException('Preview superseded', 'AbortError');
+            valid();
         };
         void (async () => {
             try {
@@ -296,7 +316,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         const item = source.readNode(index);
                         return textItem && index === textIndex ? { ...item, content: [...item.content.filter(part => part.kind !== 'text'), textItem] } : item;
                     },
-                    isCurrent: () => { try { check(); return source.isCurrent(); } catch { return false; } } };
+                    isCurrent: () => { try { valid(); return source.isCurrent(); } catch { return false; } } };
                 if (!frames || !pair) {
                     const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report);
                     const assembler: typeof inner = { ...inner, prepare(budget) {
@@ -307,7 +327,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         }
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        requestedTheme: () => engine.getView().theme, optional: true });
+                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
@@ -324,6 +344,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
                 // Ready means this generation's source is handed to its layer. Drawing it is the platform's
                 // later step, and the commit must not wait on a compositor cycle that a gesture may not trigger.
+                if (controller === job) controllerHandedOff = true;
                 handedOffGeneration = seq; settle();
                 if (pendingRelease === releaseLeases) pendingRelease = null;
             } catch (error) {
@@ -347,8 +368,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         },
         showOps(ops) { try { const projected = operationNodes(runtime.session.doc, ops); start(projected.changes, undefined, projected.paper); } catch (error) { clear(); report(error); } },
         waitUntilReady(signal) {
-            if (disposed || signal.aborted || ((!pin || !controller) && !deferred)) return Promise.reject(interrupted());
-            if (handedOffGeneration === generation && frames) return Promise.resolve();
+            if (disposed || signal.aborted || ((!pin || !controller) && !deferred && !queued)) return Promise.reject(interrupted());
+            if (handedOffGeneration === generation && frames && !queued) return Promise.resolve();
             return new Promise<void>((resolve, reject) => {
                 const waiter = { generation, resolve, reject, signal, abort: () => {} };
                 waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };

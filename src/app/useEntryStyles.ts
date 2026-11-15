@@ -72,7 +72,7 @@ export function useEntryStyles(deps: UseEntryStylesDeps) {
     fanOutRef.current = false;
   }, [rootHandle]);
 
-  /** The migration above runs before `writeEntryStyles` is declared, and a
+  /** The migration below runs before `writeEntryStyles` is declared, and a
    *  hoisted reference is the only way to reach it from there. */
   const writeEntryStylesRef = useRef<((next: ReturnType<typeof getEntryStyles>) => Promise<void>) | null>(null);
 

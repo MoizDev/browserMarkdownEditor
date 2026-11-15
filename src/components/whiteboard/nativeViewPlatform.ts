@@ -33,7 +33,11 @@ export function createNativeViewPlatform(options: {
         vaultEpoch: identity.vaultActivation, bytesGeneration: identity.bytesGeneration });
     return {
         paneId, viewLease, camera, backendPreference: viewer.getSnapshot().backendPreference,
-        session: { mirrors: null, checkpoint: () => { if (board.hasPendingEdits()) board.checkpoint(); },
+        session: { mirrors: null, checkpoint: () => {
+            // Rebind retires a view while App still retains its document and undo.
+            // Its hide hook must not enter the temporarily revoked writer again.
+            if (host.isCurrent(identity) && (options.currentSource?.() ?? true) && !board.isReadOnly && board.hasPendingEdits()) board.checkpoint();
+        },
             ...(options.captureRegion ? { captureRegion: options.captureRegion } : {}),
             ...(options.captureBlob ? { captureBlob: options.captureBlob } : {}) },
         layout: viewer.getSnapshot().layout,

@@ -4,7 +4,7 @@ import { getBoardRuntime } from '../host/runtime';
 import type { BoardInputMode, BoardInputView } from '../input/attach';
 import type { InputToken } from '../input/tool';
 import type { BoardSession } from '../session/BoardSession';
-import { createBoardInputHost } from './inputHost';
+import { createBoardInputHost, type BoardInputHostOptions } from './inputHost';
 import { createBoardToolServices, type BoardToolServicesOptions } from './toolServices';
 import type { ViewerEngine } from './types';
 import { NO_SENSITIVE_IDS } from './sensitiveTargets';
@@ -30,6 +30,8 @@ export interface NativeEditingOptions extends Pick<BoardToolServicesOptions, 'vi
     readonly invalidate: () => void;
     readonly cameraChanged: () => void;
     readonly onError: (error: unknown) => void;
+    /** Composable observer of each actual presented frame (e.g. the embed presentation producer). */
+    readonly presented?: BoardInputHostOptions['presented'];
 }
 
 /**
@@ -45,7 +47,7 @@ export function createNativeEditingInput(options: NativeEditingOptions) {
     const host = createBoardInputHost({ session: options.session, runtime, engine: options.engine, token: options.token,
         inputToken: options.inputToken, camera: options.camera, viewport: options.viewport, current: options.current,
         visible: options.visible, focused: options.focused, mode: options.mode, a11y: options.a11y, paged: options.paged,
-        invalidate: options.invalidate, onError: options.onError,
+        invalidate: options.invalidate, onError: options.onError, presented: options.presented,
         services(surface, overlay, _wet, ports) {
             release();
             const tools = createBoardToolServices({ runtime, engine: options.engine, spelling: options.spelling, images: options.images,

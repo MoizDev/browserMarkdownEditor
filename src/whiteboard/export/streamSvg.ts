@@ -81,9 +81,10 @@ export async function streamSvg(
           const frame = captureTextDisplay(item)
           const lease = await openExportTextStream(source, item, scale, signal, true)
           try {
-            await client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
-            lease.complete()
-          } finally { lease.release() }
+            const chunk = client.request('svgChunk', { streamId, text: { id: lease.id, owner: lease.owner, frame } }, identity, opts, current)
+            lease.track(chunk)
+            await chunk
+          } finally { await lease.release() }
         } else items.push(await paintItemDisplay(item, scale, image, signal))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }

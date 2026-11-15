@@ -14,6 +14,8 @@ export interface BoardNavigationHostOptions {
     readonly current: () => boolean;
     /** Persist/notify the latest camera once when the shared scheduler consumes input. */
     readonly changed: () => void;
+    /** Called synchronously only for navigation input, before coalesced camera persistence. */
+    readonly onUserNavigation?: () => void;
     readonly invalidate: () => void;
     readonly onError: (error: unknown) => void;
     readonly mac: boolean;
@@ -66,6 +68,7 @@ export function createBoardNavigationHost(options: BoardNavigationHostOptions): 
             interactionChanged(value) { if (binding === captured) { contact = value; invalidate(); } },
             changed() {
                 if (!active() || binding !== captured) return;
+                try { options.onUserNavigation?.(); } catch (error) { report(error); }
                 queued = captured.generation;
                 invalidate();
             },

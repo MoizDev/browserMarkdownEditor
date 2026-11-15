@@ -208,7 +208,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                         afterWritten: (revision, context) => options.afterWritten(revision, build.writtenContext(revision, context), sources),
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: services.bounds, retainNode: services.retainNode, realize: services.realize,
-                            preparePaint: services.preparePaint, subscribeInvalidation: services.subscribeInvalidation },
+                            preparePaint: services.preparePaint, preparePaintStream: services.preparePaintStream, subscribeInvalidation: services.subscribeInvalidation },
                     }, builds: { pinMedia: () => {
                         const held: Array<{ id: MediaId; bytes: number; blob: Blob; lease: MediaLease }> = [];
                         try {
@@ -240,7 +240,7 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
                     }, pinPdf: build.pinPdf } });
                     releaseCreators(); acquired?.dispose();
                     transferred = true;
-                    return { board: owned.board, sources, dispose: close };
+                    return { board: owned.board, runtime: owned.runtime, sources, dispose: close };
                 } catch (error) {
                     try { journal?.dispose(); } finally { void close(); }
                     throw error;

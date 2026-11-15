@@ -30,7 +30,6 @@ export interface PrepareNativeRuntimeOptions {
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
-    readonly readOnlyReason?: string;
     readonly sourcePin?: ReturnType<NativeCanvasHost['pinBoardSource']>;
     readonly savedView?: () => SavedView | undefined;
     onError(error: unknown): void;
@@ -232,10 +231,13 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         geometry: render.changeGeometry,
                         isCurrent: candidate => candidate.documentId === identity.documentId && candidate.session === identity.session
                             && isLiveOwner(candidate) && host.isCurrent(identity),
-                        readOnlyReason: () => readOnlyReason() ?? options.readOnlyReason ?? null,
+                        // Only the acquisition's temporary seal (and the App-immutable guards it wraps)
+                        // may refuse writes. A permanent per-call reason here could never be cleared by
+                        // activateEditing, so it is not an option (measured: cold agent stayed read-only).
+                        readOnlyReason: () => readOnlyReason() ?? null,
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: render.bounds, retainNode: render.retainNode, realize: render.realize,
-                            preparePaint: render.preparePaint, subscribeInvalidation: render.subscribeInvalidation },
+                            preparePaint: render.preparePaint, preparePaintStream: render.preparePaintStream, subscribeInvalidation: render.subscribeInvalidation },
                     }, builds: { pinMedia } });
                     transferred = true;
                     releaseCreators();

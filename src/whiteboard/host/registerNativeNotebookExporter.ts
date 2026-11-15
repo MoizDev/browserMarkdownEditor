@@ -1,13 +1,11 @@
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { removeNotebookExporter, setNotebookRenderData, type NativeNotebookExporter } from '../../utils/notebookRenderCache';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
-import type { DisplayPdfWriter } from '../export/capturePdf';
 import type { ComposedBoardSession } from '../session/factoryTypes';
-import { exportNotebookPdf } from './notebookExport';
+import { exportIncrementalNotebookPdf } from './notebookExport';
+import { createNativeNotebookIncrementalWriter } from './notebookIncrementalWriter';
 import { pinNativeNotebookExport } from './notebookExportCapture';
 import { getBoardRuntime } from './runtime';
-
-export type NativeNotebookDisplayWriter = (revision: number) => DisplayPdfWriter;
 
 const slot = Symbol('native notebook exporter');
 
@@ -16,7 +14,6 @@ export function registerNativeNotebookExporter(options: {
     board: ComposedBoardSession;
     host: NativeCanvasHost;
     identity: NativeCanvasIdentity;
-    writer: NativeNotebookDisplayWriter;
     onError(error: unknown): void;
 }): void {
     const { board, host, identity } = options;
@@ -49,8 +46,7 @@ export function registerNativeNotebookExporter(options: {
                     getSessionIdentity(identity.documentId)?.serial === identity.session && getBoardRuntime(board) === runtime;
             };
             const pin = pinNativeNotebookExport({ runtime, revision, current: isCurrent, onError: options.onError });
-            let writer: DisplayPdfWriter;
-            try { writer = options.writer(pin.revision); } catch (error) { pin.release(); throw error; }
+            const writer = createNativeNotebookIncrementalWriter(pin.revision, sourcePath);
             const controller = new AbortController();
             let released = false, active = false, pinReleased = false;
             let flight: Promise<{ paper: typeof pin.snapshot.paper; bytes: Uint8Array }> | undefined;
@@ -78,7 +74,7 @@ export function registerNativeNotebookExporter(options: {
                         flight = (async () => {
                             try {
                                 combined.throwIfAborted();
-                                const bytes = await exportNotebookPdf(pin.snapshot, sourcePath, writer, combined);
+                                const bytes = await exportIncrementalNotebookPdf(pin.snapshot, sourcePath, writer, combined);
                                 combined.throwIfAborted();
                                 if (released || !isCurrent()) throw new DOMException('Notebook export is no longer current', 'AbortError');
                                 return { paper: { ...pin.snapshot.paper }, bytes };

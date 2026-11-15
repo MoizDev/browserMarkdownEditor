@@ -19,10 +19,11 @@ export function createBoardViewCamera(options: {
     mapLegacyPage?(id: string): string | undefined;
 }) {
     const { runtime, limits, insets } = options;
+    let ports: Pick<typeof options, 'currentPath' | 'invalidate' | 'onError'> | null = options;
     const doc = runtime.session.doc;
     let stack = boardPageStack(doc.host);
     if (doc.kind !== 'whiteboard' && !stack) throw new Error('Paged canvas layout is unavailable');
-    const path = options.currentPath();
+    const path = ports.currentPath();
     const drawing = doc.kind === 'whiteboard' && path ? readNativeDrawingViewPos(path, id => {
         const mapped = options.mapLegacyPage?.(id);
         return mapped && [...doc.sheets.values()].some(sheet => sheet.id === mapped) ? mapped : undefined;
@@ -58,7 +59,7 @@ export function createBoardViewCamera(options: {
     const changed = () => {
         if (disposed) return;
         try {
-            const currentPath = options.currentPath();
+            const currentPath = ports?.currentPath();
             if (currentPath && !pending) {
                 if (doc.kind === 'whiteboard') {
                     const selected = runtime.selection.getSnapshot().sheet;
@@ -75,8 +76,8 @@ export function createBoardViewCamera(options: {
                 if (timer !== undefined) clearTimeout(timer);
                 timer = setTimeout(flush, 400);
             }
-            options.invalidate();
-        } catch (error) { options.onError(error); }
+            ports?.invalidate();
+        } catch (error) { ports?.onError(error); }
     };
     const refreshLayout = () => {
         if (disposed || doc.kind === 'whiteboard') return;
@@ -92,15 +93,21 @@ export function createBoardViewCamera(options: {
             pending = position;
             restore();
             changed();
-        } catch (error) { options.onError(error); }
+        } catch (error) { ports?.onError(error); }
     };
     const stopSelection = runtime.selection.subscribe(changed);
     const stopDocument = runtime.session.subscribe(refreshLayout);
-    const stopRetarget = subscribeDocumentViewRetarget(from => { if (options.currentPath() === from) flush(); });
+    const stopRetarget = subscribeDocumentViewRetarget(from => { if (ports?.currentPath() === from) flush(); });
     const onPageHide = () => flush();
     if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide);
     return {
         camera,
+        /** Rebinding transfers view callbacks; the camera and document subscriptions stay owned here. */
+        bind(next: Pick<typeof options, 'currentPath' | 'invalidate' | 'onError'>) {
+            if (disposed || ports) throw new Error('Camera owner is already bound or disposed');
+            ports = next;
+        },
+        unbind() { if (!disposed) { flush(); ports = null; } },
         get viewport() { return camera.viewport; },
         changed,
         resize(viewport: Viewport, anchor?: CameraAnchor, geometryChanged = false) {
@@ -113,7 +120,7 @@ export function createBoardViewCamera(options: {
         flush,
         dispose() {
             if (disposed) return;
-            flush(); disposed = true;
+            flush(); disposed = true; ports = null;
             stopSelection(); stopDocument(); stopRetarget();
             if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
         },

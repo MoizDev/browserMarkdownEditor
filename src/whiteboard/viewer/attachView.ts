@@ -8,6 +8,7 @@ import type { PlatformLayerDefinition } from '../../platform/render/attachPlatfo
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
+import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
@@ -43,6 +44,9 @@ export const attachView: AttachView = options => {
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
+    // Density mode and the index's candidate count drive which frame kind is requested; both are read
+    // by the layers, which never own a frame request of their own.
+    let densityMode: DensityMode = 'direct', lastCandidates: number | null = null;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -88,7 +92,8 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const frames = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintFrame): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
@@ -112,8 +117,11 @@ export const attachView: AttachView = options => {
         selectionIds(), union(union(interaction?.liveNodeIds?.(), view.visible ? embedPort?.inlineNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
-        liveNodeIds,
-        onDrawn(revision, _frame, context) {
+        liveNodeIds, candidates: () => lastCandidates,
+        onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
+        requestFrame: () => { if (!disposed) requestPaint(); },
+        onDrawn(revision, frame, context) {
+            options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
                 sceneRevision: revision, omittedNodeIds: context.omittedNodeIds });
         },
@@ -150,13 +158,18 @@ export const attachView: AttachView = options => {
     let snapshot: ViewerSnapshot;
     function makeSnapshot(): ViewerSnapshot {
         const palette = palettes[options.session.doc.kind === 'whiteboard' ? view.theme : 'light'];
+        const nextLayers = [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
+            ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
+            layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : [],
+            ...embedPort ? [embedPort.layer] : []];
+        // A new topology seals platform input. Rebuilding the same list on preview cancellation
+        // sealed it again during React's layout effect, recursively cancelling until error #185.
+        const definitions = snapshot?.layers.length === nextLayers.length && nextLayers.every((layer, i) => snapshot.layers[i] === layer)
+            ? snapshot.layers : Object.freeze(nextLayers);
         return { state: failed ? 'failed' : !runtime.scene ? 'loading' : options.session.isReadOnly ? 'read-only' : 'ready',
             readOnlyReason: failed?.message ?? runtime.session.readOnlyReason, sceneRevision: runtime.scene?.revision ?? options.session.doc.rev,
             layout: scene.layout, palette, appearance: { background: palettes[view.theme].background, inverted: view.inverted },
-            layers: [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
-                ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
-                layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : [],
-                ...embedPort ? [embedPort.layer] : []],
+            layers: definitions,
             backendPreference: BOARD_BACKEND_PREFERENCE };
     }
     function publish(): void {
@@ -171,15 +184,36 @@ export const attachView: AttachView = options => {
         paintJob = controller;
         const pin = runtime.scene.pin(), selectedSheet = sheet();
         const current = lastView;
-        const world: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
-            width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
+        // The frame covers the viewport plus two of its sides: a progressive coarse tile may extend one tile
+        // beyond the viewport, and every live item it meets must be in the frame to be drawn live.
+        const world: Rect | undefined = current ? (() => {
+            const width = current.viewport.width / current.camera.z, height = current.viewport.height / current.camera.z;
+            const margin = 2 * Math.max(width, height);
+            return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
+        })() : undefined;
         lastSensitive = sensitive;
-        const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
-        void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {
-            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) { pin.release(); return; }
-            frames.request({ source, release: () => pin.release() });
+        // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
+        const open = pin.paintStream;
+        if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
+        lastCandidates = world ? pin.countCandidates?.(selectedSheet, world) ?? null : null;
+        // Dense mode keeps only the live nodes in its frame: selection, wet ink, embeds and previewed nodes.
+        // Their set is the frame's whole sensitivity set, so every barrier a tile meets is present.
+        // An absent set is EMPTY here: an unset `only` would stream the whole sheet as the "live" frame.
+        const dense = densityMode === 'dense';
+        const liveSet = dense ? (union(precisionNodeIds(sensitive), previewCoverage?.()?.nodeIds ?? null) ?? new Set<string>()) as ReadonlySet<NodeId> : null;
+        const sensitiveNodes = (dense ? liveSet : precisionNodeIds(sensitive)) as ReadonlySet<NodeId>;
+        // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
+        const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
+        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        void open.call(pin, shape, controller.signal).then(stream => {
+            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
+                void stream.release().catch(report).finally(() => pin.release());
+                return;
+            }
+            frames.requestStream({ stream, release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
+                open: (apron, signal) => open.call(pin, { ...identity, world: apron }, signal) });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }
@@ -238,6 +272,7 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        wakeAt(deadlineMs) { if (!disposed) layers.wakeAt(deadlineMs); },
         getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {
@@ -254,6 +289,7 @@ export const attachView: AttachView = options => {
             if (disposed || !options.session.doc.nodes.has(id as NodeId)) return;
             runtime.selection.replace([id as NodeId]); reveal(new Set([id as NodeId]));
         },
+        cancelReveal,
         connectEmbeds(port) {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
@@ -262,7 +298,6 @@ export const attachView: AttachView = options => {
             port?.setVisible(view.visible);
             publish(); layers.invalidate('board-embed-port');
         },
-        cancelReveal,
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

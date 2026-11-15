@@ -7,7 +7,6 @@ import type { NodeId } from '../model/ids';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
 import type { ClipboardCopy } from './copy';
-import type { CopySnapshot } from './snapshot';
 import { insertNativeClipboard } from './insertNative';
 import { planBoardClipboardPlacement } from './placement';
 import { prepareBoardClipboardMediaInJob } from './prepareMedia';
@@ -78,54 +77,4 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
             return inserted;
         } finally { media.release(); }
     } finally { decoded.release(); acquisition?.dispose(); }
-}
-export function pastePrivateClipboard(options: PrivateClipboardPasteOptions, signal?: AbortSignal): Promise<readonly NodeId[]> {
-    return options.runtime.jobs.run(context => pastePrivateClipboardInJob(options, context), { signal, deadlineMs: 120_000 });
-}
-
-export interface DuplicateClipboardOptions extends Omit<PrivateClipboardPasteOptions, 'encoded' | 'plain' | 'intent' | 'cache'> {
-    /** Caller retains the snapshot and its sample/media leases through completion. */
-    readonly snapshot: CopySnapshot;
-}
-/** Duplicate never touches the OS clipboard, but still performs actual C5 admission. */
-export async function duplicateClipboardInJob(options: DuplicateClipboardOptions, context: JobContext): Promise<readonly NodeId[]> {
-    const { runtime, snapshot } = options, session = runtime.session, doc = session.doc, revision = doc.rev;
-    const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
-        pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
-    const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
-    const check = () => {
-        runtime.jobs.assertContext(context); context.assertCurrent();
-        if (!options.current(target) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {
-            throw new DOMException('Duplicate target became stale', 'AbortError');
-        }
-    };
-    const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch
-        && value.revision === revision && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc && doc.rev === revision;
-    check();
-    let acquisition: Awaited<ReturnType<typeof acquireBoardClipboard>> | undefined;
-    try {
-        acquisition = await acquireBoardClipboard({ decoded: { payload: snapshot.payload, cacheOnly: false, inline: [] },
-            duplicateSnapshot: snapshot, identity, signal: context.signal, isCurrent: current, cooperate: options.cooperate });
-        check();
-        let containsFrame = false, visited = 0;
-        for (const node of acquisition.load.doc.nodes.values()) {
-            if (node.kind === 'frame') { containsFrame = true; break; }
-            if ((++visited & 255) === 0) { await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); }
-        }
-        const placement = planBoardClipboardPlacement({ receivingBoardId: options.receivingBoardId, target, source: acquisition.payload,
-            containsFrame, doc, cameraZoom: options.cameraZoom, intent: 'duplicate' });
-        const media = await prepareBoardClipboardMediaInJob({ runtime, acquisition, memory: options.memory, signal: context.signal,
-            current: () => current(identity), readBlob: options.readBlob, storeMedia: options.storeMedia, cooperate: options.cooperate }, context);
-        try {
-            check();
-            const owned = acquisition; acquisition = undefined;
-            const inserted = await insertNativeClipboard({ runtime, acquisition: owned, media, placement, target, signal: context.signal,
-                receivingBoardId: options.receivingBoardId, external: false, current: () => current(identity), cooperate: options.cooperate });
-            if (media.missing.length) options.noticeMissing(media.missing);
-            return inserted;
-        } finally { media.release(); }
-    } finally { acquisition?.dispose(); }
-}
-export function duplicateClipboard(options: DuplicateClipboardOptions, signal?: AbortSignal): Promise<readonly NodeId[]> {
-    return options.runtime.jobs.run(context => duplicateClipboardInJob(options, context), { signal, deadlineMs: 120_000 });
 }

@@ -31,18 +31,26 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     const [error, setError] = useState<string | null>(null);
     const onError = useCallback((cause: unknown) => {
         const message = cause instanceof Error ? cause.message : String(cause);
+        // Once the session owns a PDF source, rebind/view errors belong to
+        // that mounted view; dropping it would also drop its camera and cover.
+        if (getPdfInkSourceState(documentId)) { latest.current.onNotice(message); return; }
         if (latest.current.legacyConversion && latest.current.onLegacyConversionRefused) {
             latest.current.onLegacyConversionRefused(message); return;
         }
         setError(message);
-    }, []);
+    }, [documentId]);
+    // This view wrapper stays inline on purpose. Its prepare feeds a render-time useMemo, and React Compiler
+    // reports "Cannot access refs during render" when that prepare calls any imported preparer. App's cold
+    // path (preparePdfInkAttempt) calls the SAME canonical preparePdfInkSession from an async job instead.
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
         const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;
         const result = await create({ host: nativeCanvasHost, identity, signal, deadlineMs, zMax,
             prepareOwned: prepareOwnedPdfInk, createHost: createPdfInkHost, validateLoadedHost: validateLoadedPdfInkHost,
             readLegacyDigest: readPdfInkLegacyDigest, pinHost: pinPdfInkHostForSave, rebind: rebindPdfInkSource,
-            currentReadOnly: () => VIEW_REASON, onReadOnly: reason => setError(reason), onError,
+            // The acquisition adapter owns the temporary viewing seal. Source,
+            // emergency and C5/D10 restrictions remain independent of that seal.
+            currentReadOnly: () => null, onReadOnly: reason => latest.current.onNotice(reason), onError,
             onHistoryLimit: () => setError('The board history limit was reached.') });
         if (result.kind === 'read-only') {
             try {
@@ -67,12 +75,12 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     }), [nativeCanvasHost, identity, attachCanvasSession, onNativeCanvasReady, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
     const source = acquired ? getPdfInkSourceState(documentId) : undefined;
-    if (error || acquired && (!source || !acquired.adapter.board.isReadOnly)) {
-        return <div role="alert">{error ?? 'This PDF cannot be opened safely in read-only mode.'}
+    if (error || acquired && !source) {
+        return <div role="alert">{error ?? 'The PDF ink source is unavailable.'}
             <button type="button" onClick={props.onViewOriginal}>Back to view</button></div>;
     }
     if (!acquired || !source) return <div role="status">Preparing PDF annotations…</div>;
-    return <NativePdfViewer board={acquired.adapter.board} identity={identity} host={nativeCanvasHost} sourceState={source}
+    return <NativePdfViewer adapter={acquired.adapter} board={acquired.adapter.board} identity={identity} host={nativeCanvasHost} sourceState={source}
         file={props.file} isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme}
         emphasisEnabled={props.emphasisEnabled} zoomLimits={props.zoomLimits} insets={props.insets}
         registerKeyboardTarget={props.registerKeyboardTarget} onFocusPane={props.onFocusPane} onNotice={props.onNotice} onError={onError} />;

@@ -1227,18 +1227,26 @@ export default function App() {
       return tab && !tab.readError && tab.representation.status === 'ready' && tab.representation.loadedKind === loaded
         && entry?.serial === identity.session && (entry.bytesGeneration === identity.bytesGeneration || retained) ? tab : undefined;
     };
-    const writableSource = (identity: NativeCanvasIdentity) => {
+    // The first failing guard names the refusal; a null result is the only state in which the source may be written.
+    const writeBlockSource = (identity: NativeCanvasIdentity): string | null => {
       const policy = nativePoliciesRef.current.get(identity.documentId);
       const entry = documentSessions.get(identity.documentId);
-      return !!current(identity) && !!policy && !policy.emergencyReadOnly && policy.session === identity.session
-        && policy.activation === identity.vaultActivation && policy.kind === identity.kind
-        && policy.sourceGeneration === identity.bytesGeneration && policy.retainedThroughGeneration === entry?.bytesGeneration
-        && hasHostedNativeOwner(entry, identity.documentId) && !!getBaseline(identity.documentId)
-        && !diskStateRef.current.has(identity.documentId)
-        && (identity.kind !== 'pdfInk' || policy.pdfWriteAuthority?.canWriteSource() === true);
+      if (!current(identity)) return 'The native canvas session has ended.';
+      if (!policy) return 'The native canvas is not available for editing.';
+      if (policy.emergencyReadOnly) return 'This canvas is in emergency read-only mode.';
+      if (policy.session !== identity.session || policy.activation !== identity.vaultActivation || policy.kind !== identity.kind
+        || policy.sourceGeneration !== identity.bytesGeneration || policy.retainedThroughGeneration !== entry?.bytesGeneration)
+        return 'The native canvas changed; reopen it to continue.';
+      if (!hasHostedNativeOwner(entry, identity.documentId)) return 'The native canvas has no active editor.';
+      if (!getBaseline(identity.documentId)) return 'The file has no disk baseline yet.';
+      if (diskStateRef.current.has(identity.documentId)) return 'The file changed on disk; resolve the conflict first.';
+      if (identity.kind === 'pdfInk' && policy.pdfWriteAuthority?.canWriteSource() !== true) return 'The PDF source is locked for writing.';
+      return null;
     };
-    const writable = (identity: NativeCanvasIdentity) => writableSource(identity)
-      && hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId);
+    const writableSource = (identity: NativeCanvasIdentity) => writeBlockSource(identity) === null;
+    const writeBlockReason = (identity: NativeCanvasIdentity): string | null => writeBlockSource(identity)
+      ?? (hasWritableHostedNativeOwner(documentSessions.get(identity.documentId), identity.documentId) ? null : 'Another editor holds this canvas for writing.');
+    const writable = (identity: NativeCanvasIdentity) => writeBlockReason(identity) === null;
     const request = (identity: NativeCanvasIdentity, media: { hash: string; preferredName?: string | null }, signal: AbortSignal, write = false) => {
       signal.throwIfAborted();
       const tab = current(identity), root = rootHandleRef.current;
@@ -1249,6 +1257,10 @@ export default function App() {
     return {
       clipboard: nativeClipboard,
       embeds: nativeEmbeds,
+      async createEditingCapabilities(context) {
+        const { createNativeEditingCapabilities } = await import('./components/whiteboard/nativeEditingCapabilityFactory');
+        return createNativeEditingCapabilities(context);
+      },
       identity(id) {
         const tab = tabsRef.current.find(tab => tab.id === id), entry = documentSessions.get(id);
         if (!tab || tab.readError || tab.representation.status !== 'ready' || !entry) return undefined;
@@ -1272,6 +1284,7 @@ export default function App() {
       isCurrent: identity => !!current(identity),
       canWriteSource: identity => writableSource(identity),
       canWrite: identity => writable(identity),
+      writeBlockReason: identity => writeBlockReason(identity),
       session(id) {
         const adapter = documentSessions.get(id)?.adapter;
         return adapter && 'peek' in adapter ? (adapter as CanvasSessionBridge).peek() : undefined;
@@ -3188,7 +3201,7 @@ export default function App() {
     } finally { captured?.release(); }
     // queueReconcile is stable (a useCallback over refs), so flushTab — and
     // every timer and listener downstream of it — keeps its identity.
-  }, [bumpBytesGeneration, clearSaveTimer, contentOf, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
+  }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice]);
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
@@ -3370,7 +3383,7 @@ export default function App() {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, syncExitGuard, recoveryEvent]);
+  }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, recoveryEvent]);
 
   const preparePdfPrint = useCallback(async (path: string) => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -3383,16 +3396,22 @@ export default function App() {
         now.file.handle === handle && now.representation.generation === generation && !diskStateRef.current.get(id);
     };
     if (!current()) throw new Error('Return to this PDF and resolve any disk conflict before printing.');
+    // Native Annotate and classic canvases hold strokes the App cannot see until
+    // they report them; push those into the save funnel before reading any bytes.
+    try { await getView(path)?.flushPending?.(); }
+    catch { throw new Error('The PDF annotations could not be saved. Keep the file open and retry before printing.'); }
     await drain(id);
     await flushChainsRef.current.get(id);
     if (!current()) throw new Error('The document changed while preparing to print.');
     const revision = documentBuffers.revisionForDocument(id)?.revision;
-    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id);
+    // A native ink edit lives in the document session, not the buffer: the buffer can be clean while it is pending.
+    const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
     if (needsSave) {
       const outcome = await flushTab(path, true);
       if (outcome !== 'written') throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
     }
-    if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The document changed while preparing to print.');
+    if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()
+        || documentSessions.hasPendingEdits(id)) throw new Error('The document changed while preparing to print.');
     const baseline = getBaseline(id) ?? await pdfSeedForRef.current(id);
     let disk: Awaited<ReturnType<typeof readBytesVersioned>>;
     try { disk = await readBytesVersioned(handle as FileSystemFileHandle); }
@@ -3402,9 +3421,9 @@ export default function App() {
     }
     if (current() && baseline && disk.version.hash !== baseline.hash) setDiskState(id, 'conflict');
     if (!current() || !baseline || disk.version.hash !== baseline.hash || getBaseline(id)?.hash !== baseline.hash ||
-        documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
+        documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.() || documentSessions.hasPendingEdits(id)) throw new Error('The saved PDF changed. Reload or resolve its disk conflict before printing.');
     const valid = () => current() && getBaseline(id)?.hash === disk.version.hash && documentBuffers.revisionForDocument(id)?.revision === revision &&
-      !getView(path)?.hasPendingEdits?.() && !flushingRef.current.has(id);
+      !getView(path)?.hasPendingEdits?.() && !documentSessions.hasPendingEdits(id) && !flushingRef.current.has(id);
     const validate = async () => {
       if (!valid()) return false;
       try {
@@ -3417,7 +3436,7 @@ export default function App() {
       }
     };
     return { bytes: disk.bytes, valid, validate };
-  }, [documentBuffers, flushTab, readBytesVersioned, setDiskState]);
+  }, [documentBuffers, documentSessions, flushTab, readBytesVersioned, setDiskState]);
 
   /**
    * Turn a PDF's pages a quarter at a time, and write it.
@@ -4719,14 +4738,15 @@ export default function App() {
     if (!parentHandle || !rootHandleRef.current || createInFlightRef.current) return;
     createInFlightRef.current = true;
     const where = parentPath || parentHandle.name || 'this folder';
-    const root = rootHandleRef.current;
+    const root = rootHandleRef.current, activation = getVaultActivation();
+    const current = () => root === rootHandleRef.current && activation === getVaultActivation();
+    const nativeKind = isNativeDrawingFile(name) || isDrawingFile(name) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
+      : isNotebookFile(name) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
     try {
-      // Nothing here overwrites a file by accident — the rule the rest of the
-      // app keeps with freeEntryName, kept here with a refusal instead,
-      // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either. Native drawings use the unique-name
-      // creation path below instead.
+      // Explicit names refuse collisions; native drawing imports keep their existing
+      // unique-name behavior and carry the actual freeEntryName result forward.
       if (!isNativeDrawingFile(name) && await nameTaken(parentHandle, name)) {
+        if (!current()) return;
         await tell({
           title: 'That name is taken',
           confirmLabel: 'OK',
@@ -4734,25 +4754,30 @@ export default function App() {
         });
         return;
       }
+      let nativeBytes: Blob | undefined;
+      if (nativeKind) {
+        const { createEmptyNativeBytes } = await import('./whiteboard/host/emptyNative');
+        nativeBytes = createEmptyNativeBytes(nativeKind);
+      }
+      // Encode before fresh-file creation. A failed native encoder never creates
+      // a blank artifact or authorizes a Classic writer; once IO starts, finish
+      // this immutable payload even if its vault goes out of view.
+      if (!current()) return;
       if (__BME_BENCH__) {
         try { reportVault({ op: 'write', path: joinVaultPath(parentPath, name), caller: 'create' }); } catch { /* Measurement must not interrupt a write. */ }
       }
-      // An empty native drawing is the format's defined new-board state. Use
-      // the import path's freeEntryName (files AND folders) rather than the
-      // truncating createFile primitive, and carry its actual name forward.
       let createdName = name;
       let newFileHandle: FileSystemFileHandle | null;
-      if (isNativeDrawingFile(name)) {
-        const created = await importFiles([new File([], name)], parentHandle);
-        if (!created.length || !root) throw new Error('Could not create the drawing.');
+      if (nativeBytes) {
+        const created = await importFiles([new File([nativeBytes], name)], parentHandle);
+        if (!created.length) throw new Error('Could not create the native canvas.');
         createdName = created[0];
+        if (!current()) return;
         ({ handle: newFileHandle } = await resolveVaultFile(root, joinVaultPath(parentPath, createdName)));
       } else {
         newFileHandle = await createFile(parentHandle, name);
       }
-      // A vault switch during creation must not open the old folder's file in
-      // the new workspace, even if the path exists in both.
-      if (root !== rootHandleRef.current) return;
+      if (!current()) return;
       if (newFileHandle) {
         const newPath = joinVaultPath(parentPath, createdName);
         const newNode: FileTreeFileNode = {
@@ -4763,6 +4788,7 @@ export default function App() {
           path: newPath,
         };
         await handleFileClick(newNode);
+        if (!current()) return;
         setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {
@@ -4770,14 +4796,14 @@ export default function App() {
       // is indistinguishable from one that worked and left the tree alone.
       console.error('Failed to create file:', err);
       await tell({
-        title: 'Could not create the note',
+        title: 'Could not create the file',
         confirmLabel: 'OK',
         body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
       });
     } finally {
       createInFlightRef.current = false;
     }
-  }, [createFile, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
+  }, [createFile, getVaultActivation, handleFileClick, importFiles, resolveVaultFile, tell, nameTaken]);
 
   /**
    * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
@@ -6193,7 +6219,7 @@ export default function App() {
       resolvingRef.current.delete(id);
     }
   }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
+    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline, setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, bumpBytesGeneration]);
 
   // ── The AI agent's hands ────────────────────────────────────────────────
   // Everything the agent panel and its tool executor can do to the vault goes
@@ -6219,9 +6245,11 @@ export default function App() {
       const id = newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
-      setTabs(prev => prev.some(t => t.file.path === node.path)
+      // Session-only tools acquire immediately after this resolves; commit the tab
+      // and its source classification before handing them the live App owner.
+      flushSync(() => setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
-        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
+        : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]));
       return true;
     } catch (err) {
       console.error('Agent could not open a file:', err);
@@ -6300,13 +6328,29 @@ export default function App() {
     signal.throwIfAborted();
     const tab = tabsRef.current.find(item => item.file.path === path);
     const kind = tab?.representation.loadedKind;
-    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook')) {
+    if (!tab || tab.readError || tab.representation.status !== 'ready' || (kind !== 'drawing' && kind !== 'notebook' && kind !== 'pdf')) {
       throw new Error('The open canvas representation is not available for native reading.');
     }
     ensureCanvasBridge(tab);
     const identity = nativeCanvasHost.identity(tab.id);
-    if (!identity || identity.kind !== kind) throw new DOMException('Canvas session ended', 'AbortError');
-    const pinned = nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    if (!identity || identity.kind !== (kind === 'pdf' ? 'pdfInk' : kind)) throw new DOMException('Canvas session ended', 'AbortError');
+    // pinBoardSource is a drawing/notebook buffer pin; a PDF cold source never uses it (the host refuses pdfInk).
+    const pinned = kind === 'pdf' || nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
+    // Cold PDF source: one synchronous snapshot before the first await (buffer identity, revision, source and the
+    // verified disk baseline object). pdfPinHolds rechecks it after the import, after prepare and inside take;
+    // any change disposes the prepared source and refuses. A dirty or changed buffer is never read from disk.
+    const pinCleanPdf = () => {
+      const buffer = documentBuffers.get(tab.id), baseline = getBaseline(tab.id);
+      if (buffer && buffer.revision > buffer.savedRevision) return { ok: false as const, message: 'Save the PDF before the agent reads or edits its ink.' };
+      if (!baseline) return { ok: false as const, message: 'The PDF has no verified disk baseline, so the agent cannot read it.' };
+      return { ok: true as const, buffer, revision: buffer?.revision, source: buffer?.source, baseline };
+    };
+    const pdfPin = kind === 'pdf' ? pinCleanPdf() : undefined;
+    const pdfPinHolds = (pin: Extract<ReturnType<typeof pinCleanPdf>, { ok: true }>) => {
+      const buffer = documentBuffers.get(tab.id);
+      return nativeCanvasHost.isCurrent(identity) && buffer === pin.buffer && buffer?.revision === pin.revision
+        && buffer?.source === pin.source && getBaseline(tab.id) === pin.baseline && !(buffer && buffer.revision > buffer.savedRevision);
+    };
     let pinTransferred = false;
     try {
     const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
@@ -6317,13 +6361,33 @@ export default function App() {
     if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
     const reason = 'This native canvas is currently available in read-only mode.';
     const onError = (error: unknown) => console.error('Native canvas session failed:', error);
+    // Cold PDF source: only the already-native ink is admitted (a plain PDF is refused, never annotated),
+    // no legacy conversion, and no notebook handoff. A dirty document is refused rather than read from disk.
+    const preparePdfAgentSource = async (prepareSignal: AbortSignal) => {
+      if (!pdfPin?.ok) throw new Error(pdfPin?.message ?? 'The PDF source is unavailable.');
+      const pin = pdfPin;
+      const changed = () => new Error('The PDF changed while the agent was reading it; try again.');
+      const { preparePdfInkAttempt } = await import('./components/whiteboard/preparePdfInkAttempt');
+      if (!pdfPinHolds(pin)) throw changed();
+      const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: 100,
+        legacyConversion: false, requireExistingNative: true, onError,
+        onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.') }, prepareSignal);
+      if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
+      // ensureNativeBoard calls take inside attachCanvasSession, so this covers the attachment too.
+      return { ...prepared, take(owner: Parameters<typeof prepared.take>[0], isLiveOwner: Parameters<typeof prepared.take>[1], readOnlyReason: Parameters<typeof prepared.take>[2]) {
+        // No dispose here: ensureNativeBoard's finally awaits prepared.dispose when take never ran.
+        if (!pdfPinHolds(pin)) throw changed();
+        return prepared.take(owner, isLiveOwner, readOnlyReason);
+      } };
+    };
     const options = createNativeAcquisitionOptions({ host: nativeCanvasHost, identity,
       attachCanvasSession: attachNativeCanvasSession, onNativeCanvasReady, emergencyReadOnlyReason: reason,
       emergencyReadOnly: () => !!nativePoliciesRef.current.get(tab.id)?.emergencyReadOnly,
       onError, prepare: prepareSignal => {
+        if (kind === 'pdf') return preparePdfAgentSource(prepareSignal);
         pinTransferred = true;
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: kind, sourcePin: pinned,
-          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, readOnlyReason: reason, onError,
+          signal: prepareSignal, deadlineMs: 30_000, zMax: 100, onError,
           onHistoryLimit: () => announce('The board history limit was reached.') });
       },
     });
@@ -6333,10 +6397,38 @@ export default function App() {
     if (!runtime || !nativeCanvasHost.isCurrent(identity) || nativeCanvasHost.session(tab.id) !== acquired.adapter) {
       throw new DOMException('Canvas session ended', 'AbortError');
     }
-    return { identity, runtime, isCurrent: () => nativeCanvasHost.isCurrent(identity)
-      && nativeCanvasHost.session(tab.id) === acquired.adapter };
+    const isCurrent = () => nativeCanvasHost.isCurrent(identity) && nativeCanvasHost.session(tab.id) === acquired.adapter;
+    return { identity, runtime, isCurrent, canWrite: () => isCurrent() && nativeCanvasHost.canWrite(identity),
+      writeBlockReason: () => isCurrent() ? nativeCanvasHost.writeBlockReason(identity) : 'The native canvas session has ended.',
+      activateEditing() {
+        if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error('The native canvas source is not writable.');
+        if (!acquired.adapter.activateEditing) throw new Error('The native session has no editing admission.');
+        acquired.adapter.activateEditing();
+        if (!isCurrent() || !nativeCanvasHost.canWrite(identity)) throw new Error('The native canvas source is no longer writable.');
+      },
+      async readMedia(entry, mediaSignal) {
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        const pending = runtime.media.get(entry.id);
+        if (pending) return pending;
+        if (kind === 'pdf') {
+          // A PDF's embedded media lives only in its owned source, read through the lease-checked facade
+          // (same as the view and clipboard). It never goes through the drawing asset path below.
+          const { getPdfInkSourceState } = await import('./whiteboard/host/preparePdfInkSession');
+          const state = getPdfInkSourceState(identity.documentId);
+          if (!state) throw new DOMException('Canvas session ended', 'AbortError');
+          const blob = await state.readMedia(entry.id, mediaSignal);
+          mediaSignal.throwIfAborted();
+          if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+          return blob;
+        }
+        const result = await nativeCanvasHost.readMedia(identity, { hash: entry.id.slice(7), preferredName: entry.file }, mediaSignal);
+        mediaSignal.throwIfAborted();
+        if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
+        return result?.blob ?? null;
+      } };
     } finally { if (!pinTransferred) pinned?.release(); }
-  }, [announce, attachNativeCanvasSession, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
+  }, [announce, attachNativeCanvasSession, documentBuffers, ensureCanvasBridge, nativeCanvasHost, onNativeCanvasReady]);
 
   const [closedCanvasVersions] = useState(() => createClosedCanvasVersions());
   const closedCanvasReads = useRef(new Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>());

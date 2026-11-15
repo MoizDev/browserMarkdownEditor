@@ -7,6 +7,7 @@ import { compose, inverse } from '../geom/affine';
 import { transformBox } from '../geom/bounds';
 import { nextUp } from '../geom/numeric';
 import type { PaintNode, PaintNodeSource } from './paintStream';
+import type { ScenePaintNodeStream } from './scenePaintStream';
 import { SessionDenseRasters } from './sessionDenseRasters';
 import type { PaintNodeOrder } from './paintOrder';
 import { geometrySceneBounds, transformedPathBounds } from '../geom/providers';
@@ -307,18 +308,32 @@ export function createBoardRenderServices(options: {
             },
         };
     };
-    const rasterVariant = (doc: BoardDoc, request: ScenePaintRequest, epoch: number) => JSON.stringify([
+    const rasterVariant = (doc: BoardDoc, request: ScenePaintRequest, epoch: number, sourceToken: RenderToken) => JSON.stringify([
+        sourceToken.vaultEpoch, sourceToken.documentId, sourceToken.bytesGeneration, sourceToken.session,
         request.sheetId, request.theme, palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, epoch,
     ]);
     const paint = async (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): Promise<PaintNodeSource> => {
-        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch);
+        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
         const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
         return { ...source, sessionRasters, sourceWorld: world,
             ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
     };
-    const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) =>
-        createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+    // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
+    // stream was being consumed, so a frame never claims a raster from a superseded face set.
+    const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): ScenePaintNodeStream => {
+        const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
+        const world = request.world ? Object.freeze({ ...request.world }) : undefined;
+        const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+        return {
+            token: stream.token, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
+            sessionRasters, sourceWorld: world,
+            get rasterVariant() { return text.fonts.epoch === epoch ? variant : undefined; },
+            isCurrent: () => stream.isCurrent(),
+            next: () => stream.next(),
+            release: () => stream.release(),
+        };
+    };
     const paintNow = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token) => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
         return prepareScenePaintSourceNow(doc, sourceToken, request, {

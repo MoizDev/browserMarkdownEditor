@@ -1,6 +1,7 @@
 import type { Affine, ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
-import type { LayerHost } from '../../platform/render/compositor.types';
+import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
+import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
@@ -35,6 +36,9 @@ export interface BoardLayersOptions {
     readonly onDensityMode?: (mode: DensityMode) => void;
     /** A live item the current dense frame does not hold: the owner requests a frame that does. */
     readonly requestFrame?: () => void;
+    /** An overlay whose absence is not a view failure (a preview). Until its current frame is ready it reports complete
+     * and draws nothing, and it never draws a superseded frame, so it cannot hold back the pane's other layers. */
+    readonly optional?: boolean;
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -433,6 +437,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             options.onPresented?.(revision, token, presentedFrame(inkFrame(frame, ink), context.omittedNodeIds), context);
         } catch (error) { report(error); }
     };
+    // A frame is drawable only while it is the current generation of its source (an optional overlay's superseded frame never paints).
+    const drawable = (frame: PaintSource): boolean => !options.optional || options.frames.isCurrent(frame);
+    const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
+        const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
+        const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
+        const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
+        const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
+        if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
+        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
+        if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
+        const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision() && options.frames.isCurrent(ready);
+        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
+    };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
         id: `board-${band}`, group: 'document',
         create(host) {
@@ -443,7 +460,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 prepare,
                 drawGpu(pass, view) {
                     const frame = gpu?.readyFrame();
-                    if (!frame) return;
+                    if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
@@ -459,7 +476,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
-                    if (!frame) return;
+                    if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
                     const ink = adapter!.borrowPrepared()?.root.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
@@ -513,15 +530,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         },
         critical() { return !adapter?.readyFrame(); },
         coverage(layer, frame, backend) {
-            const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
-            const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
-            const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
-            const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
-            if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
-            if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
-            if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
-            const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision() && options.frames.isCurrent(ready);
-            return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
+            const actual = coverageOf(layer, frame, backend);
+            return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;

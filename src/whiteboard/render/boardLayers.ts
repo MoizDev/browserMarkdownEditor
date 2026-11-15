@@ -25,6 +25,16 @@ export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pen
     | { readonly kind: 'failed'; readonly message: string };
 function sameProgress(a: PaintProgress, b: PaintProgress): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+/** The budget one layer prepares under: the frame's own budget with one unit of work always admitted. A frame's prepare
+ * slice can be zero (input and presentation take the whole target), and then no layer advances: nothing wakes a stalled
+ * build but the next frame, which has no time either. One unit is one bounded step, so a frame costs one step more. */
+function withFirstUnit(budget: FrameBudget): FrameBudget {
+    let admitted = false;
+    return Object.create(budget, { shouldYield: { value: (): boolean => {
+        if (!admitted) { admitted = true; return false; }
+        return budget.shouldYield();
+    } } }) as FrameBudget;
+}
 export interface BoardLayersOptions {
     readonly frames: PaintFrameAssembler;
     readonly images: PaintImageProvider;
@@ -350,9 +360,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const current = () => useDense ? dense! : direct!;
             adapter = {
                 prepare: (view, budget) => {
-                    const source = options.frames.readFrame();
-                    if (useDense) dense!.prepare(view, budget, source ? liveFor(source) : undefined);
-                    else direct!.prepare(view, budget);
+                    const source = options.frames.readFrame(), work = withFirstUnit(budget);
+                    if (useDense) dense!.prepare(view, work, source ? liveFor(source) : undefined);
+                    else direct!.prepare(view, work);
                 },
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
@@ -384,7 +394,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);
-            options.frames.prepare(budget);
+            options.frames.prepare(withFirstUnit(budget));
             const frame = options.frames.readFrame();
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) return;
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
@@ -452,7 +462,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
-            gpu?.prepare(view, budget);
+            gpu?.prepare(view, withFirstUnit(budget));
             prune(frame, adapter.readyFrame());
         } catch (error) { report(error); }
         finally { refreshProgress(); }

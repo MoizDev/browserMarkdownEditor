@@ -167,8 +167,10 @@ export class SessionScene implements SceneSpatial {
     step(maxWork: number, deadline = Infinity): 'pending' | 'complete' {
         if (this.disposed) return 'complete';
         if (!Number.isSafeInteger(maxWork) || maxWork < 1 || Number.isNaN(deadline)) throw new RangeError('Invalid scene work budget');
+        // One unit is always admitted: a frame whose prepare slice is spent can never leave the Scene behind forever.
+        // A unit is one bounded generator step (the update yields every 256 items), so the floor is bounded too.
         let work = 0;
-        while (work++ < maxWork && performance.now() < deadline) {
+        while (work++ < maxWork && (work === 1 || performance.now() < deadline)) {
             if (!this.active) {
                 if (!this.pendingNodes.size && !this.pendingSheets.size && !this.pages && this.state.revision === this.options.doc.rev) {
                     this.rebuild.step(Math.max(1, maxWork - work));

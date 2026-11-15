@@ -199,7 +199,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) / side);
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const lease = host.allocator.cpu.reserve(BLOCK);
-        if (!lease) { denied = true; return null; }
+        // A denied plan start waits for a real capacity change: the wake re-runs the frame, nothing polls.
+        if (!lease) { denied = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,

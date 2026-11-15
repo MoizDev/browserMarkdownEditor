@@ -460,7 +460,6 @@
     "paper.cancel": "Annuler",
     "paper.keepProtected": "Le contenu verrouillé sera conservé.",
     "chrome.readOnly": "Ce forum est en lecture seule.",
-    "shortcuts.file.print": "Imprimer",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

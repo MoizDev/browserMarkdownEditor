@@ -102,8 +102,12 @@ missing-media guard, invent media receipts or fall back to folder `.Assets` for 
 - `prepareUnsignedPdfCopy` is copy-only for its admitted signature/AP subset. Warn and allocate a distinct
   collision-free target, preserve exact signed raw bytes, independently verify safety and refuse unsupported
   graphs. Never overwrite the signed original or claim cryptographic signature validation.
-- Print hands exact saved original bytes to the browser after flushing pending ink. It is not a raster
-  spooler. Keep print policy and stale-handoff checks through awaits; close a stale reserved tab.
+- PDF-pane print hands exact saved original bytes to the browser after flushing pending ink. It is not a
+  raster spooler. Keep print policy/stale-handoff checks through awaits; close a stale reserved tab.
+- Native board print/export shares one focused pin (`useNativeClipboard.pinFocusedBoard`): drawing sheets
+  use `whiteboardPrint`, notebooks `notebookPrint`, PDF-backed boards `pagedPrintSnapshot`. `printBoard.ts`
+  is their sole print surface; menus and Mod-P reach that service, never a second pin. JSON copy/export
+  likewise shares the chunked `clipboard/copyJson.buildBoardJson` producer and `exportDelivery`.
 
 ## Reader, fonts and module boundaries
 

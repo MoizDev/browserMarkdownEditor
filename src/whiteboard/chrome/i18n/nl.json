@@ -390,7 +390,6 @@
     "paper.cancel": "Annuleer",
     "paper.keepProtected": "Vergrendelde inhoud blijft behouden.",
     "chrome.readOnly": "Dit bord is alleen-lezen.",
-    "shortcuts.file.print": "Afdrukken",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

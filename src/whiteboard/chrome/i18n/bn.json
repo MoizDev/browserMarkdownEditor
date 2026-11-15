@@ -390,7 +390,6 @@
     "paper.cancel": "বাতিল করুন",
     "paper.keepProtected": "লক কন্টেন্ট রাখা হবে.",
     "chrome.readOnly": "এই বোর্ড শুধুমাত্র পঠনযোগ্য.",
-    "shortcuts.file.print": "মুদ্রণ",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

@@ -390,7 +390,6 @@
     "paper.cancel": "రద్దు చేయి",
     "paper.keepProtected": "లాక్ చేయబడిన కంటెంట్ ఉంచబడుతుంది.",
     "chrome.readOnly": "ఈ బోర్డు చదవడానికి మాత్రమే.",
-    "shortcuts.file.print": "ముద్రించు",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

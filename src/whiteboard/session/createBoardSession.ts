@@ -78,9 +78,12 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         return work;
     };
     const readonlyReason = () => options.readOnlyReason() ?? (applyController.isReadOnly ? 'The board cannot be saved safely; reload to continue.' : null);
-    const guardOwnership = () => {
+    const guardLive = () => {
         if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
         if (disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
+    };
+    const guardOwnership = () => {
+        guardLive();
         if (readonlyReason()) throw new ApplyFailed('read-only', readonlyReason()!);
     };
     const guard = () => {
@@ -237,7 +240,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         hasPendingEdits: pendingState,
         onPending(listener: () => void) { pendingListeners.add(listener); return () => { pendingListeners.delete(listener); }; },
         checkpoint() {
-            if (notifyingPending || disposed || !options.isCurrent(owner)) throw new ApplyFailed('stale-session', 'The board session has ended');
+            guardLive();
             if (recovering) throw new ApplyFailed('read-only', 'Recovery is in progress');
             if (applyController.isReadOnly) throw new ApplyFailed('read-only', 'Cannot capture a board after an unsafe transaction failure', true);
             // Capturing committed content is not an edit: native acquisition needs

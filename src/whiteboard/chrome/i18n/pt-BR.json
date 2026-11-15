@@ -390,7 +390,6 @@
     "paper.cancel": "Cancelar",
     "paper.keepProtected": "O conteúdo bloqueado será mantido.",
     "chrome.readOnly": "Esta placa é somente leitura.",
-    "shortcuts.file.print": "Imprimir",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

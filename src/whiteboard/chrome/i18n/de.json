@@ -455,7 +455,6 @@
     "paper.cancel": "Abbrechen",
     "paper.keepProtected": "Gesperrte Inhalte bleiben erhalten.",
     "chrome.readOnly": "Dieses Forum ist schreibgeschützt.",
-    "shortcuts.file.print": "Drucken",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

@@ -390,7 +390,6 @@
     "paper.cancel": "Отмена",
     "paper.keepProtected": "Заблокированный контент будет сохранен.",
     "chrome.readOnly": "Эта доска доступна только для чтения.",
-    "shortcuts.file.print": "Печать",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

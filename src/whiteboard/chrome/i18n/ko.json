@@ -390,7 +390,6 @@
     "paper.cancel": "취소",
     "paper.keepProtected": "잠긴 콘텐츠는 보관됩니다.",
     "chrome.readOnly": "이 보드는 읽기 전용입니다.",
-    "shortcuts.file.print": "인쇄",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

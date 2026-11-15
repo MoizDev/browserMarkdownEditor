@@ -4,7 +4,7 @@ import { isNativeDrawingFile, isNotebookFile, isPdfFile } from './fileTypes';
 import { createNativeAgentReader } from '../whiteboard/host/nativeAgentRead';
 import { readNativeAgentViewport } from '../whiteboard/host/nativeAgentView';
 import { readClosedAgentProjection } from '../whiteboard/host/agentProjection';
-import { getPdfInkSourceState } from '../whiteboard/host/preparePdfInkSession';
+
 import type { PdfInkAcquisition } from '../pdf/session/inkAcquisition.types';
 import type { Rect } from '../platform/types';
 import { MEDIA_MIMES, type MediaEntry, type MediaMime } from '../whiteboard/model/media';
@@ -13,6 +13,8 @@ import { acquireNativeBoard } from '../whiteboard/host/nativeAcquisition';
 import { createClosedBoardSource, type ClosedBoardSource } from '../whiteboard/host/closedBoardScene';
 import { prepareNativeExport } from '../whiteboard/host/nativeExport';
 import type { ClosedCanvasSourceLease } from './closedCanvasSource';
+import { getPdfInkSourceState } from '../whiteboard/host/preparePdfInkSession';
+import { boardPageStack } from '../whiteboard/model/pages';
 
 /** Loaded only by an actual canvas tool request; source ownership stays in App. */
 export async function readNativeCanvasShapePage(options: {
@@ -47,14 +49,15 @@ export async function readNativeCanvasShapePage(options: {
         // source the clipboard uses; a refusal here is explicit, never a blank backdrop.
         const pdfInk = source.identity.kind === 'pdfInk', documentId = source.identity.documentId;
         return createNativeAgentReader({ runtime: source.runtime,
+            // App's canonical pending-or-disk media reader: the export producer uses it for embedded pictures.
+            readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
             ...(pdfInk ? { retainPdfSource: () => {
                 const pdf = getPdfInkSourceState(documentId);
                 if (!pdf || !source.isCurrent()) throw new Error('The PDF ink source is unavailable');
                 if (pdf.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
                 return pdf.retainSource();
             } } : {}),
-            // App's canonical pending-or-disk media reader: the export producer uses it for embedded pictures.
-            readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
+
             isCurrent: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
             onError: error => console.error('Native canvas tool capture failed:', error),
         }).shapes({ ...options.query }, job);
@@ -79,10 +82,13 @@ export async function readNativeCanvasShapePage(options: {
     } finally { await lease.release(); }
 }
 
-/** An open native drawing's view with no mounted pane. The caller has established that the tab is open natively. */
+/** An open native canvas's view with no mounted pane: a drawing, notebook or PDF ink board, read from its own
+ * session. The caller has established that the tab is open natively. `storedPage` is a PDF's stored page (1-based),
+ * shown when the board was never viewed. */
 export async function readNativeCanvasView(options: {
     readonly deps: AgentHostDeps;
     readonly path: string;
+    readonly storedPage?: number;
     readonly guard: Parameters<NonNullable<VaultToolHost['nativeCanvasView']>>[1];
 }): Promise<NativeCanvasView> {
     const { deps, path, guard } = options;
@@ -97,19 +103,37 @@ export async function readNativeCanvasView(options: {
     check();
     if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
     const isCurrent = () => guard.isCurrent() && source.isCurrent();
+    const pdfInk = source.identity.kind === 'pdfInk', documentId = source.identity.documentId;
     const reader = createNativeAgentReader({ runtime: source.runtime,
         readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal),
+        // A PDF ink board's whole-sheet and page captures pin the App-owned PDF source of this exact document.
+        ...(pdfInk ? { retainPdfSource: () => {
+            const pdf = getPdfInkSourceState(documentId);
+            if (!pdf || !source.isCurrent()) throw new Error('The PDF ink source is unavailable');
+            if (pdf.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+            return pdf.retainSource();
+        } } : {}),
         isCurrent, notice: deps.notify, onError: error => console.error('Native canvas view failed:', error) });
     const job = { signal, deadlineMs: 30_000 };
-    // Read the recorded state before describing: a never-viewed board has no camera and its view is the whole sheet.
-    const wholeSheet = !readNativeAgentViewport(source.runtime);
-    const info = await reader.describe(job);
+    // The last real viewport the App recorded, if any: a hidden or unmounted board is read at that place.
+    // A never-viewed board has no camera; its view is the whole sheet (paged: its stored page).
+    const recorded = readNativeAgentViewport(source.runtime);
+    const info = await reader.describe(job, options.storedPage);
     check();
-    if (info.kind !== 'drawing') throw new Error('The open native canvas is not a drawing');
-    return { info, wholeSheet, capture: async (maxSide, captureSignal) => {
+    return { info, wholeSheet: !recorded, capture: async (maxSide, captureSignal, page) => {
         const requestSignal = captureSignal ? AbortSignal.any([signal, captureSignal]) : signal;
-        const { x, y, w, h } = info.viewport;
-        return reader.capture({ x, y, width: w, height: h }, maxSide, { signal: requestSignal, deadlineMs: 30_000 });
+        const captureJob = { signal: requestSignal, deadlineMs: 30_000 };
+        if (page !== undefined) {
+            const rect = reader.pageRect(page);
+            if (!rect) throw new RangeError(`page ${page} is not on this board`);
+            return reader.capture(rect, maxSide, captureJob);
+        }
+        if (info.kind === 'drawing') {
+            const { x, y, w, h } = info.viewport;
+            return reader.capture({ x, y, width: w, height: h }, maxSide, captureJob);
+        }
+        // A paged board shows its recorded region, or the whole sheet when it was never viewed.
+        return reader.capture(recorded?.region, maxSide, captureJob);
     } };
 }
 
@@ -251,40 +275,72 @@ async function captureAdmittedPdfInk(options: {
     }
 }
 
-/** An OPEN native ink PDF's whole-sheet picture from its LIVE session: the same canonical producer, the session's
- * own render parts and its own PDF source lease. No view is mounted and no second session is opened. */
-export async function readOpenNativePdfPicture(options: {
+/** A closed native drawing or notebook pictured from its immutable bytes: the canonical whole-sheet capture (a
+ * notebook's whole stack, or its one page), with no mounted view and no session. */
+export interface NativeClosedCanvasPicture {
+    readonly png: Blob;
+    /** Sheets for a drawing, pages for a notebook. */
+    readonly count: number;
+    readonly wholeSheet: boolean;
+    readonly page?: number;
+}
+
+/** A legacy (non-native) file is `null`, so its existing route keeps it. A native file that is truncated or malformed
+ * throws; it never falls back to a legacy read. Pictures read media only from the board's own folder, through App. */
+export async function readNativeClosedCanvasPicture(options: {
     readonly deps: AgentHostDeps;
     readonly path: string;
+    readonly handle: FileSystemFileHandle;
+    readonly page?: number;
     readonly maxSide: number;
-    readonly guard: Parameters<NonNullable<VaultToolHost['nativePdfPicture']>>[2];
-}): Promise<NativePdfPicture | null> {
-    const { deps, path, maxSide, guard } = options;
+    readonly guard: { readonly signal?: AbortSignal; isCurrent(): boolean };
+}): Promise<NativeClosedCanvasPicture | null> {
+    const { deps, path, handle, page, maxSide, guard } = options;
     const signal = guard.signal ?? new AbortController().signal;
     const check = () => {
         signal.throwIfAborted();
-        if (!guard.isCurrent()) throw new DOMException('Canvas picture source changed', 'AbortError');
+        if (!guard.isCurrent()) throw new DOMException('Closed canvas picture source changed', 'AbortError');
     };
-    if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
-    const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
-    check();
-    if (!source.isCurrent()) throw new DOMException('Canvas session changed', 'AbortError');
-    const { getPdfInkSourceState } = await import('../whiteboard/host/preparePdfInkSession');
-    const state = getPdfInkSourceState(source.identity.documentId);
-    if (!state) throw new Error('The open PDF ink source is unavailable.');
-    const lease = state.retainSource();
+    if (!deps.acquireClosedCanvasSource || !deps.readClosedCanvasMedia) return null;
+    const notebook = isNotebookFile(path);
+    const lease = await deps.acquireClosedCanvasSource(path, handle, notebook ? 'notebook' : 'drawing', { signal, isCurrent: guard.isCurrent });
+    let acquired: Awaited<ReturnType<typeof acquireNativeBoard>> | undefined, source: ClosedBoardSource | undefined;
     try {
-        const runtime = source.runtime;
-        const capture = await prepareNativeExport({ runtime, route: 'menu', boardName: 'Picture', theme: 'light', transparent: false,
-            maxSide, signal, current: () => guard.isCurrent() && source.isCurrent(), notice: deps.notify,
-            onError: error => console.error('Open PDF ink picture failed:', error),
-            readMedia: (entry, mediaSignal) => source.readMedia(entry, mediaSignal), retainPdfSource: () => lease });
+        check();
+        acquired = await acquireNativeBoard({ bytes: lease.bytes, kind: notebook ? 'notebook' : 'whiteboard',
+            identity: { session: `${lease.token.documentId}:${lease.token.session}`, epoch: lease.token.vaultEpoch,
+                generation: lease.token.bytesGeneration },
+            signal: lease.signal, deadlineMs: 30_000 });
+        check();
+        if (acquired.status === 'read-only') {
+            if (acquired.report.complete && acquired.report.format === 'other') return null;
+            throw new Error('The canvas cannot be pictured safely without its original bytes');
+        }
+        const doc = acquired.load.doc;
+        const stack = boardPageStack(doc.host);
+        const count = doc.kind === 'notebook' ? (stack?.rects.length ?? 0) : doc.sheetOrder.length;
+        if (page !== undefined && (doc.kind !== 'notebook' || !Number.isSafeInteger(page) || page < 1 || page > count)) {
+            throw new RangeError(`page ${page} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
+        }
+        const region = page !== undefined ? stack?.rects[page - 1] : undefined;
+        const readMedia = async (entry: MediaEntry, mediaSignal: AbortSignal) => {
+            const blob = await deps.readClosedCanvasMedia!(path, handle, entry, mediaSignal);
+            if (!blob) throw new Error(`The board's picture is missing: ${entry.file}`);
+            return blob;
+        };
+        source = await createClosedBoardSource({ doc, samples: acquired.samples, token: lease.token, readMedia, signal: lease.signal,
+            onError: error => console.error('Closed canvas picture failed:', error) });
+        check();
+        const capture = await prepareNativeExport({ runtime: source.runtime, route: 'menu', boardName: 'Picture', theme: 'light',
+            transparent: false, maxSide, signal: lease.signal, ...(region ? { region: { ...region } } : {}),
+            current: () => guard.isCurrent() && lease.isCurrent(), notice: deps.notify,
+            onError: error => console.error('Closed canvas picture failed:', error), readMedia });
         try {
-            const png = await capture.png(signal);
+            const png = await capture.png(lease.signal);
             check();
-            const host = runtime.session.doc.host;
-            if (host.kind !== 'pdf-ink') throw new Error('The open PDF is not an ink board');
-            return { png, bounds: { ...capture.bounds }, pageCount: host.pages.length };
+            return { png, count, wholeSheet: !region, ...(page !== undefined ? { page } : {}) };
         } finally { capture.release(); }
-    } finally { lease.release(); }
+    } finally {
+        try { source?.dispose(); } finally { try { acquired?.dispose(); } finally { await lease.release(); } }
+    }
 }

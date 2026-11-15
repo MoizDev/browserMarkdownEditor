@@ -23,6 +23,7 @@ import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
+import { printBoard } from './printBoard';
 
 const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
     { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
@@ -88,6 +89,10 @@ export interface NativeClipboardService {
     /** The one picture/card action provider for this document; every view's menu reads its selection. */
     readonly media: MediaActions;
     theme(): 'light' | 'dark';
+    /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
+    print(): boolean;
+    /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
+    exportPdf(): boolean;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean, writable?: () => boolean): NativeClipboardBinding;
 }
@@ -154,23 +159,24 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const storeMedia: StoreMedia = identity.kind === 'pdfInk'
         ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
         : restoreMedia;
-    // A PDF annotation page's pictures live in the PDF, so replacing one needs that page's own storage port, which is not built yet.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current,
-        ...(identity.kind === 'pdfInk' ? {} : { restore: restoreMedia }) });
+    // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
+    // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
+    const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
+        boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
+        transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
+        ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
+            const source = pdfSource();
+            if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+            return source.retainSource();
+        } } : {}) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
             captureWriteAuthority: () => { const captured = active; return () => !!captured && bindings.has(captured) && captured.writable(); },
-            prepareExport: (route, signal) => prepareNativeExport({ runtime, route, signal,
-                boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
-                transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-                ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
-                    const source = pdfSource();
-                    if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
-                    return source.retainSource();
-                } } : {}) }),
+            prepareExport,
             duplicate: snapshot => {
                 if (!active) return Promise.reject(new Error('The board view is unavailable'));
                 return active.controller.duplicate(snapshot);
@@ -191,9 +197,35 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
+    const focusedPdf = async (signal: AbortSignal, print: boolean) => {
+        const job = await prepareExport(print ? 'print' : 'menu', signal);
+        try {
+            const pdf = await job.print.pdf(signal);
+            signal.throwIfAborted();
+            if (!print) { downloadBoardExport(pdf, job.filename('pdf')); return; }
+            await printBoard({ pdf, valid: current, signal, onError: fail,
+                renderFallback: async (limit, pageSignal) => {
+                    const pages: Blob[] = [], total = job.print.pageCount;
+                    for (let page = 0; page < Math.min(limit, total); page++) pages.push(await job.print.pngPage(page, pageSignal));
+                    return { pages, total };
+                },
+                noticeTruncated: (printed, total) => report(`Printing ${printed} of ${total} pages; export to PDF to print all`) });
+        } finally { job.release(); }
+    };
+    let focusedTask: AbortController | undefined;
+    /** One focused print or export at a time; a second request while one runs is refused, not queued. */
+    const startFocusedTask = (work: (signal: AbortSignal) => Promise<void>): boolean => {
+        if (disposed || !current() || focusedTask) return false;
+        const controller = new AbortController();
+        focusedTask = controller;
+        void work(controller.signal).catch(fail).finally(() => { if (focusedTask === controller) focusedTask = undefined; });
+        return true;
+    };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
+        print: () => startFocusedTask(signal => focusedPdf(signal, true)),
+        exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let detached = false;
@@ -230,6 +262,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 }
                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c') {
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
+                }
+                if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
+                    event.preventDefault(); event.stopPropagation(); service.print(); return;
                 }
                 if (canWriteView()) {
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {

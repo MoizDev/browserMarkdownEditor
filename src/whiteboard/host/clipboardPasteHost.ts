@@ -16,9 +16,6 @@ export interface BoardClipboardPasteHostOptions extends Omit<BoardClipboardPaste
     isCurrent(identity: BoardJobIdentity): boolean;
 }
 
-/** The host maximum the native canvas entries pass to their encoders (App, PdfPane and CanvasPane all use 100). */
-export const NATIVE_Z_MAX = 100;
-
 /** One paste's host. The external source admitter is built from the same token, memory and media
  * reader as the rest of the host, so admission and insertion share one owner and one allocator. */
 export function createBoardClipboardPasteHost(options: BoardClipboardPasteHostOptions): BoardClipboardPasteHost {

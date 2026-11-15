@@ -182,6 +182,8 @@ function PdfReadingText({ filePath, expectedPageDigest, findMemory, sameSchema =
     useEffect(() => {
         if (!isVisible) return;
         return () => {
+            // A counter, not a value to snapshot: the cleanup must bump the latest epoch.
+            // eslint-disable-next-line react-hooks/exhaustive-deps
             ++navigationEpoch.current;
             if (navigation.current?.cause === 'restore') restoredAnchor.current = undefined;
             navigation.current?.cancel.abort();

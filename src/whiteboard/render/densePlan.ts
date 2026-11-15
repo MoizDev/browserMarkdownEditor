@@ -558,10 +558,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const matches = ready?.source === frame && ready.view === key && supportsLive(ready, liveNodes);
             // A sharp plan asks for its idle ancestor pass once; a pass already staged keeps running.
             let idle = false;
-            if (matches && ready?.sharp) {
-                if (staged?.ancestorsTried) { /* the idle pass continues below */ }
-                else if (staged || ready.ancestorsTried || !frame.occupiedRoot || !frame.sessionRasters || !frame.rasterVariant) return;
-                else { ready.ancestorsTried = true; idle = true; }
+            // The gate only decides whether an idle pass STARTS. Staged work always continues below: a provisional
+            // plan is both `ready` and `staged` while it refines, so returning on `staged` froze it at its first standin.
+            if (matches && ready?.sharp && !staged) {
+                if (ready.ancestorsTried || !frame.occupiedRoot || !frame.sessionRasters || !frame.rasterVariant) return;
+                ready.ancestorsTried = true; idle = true;
             }
             try {
                 staged ??= start(frame, view, liveNodes, matches, idle);

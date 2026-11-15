@@ -228,7 +228,11 @@ export const attachView: AttachView = options => {
         // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
-        lastCandidates = world ? pin.countCandidates?.(selectedSheet, world) ?? null : null;
+        // A pin's cell index is built by its own first stream open, so a fresh pin counts nothing yet: the count is
+        // taken again when that stream lands. Keeping the last known count meanwhile (not nulling it) matters, since a
+        // null count never releases the dense latch.
+        const counted = world ? pin.countCandidates?.(selectedSheet, world) ?? null : null;
+        if (counted !== null) lastCandidates = counted;
         // Dense mode keeps only the live nodes in its frame: selection, wet ink, embeds and previewed nodes.
         // Their set is the frame's whole sensitivity set, so every barrier a tile meets is present.
         // An absent set is EMPTY here: an unset `only` would stream the whole sheet as the "live" frame.
@@ -244,6 +248,8 @@ export const attachView: AttachView = options => {
                 void stream.release().catch(report).finally(() => pin.release());
                 return;
             }
+            // The stream's open has built this pin's index for the sheet: the count is current before the frame prepares.
+            if (world) { const landed = pin.countCandidates?.(selectedSheet, world) ?? null; if (landed !== null) lastCandidates = landed; }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish();

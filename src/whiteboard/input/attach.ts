@@ -231,7 +231,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     },
     ended(reason) {
       delegated?.clear()
-      if (reason === 'up' && start && completeTool) services.tools.complete(start)
+      // A non-editable view must not write the single-use reset: complete() can persist ui.tool to the shared document.
+      if (reason === 'up' && start && completeTool && editable()) services.tools.complete(start)
       completeTool = false
       temporaryPan = false
       pendingPrediction = undefined
@@ -418,7 +419,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     },
     update: (sample, modifiers) => router.update(view.token, sample.pointerId, [sample], modifiers),
     finish() {
-      try { router.finish(view.token, -1, 'up'); if (keyboardStart) services.tools.complete(keyboardStart) }
+      try { router.finish(view.token, -1, 'up'); if (keyboardStart && editable()) services.tools.complete(keyboardStart) }
       finally { keyboardStart = null; releaseClaim() }
     },
     escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },

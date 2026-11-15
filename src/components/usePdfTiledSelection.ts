@@ -44,8 +44,8 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
     const snapshot = useSyncExternalStore(options.selection.subscribe, options.selection.getSnapshot, options.selection.getSnapshot);
     const refreshPointer = useCallback(() => input.current?.refreshPointer(), []);
     useLayoutEffect(() => { options.selection.setDocument(options.docKey); }, [options.selection, options.docKey]);
+    const { element, selection, geometry } = options;
     useLayoutEffect(() => {
-        const { element, selection, geometry } = options;
         if (!element || !geometry) return;
         const detach = selection.attachGeometry(geometry);
         const gestures = new PdfSelectionGestures({ selection, cached: page => geometry.cached(page),
@@ -103,7 +103,7 @@ export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
             if (input.current === textInput) input.current = null;
             if (visibility.current === lifecycle) visibility.current = null;
         };
-    }, [options.element, options.selection, options.geometry]);
+    }, [element, selection, geometry]);
     useLayoutEffect(() => { visibility.current?.setVisible(options.isVisible); }, [options.isVisible, options.element, options.geometry]);
     return { selection: snapshot.selection, refreshPointer };
 }

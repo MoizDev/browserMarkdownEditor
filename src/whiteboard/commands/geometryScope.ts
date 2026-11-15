@@ -227,6 +227,8 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
             resolvedPolylineTip: polylineTip,
             resolvedTip(candidate, connector, terminal) { guard(connector.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
                 return render.changeGeometry.resolvedTip(candidate, connector, terminal); },
+            elbowRoute(candidate, connector) { guard(connector.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
+                return render.changeGeometry.elbowRoute(candidate, connector); },
             worldBoundsCenter(candidate, node) { guard(node.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
                 return render.changeGeometry.worldBoundsCenter(candidate, node); },
         };

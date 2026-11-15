@@ -10,6 +10,10 @@ import { createEmbedPresentationPort } from '../../platform/render/embedPresenta
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import { createNativeEmbedController, type NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../../whiteboard/host/embedPresentationFacts';
+import type { PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import type { RenderToken } from '../../platform/render/types';
+import type { PaintFrame } from '../../whiteboard/render/paintStream';
+import type { ViewerPaintPresentation } from '../../whiteboard/render/paintPresentation';
 import type { NativeClipboardBinding, NativeClipboardService } from './useNativeClipboard';
 import { createNativeImportAdapter } from './nativeImportAdapter';
 import { createNativeTextClipboard } from './nativeTextClipboard';
@@ -45,6 +49,8 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     readonly clipboard: NativeClipboardService;
     onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
     bindClipboard(surface: HTMLElement): NativeClipboardBinding;
+    /** The view's own certificate: complete, sharp, of the live platform frame and PDF source. */
+    certifyPresentation(presentation: PlatformPresentation): boolean;
 }) {
     if (options.toolOptions.runtime !== options.runtime || options.toolOptions.engine !== options.engine ||
         options.toolOptions.camera !== options.camera) throw new Error('Editing must use the attached board view');
@@ -73,7 +79,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         } }
     };
     const input = createBoardInputHost({ ...options, mode: 'edit',
-        presented: (...args) => embed?.producer.presented(...args),
+        presented(revision, renderToken: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) {
+            embed?.producer.presented(revision, renderToken, frame, context);
+            options.presented?.(revision, renderToken, frame, context);
+        },
         a11y: {
             toolState(snapshot) { accessible?.a11y.toolState(snapshot); },
             bindKeyboardCursor(activate) {
@@ -193,9 +202,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     });
     return {
         ...input,
+        // Only a complete, sharp, live presentation reaches the producer; anything else releases its pending frame.
         onPresentation(presentation: Parameters<typeof input.onPresentation>[0]) {
             input.onPresentation(presentation);
-            embed?.producer.onPresentation(presentation);
+            embed?.producer.onPresentation(presentation && options.certifyPresentation(presentation) ? presentation : null);
         },
         getTools: () => tools,
         getBinding: () => binding,

@@ -2,6 +2,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NodeId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
+import type { VideoFrameRegistry } from './videoFrames';
 
 // Provenance: media §6 session playback, C4 visibility and verified-blob
 // authority; independent detached video lifecycle, no upstream engine source.
@@ -18,6 +19,8 @@ export interface VideoPlaybackHost {
     current(): boolean;
     invalidate(id: NodeId): void;
     error(id: NodeId, message: string): void;
+    /** Where each presented frame goes as an immutable bitmap. Without it the view repaints the live element instead. */
+    readonly frames?: VideoFrameRegistry;
 }
 interface Player {
     readonly id: NodeId;
@@ -27,6 +30,10 @@ interface Player {
     readonly memory: ByteLease;
     callback: number | null;
     closed: boolean;
+    /** One snapshot at a time: a frame that arrives while the last is copying is the next one to be shown. */
+    snapshotting: boolean;
+    /** The copy in flight. The source it reads (object URL and charge) is dropped only after this settles. */
+    copying: Promise<void> | null;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
@@ -123,7 +130,7 @@ export class BoardVideoPlayback {
                 url = URL.createObjectURL(source.blob);
                 const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
-                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false };
+                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false, snapshotting: false, copying: null };
                 state.player = player; state.muted = true;
                 if (this.host.mode === 'hidden-dom') {
                     if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
@@ -142,7 +149,7 @@ export class BoardVideoPlayback {
                 const frame = () => {
                     if (player.closed || !this.visible || !state.visible || !this.host.current()) return;
                     if (this.host.source(id)?.entry.id !== player.mediaId) { this.close(state); return; }
-                    this.host.invalidate(id);
+                    if (this.host.frames) this.presentFrame(player); else this.host.invalidate(id);
                     player.callback = video.requestVideoFrameCallback(frame);
                 };
                 player.callback = video.requestVideoFrameCallback(frame);
@@ -165,17 +172,39 @@ export class BoardVideoPlayback {
             void player.video.play().catch(() => { if (!player.closed && this.host.current()) this.host.error(id, 'Video playback was blocked'); });
         } else state.player.video.pause();
     }
+    /** Copies the element's current frame out as an immutable bitmap. Its lifetime is the registry's, not the element's. */
+    private presentFrame(player: Player): void {
+        const frames = this.host.frames, video = player.video;
+        if (!frames || player.closed || player.snapshotting || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        // Charged before the copy allocates. A refused charge defers this frame; the next frame callback asks again.
+        const lease = frames.admitFrame(video.videoWidth * video.videoHeight * 4);
+        if (!lease) return;
+        player.snapshotting = true;
+        const copy: Promise<void> = createImageBitmap(video).then(bitmap => {
+            if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { bitmap.close(); frames.release(lease); return; }
+            frames.present(player.id, bitmap, lease);
+        }, () => {
+            frames.release(lease);
+            if (!player.closed && this.host.current()) this.host.error(player.id, 'This video frame could not be shown');
+        }).finally(() => { player.snapshotting = false; if (player.copying === copy) player.copying = null; });
+        player.copying = copy;
+    }
     private close(state: State): void {
         const player = state.player; if (!player || player.closed) return;
         player.closed = true; state.player = undefined;
         if (Number.isFinite(player.video.currentTime)) state.time = player.video.currentTime;
         if (soundOwner === player) soundOwner = null;
         state.muted = true;
+        // Presented frames close before the element and its object URL are released, so no paint can name a source that is gone.
+        this.host.frames?.retire(player.id);
         try {
             if (player.callback !== null) player.video.cancelVideoFrameCallback(player.callback);
             player.video.pause(); player.video.removeAttribute('src'); player.video.load();
         } finally {
-            player.video.remove(); URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
+            player.video.remove();
+            // The decoder is stopped above. The source (object URL and charge) waits for a copy the browser already started.
+            const dropSource = () => { URL.revokeObjectURL(player.url); this.host.memory.release(player.memory); };
+            if (player.copying) void player.copying.then(dropSource, dropSource); else dropSource();
         }
     }
 }

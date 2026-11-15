@@ -196,6 +196,26 @@ export interface ClipToken { readonly depth: number }
 // rendering-design.md:171, §2.4: identifies an explicit isolated effect, not ordinary group opacity.
 export interface GroupToken { readonly id: number }
 
+// Pre-admitted stencil coverage storage: a colour texture plus a stencil-backed target on the same
+// lease. Created in prepare through the device, never inside a draw; the frame borrows it per scope.
+export interface CoverageTarget {
+    readonly target: TargetHandle;
+    readonly texture: TextureHandle;
+    readonly width: number;
+    readonly height: number;
+    readonly samples: Samples;
+}
+export interface CoverageToken { readonly id: number }
+// Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
+// least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
+export function coverageTargetBytes(width: number, height: number, samples: Samples): number {
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid coverage size');
+    const pixels = width * height;
+    const bytes = pixels * 4 + pixels * ((samples === 4 ? 4 * 4 : 0) + 8 * samples);
+    if (!Number.isSafeInteger(bytes)) throw new RangeError('Coverage target exceeds safe accounting');
+    return bytes;
+}
+
 // rendering-design.md:172–176, 241, 284: leases report actual bucketed storage;
 // multisample colour and stencil storage are charged in addition to resolve textures.
 export interface TargetLease {
@@ -240,6 +260,13 @@ export interface GpuPass {
         blend: 'normal' | 'multiply';
         opacity: number;
     }): void;
+    // Stencil-winding coverage (rendering-design §2.4, §5.1). The target was admitted and created
+    // during prepare; this scope only BORROWS it. Draws between beginCoverage and endCoverage use
+    // stencil pipelines against the target; endCoverage resolves multisampled colour and composites
+    // the coverage into the current colour target with the clip active at begin. Nested or
+    // overlapping borrows of one target are rejected; LIFO with clips and groups is enforced.
+    beginCoverage(target: CoverageTarget, bounds: RectI): CoverageToken;
+    endCoverage(token: CoverageToken): void;
     end(): void;
 }
 
@@ -299,6 +326,8 @@ export interface GfxDevice {
     // Clamp at the edge; no mip levels.
     createSampler(filter: 'nearest' | 'linear'): SamplerHandle;
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
+    // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;
     createPipeline(desc: PipelineDesc): Promise<PipelineHandle>;
     createTarget(
         color: TextureHandle,

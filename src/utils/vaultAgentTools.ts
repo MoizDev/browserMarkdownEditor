@@ -32,7 +32,7 @@
 
 import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
-import type { AgentChange, ClosedPdfEmphasis, HostResult, VaultToolHost } from '../types/vaultAgent';
+import type { AgentChange, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
 import { getView, type CanvasApplyResult, type CanvasShapePage, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
@@ -688,6 +688,23 @@ async function pngResult(blob: Blob | null, caption: string, what: string): Prom
     return ok(caption, undefined, [{ type: 'image', data: img.data, mimeType: img.mimeType }]);
 }
 
+function onScreenCaption(viewport: { readonly x: number; readonly y: number; readonly w: number; readonly h: number }): string {
+    return ` — the part on screen: x ${Math.round(viewport.x)}…${Math.round(viewport.x + viewport.w)}, y ${Math.round(viewport.y)}…${Math.round(viewport.y + viewport.h)}`;
+}
+
+/** What a native canvas picture shows, said plainly: a recorded view, the whole sheet when the board was never viewed,
+ *  or one page. A hidden or unmounted board is never claimed to be on screen. */
+function nativeViewCaption(path: string, native: NativeCanvasView, page: number | undefined): string {
+    const info = native.info;
+    if (info.kind === 'drawing') return `${path}${native.wholeSheet ? ', the whole sheet' : onScreenCaption(info.viewport)}:`;
+    const count = info.pageCount;
+    const pdf = info.kind === 'pdf-annotate';
+    if (page !== undefined) return `${path}, page ${page} of ${count}${pdf ? ' (with its ink)' : ''}:`;
+    const pages = pdf ? `${count} PDF page${count === 1 ? '' : 's'}` : `${count} page${count === 1 ? '' : 's'}`;
+    if (native.wholeSheet) return `${path}, the whole sheet of its ${pages}:`;
+    return `${path}, pages ${info.visiblePages.join(', ')} of ${pages} on its recorded view:`;
+}
+
 function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
     if (!emphasis) return '';
     if (emphasis.kind === 'active') return ' (word emphasis applied)';
@@ -710,6 +727,20 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
     if (isPdfFile(name)) {
         const view = openPdfView(path);
+        // An OPEN native ink board with no mounted pane is pictured from its own session, at its last real view.
+        if (!view && ctx.host.nativeCanvasView) {
+            const native = await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (native) {
+                const count = native.info.kind === 'pdf-annotate' ? native.info.pageCount : 0;
+                if (page !== undefined && count && page > count) throw new ToolError(`page ${page} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
+                const blob = await withTimeout(native.capture(max, ctx.signal, page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+                ctx.ensureLive();
+                return pngResult(blob, nativeViewCaption(path, native, page), `"${path}"`);
+            }
+        }
         if (view) {
             const info = await describe(view);
             if (info.kind === 'pdf' && info.surface === 'text') throw new ToolError('PDF Text image capture is unavailable. Use vault_read for canonical text or switch to Original to view page images.');
@@ -729,6 +760,19 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             ctx.ensureLive();
             return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
+        // A closed native ink board is pictured from its admitted source; every other PDF keeps the routes below.
+        if (!view && ctx.host.nativePdfPicture) {
+            const picture = await ctx.host.nativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (picture) {
+                const count = picture.pageCount;
+                const pages = `${count} PDF page${count === 1 ? '' : 's'}`;
+                const note = page !== undefined ? ' (an ink board is pictured whole, not by page)' : '';
+                return pngResult(picture.png, `${path}, the whole sheet of its ${pages}${note}:`, `"${path}"`);
+            }
+        }
         const bytes = await ctx.host.readBytes(path);
         if (!bytes) throw new ToolError(`"${path}" could not be read.`);
         const target = page ?? 1;
@@ -745,6 +789,32 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {
+        // An open native canvas is read from its session: no mounted pane is waited for or opened.
+        const native = ctx.host.nativeCanvasView ? await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+            try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+        } }) : null;
+        // A CLOSED native drawing or notebook is pictured from its own bytes, without mounting or opening anything.
+        if (!native && !getView(path)?.canvas && ctx.host.nativeClosedPicture) {
+            const closed = await ctx.host.nativeClosedPicture(path, page, max, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (closed) {
+                const caption = closed.wholeSheet
+                    ? `${path}, the whole ${isNotebookFile(name) ? `notebook of ${closed.count} page${closed.count === 1 ? '' : 's'}` : `drawing (${closed.count} sheet${closed.count === 1 ? '' : 's'}; the first)`}:`
+                    : `${path}, page ${closed.page} of ${closed.count}:`;
+                return pngResult(closed.png, caption, `"${path}"`);
+            }
+        }
+        if (native) {
+            const info = native.info;
+            if (info.kind === 'notebook' && page !== undefined && page > info.pageCount) {
+                throw new ToolError(`page ${page} is past the end of "${path}", which has ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.`);
+            }
+            const blob = await withTimeout(native.capture(max, ctx.signal, info.kind === 'drawing' ? undefined : page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+            ctx.ensureLive();
+            return pngResult(blob, nativeViewCaption(path, native, info.kind === 'drawing' ? undefined : page), `"${path}"`);
+        }
         // A closed canvas opens beside the user without taking focus.
         let view = getView(path);
         if (!view?.canvas) {
@@ -766,10 +836,7 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
         const blob = await withTimeout(view.capture(max), REPORTER_TIMEOUT_MS, 'capturing the canvas');
         ctx.ensureLive();
         const info = await describe(view);
-        const where = info.kind === 'drawing'
-            ? ` — the part on screen: x ${Math.round(info.viewport.x)}…${Math.round(info.viewport.x + info.viewport.w)}, y ${Math.round(info.viewport.y)}…${Math.round(info.viewport.y + info.viewport.h)}`
-            : '';
-        return pngResult(blob, `${path}${where}:`, `"${path}"`);
+        return pngResult(blob, `${path}${info.kind === 'drawing' ? onScreenCaption(info.viewport) : ''}:`, `"${path}"`);
     }
 
     throw new ToolError(`vault_view shows PDFs, notebooks, drawings and images; "${path}" is text — read it with vault_read.`);
@@ -1026,7 +1093,8 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
             revision: a.revision as number | undefined };
         const view = getView(path);
         let result = view?.canvas?.shapePage?.(query);
-        if (!result && !isPdfFile(path) && ctx.host.canvasShapePage) {
+        // A PDF with no mounted view reads its admitted native board from the closed source, never by mounting it.
+        if (!result && (!isPdfFile(path) || !view?.canvas) && ctx.host.canvasShapePage) {
             result = (await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
                 try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
             } })) ?? undefined;
@@ -1045,8 +1113,18 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok([...head, '', ...lines].join('\n'));
     }
     if (isPdfFile(baseName(path))) {
-        // A PDF's annotations live inside the PDF; only its annotate view
-        // reads them out, so this one does open it (beside the user).
+        // A closed PDF's admitted native ink board is read from its source; no view is mounted for it.
+        if (!getView(path)?.canvas && ctx.host.canvasShapePage) {
+            const native = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
+                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+            } });
+            ctx.ensureLive();
+            if (native) {
+                const head = [`path: ${path}`, `revision: ${native.revision}`, `total: ${native.total}`, COORDS_PAGED];
+                return ok([...head, '', ...pagedShapeLines(native, 0, MAX_TOOL_TEXT_CHARS - 1500).lines].join('\n'));
+            }
+        }
+        // An ordinary PDF's annotations are read only through its annotate view, which this does open (beside the user).
         const view = await liveCanvas(ctx, path);
         const result = view.canvas.shapePage?.({ page });
         const shapes = result?.shapes ?? view.canvas.shapes(page), total = result?.total ?? shapes.length;

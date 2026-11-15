@@ -68,14 +68,19 @@ export interface AgentHostDeps {
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
     /** App-owned immutable closed source; projection and format classification stay in the consumer. */
-    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook',
+    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook' | 'pdf-ink',
         guard: { readonly signal: AbortSignal; isCurrent(): boolean }) => Promise<import('./closedCanvasSource').ClosedCanvasSourceLease>;
+    /** One embedded picture of a closed board, read from the board's own folder (its `.Assets`), never from a tab. */
+    readClosedCanvasMedia?: (path: string, handle: FileSystemFileHandle, entry: import('../whiteboard/model/media').MediaEntry,
+        signal: AbortSignal) => Promise<Blob | null>;
     /** Resolve or acquire the open tab's one canonical runtime, without attaching a view. */
     ensureNativeAgentRuntime?: (path: string, signal: AbortSignal) => Promise<{
         readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
         readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
         isCurrent(): boolean;
         canWrite(): boolean;
+        /** Named refusal for the facade's write block; null only when canWrite() holds. */
+        writeBlockReason(): string | null;
         activateEditing(): void;
         readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     }>;
@@ -232,18 +237,65 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async canvasShapePage(path, query, guard) {
             const deps = getDeps();
             if (deps.canvasShapePage) return deps.canvasShapePage(path, query, guard);
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            const found = openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
+            const found =openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
             const { readNativeCanvasShapePage } = await import('./nativeCanvasAgentRead');
             return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
+        async nativeCanvasView(path, guard) {
+            const deps = getDeps();
+            // A closed canvas has no session to read; only an OPEN, admitted native canvas is read here.
+            const tab = deps.root ? openTabAt(deps, path) : undefined;
+            if (!deps.root || !tab) return null;
+            const kind = tab.representation.nativeCanvasKind;
+            const native = isNativeDrawingFile(path) ? true
+                : isNotebookFile(path) ? kind === 'notebook'
+                    : isPdfFile(path) ? kind === 'pdfInk' : false;
+            if (!native) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            guard.signal?.throwIfAborted();
+            if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
+            // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
+            const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
+            const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
+            return readNativeCanvasView({ deps, path, storedPage: stored ? stored.page + 1 : undefined,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
+        async nativeClosedPicture(path, page, maxSide, guard) {
+            const deps = getDeps();
+            // Only a CLOSED native drawing or notebook is pictured here; an open canvas is read through its session.
+            if (!deps.root || openTabAt(deps, path) || !(isNativeDrawingFile(path) || isNotebookFile(path))) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            const found = await fileAt(deps.root, path);
+            guard.signal?.throwIfAborted();
+            if (!found || !current()) return null;
+            const { readNativeClosedCanvasPicture } = await import('./nativeCanvasAgentRead');
+            return readNativeClosedCanvasPicture({ deps, path, handle: found.handle, page, maxSide,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
+        async nativePdfPicture(path, maxSide, guard) {
+            const deps = getDeps();
+            if (!deps.root || !isPdfFile(path)) return null;
+            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
+            const tab = openTabAt(deps, path);
+            // An OPEN PDF is read through nativeCanvasView (its last real view), never pictured here: a mounted or
+            // classic open PDF keeps its own route.
+            if (tab) return null;
+            // A CLOSED PDF is pictured from its admitted source, never by opening a tab.
+            const found = await fileAt(deps.root, path);
+            guard.signal?.throwIfAborted();
+            if (!found || !current()) return null;
+            const { readNativePdfPicture } = await import('./nativeCanvasAgentRead');
+            return readNativePdfPicture({ deps, path, handle: found.handle, maxSide,
+                guard: { signal: guard.signal, isCurrent: current } });
+        },
         async canvasApplyNative(path, ops, guard) {
             const deps = getDeps();
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path))) return null;
+            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
@@ -589,6 +641,13 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 tabs,
                 focusedPath: focusedPathOf(deps.layout),
                 remembered: path => rememberedPosition(getDeps(), path),
+                // The same native read the tools use, guarded to this vault for its whole duration.
+                nativeView: (path, signal) => {
+                    const root = deps.root;
+                    return toolHost.nativeCanvasView
+                        ? toolHost.nativeCanvasView(path, { signal, isCurrent: () => getDeps().root === root })
+                        : Promise.resolve(null);
+                },
             };
         },
 

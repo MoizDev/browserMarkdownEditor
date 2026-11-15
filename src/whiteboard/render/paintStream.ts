@@ -5,6 +5,8 @@ import type { Blend } from './colour';
 import type { InkMaterial, PaintBand, PathMaterial, TextMaterial } from './material';
 import type { TextPaint, FaceTable } from '../text/paint';
 import type { BoardDoc } from '../model/doc';
+import type { SessionDenseRasters } from './sessionDenseRasters';
+import type { ScenePaintNodeStream } from './scenePaintStream';
 
 export type FillRule = 'nonzero' | 'evenodd';
 export interface PaintClip {
@@ -70,6 +72,10 @@ export interface PaintNode {
 export interface PaintNodeSource {
     /** The actual immutable source document, never the session's newer live model. */
     readonly sourceDoc?: BoardDoc;
+    readonly sessionRasters?: SessionDenseRasters;
+    readonly rasterVariant?: string;
+    /** All contributors inside this region are present; absent means the whole sheet. */
+    readonly sourceWorld?: Readonly<Rect>;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly sensitiveNodes?: ReadonlySet<string>;
@@ -79,6 +85,11 @@ export interface PaintNodeSource {
 }
 export interface PaintFrame {
     readonly sourceDoc?: BoardDoc;
+    readonly sessionRasters?: SessionDenseRasters;
+    readonly rasterVariant?: string;
+    readonly sourceWorld?: Readonly<Rect>;
+    /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

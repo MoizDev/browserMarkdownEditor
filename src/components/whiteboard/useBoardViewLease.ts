@@ -10,17 +10,19 @@ export function useBoardViewLease<T extends object, S extends BoardSessionPort>(
     readonly parameters: BoardViewParameters;
     readonly onError: (error: unknown) => void;
 }): BoardViewLease<T> | null {
-    const current = useRef(options.parameters), error = useRef(options.onError);
-    useEffect(() => { current.current = options.parameters; error.current = options.onError; });
-    const [entry, setEntry] = useState<{ adapter: typeof options.adapter; attach: typeof options.attachView;
+    const { adapter, attachView, parameters, onError } = options;
+    const mode = parameters.mode;
+    const current = useRef(parameters), error = useRef(onError);
+    useEffect(() => { current.current = parameters; error.current = onError; });
+    const [entry, setEntry] = useState<{ adapter: typeof adapter; attach: typeof attachView;
         mode: BoardViewParameters['mode']; lease: BoardViewLease<T> } | null>(null);
     useEffect(() => {
         let lease: BoardViewLease<T>;
-        try { lease = options.attachView(options.adapter.board, current.current); }
+        try { lease = attachView(adapter.board, current.current); }
         catch (cause) { error.current(cause); return; }
-        setEntry({ adapter: options.adapter, attach: options.attachView, mode: options.parameters.mode, lease });
+        setEntry({ adapter, attach: attachView, mode, lease });
         return () => lease.dispose();
-    }, [options.adapter, options.attachView, options.parameters.mode]);
-    return entry && entry.adapter === options.adapter && entry.attach === options.attachView
-        && entry.mode === options.parameters.mode ? entry.lease : null;
+    }, [adapter, attachView, mode]);
+    return entry && entry.adapter === adapter && entry.attach === attachView
+        && entry.mode === mode ? entry.lease : null;
 }

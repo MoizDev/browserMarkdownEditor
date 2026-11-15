@@ -1,14 +1,11 @@
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { removeNotebookExporter, setNotebookRenderData, type NativeNotebookExporter } from '../../utils/notebookRenderCache';
 import { getSessionIdentity } from '../../utils/sessionIdentity';
-import type { DisplayPdfWriter } from '../export/capturePdf';
 import type { ComposedBoardSession } from '../session/factoryTypes';
 import { exportIncrementalNotebookPdf } from './notebookExport';
 import { createNativeNotebookIncrementalWriter } from './notebookIncrementalWriter';
 import { pinNativeNotebookExport } from './notebookExportCapture';
 import { getBoardRuntime } from './runtime';
-
-export type NativeNotebookDisplayWriter = (revision: number) => DisplayPdfWriter;
 
 const slot = Symbol('native notebook exporter');
 
@@ -17,8 +14,6 @@ export function registerNativeNotebookExporter(options: {
     board: ComposedBoardSession;
     host: NativeCanvasHost;
     identity: NativeCanvasIdentity;
-    /** Legacy callers may still supply this; native export uses the incremental writer. */
-    writer?: NativeNotebookDisplayWriter;
     onError(error: unknown): void;
 }): void {
     const { board, host, identity } = options;

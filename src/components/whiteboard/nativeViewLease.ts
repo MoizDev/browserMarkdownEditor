@@ -1,5 +1,5 @@
-import type { PlatformLayerDefinition, PlatformPane } from '../../platform/render/attachPlatformPane.types';
-import { cameraForPagedPosition, pagedPosition, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
+import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { createPlatformCapturer } from '../../platform/render/captureRuntime';
@@ -13,7 +13,14 @@ import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { recordNativeAgentViewport } from '../../whiteboard/host/nativeAgentView';
 import { createBoardCaptureSnapshot } from '../../whiteboard/export/runtimeSnapshot';
 import { createBoardHostImages } from '../../whiteboard/media/hostImages';
+import { BoardVideoPlayback } from '../../whiteboard/media/playback';
+import { videoFrameOverlay } from '../../whiteboard/media/videoFrames';
+import { AnimatedPictureDriver, canAnimatePicture } from '../../whiteboard/media/animatedFrames';
+import type { AnimatedPictureDemand } from '../../whiteboard/media/animation';
+import { PicturePlayback } from '../../whiteboard/media/picturePlayback';
+import { isSheetParent } from '../../whiteboard/model/doc';
 import { boardPageStack } from '../../whiteboard/model/pages';
+import type { NodeId } from '../../whiteboard/model/ids';
 import type { MediaId } from '../../whiteboard/model/media';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
@@ -66,10 +73,19 @@ function claimCamera(handoff: NativeCameraHandoff, runtime: BoardRuntime, limits
 }
 
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
+/** This view's playback of its video pictures. Playback never dirties the document; only the view's frames carry it. */
+export interface NativeVideoPlayback {
+    /** True once a drawn frame has shown this picture, so starting playback is offered only after its image is on screen. */
+    shown(node: NodeId): boolean;
+    playing(node: NodeId): boolean;
+    play(node: NodeId): void;
+    pause(node: NodeId): void;
+}
 export interface NativeViewLease extends BoardViewLease<object> {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
     readonly camera: CameraController;
+    readonly video: NativeVideoPlayback;
     readonly editing: ReturnType<typeof createNativeEditingLease> | null;
     getNavigationSnapshot(): NativeNavigationSnapshot;
     jump(page: number): void;
@@ -153,7 +169,22 @@ export function createNativeViewLease(options: {
         catch (error) { options.onError(error); return false; }
     }
     const current = () => !disposed && host.isCurrent(identity) && sourceCurrent();
-    const publish = () => { if (!disposed) for (const listener of [...listeners]) listener(); };
+    /** The one certificate that a presentation is complete, sharp and belongs to this live view, its platform
+     * frame and its PDF source. The backdrop and the embed presentation both act only on it, so neither can
+     * accept a frame the other refuses. */
+    const certifyPresentation = (presentation: PlatformPresentation): boolean => {
+        const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
+        return !!actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
+            presentation.token.viewLease === actualFrame.viewLease && actualFrame.documentId === token.documentId && actualFrame.session === token.session &&
+            actualFrame.vaultEpoch === token.vaultEpoch && actualFrame.bytesGeneration === token.bytesGeneration &&
+            presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
+            presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
+            presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
+            (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
+                presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
+                presentation.token.bytesGeneration === source.bytesGeneration));
+    };
+    const publish =() => { if (!disposed) for (const listener of [...listeners]) listener(); };
     const invalidate = () => { platformPane?.invalidate('native-view'); publish(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate, onError: options.onError };
@@ -190,7 +221,84 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, onError: options.onError });
+        }, invalidate: () => invalidate(), onError: options.onError });
+    // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
+    // before the source it came from is released.
+    const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
+        source(id) {
+            const node = board.doc.nodes.get(id);
+            if (!node || node.kind !== 'picture' || !node.media) return null;
+            const entry = board.doc.media.get(node.media), bytes = runtime.media.get(node.media);
+            return entry && bytes && entry.mime.startsWith('video/') ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
+        },
+        current: () => current() && parameters.visible,
+        invalidate: () => invalidate(),
+        error: (_id, message) => options.onNotice(message) });
+    // Animated pictures: the picture's own playing choice (its default follows the reduced-motion preference), and one clock
+    // that decodes only the frame it is on. Their frames are presented through the same registry as a video's.
+    const pictures = new PicturePlayback(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const pictureMedia = (node: NodeId): MediaId | null => {
+        const value = board.doc.nodes.get(node);
+        return value?.kind === 'picture' && value.media ? value.media : null;
+    };
+    const isVideo = (node: NodeId): boolean => {
+        const media = pictureMedia(node);
+        return media !== null && !!board.doc.media.get(media)?.mime.startsWith('video/');
+    };
+    const animation = new AnimatedPictureDriver({ registry: images.frames,
+        source(id) {
+            const media = pictureMedia(id), entry = media ? board.doc.media.get(media) : undefined, bytes = media ? runtime.media.get(media) : undefined;
+            return entry && bytes && entry.animated && !entry.mime.startsWith('video/') && canAnimatePicture(entry.mime)
+                ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
+        },
+        current: () => current() && parameters.visible,
+        invalidate: () => invalidate(),
+        // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
+        wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
+        error: (_id, message) => options.onNotice(message) });
+    // The world rectangle this view shows; a sheet's picture counts for its overlap with it, and a picture inside a frame
+    // counts for its whole box (its frame's transform is not resolved here, and only the overlap ranks which animate).
+    const shownWorld = () => {
+        const corner = (x: number, y: number) => surfaceToWorld({ x, y }, camera.camera);
+        const a = corner(0, 0), b = corner(camera.viewport.width, camera.viewport.height);
+        return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+    };
+    const animationDemands = (): AnimatedPictureDemand[] => {
+        const sheet = runtime.selection.getSnapshot().sheet, shown = shownWorld(), demands: AnimatedPictureDemand[] = [];
+        for (const id of board.doc.bySheet.get(sheet) ?? []) {
+            const node = board.doc.nodes.get(id);
+            if (!node || node.kind !== 'picture' || !node.media) continue;
+            const entry = board.doc.media.get(node.media);
+            if (!entry?.animated || entry.mime.startsWith('video/') || !canAnimatePicture(entry.mime)) continue;
+            const area = isSheetParent(board.doc, node.parent)
+                ? Math.max(0, Math.min(node.x + node.w, shown.x1) - Math.max(node.x, shown.x0)) * Math.max(0, Math.min(node.y + node.h, shown.y1) - Math.max(node.y, shown.y0))
+                : node.w * node.h;
+            demands.push({ node: id, media: node.media, visibleArea: area, playing: pictures.playing(id, node.media) });
+        }
+        return demands;
+    };
+    // The view's draw is the animation clock's sync point: it reads what is on the sheet and shown right now.
+    const syncAnimation = () => animation.sync(animationDemands(), performance.now());
+    const videoPort: NativeVideoPlayback = {
+        shown: node => images.frames.drawn(node),
+        playing(node) {
+            if (isVideo(node)) return video.getState(node).playing;
+            const media = pictureMedia(node);
+            return media !== null && pictures.playing(node, media);
+        },
+        play(node) {
+            if (isVideo(node)) { video.show(node, true); video.play(node); return; }
+            const media = pictureMedia(node);
+            if (media) pictures.setPlaying(node, media, true);
+            invalidate();
+        },
+        pause(node) {
+            if (isVideo(node)) { video.pause(node); return; }
+            const media = pictureMedia(node);
+            if (media) pictures.setPlaying(node, media, false);
+            invalidate();
+        },
+    };
     const viewParameters = (): ViewerViewParams => ({ ...parameters, sheetId: runtime.selection.getSnapshot().sheet,
         // attachView owns the notebook's actual paper layer; adding another one
         // here gives the compositor two definitions with the same layer id.
@@ -199,8 +307,12 @@ export function createNativeViewLease(options: {
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
         backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, reveal, onError: options.onError });
-    } catch (error) { backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
+        images.setVisible(parameters.visible && current());
+        video.setVisible(parameters.visible && current());
+        animation.setVisible(parameters.visible && current(), performance.now());
+        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
+            reveal, onError: options.onError });
+    } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
@@ -208,7 +320,7 @@ export function createNativeViewLease(options: {
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
-        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure,
+        host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => inputPermitted && parameters.mode === 'edit' && edit.canMutate()),
         toolOptions: { runtime, engine: viewer, images, camera, token,
@@ -220,7 +332,7 @@ export function createNativeViewLease(options: {
             interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
-        } catch (error) { viewer.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
+        } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
@@ -329,16 +441,8 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
-                if (presentation && actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
-                    presentation.token.viewLease === actualFrame.viewLease && actualFrame.documentId === token.documentId && actualFrame.session === token.session &&
-                    actualFrame.vaultEpoch === token.vaultEpoch && actualFrame.bytesGeneration === token.bytesGeneration &&
-                    presentation.complete && presentation.sharp && !presentation.staleVersion && parameters.visible && current() &&
-                    presentation.token.viewLease === viewLease && presentation.token.documentId === token.documentId && presentation.token.session === token.session &&
-                    presentation.token.vaultEpoch === token.vaultEpoch && presentation.token.bytesGeneration === token.bytesGeneration &&
-                    (!source || (!!backdrop?.isCurrentSource?.() && presentation.token.documentId === source.documentId &&
-                        presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
-                        presentation.token.bytesGeneration === source.bytesGeneration))) backdrop?.notePresentation?.();
+                viewer.presentationAccepted(presentation);
+                if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
@@ -354,7 +458,8 @@ export function createNativeViewLease(options: {
     };
     function recordViewport() {
         if (!parameters.visible || !current() || !platformPane) return;
-        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused });
+        recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
+            inverted: parameters.inverted });
     }
     const stopViewer = viewer.subscribe(invalidate);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
@@ -364,7 +469,7 @@ export function createNativeViewLease(options: {
         navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
     };
     const lease: NativeViewLease = {
-        runtime, engine: viewer, camera, editing, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
+        runtime, engine: viewer, camera, editing, video: videoPort, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,
         setInputPermitted(permitted) { if (!disposed) { inputPermitted = permitted; updateInput(); } },
         canMutateView() { return !disposed && !!editing && !!edit && inputPermitted && sourceCurrent() && parameters.visible && !!platformPane &&
             current() && edit.canMutate() && !board.isReadOnly && host.canWrite(identity); },
@@ -413,6 +518,9 @@ export function createNativeViewLease(options: {
                 if (parameters.visible && (!next.visible || (parameters.focused && !next.focused))) recordViewport();
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
+                images.setVisible(parameters.visible && current());
+                video.setVisible(parameters.visible && current());
+                animation.setVisible(parameters.visible && current(), performance.now());
                 viewer.setView(viewParameters());
                 updateInput();
             },
@@ -447,7 +555,7 @@ export function createNativeViewLease(options: {
         dispose() {
             if (disposed) return;
             recordViewport(); disposed = true; stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
-            navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
+            navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
     cameraClaim?.commit();

@@ -197,6 +197,7 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
     if (signal.aborted) abort();
     return {
         token: pinnedToken, sceneRevision: revision, sourceDoc: doc, sensitiveNodes,
+        isCurrent: () => !controller.signal.aborted && doc.rev === revision,
         next() {
             if (ended || releasePromise) return Promise.resolve(null);
             if (active) return Promise.reject(new Error('Scene paint stream already has an active consumer'));

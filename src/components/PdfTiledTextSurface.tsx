@@ -3,6 +3,7 @@ import PdfReadingText from './PdfReadingText';
 import type { PdfTiledTextSurfaceProps } from './PdfTiledTextSurface.types';
 import { usePdfTiledTextReader } from './usePdfTiledTextReader';
 import { tiledOriginalToText } from '../pdf/text/viewMapping';
+import type { PdfViewPos } from '../utils/pdfViewState';
 import type { PdfTextAnchor, PdfTextTypography } from '../utils/pdfReadingText';
 
 const DEFAULT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
@@ -43,14 +44,17 @@ export default function PdfTiledTextSurface({ source, reading, filePath, findMem
         return () => notify.current?.(undefined);
     }, [reader]);
     const [mapped, setMapped] = useState<{ reader: NonNullable<typeof reader>; anchor: PdfTextAnchor }>();
+    // The mapping reads only the page and offset of the checkpoint, so those primitives are its inputs.
+    const { page: checkpointPage, offset: checkpointOffset, zoom: checkpointZoom } = checkpoint;
     useEffect(() => {
         if (!reader || anchor) return;
         const cancel = new AbortController();
-        void tiledOriginalToText(reader, checkpoint, cancel.signal).catch((): PdfTextAnchor => ({
-            physicalPageIndex: checkpoint.page, offsetUTF16: 0, affinity: 'after', quote: '', before: '', after: '',
+        const position: PdfViewPos = { page: checkpointPage, offset: checkpointOffset, zoom: checkpointZoom };
+        void tiledOriginalToText(reader, position, cancel.signal).catch((): PdfTextAnchor => ({
+            physicalPageIndex: checkpointPage, offsetUTF16: 0, affinity: 'after', quote: '', before: '', after: '',
         })).then(next => { if (!cancel.signal.aborted) setMapped({ reader, anchor: next }); });
         return () => cancel.abort();
-    }, [reader, anchor, checkpoint.page, checkpoint.offset, checkpoint.zoom]);
+    }, [reader, anchor, checkpointPage, checkpointOffset, checkpointZoom]);
     const initial = anchor ?? (mapped && mapped.reader === reader ? mapped.anchor : undefined);
     if (!reader || !initial) return <div className="pdf-pane-message">Opening extracted text…</div>;
     return <PdfReadingText filePath={filePath} controller={reader} isFocused={isFocused} isVisible={isVisible}

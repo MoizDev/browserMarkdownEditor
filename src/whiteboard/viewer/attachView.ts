@@ -6,6 +6,8 @@ import type { NodeId } from '../model/ids';
 import type { PaintFrame } from '../render/paintStream';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -42,6 +44,7 @@ export const attachView: AttachView = options => {
     let paintJob: AbortController | null = null, revealJob: AbortController | null = null, request = 0;
     let lastView: ViewState | null = null, drawnFrame: { sceneRevision: number; token: RenderToken; frame: PaintFrame; context?: ViewerPaintPresentation } | null = null;
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
+    let embedProducer: NativeEmbedPresentationProducer | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
@@ -88,7 +91,8 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const frames = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintFrame): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
@@ -113,7 +117,8 @@ export const attachView: AttachView = options => {
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, omitNodes: omitPreview,
         liveNodeIds,
-        onDrawn(revision, _frame, context) {
+        onDrawn(revision, frame, context) {
+            options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
                 sceneRevision: revision, omittedNodeIds: context.omittedNodeIds });
         },
@@ -130,8 +135,14 @@ export const attachView: AttachView = options => {
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
             interaction?.presented?.(revision, token, frame, context);
+            embedProducer?.presented(revision, token, frame, context);
         },
     });
+    // The producer reserves and releases through the layer host's canonical CPU allocator, which exists only once a host has drawn.
+    const embedMemory: MemoryAllocator = {
+        reserve: bytes => layers.memory()?.reserve(bytes) ?? null,
+        release: lease => layers.memory()?.release(lease),
+    };
     const accessibility = createViewerAccessibility({ token: options.token, session: options.session, selection: runtime.selection, scene,
         visibleIds: () => options.session.doc.bySheet.get(sheet()) ?? [],
         label: node => {
@@ -176,10 +187,19 @@ export const attachView: AttachView = options => {
         lastSensitive = sensitive;
         const sensitiveNodes = precisionNodeIds(sensitive) as ReadonlySet<NodeId>;
         const deviceScale = current ? current.camera.z * current.viewport.dpr : undefined;
-        void pin.paintSource({ sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(world ? { world } : {}), ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) }, controller.signal).then(source => {
-            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) { pin.release(); return; }
-            frames.request({ source, release: () => pin.release() });
+        // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
+        const open = pin.paintStream;
+        if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
+        // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
+        const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
+        void open.call(pin, { ...identity, ...(world ? { world } : {}) }, controller.signal).then(stream => {
+            if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
+                void stream.release().catch(report).finally(() => pin.release());
+                return;
+            }
+            frames.requestStream({ stream, release: () => pin.release(),
+                open: (apron, signal) => open.call(pin, { ...identity, world: apron }, signal) });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }
@@ -228,6 +248,7 @@ export const attachView: AttachView = options => {
     const dispose = () => {
         if (disposed) return;
         clearPreview?.(); clearPreview = null;
+        const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;
         if (oldEmbed) { oldEmbed.setVisible(false); void oldEmbed.dispose().catch(report); }
         disposed = true; paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
@@ -238,6 +259,7 @@ export const attachView: AttachView = options => {
     return {
         session: options.session, scene, accessibility,
         getSnapshot: () => snapshot,
+        wakeAt(deadlineMs) { if (!disposed) layers.wakeAt(deadlineMs); },
         getView: () => ({ ...view }),
         subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         setView(next) {
@@ -259,10 +281,15 @@ export const attachView: AttachView = options => {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
             const old = embedPort; embedPort = port;
+            // One port, one producer: the producer presents only through the same port the per-node Load/Unload uses.
+            const oldProducer = embedProducer;
+            embedProducer = port ? createNativeEmbedPresentationProducer({ port, images, memory: embedMemory, onError: report }) : null;
+            oldProducer?.dispose();
             if (old) { old.setVisible(false); void old.dispose().catch(report); }
             port?.setVisible(view.visible);
             publish(); layers.invalidate('board-embed-port');
         },
+        presentationAccepted(presentation) { embedProducer?.onPresentation(presentation); },
         bindInteractions(ports) {
             if (disposed) throw new Error('Board view is disposed');
             interaction?.finishGesture(); interaction?.finishComposition(); interaction = ports;

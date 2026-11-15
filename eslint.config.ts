@@ -211,8 +211,8 @@ export default defineConfig([
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           // App's closed-PDF agent seam (src/app/useAgentCanvasAccess) imports the contained host only on an
-          // awaited tiled tool call; its PDF actions and a new canvas's empty bytes load on the gesture.
-          darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/usePdfActions.ts', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
+          // awaited tiled tool call; its PDF gestures and a new canvas's empty bytes load on the gesture.
+          darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/agentCanvas.ts', 'src/app/pdfGestures.ts', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

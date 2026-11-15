@@ -4,6 +4,11 @@ import { prefetchPanes } from '../components/prefetchPanes';
 import { collectFiles } from '../utils/tree';
 import { isDrawingFile, isEpubFile, isNativeDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
 
+function whenIdle(run: () => void): void {
+  if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
+  else setTimeout(run, 1500);
+}
+
 export function usePanePrefetch(fileTree: FileTreeNode[]): void {
   /**
    * Warm the heavy panes for the kinds of file this vault actually holds.
@@ -25,5 +30,9 @@ export function usePanePrefetch(fileTree: FileTreeNode[]): void {
       if (kinds.epub && kinds.pdf && kinds.drawing && kinds.nativeDrawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
+    // A PDF's gestures (rotate, print, unsigned copy) load on first use; warm
+    // them beside its pane, so a turn of the page never waits on a fetch and
+    // two quick clicks run in the order they were made.
+    if (kinds.pdf) whenIdle(() => { void import('./pdfGestures').catch(() => {}); });
   }, [fileTree]);
 }

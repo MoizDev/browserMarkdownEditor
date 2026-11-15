@@ -399,7 +399,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   return {
-    releaseTab, releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab,
+    releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab,
     retryUnreadTab, changeTabMode, toggleTabMode,
   };
 }

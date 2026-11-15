@@ -125,8 +125,7 @@ export function useSidePanels(deps: UseSidePanelsDeps) {
   }, []);
 
   return {
-    agentPanelOpen, setAgentPanelOpen,
-    agentPanelWidth,
+    agentPanelOpen, agentPanelWidth,
     agentOpenedByReader,
     toggleAgentPanel,
     closeAgentPanel,

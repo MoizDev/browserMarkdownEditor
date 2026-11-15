@@ -34,7 +34,7 @@ export interface UseReaderIntegrationDeps {
   setDiskState: SetDiskState;
   // useTabLifecycle
   closeTab: (path: string) => void;
-  reopenClosedTab: () => Promise<void>;
+  reopenClosedTab: () => Promise<string | undefined>;
 }
 
 export function useReaderIntegration(deps: UseReaderIntegrationDeps) {

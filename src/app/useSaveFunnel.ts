@@ -676,7 +676,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
   }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, recoveryEvent, sessionReportRef]);
 
   return {
-    writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard, keepClosingEdits, flushTab,
-    scheduleSave, updateTabContent, checkpointAll,
-  };
+    writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard, flushTab,
+    scheduleSave, updateTabContent, };
 }

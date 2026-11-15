@@ -138,7 +138,7 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
       }
       return true;
     });
-  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions, reconcileQueueRef, rootHandleRef, setSaveStatus, tabsRef]);
+  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions, reconcileQueueRef, rootHandleRef, setSaveStatus, tabsRef, holdStatus]);
 
   const handleTrash = useCallback(async (node: FileTreeNode) => {
     // A folder copy runs for seconds, and its row stays on screen throughout —
@@ -361,7 +361,7 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
     } finally {
       trashInFlightRef.current = false;
     }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions, reconcileQueueRef, rootHandleRef, tabsRef, trashInFlightRef]);
+  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor, requeueAssetsAffected, preparePdfDeparture, documentSessions, reconcileQueueRef, rootHandleRef, tabsRef, trashInFlightRef, showStatus]);
 
   /** Erase one trashed item. One of the app's two points of no return. */
   const handleTrashCopy = useCallback(async (item: TrashItem) => {
@@ -481,5 +481,5 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
   const handleTrashReadFile = useCallback(
     (item: TrashItem) => handleIO.file(item.handle as FileSystemFileHandle), [handleIO]);
 
-  return { performTrash, handleTrash, trashForAgent, handleTrashRestore, handleTrashCopy, handleTrashDelete, handleTrashEmpty, handleTrashReadText, handleTrashReadFile };
+  return { handleTrash, trashForAgent, handleTrashRestore, handleTrashCopy, handleTrashDelete, handleTrashEmpty, handleTrashReadText, handleTrashReadFile };
 }

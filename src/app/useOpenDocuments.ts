@@ -241,7 +241,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
     reopenedClosingRef,
     layout, setLayout,
     activeTabPath,
-    activeTab,
     activeFile,
     tabsRef,
     sessionReportRef,

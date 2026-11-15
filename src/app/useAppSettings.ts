@@ -227,7 +227,7 @@ export function useAppSettings(deps: UseAppSettingsDeps) {
   const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
 
   return {
-    theme, setTheme, toggleTheme,
+    theme, toggleTheme,
     editorFontSize, setEditorFontSize,
     codeFontSize, setCodeFontSize,
     rainbowBrackets, setRainbowBrackets,

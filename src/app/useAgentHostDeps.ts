@@ -197,5 +197,5 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
     () => (rootHandle ? { key: currentVaultId ?? rootHandle.name, name: rootHandle.name } : null),
     [rootHandle, currentVaultId]);
 
-  return { addTabQuietly, getAgentHostDeps, agentVault };
+  return { getAgentHostDeps, agentVault };
 }

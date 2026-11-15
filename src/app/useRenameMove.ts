@@ -313,7 +313,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
 
   const retargetExpanded = useCallback((node: FileTreeNode, newPath: string) => {
     if (node.kind === 'directory') retargetExpandedPaths(node.path, newPath);
-  }, [retargetExpandedPaths]);
+  }, []);
 
   // Both tracked from the first FS call to the end of retargetTabs — see
   // vaultMovesRef for what the restore pass waits on and why.

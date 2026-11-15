@@ -47,7 +47,6 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
     for (const id of live) if (!plan.live?.has(id)) return false;
     return true;
 };
-const isEmpty = (live: ReadonlySet<string> | undefined) => !live || live.values().next().done === true;
 
 /** A dense frame: each band's unlive content is rasterized per tile from its own bounded stream,
  * and the live items are drawn as prepared items at their canonical positions between those parts.
@@ -135,7 +134,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const cache = p.source.sessionRasters, variant = p.source.rasterVariant;
         // A sensitive node (selection, edit, embed) paints at precision, so a tile holding one is not
         // a pure function of the document; only sensitive-free tiles are cached and reused.
-        const cacheable = !!cache && !!variant && isEmpty(p.live) && p.source.sensitiveNodes?.size === 0 && tileScale.scale === p.scale;
+        // The tile's pixels are the document's own while no sensitive node may paint in its apron (2 px, as the job).
+        const bleed = 2 / p.scale, apron: Rect = { x: rect.x - bleed, y: rect.y - bleed, width: side + 2 * bleed, height: side + 2 * bleed };
+        const reaches = (nodes: ReadonlySet<string>) => p.source.sensitiveMayMeet?.(apron, nodes) !== false;
+        const cacheable = !!cache && !!variant && tileScale.scale === p.scale
+            && p.source.sensitiveNodes !== undefined && !reaches(p.source.sensitiveNodes) && !(p.live && reaches(p.live));
         const interval = cacheable ? JSON.stringify([variant, band]) : '';
         if (cacheable && !p.job && !p.cache) {
             cache.bindMemory(host.allocator.cpu);
@@ -157,7 +160,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             }
         }
         p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal),
-            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, token: p.source.token, revision: p.source.sceneRevision,
+            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
         p.job.prepare(view, budget);
@@ -167,7 +170,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const job = p.job, pending = p.cache;
         p.job = null; p.cache = null;
         const parts = job.takeParts();
-        const only = parts.length === 1 && parts[0].end === null && parts[0].blend === 'normal' && !parts[0].hasImage ? parts[0] : null;
+        const only = !job.touchedLive && parts.length === 1 && parts[0].end === null && parts[0].blend === 'normal' && !parts[0].hasImage ? parts[0] : null;
         if (pending && only) {
             let accepted = false;
             try {
@@ -206,19 +209,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (!Number.isSafeInteger(p.directEstimate)) throw new RangeError('Dense live path estimate overflows');
         p.estimateItem++; p.estimateClip = p.estimateChunk = 0; return false;
     };
-    /** The frame's live items of one band, in canonical order, with each barrier's own tile parts
-     * placed before it. Every barrier named by a part must be a live item of this frame. */
+    /** The band's frame in canonical order, with each barrier's tile parts placed before its live items.
+     * One walk over the frame's own items: buckets follow the parts, never a per-live-node structure. */
     const bandItems = (p: Plan, band: PaintBand): PaintItem[] => {
-        const sequence: string[] = [], direct = new Map<string, PaintItem[]>();
-        for (const item of p.source[band]) {
-            if (!p.live?.has(item.nodeId)) continue;
-            let group = direct.get(item.nodeId);
-            if (!group) { group = []; direct.set(item.nodeId, group); sequence.push(item.nodeId); }
-            group.push(item);
-        }
         const buckets = new Map<string | null, Entry[]>();
         for (const entry of p.entries[band]) {
-            if (entry.end !== null && !direct.has(entry.end)) throw new Error('Dense tile barrier is missing from the live frame');
             const list = buckets.get(entry.end);
             if (list) list.push(entry); else buckets.set(entry.end, [entry]);
         }
@@ -231,10 +226,17 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return item;
         };
         const out: PaintItem[] = [];
-        for (const id of sequence) {
-            for (const entry of buckets.get(id) ?? []) out.push(image(entry));
-            out.push(...direct.get(id)!);
+        let group: string | null = null;
+        for (const item of p.source[band]) {
+            if (!p.live?.has(item.nodeId)) continue;
+            if (item.nodeId !== group) {
+                group = item.nodeId;
+                const before = buckets.get(group);
+                if (before) { for (const entry of before) out.push(image(entry)); buckets.delete(group); }
+            }
+            out.push(item);
         }
+        for (const end of buckets.keys()) if (end !== null) throw new Error('Dense tile barrier is missing from the live frame');
         for (const entry of buckets.get(null) ?? []) out.push(image(entry));
         return out;
     };

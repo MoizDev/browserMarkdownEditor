@@ -136,7 +136,28 @@ export function createSceneSnapshot(options: {
         ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}),
         ...(request.only ? { only: new Set(request.only) } : {}) });
     const regionChangesSince = (from: number): RegionChanges => options.changes ? options.changes(from) : FULL_REGION_CHANGES;
-    const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined): ScenePaintNodeStream => {
+    /** Whether any sensitive node may paint inside `world`. Cell candidates answer it; a query too large
+     * for the grid tests each sensitive node's own bounds instead. Unknown answers true. */
+    const sensitiveMayMeet = (index: SceneCellIndex, world: Readonly<Rect>, sensitive: ReadonlySet<string>): boolean => {
+        if (!sensitive.size) return false;
+        try {
+            if (index.countCandidates(world) < index.ids.length) {
+                for (const ordinal of index.candidates(world)) if (sensitive.has(index.ids[ordinal])) return true;
+                return false;
+            }
+        } catch { return true; }
+        const pinned = options.bounds;
+        if (!pinned) return true;
+        for (const id of sensitive) {
+            const value = pinned.get(id as NodeId);
+            if (value === undefined) continue;
+            const ink = value.ink;
+            if (!ink || value.quality === BoundsQuality.Pending || value.quality === BoundsQuality.ColdLayout) return true;
+            if (ink[0] <= world.x + world.width && world.x <= ink[2] && ink[1] <= world.y + world.height && world.y <= ink[3]) return true;
+        }
+        return false;
+    };
+    const wrapStream = (source: ScenePaintNodeStream, signal: AbortSignal, local: AbortController, sourceWorld: Readonly<Rect> | undefined, index: SceneCellIndex): ScenePaintNodeStream => {
         let next: Promise<PaintNode | null> | undefined, closePromise: Promise<void> | undefined;
         const close = (): Promise<void> => {
             if (closePromise) return closePromise;
@@ -158,6 +179,7 @@ export function createSceneSnapshot(options: {
         return {
             token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
             sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
+            sensitiveMayMeet: (world, nodes) => sensitiveMayMeet(index, world, nodes),
             isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),
             async next() {
                 if (closePromise) throw cancelled();
@@ -247,7 +269,7 @@ export function createSceneSnapshot(options: {
                 const index = await indexFor(pinnedRequest.sheetId);
                 check(); combined.throwIfAborted();
                 const source = options.prepareStream!(doc, pinnedRequest, combined, ordered(index, pinnedRequest));
-                const stream = wrapStream(source, combined, local, pinnedRequest.world);
+                const stream = wrapStream(source, combined, local, pinnedRequest.world, index);
                 try {
                     check(); combined.throwIfAborted();
                     if (source.sceneRevision !== revision || !sameToken(source.token, token) || source.sourceDoc !== doc) {

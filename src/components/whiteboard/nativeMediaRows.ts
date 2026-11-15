@@ -82,7 +82,8 @@ export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions
         rows.push({ kind: 'command', id: 'media-crop-editor', label: label('chrome.cropImage', 'Crop image'), ...rowState,
             run: attempt(() => openCrop(selection.id)) });
     }
-    rows.push({ kind: 'submenu', id: 'media-crop', label: label('chrome.cropImage', 'Crop picture'), ...rowState,
+    // The editor row above already says "Crop image"; this submenu names what it is for: the presets the editor offers.
+    rows.push({ kind: 'submenu', id: 'media-crop', label: label('chrome.cropToAspect', 'Crop to aspect ratio'), ...rowState,
         entries: CROP_ROWS.map(({ preset, label: presetLabel }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: presetLabel, ...rowState,
             run: attempt(() => actions.crop(selection.id, preset)) })) });
     // Invert is a picture's own flag; a clip's frames are not inverted by it.

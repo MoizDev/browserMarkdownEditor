@@ -1,6 +1,7 @@
 import type { Rgba } from '../../platform/types';
 import { figureLabelRequest, frameTitleRequest } from '../geom/providers';
-import type { Node } from '../model/nodes';
+import { embedPoster } from '../media/embedPoster';
+import type { EmbedNode, Node } from '../model/nodes';
 import { editableTextRequest } from '../text/edit/request';
 import { BoardFonts } from '../text/fonts';
 import { BoardTextLayout } from '../text/layout';
@@ -32,6 +33,20 @@ export interface BoardTextGeometry {
     prepare(node: Readonly<Node>, options: BoardTextGeometryOptions, signal: AbortSignal): Promise<PreparedBoardText | null>;
     dispose(): void;
 }
+/** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
+function embedPosterPad(zoom: number): number { return 12 / zoom; }
+/** An inert embed's poster: its provider's name, the address it names, and how to load it. Set in the card's own width. */
+function embedPosterRequest(node: Readonly<EmbedNode>, revision: string, fontEpoch: number, zoom: number): TextLayoutRequest {
+    const { title, address } = embedPoster(node.url), pad = embedPosterPad(zoom);
+    return { text: { blocks: [
+            { kind: 'p', level: 0, dir: 'auto', runs: [{ text: title, marks: {} }] },
+            { kind: 'p', level: 0, dir: 'auto', runs: [{ text: address, marks: {} }] },
+            { kind: 'p', level: 0, dir: 'auto', runs: [{ text: 'Not loaded: right-click and choose Load embed', marks: {} }] },
+        ] },
+        revision, fontEpoch, width: Math.max(1, node.w - 2 * pad),
+        style: { font: 'sans', size: 14 / zoom, ink: { swatch: 'black', role: 'label' }, align: 'start', verticalAlign: 'start',
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }, minHeight: 0, overflow: 'allow', maxLines: 6, ellipsis: true } };
+}
 export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpoch?: (epoch: number) => void;
     cooperate?: () => Promise<void> } = {}): BoardTextGeometry {
     let fonts = options.fonts, layout: BoardTextLayout | undefined, measurer: ReferenceMeasurer | undefined;
@@ -57,6 +72,7 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
         return layout;
     };
     const makeRequest = (node: Readonly<Node>, requestOptions: BoardTextGeometryOptions): TextLayoutRequest | null => {
+        if (node.kind === 'embed') return embedPosterRequest(node, requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1);
         let text: RichText;
         if (node.kind === 'text' || node.kind === 'sticky') text = node.text;
         else if (node.kind === 'figure' || node.kind === 'connector') {
@@ -81,6 +97,11 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             x = placement.x; y = placement.y;
         } else if (node.kind === 'sticky' || node.kind === 'text') scale = node.scale;
         else if (node.kind === 'frame') y = -paint.box.h;
+        else if (node.kind === 'embed') {
+            // The poster's text sits at the card's bottom-left, inside the same pad the layout width leaves.
+            const pad = embedPosterPad(requestOptions.zoom ?? 1);
+            x = pad; y = node.h - paint.box.h - pad;
+        }
         else if (node.kind === 'connector') {
             x = requestOptions.anchor!.x - paint.box.w / 2;
             y = requestOptions.anchor!.y - paint.box.h / 2;

@@ -86,6 +86,8 @@ export function pdfClassicAssets(): Plugin {
                 // Vite may already have stripped base before this middleware.
                 const name = path.startsWith(base) ? path.slice(base.length) : path.replace(/^\//, '');
                 const data = byName.get(name);
+                // A missing runtime file is a 404, never Vite's index.html served as wasm (a MIME error at the caller).
+                if (!data && name.startsWith('pdfjs-runtime/')) { res.statusCode = 404; res.end(); return; }
                 if (!data) { next(); return; }
                 res.setHeader('Content-Type', name.endsWith('.wasm') ? 'application/wasm' : name.endsWith('.js') ? 'text/javascript' : name.endsWith('.json') ? 'application/json' : 'application/octet-stream');
                 res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');

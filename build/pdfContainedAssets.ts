@@ -27,7 +27,9 @@ export function pdfContainedAssets(): Plugin {
             const pin = JSON.parse(readFileSync(new URL('../src/pdf/engine/dev/source-manifest.json', import.meta.url), 'utf8')) as {
                 shippingAllowed?: boolean; qualification?: string;
             };
-            return { define: { __BME_PDF_ENGINE_AVAILABLE__: JSON.stringify(env.command === 'serve' || env.mode === 'benchmark' ||
+            // A dev server claims the native engine only when pdfiumDevAssets actually serves it (BME_DEV_ENGINE_DIR set);
+            // otherwise the build behaves like production and every PDF route takes its existing classic/generated path.
+            return { define: { __BME_PDF_ENGINE_AVAILABLE__: JSON.stringify((env.command === 'serve' && !!process.env.BME_DEV_ENGINE_DIR) || env.mode === 'benchmark' ||
                 (pin.shippingAllowed === true && pin.qualification !== 'development')) } };
         },
         resolveId(id) {

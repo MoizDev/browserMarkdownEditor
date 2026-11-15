@@ -34,7 +34,7 @@ import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type Canva
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
 import type { AgentChange, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
 import type { FileTreeNode } from '../types';
-import { getView, type CanvasApplyResult, type CanvasShapePage, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
+import { getView, type CanvasApplyResult, type CanvasShapePage, type CanvasShapeQuery, type ShapeSummary, type TextChange, type ViewReporter } from './viewRegistry';
 import { validateAgainstSchema } from './agentSchema';
 import { creationDiff, lineDiff } from './agentDiff';
 import { AGENT_IMAGE_MAX_SIDE, blobBytes, imageMimeFor, prepareImageForAgent, sha256Hex } from './agentMedia';
@@ -579,18 +579,8 @@ async function readableCanvasText(ctx: Ctx, path: string): Promise<string> {
 async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | undefined): Promise<{ lines: string[]; head: string[] }> {
     const name = baseName(path);
     const notebook = isNotebookFile(name);
-    const view = getView(path);
-    // The new session owns unsaved data and validates its own SourceOwner; a
-    // disk reread here could observe a different revision from the open board.
-    if (view?.canvas?.shapePage) {
-        const result = view.canvas.shapePage({ page });
-        const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, open in a pane (live)`,
-            `${result.total} shape${result.total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`,
-            notebook ? COORDS_PAGED : COORDS_DRAWING];
-        const lines = shapeLines(result.shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to narrow the result');
-        if (result.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
-        return { head, lines };
-    }
+    // The board's session owns unsaved data and fences its own SourceOwner; a disk reread here could observe a different
+    // revision from the open board.
     if (ctx.host.canvasShapePage) {
         const result = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
@@ -611,16 +601,6 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
     const budget = MAX_TOOL_TEXT_CHARS - 1500;
     const pageHint = notebook ? 'pass page to see one page at a time' : 'look at a region with vault_view';
 
-    if (view?.canvas) {
-        const info = await describe(view);
-        const shapes = view.canvas.shapes(page);
-        const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, open in a pane (live)`];
-        if (info.kind === 'notebook') head.push(`${info.pageCount} page${info.pageCount === 1 ? '' : 's'}; the user is on page ${info.page}`);
-        if (info.kind === 'drawing') head.push(`tldraw page "${info.pageName}" (${info.pageIndex + 1} of ${info.pageCount})`);
-        head.push(`${shapes.length} shape${shapes.length === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`, notebook ? COORDS_PAGED : COORDS_DRAWING);
-        return { head, lines: shapeLines(shapes, budget, pageHint) };
-    }
-
     const summary = summarizeCanvasFile(notebook ? 'notebook' : 'drawing', text);
     if ('error' in summary) throw new ToolError(`"${path}": ${summary.error}.`);
     const head = [`path: ${path}`, `${notebook ? 'notebook' : 'drawing'}, not open — read from the saved file`];
@@ -636,7 +616,7 @@ async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | u
     let remaining = budget;
     for (const pg of summary.pages) {
         const shapes: FileShape[] = page ? pg.shapes.filter(s => s.page === page) : pg.shapes;
-        if (perPage) lines.push(`— tldraw page "${pg.name}": ${shapes.length} shape${shapes.length === 1 ? '' : 's'}`);
+        if (perPage) lines.push(`— page "${pg.name}": ${shapes.length} shape${shapes.length === 1 ? '' : 's'}`);
         else lines.push(`${shapes.length} shape${shapes.length === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`);
         const got = shapeLines(shapes, remaining, pageHint);
         lines.push(...got);
@@ -717,7 +697,7 @@ function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
 
 async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const path = ctx.path(a.path);
-    if (!getView(path)?.canvas?.shapePage && !ctx.host.canvasShapePage) assertSupportedCanvasFormat(path);
+    if (!ctx.host.canvasShapePage) assertSupportedCanvasFormat(path);
     await requireFile(ctx, path);
     const name = baseName(path);
     const page = typeof a.page === 'number' ? a.page : undefined;
@@ -790,15 +770,15 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {
-        // An open native canvas is read from its session: no mounted pane is waited for or opened.
-        const native = ctx.host.nativeCanvasView ? await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
+        // An open board is read from its session (its live view while mounted). A closed native drawing or notebook is
+        // pictured from its own bytes. Any other canvas opens beside the user, without taking focus, and its session answers.
+        const guard = { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
-        } }) : null;
-        // A CLOSED native drawing or notebook is pictured from its own bytes, without mounting or opening anything.
-        if (!native && !getView(path)?.canvas && ctx.host.nativeClosedPicture) {
-            const closed = await ctx.host.nativeClosedPicture(path, page, max, { signal: ctx.signal, isCurrent: () => {
-                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
-            } });
+        } };
+        let native = await ctx.host.nativeCanvasView?.(path, guard) ?? null;
+        ctx.ensureLive();
+        if (!native && ctx.host.nativeClosedPicture) {
+            const closed = await ctx.host.nativeClosedPicture(path, page, max, guard);
             ctx.ensureLive();
             if (closed) {
                 const caption = closed.wholeSheet
@@ -807,37 +787,21 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
                 return pngResult(closed.png, caption, `"${path}"`);
             }
         }
-        if (native) {
-            const info = native.info;
-            if (info.kind === 'notebook' && page !== undefined && page > info.pageCount) {
-                throw new ToolError(`page ${page} is past the end of "${path}", which has ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.`);
-            }
-            const blob = await withTimeout(native.capture(max, ctx.signal, info.kind === 'drawing' ? undefined : page), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+        if (!native) {
+            await ctx.host.openCanvasForAgent(path);
             ctx.ensureLive();
-            return pngResult(blob, nativeViewCaption(path, native, info.kind === 'drawing' ? undefined : page), `"${path}"`);
-        }
-        // A closed canvas opens beside the user without taking focus.
-        let view = getView(path);
-        if (!view?.canvas) {
-            view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;
+            native = await ctx.host.nativeCanvasView?.(path, guard) ?? null;
             ctx.ensureLive();
         }
-        if (!view) throw new ToolError(`"${path}" could not be opened to look at (it did not finish loading).`);
-        if (isNativeDrawingFile(name) && !view.canvas?.shapePage) throw new ToolError(`"${path}" is not open as a native board.`);
-        if (isNotebookFile(name) && view.renderPage) {
-            const info = await describe(view);
-            const count = info.kind === 'notebook' ? info.pageCount : 1;
-            const target = page ?? (info.kind === 'notebook' ? info.page : 1);
-            if (target > count) throw new ToolError(`page ${target} is past the end of "${path}", which has ${count} page${count === 1 ? '' : 's'}.`);
-            const blob = await withTimeout(view.renderPage(target, max), REPORTER_TIMEOUT_MS, 'rendering the page');
-            ctx.ensureLive();
-            return pngResult(blob, `${path}, page ${target} of ${count}:`, `page ${target}`);
+        if (!native) throw new ToolError(`"${path}" could not be opened to look at (it did not finish loading).`);
+        const info = native.info;
+        if (info.kind === 'notebook' && page !== undefined && page > info.pageCount) {
+            throw new ToolError(`page ${page} is past the end of "${path}", which has ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.`);
         }
-        if (!view.capture) throw new ToolError(`"${path}" cannot be rendered.`);
-        const blob = await withTimeout(view.capture(max), REPORTER_TIMEOUT_MS, 'capturing the canvas');
+        const shownPage = info.kind === 'drawing' ? undefined : page;
+        const blob = await withTimeout(native.capture(max, ctx.signal, shownPage), REPORTER_TIMEOUT_MS, 'capturing the canvas');
         ctx.ensureLive();
-        const info = await describe(view);
-        return pngResult(blob, `${path}${info.kind === 'drawing' ? onScreenCaption(info.viewport) : ''}:`, `"${path}"`);
+        return pngResult(blob, nativeViewCaption(path, native, shownPage), `"${path}"`);
     }
 
     throw new ToolError(`vault_view shows PDFs, notebooks, drawings and images; "${path}" is text — read it with vault_read.`);
@@ -1054,7 +1018,7 @@ async function vaultTrash(a: Args, ctx: Ctx): Promise<ToolExecution> {
 /* ───────────────────────── canvas ───────────────────────── */
 
 function assertCanvasPath(path: string, supportsNative: boolean): void {
-    if (isNativeDrawingFile(path) && (supportsNative || getView(path)?.canvas?.shapePage)) return;
+    if (isNativeDrawingFile(path) && supportsNative) return;
     assertSupportedCanvasFormat(path);
     const name = baseName(path);
     if (!isCanvasFile(name) && !isPdfFile(name)) {
@@ -1062,26 +1026,14 @@ function assertCanvasPath(path: string, supportsNative: boolean): void {
     }
 }
 
-async function liveCanvas(ctx: Ctx, path: string): Promise<ViewReporter & { canvas: NonNullable<ViewReporter['canvas']> }> {
-    let view = getView(path);
-    // Native boards are admitted by their session, never by the legacy text
-    // sniffer. A session-backed reporter then fences its own SourceOwner.
-    if (isNativeDrawingFile(path) && !view?.canvas?.shapePage) {
-        view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;
-        ctx.ensureLive();
-        if (!view?.canvas?.shapePage) throw new ToolError(`"${path}" could not be opened as a native board.`);
-    }
-    // Legacy reporters need the loaded representation check; new session
-    // reporters instead fence their live SourceOwner immediately before edits.
-    if (!isPdfFile(path) && !view?.canvas?.shapePage) await readableCanvasText(ctx, path);
-    if (!view?.canvas) {
-        view = (await ctx.host.openCanvasForAgent(path)) ?? undefined;
-        ctx.ensureLive();
-    }
-    if (!view?.canvas) {
-        throw new ToolError(`"${path}" could not be opened as a canvas (it did not finish loading${isPdfFile(path) ? ', or the PDF cannot be annotated' : ''}). Try again, or ask the user to open it.`);
-    }
-    return view as ViewReporter & { canvas: NonNullable<ViewReporter['canvas']> };
+/** An open board's session answers a shape query, and a closed admitted source answers the rest: nothing is mounted to read. */
+async function nativeShapePage(ctx: Ctx, path: string, query: CanvasShapeQuery): Promise<CanvasShapePage | undefined> {
+    if (!ctx.host.canvasShapePage) return undefined;
+    const result = await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
+        try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
+    } });
+    ctx.ensureLive();
+    return result ?? undefined;
 }
 
 async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
@@ -1092,15 +1044,7 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
     if (a.offset !== undefined || a.limit !== undefined || a.revision !== undefined) {
         const query = { page, offset: a.offset as number | undefined, limit: a.limit as number | undefined,
             revision: a.revision as number | undefined };
-        const view = getView(path);
-        let result = view?.canvas?.shapePage?.(query);
-        // A PDF with no mounted view reads its admitted native board from the closed source, never by mounting it.
-        if (!result && (!isPdfFile(path) || !view?.canvas) && ctx.host.canvasShapePage) {
-            result = (await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
-                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
-            } })) ?? undefined;
-            ctx.ensureLive();
-        }
+        const result = await nativeShapePage(ctx, path, query);
         if (ctx.signal?.aborted) throw new ToolError('Canvas read cancelled.');
         if (!result) throw new ToolError(isPdfFile(path)
             ? 'Open the PDF in annotation mode to page its shapes.' : 'Shape paging is unavailable for this board.');
@@ -1114,25 +1058,17 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok([...head, '', ...lines].join('\n'));
     }
     if (isPdfFile(baseName(path))) {
-        // A closed PDF's admitted native ink board is read from its source; no view is mounted for it.
-        if (!getView(path)?.canvas && ctx.host.canvasShapePage) {
-            const native = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
-                try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
-            } });
+        // An ink board is read from its session or its admitted closed source. One that is not yet on screen opens beside
+        // the user, without taking focus, and is then read through its session. A refusal there throws; nothing falls back.
+        let result = await nativeShapePage(ctx, path, { page });
+        if (!result) {
+            await ctx.host.openCanvasForAgent(path);
             ctx.ensureLive();
-            if (native) {
-                const head = [`path: ${path}`, `revision: ${native.revision}`, `total: ${native.total}`, COORDS_PAGED];
-                return ok([...head, '', ...pagedShapeLines(native, 0, MAX_TOOL_TEXT_CHARS - 1500).lines].join('\n'));
-            }
+            result = await nativeShapePage(ctx, path, { page });
         }
-        // An ordinary PDF's annotations are read only through its annotate view, which this does open (beside the user).
-        const view = await liveCanvas(ctx, path);
-        const result = view.canvas.shapePage?.({ page });
-        const shapes = result?.shapes ?? view.canvas.shapes(page), total = result?.total ?? shapes.length;
-        const head = [`path: ${path}`, `PDF annotations (live)`, `${total} shape${total === 1 ? '' : 's'}${page ? ` on page ${page}` : ''}`, COORDS_PAGED];
-        const lines = shapeLines(shapes, MAX_TOOL_TEXT_CHARS - 1500, 'pass page to see one page at a time');
-        if (result?.nextOffset !== undefined) lines.push(`…[${result.total - result.nextOffset} more shapes not shown]`);
-        return ok([...head, '', ...lines].join('\n'));
+        if (!result) throw new ToolError(`"${path}" has no native ink board that can be read.`);
+        const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`, COORDS_PAGED];
+        return ok([...head, '', ...pagedShapeLines(result, 0, MAX_TOOL_TEXT_CHARS - 1500).lines].join('\n'));
     }
     const { head, lines } = await canvasShapesFromAnywhere(ctx, path, page);
     return ok([...head, '', ...lines].join('\n'));
@@ -1161,19 +1097,12 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const ops = a.ops as CanvasOp[];
     let r: CanvasApplyResult;
     try {
+        // Every board is edited through its session, which admits a legacy file by its own conversion; nothing edits a second copy.
         const native = await ctx.host.canvasApplyNative?.(path, ops, { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
         } });
-        if (native) r = native;
-        else {
-            const view = await liveCanvas(ctx, path);
-            ctx.ensureLive();
-            if (ctx.signal?.aborted) throw new ToolError('Canvas edit cancelled. Nothing was applied.');
-            if (!ctx.host.canvasWritable(path)) throw new ToolError('This canvas is open read-only. Nothing was applied.');
-            r = await view.canvas.apply(ops, { signal: ctx.signal, isCurrent: () => {
-                try { ctx.ensureLive(); return !ctx.signal?.aborted && ctx.host.canvasWritable(path); } catch { return false; }
-            } });
-        }
+        if (!native) throw new ToolError(`"${path}" is not a board this build can edit.`);
+        r = native;
     } catch (err) {
         throw new ToolError(`the canvas refused the change: ${err instanceof Error ? err.message : String(err)}. Nothing was applied.`);
     }

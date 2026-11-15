@@ -1,6 +1,12 @@
 import type { SourceOwner } from '../../utils/documentBuffers';
 import { createBoardSessionAdapter, type BoardSessionPort, type HostedBoardAdapter } from './boardSessionAdapter';
 import type { ViewerHostProps, ViewerViewHandle } from './ViewerHost';
+import type { BoardPaintProgress, BoardReadiness } from './BoardPaintStatus';
+
+/** A stable key for the renderer's readiness and progress, so a lease republishes only on a real change. */
+export function paintKey(readiness: BoardReadiness | undefined, paint: BoardPaintProgress | undefined): string {
+    return JSON.stringify([readiness ?? null, paint ?? null]);
+}
 
 /** A factory is synchronous because C-19 assigns the owner before it installs the adapter.
  * Native acquisition and validation finish first; the factory must not reread live bytes. */
@@ -25,6 +31,9 @@ export interface BoardViewSnapshot<T extends object> {
     readonly layers: ViewerHostProps<T>['layers'];
     readonly platform: ViewerHostProps<T>['platform'];
     readonly reason: string | null;
+    /** The renderer's readiness and progress for the current revision: the visible loading, pending and error surface. */
+    readonly readiness?: BoardReadiness;
+    readonly paint?: BoardPaintProgress;
 }
 export interface BoardViewLease<T extends object> {
     readonly view: ViewerViewHandle;

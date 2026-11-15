@@ -1,13 +1,15 @@
 import type { BoardAccessibilitySource } from './BoardAccessibility';
 import type { BoardSessionPort } from './boardSessionAdapter';
-import type { AttachBoardView, BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
+import { paintKey, type AttachBoardView, type BoardViewLease, type BoardViewParameters, type BoardViewSnapshot } from './boardHostRuntime';
 import type { ViewerHostProps, ViewerViewHandle } from './ViewerHost';
+import type { BoardPaintProgress, BoardReadiness } from './BoardPaintStatus';
 
 /** The renderer and input adapter are injected by the lazy engine entry. */
 export interface BoardViewEngine<T extends object> {
     readonly accessibility: BoardAccessibilitySource;
     getSnapshot(): { readonly layers: ViewerHostProps<T>['layers']; readonly readOnlyReason: string | null;
-        readonly backendPreference?: ViewerHostProps<T>['platform']['backendPreference'] };
+        readonly backendPreference?: ViewerHostProps<T>['platform']['backendPreference'];
+        readonly state?: BoardReadiness; readonly paint?: BoardPaintProgress };
     subscribe(listener: () => void): () => void;
     setView(view: { visible: boolean; focused: boolean; theme: 'light' | 'dark'; inverted: boolean }): void;
     dispose(): void;
@@ -23,7 +25,7 @@ export function createBoardViewLease<S extends BoardSessionPort, T extends objec
     viewExtras: Readonly<Record<string, unknown>> = {},
 ): BoardViewLease<T> {
     let prior: ReturnType<BoardViewEngine<T>['getSnapshot']> | undefined;
-    let snapshot: BoardViewSnapshot<T> | undefined;
+    let snapshot: BoardViewSnapshot<T> | undefined, priorProgress = '';
     let routedPlatform = platform;
     const view: ViewerViewHandle = {
         accessibility: engine.accessibility,
@@ -34,14 +36,15 @@ export function createBoardViewLease<S extends BoardSessionPort, T extends objec
     return {
         view,
         getSnapshot() {
-            const next = engine.getSnapshot();
+            const next = engine.getSnapshot(), progress = paintKey(next.state, next.paint);
             if (!snapshot || next.layers !== prior?.layers || next.readOnlyReason !== prior?.readOnlyReason
-                || next.backendPreference !== prior?.backendPreference) {
+                || next.backendPreference !== prior?.backendPreference || progress !== priorProgress) {
+                priorProgress = progress;
                 if (!snapshot || next.backendPreference !== prior?.backendPreference) {
                     routedPlatform = next.backendPreference === undefined ? platform : { ...platform, backendPreference: next.backendPreference };
                 }
                 prior = next;
-                snapshot = { layers: next.layers, platform: routedPlatform, reason: next.readOnlyReason };
+                snapshot = { layers: next.layers, platform: routedPlatform, reason: next.readOnlyReason, readiness: next.state, paint: next.paint };
             }
             return snapshot!;
         },

@@ -1,5 +1,5 @@
 import { isLocked, selectedRoots } from '../change/commands';
-import { planDelete } from '../commands/delete';
+import { keptLockedMessage, planDelete } from '../commands/delete';
 import { createBoardSelectionCommands } from '../commands/selection';
 import { childrenOf, hasOpaqueDescendant } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -18,6 +18,8 @@ export function createEditCommandOperations(options: {
     readonly current: () => boolean;
     /** This view's own editable state; a mutating command re-checks it at run time, not only when shown. */
     readonly canWrite: () => boolean;
+    /** Quiet status for a delete that kept locked descendants (R-11). */
+    readonly notice: (message: string) => void;
     readonly frameName: () => string;
     readonly zoom: () => number;
 }) {
@@ -92,10 +94,11 @@ export function createEditCommandOperations(options: {
             let builder: ReturnType<typeof session.begin> | undefined, open = true;
             try {
                 builder = session.begin('tool', 'Delete');
-                planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
+                const result = planDelete(doc, builder, before.sheet, ids, runtime.render.changeGeometry);
                 const applied = builder.commit(); builder = undefined;
                 try { runtime.selection.reconcile(doc); } finally { applied.release(); }
                 session.history.close(); open = false;
+                if (result.kept.length) options.notice(keptLockedMessage(result.kept.length));
             } catch (error) {
                 try { builder?.abort(); } finally { if (open) session.history.cancel(); }
                 throw error;

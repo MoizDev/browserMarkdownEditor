@@ -3,6 +3,7 @@ import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { PaintSource } from '../render/paintStream';
+import { keptLockedMessage } from '../commands/delete';
 import type { ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
@@ -60,6 +61,8 @@ export interface BoardToolServicesOptions {
         isDirectPen(event: PointerEvent): boolean;
         ownsWheel(event: WheelEvent): boolean;
         error(error: unknown): void;
+        /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
+        notice?(message: string): void;
         contextMenu(event: MouseEvent): void;
         persistToolLock?(locked: boolean): void;
         penModeChanged(enabled: boolean): void;
@@ -106,7 +109,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
-        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu });
+        editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
+        onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
     // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.
     const sensitive = createSensitiveTargets(() => { if (!disposed) options.interaction.invalidate(); });
@@ -225,6 +229,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         keyboardContextMenu: select.keyboardContextMenu,
+        // Double-click on a group enters it (F-SEL-005); without this the select surface's handler is never reached.
+        handleDoubleClick: select.doubleClickHandle,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId

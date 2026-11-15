@@ -29,7 +29,7 @@ export function createNativeBoardOperations(options: {
     const { runtime, lease } = options, session = runtime.session;
     if (lease.runtime !== runtime) throw new Error('Board commands need the attached session');
     const edit = createEditCommandOperations({ runtime, current: options.current, canWrite: options.canWrite,
-        frameName: options.frameName, zoom: () => lease.camera.camera.z });
+        notice: options.notice, frameName: options.frameName, zoom: () => lease.camera.camera.z });
     const arrange = createArrangementCommandOperations({ runtime, current: options.current, canWrite: options.canWrite });
     const binding = () => lease.editing?.getBinding();
     const attached = (): CommandState => binding() ? yes : no('The board input is not attached');

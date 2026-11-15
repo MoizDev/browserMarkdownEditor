@@ -39,7 +39,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'preferences.focus', group: 'preferences', label: 'Focus mode', key: '.', accel: true },
   { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
   { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
-  { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', shift: true },
+  { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', accel: true, alt: true },
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },
@@ -57,6 +57,9 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
   { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },
+  // Before text.italic, which shares Cmd/Ctrl+I: the board's dispatch skips text-formatting, so italic stays a text-editor key.
+  { id: 'embed.insert', group: 'edit', label: 'Insert embed', key: 'i', accel: true },
+  { id: 'media.invert', group: 'edit', label: 'Invert image colours', key: 'i' },
   { id: 'arrange.back', group: 'edit', label: 'Send to back', key: '[' },
   { id: 'arrange.backward', group: 'edit', label: 'Send backward', key: '[', alt: true },
   { id: 'arrange.forward', group: 'edit', label: 'Bring forward', key: ']', alt: true },
@@ -101,8 +104,11 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'camera.reset', group: 'view', label: 'Reset zoom', key: '0', shift: true },
   { id: 'camera.fit', group: 'view', label: 'Zoom to fit', key: '1', shift: true },
   { id: 'camera.selection', group: 'view', label: 'Zoom to selection', key: '2', shift: true },
+  // Both axes walk the sheets: Left/Up back and Right/Down forward, each route listed in the shortcut sheet (R-4).
   { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowLeft', alt: true },
+  { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowUp', alt: true },
   { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowRight', alt: true },
+  { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowDown', alt: true },
 ]
 
 export interface ShortcutGroup {
@@ -111,9 +117,11 @@ export interface ShortcutGroup {
   readonly bindings: readonly { readonly id: string; readonly label: string; readonly chord: string }[]
 }
 
-export function shortcutGroups(mac: boolean): readonly ShortcutGroup[] {
+/** `paperHost` drops the theme row: on notebooks and PDF ink Mod+/ does nothing (R-26), so it is not advertised. */
+export function shortcutGroups(mac: boolean, paperHost = false): readonly ShortcutGroup[] {
   const groups = new Map<string, { id: string; label: string; chord: string }[]>()
   for (const binding of boardBindings) {
+    if (paperHost && binding.id === 'preferences.theme') continue
     const parts = [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '', binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key].filter(Boolean)
     const rows = groups.get(binding.group) ?? []
     rows.push({ id: `${binding.id}:${binding.accel ? 'mod-' : ''}${binding.alt ? 'alt-' : ''}${binding.shift ? 'shift-' : ''}${binding.key}`, label: binding.label, chord: parts.join(mac ? '' : '+') })
@@ -134,7 +142,7 @@ export interface KeyboardActions {
   readonly cursor?: KeyboardCursor
   navigation?(): KeyboardNavigationPriority
   gestureActive?(): boolean
-  /** Printable text on a selected editable node is offered before tool shortcuts. */
+  /** Printable text on a selected editable node is offered only for keys no shortcut binds: a bound key is a shortcut. */
   typeText?(text: string): boolean
   clearLatches(): void
 }
@@ -180,7 +188,13 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
         if (handled) { event.preventDefault(); event.stopPropagation(); return }
       }
     }
-    if (actions.enabled() && !accel && !event.altKey && !event.ctrlKey && !event.metaKey
+    const physical: Record<string, string> = { Period: '.', Comma: ',', Equal: '=', Minus: '-', Slash: '/', Quote: "'", BracketLeft: '[', BracketRight: ']' }
+    const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1)
+      : event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1).toLowerCase()
+      : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code] : key
+    const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
+    // A bound key is a shortcut before it is text: ⇧/ opens the shortcuts dialog and never types '?' into a label.
+    if (actions.enabled() && !accel && !event.altKey && !event.ctrlKey && !event.metaKey && !binding
       && event.key.length === 1 && actions.typeText?.(event.key)) {
       event.preventDefault(); event.stopPropagation(); return
     }
@@ -188,11 +202,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (!event.repeat && actions.run(event.key === ' ' ? 'pan.hold' : 'zoom.hold', event)) { event.preventDefault(); event.stopPropagation() }
       return
     }
-    const physical: Record<string, string> = { Period: '.', Comma: ',', Equal: '=', Minus: '-', Slash: '/', Quote: "'", BracketLeft: '[', BracketRight: ']' }
-    const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1)
-      : event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1).toLowerCase()
-      : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code] : key
-    const binding = boardBindings.find(item => item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
     if (!binding || binding.group === 'text-formatting' || (event.repeat && !binding.repeat)) return
     if (actions.shortcutsEnabled?.() === false && binding.id !== 'accessibility.repeat') return
     if (!actions.enabled() && !(['view', 'accessibility'].includes(binding.group) || binding.id === 'tool.select' || binding.id === 'tool.hand' || binding.id.startsWith('select.') || binding.id.startsWith('preferences.'))) return

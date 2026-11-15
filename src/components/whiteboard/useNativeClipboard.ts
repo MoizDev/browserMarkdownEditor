@@ -9,8 +9,7 @@ import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrom
 import type { Op } from '../../whiteboard/change/ops';
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
-import { createMediaActions, type MediaActions, type MediaSelection } from '../../whiteboard/host/mediaActions';
-import type { PictureCropPreset } from '../../whiteboard/media/crop';
+import { createMediaActions, type MediaActions } from '../../whiteboard/host/mediaActions';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
 import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
 import { createPdfEmbeddedMediaStorage } from '../../whiteboard/host/pdfEmbeddedMedia';
@@ -23,49 +22,8 @@ import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
+import { chooseReplacementImage, mediaRows } from './nativeMediaRows';
 import { printBoard } from './printBoard';
-
-const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
-    { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
-    { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
-];
-
-/** The App's own picker for a replacement: one image, chosen from the right-click that asked for it. */
-function chooseReplacementImage(): Promise<File | null> {
-    return new Promise(resolve => {
-        const input = document.createElement('input');
-        input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
-        const finish = (file: File | null) => { input.onchange = null; input.oncancel = null; input.remove(); resolve(file); };
-        input.onchange = () => finish(input.files?.[0] ?? null);
-        input.oncancel = () => finish(null);
-        document.body.append(input);
-        input.click();
-    });
-}
-
-/** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
-function mediaRows(selection: MediaSelection, actions: MediaActions, fail: (error: unknown) => void,
-    pick: () => Promise<File | null>): ContextMenuEntry[] {
-    const attempt = (action: () => void | Promise<void>) => () => {
-        try { void Promise.resolve(action()).catch(fail); } catch (error) { fail(error); }
-    };
-    const rowState: { disabled?: true; reason?: string } = selection.blocked === null ? {} : { disabled: true, reason: selection.blocked };
-    if (selection.kind === 'linkcard') {
-        return [{ kind: 'command', id: 'media-card-preview', label: 'Fetch link preview', ...rowState,
-            run: attempt(() => actions.cardPreview(selection.id)) }];
-    }
-    const rows: ContextMenuEntry[] = [];
-    if (selection.replaceable) {
-        rows.push({ kind: 'command', id: 'media-replace', label: 'Replace picture…', ...rowState,
-            run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });
-    }
-    rows.push({ kind: 'submenu', id: 'media-crop', label: 'Crop picture', ...rowState,
-        entries: CROP_ROWS.map(({ preset, label }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label, ...rowState,
-            run: attempt(() => actions.crop(selection.id, preset)) })) });
-    rows.push({ kind: 'command', id: 'media-invert', label: 'Invert picture', ...rowState,
-        run: attempt(() => actions.invert(selection.id)) });
-    return rows;
-}
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -78,8 +36,6 @@ export interface NativeClipboardBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
     readonly commands: ReturnType<typeof createNativeClipboardCommands>;
     openMenu(event: MouseEvent): void;
-    /** The picture/card rows (replace, crop, invert, playback) for the board's own context menu. */
-    mediaEntries(): ContextMenuEntry[];
     focus(): void;
     detach(): void;
 }
@@ -93,6 +49,8 @@ export interface NativeClipboardService {
     theme(): 'light' | 'dark';
     /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
     print(): boolean;
+    /** One page's preview from the pinned all-sheet print source, no longer than `maxSide` pixels (the notebook thumbnails). */
+    pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
     exportPdf(): boolean;
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
@@ -169,7 +127,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         : restoreMedia;
     // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
     // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
-    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia });
+    const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
@@ -225,10 +183,35 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         void work(controller.signal).catch(fail).finally(() => { if (focusedTask === controller) focusedTask = undefined; });
         return true;
     };
+    // Thumbnails share one pinned print job per revision, so every page of a revision reads one all-sheet source. The pin lets
+    // go when the revision moves on (a stale pin would hold the scene and any PDF backdrop) and when the document ends.
+    let pagePin: { readonly revision: number; readonly controller: AbortController; readonly job: ReturnType<typeof prepareExport>;
+        readonly unsubscribe: () => void } | undefined;
+    const releasePagePin = () => {
+        const held = pagePin; pagePin = undefined;
+        if (!held) return;
+        held.unsubscribe(); held.controller.abort();
+    };
+    const pinPagePrint = (): ReturnType<typeof prepareExport> => {
+        const revision = runtime.session.doc.rev;
+        if (pagePin?.revision === revision) return pagePin.job;
+        releasePagePin();
+        const controller = new AbortController();
+        const job = prepareExport('print', controller.signal);
+        // A refused pin reaches the thumbnail that awaited it; a pin nobody awaits must not raise an unhandled rejection.
+        job.catch(() => undefined);
+        const unsubscribe = runtime.session.subscribe(() => { if (runtime.session.doc.rev !== revision) releasePagePin(); });
+        pagePin = { revision, controller, job, unsubscribe };
+        return job;
+    };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions,
         theme: () => active?.theme() ?? 'light',
         print: () => startFocusedTask(signal => focusedPdf(signal, true)),
+        pagePng: async (page, maxSide, signal) => {
+            if (disposed || !current()) throw new Error('The board is no longer open.');
+            return (await pinPagePrint()).print.pngPage(page, signal, maxSide);
+        },
         exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
         attach(surface, lease, theme, notice, inputHandled = false, writable) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
@@ -292,22 +275,11 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     { kind: 'command', id: 'export-svg', label: 'Export SVG', run: () => commands.exportSvg('context') },
                     { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
                 ];
-                const media = mediaEntries();
-                if (media.length) entries.push({ kind: 'separator', id: 'media-separator' }, ...media);
+                const media = mediaActions.selection(!readonly);
+                // This view's menu has no text dialog, so it offers no alternative-text row; the board's own menu does.
+                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, { actions: mediaActions, fail,
+                    pick: chooseReplacementImage, playback: lease.video, current: () => true, notice: report }));
                 openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
-            };
-            const mediaEntries = (): ContextMenuEntry[] => {
-                const media = mediaActions.selection(canWriteView());
-                if (!media) return [];
-                const entries = mediaRows(media, mediaActions, fail, chooseReplacementImage);
-                // A video's or an animated picture's start row exists only after its image has been drawn in this view, or while it
-                // plays (so it can stop). Each is named for what it plays.
-                if ((media?.video || media?.animated) && (lease.video.shown(media.id) || lease.video.playing(media.id))) {
-                    const playing = lease.video.playing(media.id), noun = media.video ? 'video' : 'animation';
-                    entries.push({ kind: 'command', id: 'media-playback', label: playing ? `Pause ${noun}` : `Play ${noun}`,
-                        run: () => { try { if (playing) lease.video.pause(media.id); else lease.video.play(media.id); } catch (error) { fail(error); } } });
-                }
-                return entries;
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
             surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);
@@ -315,7 +287,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
             }
-            return { controller, commands, openMenu: menu, mediaEntries, focus, detach() {
+            return { controller, commands, openMenu: menu, focus, detach() {
                 if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 controller.retire(() => controllers.delete(controller));
@@ -331,6 +303,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     try {
         runtime.registerOwned(() => {
             if (disposed) return; disposed = true; services.delete(runtime); active = undefined; bindings.clear();
+            releasePagePin();
             preferenceLifetime.abort(); stopPreferences();
             try { commands.dispose(); } finally {
                 try { for (const controller of controllers) controller.dispose(); } finally {
@@ -343,15 +316,21 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     } catch (error) { preferenceLifetime.abort(); stopPreferences(); commands.dispose(); ingestor.dispose(); cache.close(); throw error; }
 }
 
+/** The document's command service for this runtime, or null until it is ready; a failure to start it is reported. */
+export function useDocumentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identity: NativeCanvasIdentity,
+    notice: (message: string) => void): NativeClipboardService | null {
+    const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
+    useEffect(() => {
+        try { setState({ runtime, service: documentClipboard(runtime, host, identity) }); }
+        catch (error) { notice(error instanceof Error ? error.message : String(error)); }
+    }, [runtime, host, identity, notice]);
+    return state?.runtime === runtime ? state.service : null;
+}
+
 /** Only event listeners and camera belong to a pane; the command service belongs to the document. */
 export function useNativeClipboard(lease: NativeViewLease, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     theme: () => 'light' | 'dark', notice: (message: string) => void): ViewerViewHandle {
-    const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
-    const service = state?.runtime === lease.runtime ? state.service : null;
-    useEffect(() => {
-        try { setState({ runtime: lease.runtime, service: documentClipboard(lease.runtime, host, identity) }); }
-        catch (error) { notice(error instanceof Error ? error.message : String(error)); }
-    }, [lease.runtime, host, identity, notice]);
+    const service = useDocumentClipboard(lease.runtime, host, identity, notice);
     return useMemo(() => ({ ...lease.view, attachInput(surface: HTMLElement, overlay: HTMLElement) {
         const detach = lease.view.attachInput(surface, overlay);
         if (!service) return detach;

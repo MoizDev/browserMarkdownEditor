@@ -113,6 +113,8 @@ export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding
         return false;
     }
     const services: EditSessionServices = {
+        singleLine: key === 'name',
+        stickyNeighbour: direction => view.stickyNeighbour?.(direction) ?? false,
         ...view,
         history: session.history,
         ...adapter,

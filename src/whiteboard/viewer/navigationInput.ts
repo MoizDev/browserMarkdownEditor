@@ -21,6 +21,8 @@ export interface BoardNavigationOptions {
     linkAt?(point: Point): (() => void) | null;
     contextMenu?(event: MouseEvent): void;
     readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean };
+    /** Preferences: whether the mouse wheel's zoom turn is inverted. */
+    readonly invertMouseZoom?: () => boolean;
 }
 interface Drag {
     id: number; origin: Point; last: Point; moved: boolean; secondary: boolean;
@@ -59,7 +61,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     });
     const flush = () => {
         const ids = [...contacts]; contacts.clear(); drag = null; space = false; suppressMenu = false;
-        for (const id of ids) { touch.touchUp(id); touch.penUp(id, performance.now()); release(id); }
+        for (const id of ids) { touch.touchUp(id); touch.penUp(id); release(id); }
         reportInteraction(); cancelMotion();
     };
     const samples = (d: Drag, p: Point, time: number) => {
@@ -84,7 +86,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
             if (event.pointerType === 'pen') touch.penDown(event.pointerId, false);
             contacts.add(event.pointerId); reportInteraction();
             try { surface.setPointerCapture(event.pointerId); }
-            catch { contacts.delete(event.pointerId); touch.penUp(event.pointerId, event.timeStamp); reportInteraction(); return; }
+            catch { contacts.delete(event.pointerId); touch.penUp(event.pointerId); reportInteraction(); return; }
         }
         if (secondary) suppressMenu = false;
         const open = !secondary && event.button === 0 && !space && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
@@ -114,7 +116,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         if (d) drag = null;
         contacts.delete(event.pointerId); reportInteraction();
         if (event.pointerType === 'touch') touch.touchUp(event.pointerId);
-        if (event.pointerType === 'pen') touch.penUp(event.pointerId, event.timeStamp);
+        if (event.pointerType === 'pen') touch.penUp(event.pointerId);
         release(event.pointerId);
         if (!allowed || cancelled || !d) return;
         if (!d.moved) { if (!d.secondary) d.open?.(); return; }
@@ -137,7 +139,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     surface.addEventListener('pointerdown', down); surface.addEventListener('pointermove', move);
     surface.addEventListener('pointerup', up); surface.addEventListener('pointercancel', cancel); surface.addEventListener('lostpointercapture', cancel);
     surface.addEventListener('contextmenu', menu); surface.addEventListener('dblclick', doubleClick); surface.addEventListener('auxclick', aux);
-    const stopWheel = installWheel(surface, { camera, paged: false, toSurface: point,
+    const stopWheel = installWheel(surface, { camera, paged: false, toSurface: point, invertZoom: () => options.invertMouseZoom?.() ?? false,
         owns: () => { if (!active()) return false; options.viewport(); cancelMotion(); return true; }, changed: () => { if (active()) options.changed(); } });
     const stopKeyboard = installKeyboard(surface, {
         visible: active, enabled: () => false, modalOpen: () => !!document.querySelector('[aria-modal="true"]') || !!options.keyboard?.modalOpen?.(),

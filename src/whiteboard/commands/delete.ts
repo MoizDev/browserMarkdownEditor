@@ -18,6 +18,10 @@ function refuse(code: ConstructorParameters<typeof ApplyRefused>[0]['code'], rea
     throw new DeleteRefused(new ApplyRefused({ ok: false, code, reason, nodeId: id, opIndex: -1 }));
 }
 
+/** The quiet notice a delete route shows when locked descendants were kept in place (R-11). Every route uses it. */
+export function keptLockedMessage(count: number): string {
+    return count === 1 ? 'Kept 1 locked item; it was not deleted.' : `Kept ${count} locked items; they were not deleted.`;
+}
 // The model command owns extraction/reparenting and removal in this same builder;
 // it also rolls back its savepoint on refusal, so no caller can commit half a delete.
 export function planDelete(doc: BoardDoc, builder: CommandBuilder, sheet: SheetId,

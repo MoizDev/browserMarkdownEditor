@@ -91,10 +91,10 @@ export function createStructureCommands(options: StructureCommandsOptions) {
                 }
                 const detail = commands.describePageContents(contents);
                 const kept = contents.length - removable.length;
-                if (!await options.confirm({ title: 'Delete last page?', body: detail
-                    ? `Page ${expectedPage + 1} contains ${detail}.${kept ? ` ${kept} locked or unsupported item${kept === 1 ? ' is' : 's are'} kept.` : ''} Delete the page?`
-                    : `Delete empty page ${expectedPage + 1}?`,
-                confirmLabel: 'Delete page', danger: true })) return false;
+                // An empty page goes without a question; a page with content names exactly what it will delete (WB-D29).
+                if (detail && !await options.confirm({ title: `Delete page ${expectedPage + 1}?`,
+                    body: `It has ${detail} on it, which will be deleted with it.${kept ? ` ${kept} locked or unsupported item${kept === 1 ? ' is' : 's are'} kept.` : ''}`,
+                    confirmLabel: 'Delete page', danger: true })) return false;
                 guard();
                 if (doc.rev !== revision || doc.host.kind !== 'notebook' || doc.host.paper.pageCount - 1 !== expectedPage) {
                     throw new DOMException('Board changed while confirming', 'AbortError');

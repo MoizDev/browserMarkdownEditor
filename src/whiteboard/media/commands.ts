@@ -3,12 +3,14 @@ import type { Op } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { PictureNode } from '../model/nodes';
-import { planPictureCrop, type PictureCropPreset } from './crop';
+import { planPictureCrop, planPictureWindow, type CropWindow, type PictureCropPreset } from './crop';
 
 // Provenance: media edit gestures and session-owned transaction contracts;
 // independent commands, no upstream engine source.
 export interface PictureCommands {
     crop(id: NodeId, preset: PictureCropPreset, zoom?: number): void;
+    /** The crop editor's window, applied as one step. */
+    cropWindow(id: NodeId, window: CropWindow, circle: boolean): void;
     flip(id: NodeId, axis: 'x' | 'y'): void;
     invert(id: NodeId): void;
     setAlt(id: NodeId, text: string): void;
@@ -47,6 +49,11 @@ export function createPictureCommands(options: { readonly runtime: BoardRuntime;
             const node = picture(id), entry = node.media ? doc.media.get(node.media) : undefined;
             if (!entry) throw new Error('Picture dimensions are unavailable');
             apply('Crop picture', planPictureCrop(node, entry, preset, zoom));
+        },
+        cropWindow(id, window, circle) {
+            const node = picture(id), entry = node.media ? doc.media.get(node.media) : undefined;
+            if (!entry) throw new Error('Picture dimensions are unavailable');
+            apply('Crop picture', planPictureWindow(node, entry, window, circle));
         },
         flip(id, axis) {
             const node = picture(id);

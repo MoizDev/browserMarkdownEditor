@@ -2,12 +2,17 @@ import { sampleSurface, type GestureOwner, type Modifiers, type RealSample, type
 
 export interface ZoomPoint { readonly x: number; readonly y: number }
 export interface ZoomBox extends ZoomPoint { readonly width: number; readonly height: number }
+export interface ZoomCamera { readonly x: number; readonly y: number; readonly z: number }
 export interface ZoomBrushContext {
   toSurface(sample: RealSample): ZoomPoint
   preview(box: ZoomBox): void
   clearPreview(): void
   fitBox(box: ZoomBox): void
   zoomAt(point: ZoomPoint, factor: number): void
+  /** The live camera and viewport: the quick overview zooms out from them and restores them. */
+  view(): { readonly camera: ZoomCamera; readonly viewport: { readonly width: number; readonly height: number } }
+  setCamera(camera: ZoomCamera): void
+  clampZoom(z: number): number
 }
 
 class ZoomBrushGesture implements GestureOwner {

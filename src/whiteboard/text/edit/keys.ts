@@ -12,6 +12,8 @@ export interface KeyServices {
     collapse(selection: EditSelection, direction: 'left' | 'right'): number;
     command(command: string): void;
     inList(): boolean;
+    /** A note's directional neighbour (Tab, Shift+Tab, Mod+Enter, Shift+Mod+Enter); false where the flow does not apply. */
+    neighbour(direction: 'left' | 'right' | 'up' | 'down'): boolean;
     undoTransformation(): boolean;
 }
 
@@ -47,6 +49,12 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     }
     if (mod && event.shiftKey && (event.key === '7' || event.key === '8' || event.code === 'Digit7' || event.code === 'Digit8')) {
         consume(event); services.command(event.code === 'Digit7' || event.key === '7' ? 'ordered-list' : 'bullet-list'); return true;
+    }
+    if (!mod && event.key === 'Tab' && !event.altKey && !services.inList() && services.neighbour(event.shiftKey ? 'left' : 'right')) {
+        consume(event); return true;
+    }
+    if (mod && event.key === 'Enter' && !event.altKey && services.neighbour(event.shiftKey ? 'up' : 'down')) {
+        consume(event); return true;
     }
     if (event.key === 'Escape' || (mod && event.key === 'Enter')) {
         consume(event); services.command('finish'); return true;

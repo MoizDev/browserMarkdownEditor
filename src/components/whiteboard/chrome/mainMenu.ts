@@ -38,7 +38,7 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
         action('uploadMedia'), action('insertEmbed'),
         section('edit', [command('undo'), command('redo'), command('cut'), command('copy'), command('paste'),
             command('duplicate'), command('delete'), command('selectAll'), copyAs, command('group'), command('ungroup'),
-            command('flatten'), command('frameSelection'), command('toggleLocked'), action('unlockAll'),
+            command('flatten'), command('frameSelection'), command('removeFrame'), command('fitFrame'), command('toggleLocked'), action('unlockAll'),
             action('convertToBookmark'), action('convertToEmbed')]),
         section('view', [action('zoomIn'), action('zoomOut'), action('zoomToFit'), action('zoomToSelection'),
             action('zoomTo100'), action('toggleMinimap')]),

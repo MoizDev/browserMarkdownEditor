@@ -5,8 +5,12 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
+/** A dragged label snaps to the path centre within this many CSS px at the current zoom (source-only candidate, unconfirmed). */
+export const LABEL_CENTRE_SNAP_PX = 10;
+
 export interface ConnectorControlGestureOptions {
     readonly runtime: BoardRuntime;
+    readonly zoom?: () => number;
     readonly id: NodeId;
     readonly control: ConnectorControl;
     readonly current: () => boolean;
@@ -39,9 +43,10 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
         preview?.release(); preview = undefined;
         let result: ConnectorControlPreview | undefined;
         try {
+            const zoom = options.zoom?.() ?? 1;
             result = await prepareConnectorControl({ runtime: options.runtime, id: options.id, control: options.control,
                 point, signal: request.signal, current: () => !cleaned && options.current() && turn === sequence,
-                cooperate: options.cooperate });
+                cooperate: options.cooperate, labelSnapWorld: zoom > 0 ? LABEL_CENTRE_SNAP_PX / zoom : undefined });
             if (cleaned || request.signal.aborted || turn !== sequence) return;
             if (!options.current()) { cancel(); return; }
             if (commit) {

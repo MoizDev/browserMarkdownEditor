@@ -22,8 +22,6 @@ export class TouchArbiter {
   private readonly touches = new Map<number, TouchContact>()
   private readonly pens = new Set<number>()
   private mode = false
-  private lastPenUp = -Infinity
-  private hoverTime = -Infinity
   private pinch: Pinch | null = null
   private pendingPair: [number, number] | null = null
   private pan: { id: number; point: Point } | null = null
@@ -32,7 +30,7 @@ export class TouchArbiter {
   get penMode(): boolean { return this.mode }
   setPenMode(enabled: boolean): void { if (this.mode !== enabled) { this.mode = enabled; this.actions.penModeChanged(enabled) } }
   exitPenMode(): void { this.setPenMode(false) }
-  penHover(time: number): void { this.hoverTime = time }
+  penHover(): void {}
   penDown(id: number, directTouchDevice: boolean): void {
     const first = !this.pens.size, hadCamera = !!(this.pinch || this.pendingPair || this.pan)
     this.pens.add(id)
@@ -44,14 +42,14 @@ export class TouchArbiter {
       }
     } finally { if (directTouchDevice) this.setPenMode(true) }
   }
-  penUp(id: number, time: number): void { if (this.pens.delete(id) && !this.pens.size) this.lastPenUp = time }
+  penUp(id: number): void { this.pens.delete(id) }
 
   // Returns true only when the touch may start authoring; camera contacts are managed here.
+  // Admission is by contact lifetime and pen state alone (F-INPUT-007): a contact that began during pen contact
+  // was already marked ineligible in penDown, and a fresh contact after pen-up is not second-guessed by its size or timing.
   touchDown(point: ContactPoint): boolean {
     if (this.touches.has(point.id)) return false
-    const large = Math.max(point.width, point.height) > 30
-    const recentPen = point.time - this.lastPenUp < 300 || point.time - this.hoverTime < 100
-    const eligible = !this.pens.size && !(large && recentPen)
+    const eligible = !this.pens.size
     this.touches.set(point.id, { point, eligible })
     if (!eligible) return false
     const qualified = [...this.touches.values()].filter(t => t.eligible)
@@ -122,6 +120,8 @@ export interface WheelAdapterOptions {
   readonly toSurface: (x: number, y: number) => Point
   readonly owns: (event: WheelEvent) => boolean
   readonly changed: () => void
+  /** Preferences: a mouse wheel's zoom turn reverses. Panning never reverses. */
+  readonly invertZoom?: () => boolean
 }
 
 export function installWheel(root: HTMLElement, options: WheelAdapterOptions): () => void {
@@ -130,7 +130,8 @@ export function installWheel(root: HTMLElement, options: WheelAdapterOptions): (
     const mode = event.deltaMode === 1 ? 'line' : event.deltaMode === 2 ? 'page' : 'pixel'
     if (event.ctrlKey || event.metaKey) {
       const unit = mode === 'line' ? 16 : mode === 'page' ? options.camera.viewport.height : 1
-      options.camera.zoomWheel(event.deltaY * unit, options.toSurface(event.clientX, event.clientY))
+      const direction = options.invertZoom?.() ? -1 : 1
+      options.camera.zoomWheel(direction * event.deltaY * unit, options.toSurface(event.clientX, event.clientY))
     } else {
       options.camera.panWheel({ deltaX: options.paged ? 0 : event.deltaX, deltaY: event.deltaY, deltaMode: mode, shift: !options.paged && event.shiftKey })
     }

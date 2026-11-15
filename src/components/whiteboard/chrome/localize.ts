@@ -18,12 +18,18 @@ export function localizeBoardChrome(t: BoardTranslate) {
     };
 }
 
+function translatedOr(t: BoardTranslate, key: string, fallback: string): string {
+    try { return t(key); } catch { return fallback; }
+}
+
 export function localizeShortcutGroups(groups: readonly ShortcutGroup[], t: BoardTranslate): readonly ShortcutGroup[] {
     return groups.map(group => ({
         ...group,
         label: t(`shortcutGroups.${group.id === 'style' ? 'transform' : group.id === 'text-formatting' ? 'textFormatting' : group.id}`),
+        // translateBoard throws on a key a language table lacks. A binding whose translation has not shipped yet keeps
+        // its English label, so one new shortcut cannot take the whole dialog down in the other languages.
         bindings: group.bindings.map(binding => ({
-            ...binding, label: t(`shortcuts.${binding.id.split(':', 1)[0]}`),
+            ...binding, label: translatedOr(t, `shortcuts.${binding.id.split(':', 1)[0]}`, binding.label),
         })),
     }));
 }

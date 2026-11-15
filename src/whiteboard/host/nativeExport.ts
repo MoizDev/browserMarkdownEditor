@@ -262,7 +262,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         // captures still show real empty paper-white pixels, not transparent ink.
         const background = region ? DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background
             : scope.includeBackdrop || transparent ? undefined : DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
-        const sheetName = meta.sheetOrder.length > 1 ? sheet.name : null;
         const longest = Math.max(scope.bounds.width, scope.bounds.height);
         // Two pixels per world unit, or the largest scale the PNG size limit accepts (copy has the tighter clipboard side):
         // an oversize board exports smaller and says so, rather than failing the download.
@@ -507,7 +506,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             },
             svg: requestSignal => run(requestSignal, combined => pdfBackdrop ? pdfSvg(combined) :
                 streamSvg(source, scope.bounds, 1, createExportImageResolver(token, capturedImages, readImage, combined), combined, background)),
-            filename: extension => exportFileName(boardName, sheetName, scope.kind, extension, timestamp),
+            filename: extension => exportFileName(boardName, scope.kind, extension, timestamp),
             release,
         };
     } catch (error) { release(); throw error; }

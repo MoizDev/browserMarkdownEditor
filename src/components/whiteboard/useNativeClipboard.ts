@@ -9,8 +9,7 @@ import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrom
 import type { Op } from '../../whiteboard/change/ops';
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
-import { createMediaActions, type MediaActions, type MediaSelection } from '../../whiteboard/host/mediaActions';
-import type { PictureCropPreset } from '../../whiteboard/media/crop';
+import { createMediaActions, type MediaActions } from '../../whiteboard/host/mediaActions';
 import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
 import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
 import { createPdfEmbeddedMediaStorage } from '../../whiteboard/host/pdfEmbeddedMedia';
@@ -23,49 +22,8 @@ import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
+import { chooseReplacementImage, mediaRows } from './nativeMediaRows';
 import { printBoard } from './printBoard';
-
-const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
-    { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
-    { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
-];
-
-/** The App's own picker for a replacement: one image, chosen from the right-click that asked for it. */
-function chooseReplacementImage(): Promise<File | null> {
-    return new Promise(resolve => {
-        const input = document.createElement('input');
-        input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
-        const finish = (file: File | null) => { input.onchange = null; input.oncancel = null; input.remove(); resolve(file); };
-        input.onchange = () => finish(input.files?.[0] ?? null);
-        input.oncancel = () => finish(null);
-        document.body.append(input);
-        input.click();
-    });
-}
-
-/** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
-function mediaRows(selection: MediaSelection, actions: MediaActions, fail: (error: unknown) => void,
-    pick: () => Promise<File | null>): ContextMenuEntry[] {
-    const attempt = (action: () => void | Promise<void>) => () => {
-        try { void Promise.resolve(action()).catch(fail); } catch (error) { fail(error); }
-    };
-    const rowState: { disabled?: true; reason?: string } = selection.blocked === null ? {} : { disabled: true, reason: selection.blocked };
-    if (selection.kind === 'linkcard') {
-        return [{ kind: 'command', id: 'media-card-preview', label: 'Fetch link preview', ...rowState,
-            run: attempt(() => actions.cardPreview(selection.id)) }];
-    }
-    const rows: ContextMenuEntry[] = [];
-    if (selection.replaceable) {
-        rows.push({ kind: 'command', id: 'media-replace', label: 'Replace picture…', ...rowState,
-            run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });
-    }
-    rows.push({ kind: 'submenu', id: 'media-crop', label: 'Crop picture', ...rowState,
-        entries: CROP_ROWS.map(({ preset, label }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label, ...rowState,
-            run: attempt(() => actions.crop(selection.id, preset)) })) });
-    rows.push({ kind: 'command', id: 'media-invert', label: 'Invert picture', ...rowState,
-        run: attempt(() => actions.invert(selection.id)) });
-    return rows;
-}
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -291,14 +249,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
                 ];
                 const media = mediaActions.selection(!readonly);
-                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, mediaActions, fail, chooseReplacementImage));
-                // A video's or an animated picture's start row exists only after its image has been drawn in this view, or while it
-                // plays (so it can stop). Each is named for what it plays.
-                if ((media?.video || media?.animated) && (lease.video.shown(media.id) || lease.video.playing(media.id))) {
-                    const playing = lease.video.playing(media.id), noun = media.video ? 'video' : 'animation';
-                    entries.push({ kind: 'command', id: 'media-playback', label: playing ? `Pause ${noun}` : `Play ${noun}`,
-                        run: () => { try { if (playing) lease.video.pause(media.id); else lease.video.play(media.id); } catch (error) { fail(error); } } });
-                }
+                // This view's menu has no text dialog, so it offers no alternative-text row; the board's own menu does.
+                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, { actions: mediaActions, fail,
+                    pick: chooseReplacementImage, playback: lease.video, current: () => true, notice: report }));
                 openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);

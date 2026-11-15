@@ -4,7 +4,6 @@ import { exportFileName } from './scope';
 export interface PinnedNativeImageJobOptions extends Omit<NativeBoardImageExportOptions, 'format'> {
     readonly signal: AbortSignal;
     readonly boardName: string;
-    readonly sheetName: string | null;
     notice(message: string): void;
 }
 export interface PinnedNativeImageJob {
@@ -16,7 +15,7 @@ export interface PinnedNativeImageJob {
 
 /** Core can install the returned PNG/SVG promise in its ClipboardItem during the initiating event. */
 export function preparePinnedNativeImageJob(options: PinnedNativeImageJobOptions): PinnedNativeImageJob {
-    const { signal, boardName, sheetName } = options;
+    const { signal, boardName } = options;
     signal.throwIfAborted();
     const selected = options.route !== 'menu' && options.runtime.selection.getSnapshot().selected.length > 0;
     const stamp = new Date();
@@ -35,7 +34,7 @@ export function preparePinnedNativeImageJob(options: PinnedNativeImageJobOptions
     return {
         png: request => run('png', request),
         svg: request => run('svg', request),
-        filename: extension => exportFileName(boardName, sheetName, selected ? 'selection' : 'sheet', extension, stamp),
+        filename: extension => exportFileName(boardName, selected ? 'selection' : 'sheet', extension, stamp),
         release,
     };
 }

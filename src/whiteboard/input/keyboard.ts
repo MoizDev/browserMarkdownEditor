@@ -57,6 +57,9 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
   { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },
+  // Before text.italic, which shares Cmd/Ctrl+I: the board's dispatch skips text-formatting, so italic stays a text-editor key.
+  { id: 'embed.insert', group: 'edit', label: 'Insert embed', key: 'i', accel: true },
+  { id: 'media.invert', group: 'edit', label: 'Invert image colours', key: 'i' },
   { id: 'arrange.back', group: 'edit', label: 'Send to back', key: '[' },
   { id: 'arrange.backward', group: 'edit', label: 'Send backward', key: '[', alt: true },
   { id: 'arrange.forward', group: 'edit', label: 'Bring forward', key: ']', alt: true },

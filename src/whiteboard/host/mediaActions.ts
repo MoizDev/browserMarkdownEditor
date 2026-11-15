@@ -32,6 +32,12 @@ export interface MediaActions {
     replace(id: NodeId, file: Blob, name: string): Promise<void>;
     crop(id: NodeId, preset: PictureCropPreset): void;
     invert(id: NodeId): void;
+    /** The picture's alternative text, as the description dialog starts from it. */
+    alternativeText(id: NodeId): string;
+    /** One content step: the description the dialog saved. */
+    setAlt(id: NodeId, text: string): void;
+    /** Saves a copy of the picture's original bytes through the browser's download; nothing in the document changes. */
+    downloadOriginal(id: NodeId): void;
     /** Fetches the link preview for an explicit user request; the preview becomes inert text on commit. */
     cardPreview(id: NodeId): Promise<void>;
 }
@@ -68,6 +74,13 @@ export function createMediaActions(options: MediaActionOptions): MediaActions {
         },
         crop(id, preset) { commands.crop(id, preset); },
         invert(id) { commands.invert(id); },
+        alternativeText(id) {
+            const node = runtime.session.doc.nodes.get(id);
+            if (!node || node.kind !== 'picture') throw new Error('Picture is missing');
+            return node.alt;
+        },
+        setAlt(id, text) { commands.setAlt(id, text); },
+        downloadOriginal(id) { commands.downloadOriginal(id); },
         cardPreview(id) { return fetchCardPreview({ runtime, id, memory, environment, current }); },
     };
 }

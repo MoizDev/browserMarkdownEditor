@@ -130,8 +130,10 @@ export function changePaper(doc: BoardDoc, apply: MutationPort, paper: Readonly<
 }
 
 /** Append this operation to the originating content transaction, not a later save. */
+/** Only a notebook grows; any other board needs no growth (several creation paths call this unguarded). */
 export function notebookGrowthOp(doc: BoardDoc, deepestWorldY: number): BoardOp | undefined {
-    const paper = notebook(doc);
+    if (doc.host.kind !== 'notebook') return undefined;
+    const paper = doc.host.paper;
     if (!Number.isFinite(deepestWorldY)) throw new StructureRefused('Invalid content bounds');
     const { height } = paperPageSize(paper);
     const threshold = (paper.pageCount - 1) * (height + PAGE_GAP) + 0.8 * height;

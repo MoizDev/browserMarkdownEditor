@@ -3,7 +3,11 @@ import { PenContactTransitions } from './penTransitions'
 import { InputRouter } from './router'
 import type { FinishReason, InputToken, Modifiers, RealSample, Tool } from './tool'
 
-export interface PointerRoute<Context> { readonly tool: Tool<Context>; readonly context: Context }
+export interface PointerRoute<Context> {
+  readonly tool: Tool<Context>; readonly context: Context
+  /** The tool returns to Select itself once its work has landed, instead of at pointer-up. */
+  readonly completesTool?: boolean
+}
 export interface PointerRouterOptions<Context> {
   readonly root: HTMLElement
   readonly mappings: MappingHistory

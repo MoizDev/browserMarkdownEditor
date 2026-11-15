@@ -17,6 +17,7 @@ import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { BoundsQuality } from '../scene/bounds';
 import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
+import { createPreviewSlot } from './previewSlot';
 import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerSnapshot, ViewerViewParams } from './types';
 
 class SelectionIds implements ReadonlySet<string> {
@@ -171,12 +172,13 @@ export const attachView: AttachView = options => {
             }
             return result || node.kind;
         } });
+    const previewUnderlay = createPreviewSlot('board-preview-underlay', layers[0]), previewContent = createPreviewSlot('board-preview-content', layers[1]);
     let snapshot: ViewerSnapshot;
     function makeSnapshot(): ViewerSnapshot {
         const palette = palettes[options.session.doc.kind === 'whiteboard' ? view.theme : 'light'];
         const nextLayers = [...view.backdrops ?? [], ...paper ? [paper] : [], layers[0],
-            ...previewLayers ? [previewLayers.underlay] : [], ...interactionLayers ? [interactionLayers.underlay] : [],
-            layers[1], ...previewLayers ? [previewLayers.content] : [], ...interactionLayers ? [interactionLayers.content] : [],
+            previewUnderlay.definition, ...interactionLayers ? [interactionLayers.underlay] : [],
+            layers[1], previewContent.definition, ...interactionLayers ? [interactionLayers.content] : [],
             ...embedPort ? [embedPort.layer] : []];
         // A new topology seals platform input. Rebuilding the same list on preview cancellation
         // sealed it again during React's layout effect, recursively cancelling until error #185.
@@ -281,7 +283,7 @@ export const attachView: AttachView = options => {
         const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;
         if (oldEmbed) { oldEmbed.setVisible(false); void oldEmbed.dispose().catch(report); }
-        disposed = true; paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
+        disposed = true; previewUnderlay.dispose(); previewContent.dispose(); paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
         unbind(); stopScene?.(); stopSelection(); stopSession(); accessibility.dispose(); frames.dispose(); listeners.clear(); interaction = null;
         options.signal?.removeEventListener('abort', dispose);
     };
@@ -341,7 +343,7 @@ export const attachView: AttachView = options => {
         setPreviewLayers(next, coverage) {
             if (disposed) return;
             previewCoverage = next ? coverage ?? null : null;
-            if (previewLayers !== next) { previewLayers = next; publish(); }
+            if (previewLayers !== next) { previewLayers = next; previewUnderlay.set(next?.underlay ?? null); previewContent.set(next?.content ?? null); publish(); }
             layers.invalidate('board-preview-layers');
         },
         bindPreviewClear(clear) {

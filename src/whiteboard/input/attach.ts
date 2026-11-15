@@ -227,7 +227,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (commit) return { tool: continuationTool(sample, commit), context: undefined }
       }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
-      return services.resolveTool(choice, sample, modifiers, event)
+      const routed = services.resolveTool(choice, sample, modifiers, event)
+      // A creation's commit is still running after up; the single-use return to Select writes ui.tool,
+      // which bumps the revision and cancels pending gestures, so it would abort that commit.
+      if (routed?.completesTool) completeTool = false
+      return routed
     },
     ended(reason) {
       delegated?.clear()

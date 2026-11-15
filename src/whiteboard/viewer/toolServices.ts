@@ -186,11 +186,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
-                return route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+                return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
                     sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
-                        { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error });
+                        { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
             }
             default: throw new Error(`Unsupported routed board tool: ${choice.id}`);
         }

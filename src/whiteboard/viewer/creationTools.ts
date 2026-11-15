@@ -48,6 +48,7 @@ class CreationGesture implements GestureOwner {
     private readonly controller = new AbortController();
     private readonly revision: number;
     private readonly toolEpoch: number;
+    private readonly toolStart: ReturnType<BoardCreationContext['runtime']['tools']['getSnapshot']>;
     private readonly document: BoardRuntime['session']['doc'];
     private readonly owner: BoardRuntime['session']['owner'];
     private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
@@ -73,7 +74,7 @@ class CreationGesture implements GestureOwner {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
-        this.revision = doc.rev; this.toolEpoch = context.runtime.tools.getSnapshot().selectionEpoch;
+        this.revision = doc.rev; this.toolStart = context.runtime.tools.getSnapshot(); this.toolEpoch = this.toolStart.selectionEpoch;
         this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
         const parent = doc.nodes.get(this.parent as Node['id']);
         if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) throw new Error('Creation focus is not an editable container');
@@ -221,10 +222,10 @@ class CreationGesture implements GestureOwner {
         this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
         if (this.context.kind === 'connector' && this.isClick()) {
-            this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); return;
+            this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); this.completeTool(); return;
         }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
-        void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => this.cleanup());
+        void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => { this.cleanup(); this.completeTool(); });
     }
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
         const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;
@@ -324,6 +325,11 @@ class CreationGesture implements GestureOwner {
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
     }
     cancel(_reason: CancelReason): void { this.ended = true; this.previewGeneration++; this.previewRequest?.abort(); this.controller.abort(); this.cleanup(); }
+    /** The single-use return to Select, after the commit (see PointerRoute.completesTool). */
+    private completeTool(): void {
+        if (!this.context.current()) return;
+        try { this.context.runtime.tools.complete(this.toolStart); } catch (error) { this.context.onError(error); }
+    }
     private cleanup(): void {
         if (this.released) return;
         this.released = true;

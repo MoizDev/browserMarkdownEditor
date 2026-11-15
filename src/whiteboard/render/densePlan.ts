@@ -204,7 +204,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) / side);
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const lease = host.allocator.cpu.reserve(BLOCK);
-        if (!lease) { denied = true; return null; }
+        if (!lease) { denied = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
@@ -527,14 +527,14 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         p.target = { band: p.band, x: p.tileX, y: p.tileY, slot: null };
                         raster(p, view, budget);
                         if (p.retired) return;
-                        if (p.job && !p.job.needsFrame()) return;
+                        if (p.job && (p.job.awaiting || !p.job.needsFrame())) return;
                     } else if (p.phase === 'refine') {
                         if (p.refineIndex >= p.refine.length) return;
                         const next = p.refine[p.refineIndex];
                         p.target = { band: next.band, x: next.x, y: next.y, slot: p.refineIndex };
                         raster(p, view, budget);
                         if (p.retired) return;
-                        if (p.job && !p.job.needsFrame()) return;
+                        if (p.job && (p.job.awaiting || !p.job.needsFrame())) return;
                     } else if (p.phase === 'direct') {
                         if (!p.directAdapter) {
                             // Only live items are prepared: the adapter skips the rest in place, with no filtered copy.
@@ -607,7 +607,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return { complete, sharp: complete && !!ready?.sharp, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),
-        memoryBlocked: () => !disposed && !!staged?.blocked,
+        memoryBlocked: () => !disposed && (denied || !!staged?.blocked || !!staged?.job?.blocked),
         pending: () => !disposed && (!!staged || (!!ready && !ready.sharp)),
         cpuWorkingSet(nativePathUpperBound = 0) {
             let held = 0; for (const p of plans) held += working(p);

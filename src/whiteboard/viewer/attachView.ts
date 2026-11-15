@@ -312,7 +312,7 @@ export const attachView: AttachView = options => {
             const old = embedPort; embedPort = port;
             // One port, one producer: the producer presents only through the same port the per-node Load/Unload uses.
             const oldProducer = embedProducer;
-            embedProducer = port ? createNativeEmbedPresentationProducer({ port, images, memory: embedMemory, onError: report }) : null;
+            embedProducer = port ? createNativeEmbedPresentationProducer({ port, memory: embedMemory, onError: report }) : null;
             oldProducer?.dispose();
             if (old) { old.setVisible(false); void old.dispose().catch(report); }
             port?.setVisible(view.visible);

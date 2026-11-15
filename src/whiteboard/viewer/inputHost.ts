@@ -86,6 +86,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             if (options.presented) safe(() => options.presented?.(revision, actual, frame, context));
         },
         liveNodeIds: () => wet.liveNodeIds(),
+        paletteChanged: () => wet.invalidate(),
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => {

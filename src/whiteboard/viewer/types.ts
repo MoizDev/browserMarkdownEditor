@@ -58,6 +58,10 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** The theme palette changed. Interaction-owned paint (the wet ink source) caches pigments
+     * from the palette and is only refreshed when its own layer is prepared, so the view must
+     * tell it: the main layers' invalidation alone leaves a dark pigment on screen. */
+    paletteChanged?(): void;
     /** Immutable, identity-stable semantic hover/edit targets requiring exact paint. */
     sensitiveNodeIds?(): ReadonlySet<string>;
 }

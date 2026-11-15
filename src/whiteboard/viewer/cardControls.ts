@@ -8,7 +8,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { PresentedHistory } from '../input/presentedHistory';
 import type { GestureOwner, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
-import type { EmbedNode, LinkcardNode } from '../model/nodes';
+import type { EmbedNode, LinkcardNode, Node } from '../model/nodes';
 
 /** What a card's controls may do. Embed consent is session-only and never saved; opening and fetching are explicit gestures. */
 export interface BoardCardActions {
@@ -38,6 +38,11 @@ interface PlacedChip extends Chip { readonly x: number; readonly y: number; read
 // Screen pixels, not world units: a card's chips keep their size at any zoom, and a chip is a touch target as well as a label.
 const INSET = 12, HEIGHT = 26, GAP = 6, CHARACTER = 7.2, CHIP_PAD = 20;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+// A signal that is never aborted: the picking geometry is read as the current revision, not cancelled.
+const NEVER = new AbortController().signal;
+let maskSeq = 0;
+/** A node's ink on the surface, as a box: the nearest thing the picking geometry offers to its outline. */
+interface SurfaceBox { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
 
 function toWorld(runtime: BoardRuntime, node: Readonly<CardNode>, x: number, y: number): Vec2 {
     const pose = worldPose(runtime.session.doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -61,11 +66,34 @@ export function createCardControls(options: CardControlOptions) {
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current();
     const report = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.error(error); };
-    /** The sheet's cards in paint order: the last is the topmost, and a press reaches it first, as it reaches selection. */
-    const cardsOnSheet = (): CardNode[] => {
-        const out: CardNode[] = [];
-        forEachNodeInZOrder(session.doc, runtime.selection.getSnapshot().sheet, node => { if (node.kind === 'embed' || node.kind === 'linkcard') out.push(node); });
+    /** The sheet's nodes in paint order (the last is the topmost); groups have no ink of their own, and their children are listed. */
+    const sheetNodes = (): Node[] => {
+        const out: Node[] = [];
+        forEachNodeInZOrder(session.doc, runtime.selection.getSnapshot().sheet, node => { if (node.kind !== 'group') out.push(node); });
         return out;
+    };
+    /** A node's ink box on the surface; null for a kind this does not box (a connector's line and label, an opaque record). */
+    const surfaceBox = (node: Readonly<Node>, camera: ViewState['camera']): SurfaceBox | null => {
+        if (node.kind === 'connector' || node.kind === 'opaque') return null;
+        let ink: readonly number[];
+        try { ink = runtime.render.prepareForPickNow(node, NEVER, session.doc).bounds.ink; } catch { return null; }
+        const [lx0, ly0, lx1, ly1] = ink;
+        if (![lx0, ly0, lx1, ly1].every(Number.isFinite) || lx1 < lx0 || ly1 < ly0) return null;
+        const pose = worldPose(session.doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const [px, py] of [[lx0, ly0], [lx1, ly0], [lx1, ly1], [lx0, ly1]] as const) {
+            const p = worldToSurface({ x: pose.x + c * px - s * py, y: pose.y + s * px + c * py }, camera);
+            x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+        }
+        return { x0, y0, x1, y1 };
+    };
+    /** Whether a node above `from` in paint order covers the surface point: such a node is what a press there reaches. */
+    const coveredAbove = (boxes: readonly (SurfaceBox | null)[], from: number, p: Vec2): boolean => {
+        for (let j = from; j < boxes.length; j++) {
+            const b = boxes[j];
+            if (b && p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1) return true;
+        }
+        return false;
     };
     const chipsFor = (node: Readonly<CardNode>, actions: BoardCardActions): Chip[] => {
         if (node.kind === 'embed') {
@@ -127,9 +155,10 @@ export function createCardControls(options: CardControlOptions) {
         begin(surface: Vec2, sample: RealSample, accel: boolean): GestureOwner | null {
             const actions = options.actions, camera = presented.at(sample.time);
             if (!actions || !camera || !current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            const cards = cardsOnSheet();
-            for (let i = cards.length - 1; i >= 0; i--) {
-                const node = cards[i];
+            const nodes = sheetNodes(), boxes = nodes.map(node => surfaceBox(node, camera));
+            for (let k = nodes.length - 1; k >= 0; k--) {
+                const node = nodes[k];
+                if ((node.kind !== 'embed' && node.kind !== 'linkcard') || coveredAbove(boxes, k + 1, surface)) continue;
                 for (const chip of layout(node, actions, camera)) {
                     if (chip.action === null || surface.x < chip.x || surface.x > chip.x + chip.w || surface.y < chip.y || surface.y > chip.y + chip.h) continue;
                     return gesture(sample, surface, actionFor(node, chip.action, actions));
@@ -145,8 +174,8 @@ export function createCardControls(options: CardControlOptions) {
         },
         write(frame: ScheduledFrame) {
             const actions = options.actions;
-            const cards = actions ? cardsOnSheet() : [];
-            if (!actions || !cards.length) { clear(); return; }
+            const nodes = actions ? sheetNodes() : [];
+            if (!actions || !nodes.some(node => node.kind === 'embed' || node.kind === 'linkcard')) { clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (!svg) {
                 svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('aria-hidden', 'true');
@@ -154,7 +183,30 @@ export function createCardControls(options: CardControlOptions) {
                 options.overlay.append(svg);
             }
             svg.replaceChildren();
-            for (const node of cards) {
+            const boxes = nodes.map(node => surfaceBox(node, frame.view.camera));
+            for (let k = 0; k < nodes.length; k++) {
+                const node = nodes[k];
+                if (node.kind !== 'embed' && node.kind !== 'linkcard') continue;
+                // A chip is clipped by whatever is above its card, so the card's chips never show through a node drawn over them.
+                let host: SVGElement = svg;
+                const above = boxes.slice(k + 1).filter((b): b is SurfaceBox => b !== null);
+                if (above.length) {
+                    const id = `bme-card-chips-${++maskSeq}`, mask = document.createElementNS(SVG_NS, 'mask');
+                    mask.setAttribute('id', id); mask.setAttribute('maskUnits', 'userSpaceOnUse');
+                    mask.setAttribute('x', '-100000'); mask.setAttribute('y', '-100000'); mask.setAttribute('width', '200000'); mask.setAttribute('height', '200000');
+                    const visible = document.createElementNS(SVG_NS, 'rect');
+                    visible.setAttribute('x', '-100000'); visible.setAttribute('y', '-100000'); visible.setAttribute('width', '200000'); visible.setAttribute('height', '200000');
+                    visible.setAttribute('fill', '#ffffff'); mask.append(visible);
+                    for (const b of above) {
+                        const hidden = document.createElementNS(SVG_NS, 'rect');
+                        hidden.setAttribute('x', String(b.x0)); hidden.setAttribute('y', String(b.y0));
+                        hidden.setAttribute('width', String(b.x1 - b.x0)); hidden.setAttribute('height', String(b.y1 - b.y0));
+                        hidden.setAttribute('fill', '#000000'); mask.append(hidden);
+                    }
+                    const layer = document.createElementNS(SVG_NS, 'g');
+                    layer.setAttribute('mask', `url(#${id})`);
+                    svg.append(mask, layer); host = layer;
+                }
                 for (const chip of layout(node, actions, frame.view.camera)) {
                     const group = document.createElementNS(SVG_NS, 'g');
                     group.setAttribute('opacity', chip.action === null ? '0.55' : '1');
@@ -169,7 +221,7 @@ export function createCardControls(options: CardControlOptions) {
                     text.setAttribute('font-family', 'system-ui, sans-serif'); text.setAttribute('font-size', '12');
                     text.setAttribute('font-weight', '600'); text.setAttribute('fill', '#1f2328');
                     text.textContent = chip.label;
-                    group.append(rect, text); svg.append(group);
+                    group.append(rect, text); host.append(group);
                 }
             }
         },

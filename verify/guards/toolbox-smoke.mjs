@@ -15,6 +15,9 @@ import { opaqueFrameEpub } from '../lib/epubFixture.mjs';
 // One autosave of one inserted sentence; opening/reading/restoring never writes.
 // The note phase ends before the separate EPUB frame control starts workers.
 // No trash or move is requested in either phase.
+// The vault index worker starts at idle in every vault by design (AGENTS.md, context/vaultIndex/);
+// what a markdown session must not start is any OTHER worker (PDF, board, EPUB).
+const nonIndexWorker = record => record.op === 'workerStart' && !/(^|\/)index\.worker\b/.test(new URL(record.url ?? '', 'http://x/').pathname);
 const expectedCounts = { createWritable: 1, close: 1, removeEntry: 0, workerStart: 0 };
 const sentence = 'The toolbox sentence survives autosave and a real reload.';
 const fixtures = {
@@ -168,7 +171,7 @@ try {
     await assert('A write count', expectedCounts.createWritable, before.records.filter(r => r.op === 'createWritable' && r.path === aPath && r.ok).length);
     await assert('A closed-write count', expectedCounts.close, before.records.filter(r => r.op === 'close' && r.path === aPath && r.ok).length);
     await assert('no removal', expectedCounts.removeEntry, before.records.filter(r => r.op === 'removeEntry').length);
-    await assert('markdown workers', expectedCounts.workerStart, [...startupCounters.records, ...before.records].filter(r => r.op === 'workerStart').length);
+    await assert('markdown workers', expectedCounts.workerStart, [...startupCounters.records, ...before.records].filter(nonIndexWorker).length);
     report.data.counters = before;
     const synchronized = await readWitness(page, { name: 'Toolbox Vault', path: 'A.md', report,
         afterCompletedCloses: { path: 'A.md', count: 1 } });
@@ -232,7 +235,7 @@ try {
     await assert('A write count across switching and restore', 1, all.filter(r => r.op === 'createWritable' && r.path === aPath && r.ok).length);
     await assert('A close count across switching and restore', 1, all.filter(r => r.op === 'close' && r.path === aPath && r.ok).length);
     await assert('no removal across switching and restore', 0, all.filter(r => r.op === 'removeEntry').length);
-    await assert('no workers across switching and restore', 0, all.filter(r => r.op === 'workerStart').length);
+    await assert('no workers across switching and restore', 0, all.filter(nonIndexWorker).length);
     await fontsReady(page);
     report.data.screenshot = resolve(options.scratch, 'reports', `${report.data.name}-${report.data.runId}.png`);
     await page.screenshot({ path: report.data.screenshot });

@@ -1,9 +1,8 @@
-import type { CameraController, Point } from '../../platform/render/camera';
-import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import type { CameraController, Point, ViewportInsets } from '../../platform/render/camera';
+import { centredCamera, contentBounds, fitTarget, pageStackBounds, unionRects, type ContentRect } from '../commands/contentBounds';
 import type { BoardRuntime } from '../host/runtime';
-import { boardCameraInsets, resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
+import { resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
-import { boardPageStack } from '../model/pages';
 
 export interface BoardCameraCommandsOptions {
     readonly runtime: BoardRuntime;
@@ -14,7 +13,6 @@ export interface BoardCameraCommandsOptions {
     error(error: unknown): void;
     cooperate?(): Promise<void>;
 }
-interface Bounds { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
 
 /** Commands share the pane camera and its paper constraint. They never change
  * document history; asynchronous fit owns a revision/selection/camera fence. */
@@ -24,7 +22,6 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const cancel = () => { serial++; pending?.abort(); pending = undefined; };
-    const insets = () => boardCameraInsets(doc);
     const viewport = () => camera.viewport;
     const moved = (event: PointerEvent) => {
         if (!current()) return;
@@ -46,76 +43,32 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
         zoom(stepBoardZoom(doc, camera, direction), atCursor ? cursor ?? centre() : centre());
     };
     const reset = () => { zoom(resetBoardZoom(doc, camera), centre()); };
-    const setCentered = (bounds: Bounds, z: number, area: Readonly<{ left: number; right: number; top: number; bottom: number }>) => {
-        if (!current() || ![bounds.x, bounds.y, bounds.width, bounds.height, z].every(Number.isFinite) || bounds.width < 0 || bounds.height < 0 || z <= 0) return;
-        const clamped = camera.clampZoom(z), width = viewport().width, height = viewport().height;
-        const sx = (area.left + width - area.right) / 2, sy = (area.top + height - area.bottom) / 2;
-        camera.setCamera({ x: bounds.x + bounds.width / 2 - sx / clamped, y: bounds.y + bounds.height / 2 - sy / clamped, z: clamped });
-        notify();
-    };
-    const fitBounds = (bounds: Bounds, paper: boolean) => {
-        const view = viewport(); if (!(view.width > 0 && view.height > 0)) return;
-        const edges = paper ? insets() : { left: Math.min(64, view.width * .14), right: Math.min(64, view.width * .14),
-            top: Math.min(64, view.height * .14), bottom: Math.min(64, view.height * .14) };
-        const width = Math.max(1, view.width - edges.left - edges.right), height = Math.max(1, view.height - edges.top - edges.bottom);
-        const zx = bounds.width > 0 ? width / bounds.width : Infinity, zy = bounds.height > 0 ? height / bounds.height : Infinity;
-        const target = Math.min(zx, zy);
-        setCentered(bounds, Number.isFinite(target) && target > 0 ? target : 1, edges);
-    };
-    const sheetBounds = (): Bounds | null => {
-        const stack = boardPageStack(doc.host);
-        if (!stack?.rects.length) return null;
-        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-        for (const page of stack.rects) {
-            x0 = Math.min(x0, page.x); y0 = Math.min(y0, page.y);
-            x1 = Math.max(x1, page.x + page.width); y1 = Math.max(y1, page.y + page.height);
-        }
-        return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+    const centreOn = (box: ContentRect, z: number, edges: ViewportInsets) => {
+        if (!current() || ![box.x, box.y, box.width, box.height, z].every(Number.isFinite) || box.width < 0 || box.height < 0 || z <= 0) return;
+        camera.setCamera(centredCamera(box, camera.clampZoom(z), viewport(), edges)); notify();
     };
     const fit = (selectionOnly: boolean, natural = false) => {
         cancel(); if (!current()) return;
         const state = runtime.selection.getSnapshot();
         if (selectionOnly && !state.selected.length) return;
         const paper = !selectionOnly && doc.kind !== 'whiteboard';
-        if (paper) { const bounds = sheetBounds(); if (bounds) fitBounds(bounds, true); return; }
         const controller = new AbortController(); pending = controller;
         const turn = serial, revision = doc.rev, first = camera.camera, starting = { x: first.x, y: first.y, z: first.z }, view = viewport();
         const dimensions = { width: view.width, height: view.height, dpr: view.dpr };
         const active = () => current() && pending === controller && !controller.signal.aborted && serial === turn && doc.rev === revision
             && runtime.selection.getSnapshot() === state && camera.camera.x === starting.x && camera.camera.y === starting.y && camera.camera.z === starting.z
             && viewport().width === dimensions.width && viewport().height === dimensions.height && viewport().dpr === dimensions.dpr;
+        const fence = () => { if (!active()) throw new DOMException('Board view changed', 'AbortError'); };
         void (async () => {
-            const roots: NodeId[] = [];
-            if (selectionOnly) {
-                for (let i = 0; i < state.selected.length; i++) {
-                    if (!active()) return;
-                    roots.push(state.selected[i]);
-                    if ((i & 255) === 255) { await cooperate(); if (!active()) return; }
-                }
-            }
-            else {
-                const children = doc.children.get(state.sheet) ?? [];
-                for (let i = 0; i < children.length; i++) {
-                    if (!active()) return;
-                    roots.push(children[i].id);
-                    if ((i & 255) === 255) { await cooperate(); if (!active()) return; }
-                }
-            }
-            if (!roots.length || !active()) return;
-            const scope = await acquireBoardGeometryScope(runtime, roots, { signal: controller.signal, current: active, cooperate });
-            try {
-                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-                for (let i = 0; i < roots.length; i++) {
-                    if (!active()) return;
-                    const b = scope.logicalBounds(roots[i]);
-                    x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
-                    if ((i & 255) === 255) { await cooperate(); if (!active()) return; }
-                }
-                if (!active()) return;
-                const bounds = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-                if (natural || (selectionOnly && Math.abs(starting.z - 1) > .001)) setCentered(bounds, 1, { left: 0, right: 0, top: 0, bottom: 0 });
-                else fitBounds(bounds, false);
-            } finally { scope.release(); }
+            const roots: NodeId[] = selectionOnly ? [...state.selected] : (doc.children.get(state.sheet) ?? []).map(child => child.id);
+            const content = await contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate });
+            fence();
+            const bounds = unionRects(paper ? pageStackBounds(doc) : null, content);
+            if (!bounds) return;
+            // A selection at any zoom but 1 toggles to natural 1:1 (F-CAM-007); a paper sheet always fits.
+            const toNatural = natural || (selectionOnly && Math.abs(starting.z - 1) > .001);
+            const plan = fitTarget(doc, dimensions, bounds, { paper, natural: !paper && toNatural });
+            centreOn(bounds, plan.z, plan.edges);
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
     };
     const run = (id: string): boolean => {

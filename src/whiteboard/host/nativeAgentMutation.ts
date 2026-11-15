@@ -78,6 +78,8 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
             localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip,
             resolvedPolylineTip: reader.resolvedPolylineTip });
     };
+    // An unreadable or read-only admission refuses content writes with its own reason (F-AGENT-012): the original bytes stay.
+    const writeRefusal = (): string | null => source.writeBlock() ?? (runtime.session.isReadOnly ? runtime.session.readOnlyReason ?? 'This board is read-only.' : null);
     const host: AgentAdapterHost = {
         get session() { return runtime.session; },
         get geometry() { return projection().geometry; },
@@ -85,7 +87,7 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
         sheet: () => source.sheet(),
         page: () => source.page(),
         isCurrent: live,
-        readOnlyReason: () => facade.signal.aborted ? 'Board source has ended' : source.writeBlock(),
+        readOnlyReason: () => facade.signal.aborted ? 'Board source has ended' : writeRefusal(),
         // Admission is synchronous and inside the one writer; the batch releases the lease on every outcome.
         admitSamples: builder => runtime.samples.commit(builder),
         target: (node, page) => projection().target(node, page),
@@ -118,7 +120,7 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
                 runtime.jobs.assertContext(context);
                 await runtime.ready;
                 runtime.jobs.assertContext(context);
-                const block = source.writeBlock();
+                const block = writeRefusal();
                 if (!live()) throw new DOMException('Board source has ended', 'AbortError');
                 if (block !== null) throw new AgentApplyReadOnly(block);
                 const doc = runtime.session.doc, revision = doc.rev;

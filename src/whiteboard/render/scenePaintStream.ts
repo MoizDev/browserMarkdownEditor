@@ -19,6 +19,12 @@ export interface ScenePaintNodeStream {
     readonly sourceWorld?: Readonly<Rect>;
     /** Where pixels changed since an earlier raster revision of this pinned scene; full when unknown. */
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    /** False only when provably no node of `nodes` paints inside `world`; unknown is true. */
+    readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
+    /** False only when provably no node of the pinned sheet paints inside `world`; unknown is true. */
+    readonly mayPaint?: (world: Readonly<Rect>) => boolean;
+    /** Bounds of every occupied node of the pinned sheet; absent when not conservatively known. */
+    readonly occupiedRoot?: Readonly<Rect>;
     /** False once the pinned scene, document revision or the stream itself has been retired. */
     isCurrent(): boolean;
     next(): Promise<PaintNode | null>;

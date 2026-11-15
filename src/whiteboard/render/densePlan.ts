@@ -6,7 +6,7 @@ import type { Blend } from './colour';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintFrame, type PaintImageItem, type PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
-import { chooseTileScale, type TileAddress } from './tileHierarchy';
+import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type TileAddress, type TileScale } from './tileHierarchy';
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { FilteredInk } from './nodeSets';
@@ -15,11 +15,43 @@ import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
 const NO_LIVE: ReadonlySet<string> = new Set();
+const BANDS: readonly PaintBand[] = ['underlay', 'content'];
+/** A coarse summary of the occupied root, one per band and address. It lives in its own cache interval, so it
+ * is only ever borrowed as a standin, never served as a sharp tile. */
+interface SummaryTarget { readonly band: PaintBand; readonly address: TileAddress; readonly rect: Readonly<Rect>; readonly scale: number }
+const summaryInterval = (variant: string, band: PaintBand) => JSON.stringify([variant, band, 'summary']);
+const sameAddress = (a: TileAddress, b: TileAddress) => a.pyramid === b.pyramid && a.level === b.level && a.x === b.x && a.y === b.y;
+/** The finest level coarser than the viewport's at which the occupied root covers at most 2×2 tiles of the
+ * viewport's pyramid. Coarser levels only shrink the count, so the walk ends within the representable range. */
+function rootSummaryAddresses(root: Readonly<Rect>, viewport: TileScale): TileAddress[] {
+    for (let level = viewport.level - 1; ; level--) {
+        const side = DENSE_TILE_PIXELS / tileScale(viewport.pyramid, level);
+        const x0 = Math.floor(root.x / side), y0 = Math.floor(root.y / side);
+        const x1 = Math.floor((root.x + root.width) / side), y1 = Math.floor((root.y + root.height) / side);
+        if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Occupied root overflows the summary grid');
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4) continue;
+        const out: TileAddress[] = [];
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push({ pyramid: viewport.pyramid, level, x, y });
+        return out;
+    }
+}
+/** Summaries are produced for settled (fine) plans only: a moving view would stream the whole occupied root
+ * for every pose it passes through, and no tile needs a standin until the view settles. */
+function summaryTargets(frame: PaintFrame, scale: number, fine: boolean): SummaryTarget[] {
+    if (!fine || !frame.occupiedRoot || !frame.sessionRasters || !frame.rasterVariant) return [];
+    const addresses = rootSummaryAddresses(frame.occupiedRoot, chooseTileScale(scale)), out: SummaryTarget[] = [];
+    for (const band of BANDS) for (const address of addresses) {
+        out.push({ band, address, rect: tileRectWorld(address), scale: tileScale(address.pyramid, address.level) });
+    }
+    return out;
+}
 
 /** A rasterized tile part we own until the plan retires. `release` is idempotent. */
 interface TileBitmap {
     readonly bitmap: ImageBitmap;
     readonly rect: Readonly<Rect>;
+    /** A standin draws this crop of a coarser tile's bitmap into `rect`; absent for a tile's own pixels. */
+    readonly crop?: Readonly<Rect>;
     readonly memoryBytes: number;
     release(): void;
 }
@@ -27,10 +59,13 @@ interface TileBitmap {
 interface Entry { readonly blend: Blend; readonly end: string | null; readonly bitmap: TileBitmap }
 type Plan = {
     source: PaintFrame; view: string; scale: number; sharp: boolean; live: ReadonlySet<string> | undefined;
-    phase: 'tiles' | 'direct' | 'complete'; band: PaintBand; tileX: number; tileY: number; x0: number; x1: number; y0: number; y1: number;
+    phase: 'summary' | 'tiles' | 'direct' | 'complete';
+    summaries: SummaryTarget[]; summaryIndex: number; summaryCache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null; band: PaintBand; tileX: number; tileY: number; x0: number; x1: number; y0: number; y1: number;
     job: StreamingDenseTileJob | null;
     cache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
     entries: Record<PaintBand, Entry[]>;
+    /** Tiles drawn from a coarser cached tile because their own raster was denied memory. */
+    standins: number;
     owned: TileBitmap[];
     bitmaps: Map<string, TileBitmap>;
     bitmapBytes: number;
@@ -47,7 +82,6 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
     for (const id of live) if (!plan.live?.has(id)) return false;
     return true;
 };
-const isEmpty = (live: ReadonlySet<string> | undefined) => !live || live.values().next().done === true;
 
 /** A dense frame: each band's unlive content is rasterized per tile from its own bounded stream,
  * and the live items are drawn as prepared items at their canonical positions between those parts.
@@ -65,6 +99,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.retired = true;
         p.job?.cancel(); p.job = null;
         if (p.cache) { p.cache.cache.cancel(p.cache.ticket); p.cache = null; }
+        if (p.summaryCache) { p.summaryCache.cache.cancel(p.summaryCache.ticket); p.summaryCache = null; }
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.owned.splice(0)) bitmap.release();
         p.bitmaps.clear(); p.bitmapBytes = 0;
@@ -87,9 +122,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const lease = host.allocator.cpu.reserve(BLOCK);
         if (!lease) { denied = true; return null; }
         try {
+            const summaries = summaryTargets(frame, scale, fine);
             const p: Plan = { source: frame, view: projection(view), scale, sharp: scale >= demand, live,
-                phase: 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
-                job: null, cache: null, entries: { underlay: [], content: [] }, owned: [], bitmaps: new Map(), bitmapBytes: 0,
+                phase: summaries.length ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
+                job: null, cache: null, summaries, summaryIndex: 0, summaryCache: null,
+                entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0,
                 directAdapter: null, directLease: null, directEstimate: 0, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
                 pending: 0, lease, retired: false, blocked: false, prepared: null, resources };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
@@ -108,6 +145,19 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (!held) return; held = false; releaseDenseTilePart(part);
         } };
     };
+    /** A cached coarser tile drawn cropped to `child`. It owns the borrow on success, and releases it otherwise. */
+    const standinOf = (borrow: DenseRasterBorrow, child: Readonly<Rect>): TileBitmap | null => {
+        const parent = borrow.rect, k = EDGE / parent.width, eps = 1e-6 * parent.width;
+        const inside = child.x >= parent.x - eps && child.y >= parent.y - eps
+            && child.x + child.width <= parent.x + parent.width + eps && child.y + child.height <= parent.y + parent.height + eps;
+        if (!borrow.bitmap || !inside || !(k > 0)) { borrow.release(); return null; }
+        // The bitmap's EDGE interior sits inside a 2 px apron, as the sourceRect of a tile's own draw says.
+        const crop: Readonly<Rect> = Object.freeze({ x: 2 + (child.x - parent.x) * k, y: 2 + (child.y - parent.y) * k,
+            width: child.width * k, height: child.height * k });
+        let held = true;
+        return { bitmap: borrow.bitmap, rect: Object.freeze({ ...child }), crop, memoryBytes: 0,
+            release() { if (held) { held = false; borrow.release(); } } };
+    };
     const borrowBitmap = (borrow: DenseRasterBorrow): TileBitmap | null => {
         if (!borrow.bitmap) { borrow.release(); return null; }
         let held = true;
@@ -125,17 +175,67 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.band === 'underlay') { p.band = 'content'; return; }
         p.phase = 'direct';
     };
+    /** Streams each missing summary once per revision, one at a time, and publishes it to its own interval. The
+     * summary is never drawn here: it exists so that a tile denied memory has a coarser standin. */
+    const summarize = (p: Plan, view: ViewState, budget: FrameBudget): void => {
+        const cache = p.source.sessionRasters, variant = p.source.rasterVariant;
+        while (p.summaryIndex < p.summaries.length) {
+            if (!p.job) {
+                const target = p.summaries[p.summaryIndex];
+                if (!cache || !variant || !cache.advanceRevision(p.source.sceneRevision, p.source.regionChangesSince)) {
+                    p.summaryIndex = p.summaries.length; break;
+                }
+                cache.bindMemory(host.allocator.cpu);
+                const interval = summaryInterval(variant, target.band);
+                const held = cache.borrowAncestor(interval, target.address);
+                const current = !!held && sameAddress(held.address, target.address);
+                held?.release();
+                if (current) { p.summaryIndex++; continue; }
+                const ticket = cache.begin(interval, target.address, p.source.sceneRevision);
+                // Memory denied the summary: skip it, since tiles then stand in with whatever is cached.
+                if (!ticket) { p.summaryIndex++; continue; }
+                p.summaryCache = { cache, ticket };
+                p.job = createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal),
+                    rect: target.rect, scale: target.scale, band: target.band, barriers: NO_LIVE, token: p.source.token,
+                    revision: p.source.sceneRevision, isCurrent: () => !p.retired && resources.frames.isCurrent(p.source),
+                    images: p.resources.images, host, onError: report });
+            }
+            p.job.prepare(view, budget);
+            if (p.job.failed) { failedFrame = p.source; drop(p); staged = null; return; }
+            if (p.job.stopped) { drop(p); staged = null; return; }
+            if (!p.job.isComplete && !p.job.isEmpty) return;
+            const job = p.job, pending = p.summaryCache!, target = p.summaries[p.summaryIndex];
+            p.job = null; p.summaryCache = null; p.summaryIndex++;
+            const parts = job.takeParts();
+            const only = !job.touchedLive && parts.length === 1 && parts[0].end === null && parts[0].blend === 'normal' && !parts[0].hasImage ? parts[0] : null;
+            let accepted = false;
+            try {
+                if (only) accepted = pending.cache.publish(pending.ticket, { bitmap: only.bitmap, bytesLease: only.bytesLease, owner: only.owner, rect: only.rect, scale: target.scale });
+            } catch (error) {
+                pending.cache.cancel(pending.ticket);
+                for (const part of parts) releaseDenseTilePart(part);
+                throw error;
+            }
+            if (!accepted) pending.cache.cancel(pending.ticket);
+            for (const part of parts) if (!(accepted && part === only)) releaseDenseTilePart(part);
+        }
+        if (p.summaryIndex >= p.summaries.length && !p.job) p.phase = 'tiles';
+    };
     /** One tile of the current band. A cached tile is used only without live items: then its band
      * content is one part and no barrier can split it. Otherwise the tile is streamed and split. */
     const raster = (p: Plan, view: ViewState, budget: FrameBudget): void => {
-        const band = p.band, side = EDGE / p.scale;
+        const band = p.band, side = EDGE / p.scale, bleed = 2 / p.scale;
         const rect: Rect = { x: p.tileX * side, y: p.tileY * side, width: side, height: side };
+        const apron: Rect = { x: rect.x - bleed, y: rect.y - bleed, width: side + 2 * bleed, height: side + 2 * bleed };
+        // Sparse: no node of the pinned sheet can paint in the apron, so the tile is empty and needs nothing.
+        if (!p.job && !p.cache && p.source.mayPaint?.(apron) === false) { advanceTile(p); return; }
         const tileScale = chooseTileScale(p.scale);
         const address: TileAddress = { pyramid: tileScale.pyramid, level: tileScale.level, x: p.tileX, y: p.tileY };
         const cache = p.source.sessionRasters, variant = p.source.rasterVariant;
-        // A sensitive node (selection, edit, embed) paints at precision, so a tile holding one is not
-        // a pure function of the document; only sensitive-free tiles are cached and reused.
-        const cacheable = !!cache && !!variant && isEmpty(p.live) && p.source.sensitiveNodes?.size === 0 && tileScale.scale === p.scale;
+        // The tile's pixels are the document's own while no sensitive or live node may paint in its apron.
+        const reaches = (nodes: ReadonlySet<string>) => p.source.sensitiveMayMeet?.(apron, nodes) !== false;
+        const cacheable = !!cache && !!variant && tileScale.scale === p.scale
+            && p.source.sensitiveNodes !== undefined && !reaches(p.source.sensitiveNodes) && !(p.live && reaches(p.live));
         const interval = cacheable ? JSON.stringify([variant, band]) : '';
         if (cacheable && !p.job && !p.cache) {
             cache.bindMemory(host.allocator.cpu);
@@ -149,15 +249,21 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         if (bitmap) put(p, band, null, 'normal', bitmap);
                         advanceTile(p); return;
                     }
-                    found.release();
                 }
                 const ticket = cache.begin(interval, address, p.source.sceneRevision);
-                if (!ticket) { p.blocked = true; return; }
+                if (!ticket) {
+                    // Memory denied this tile's raster: a cached coarser tile stands in, so the plan can still complete.
+                    const coarse = found ?? cache.borrowAncestor(summaryInterval(variant!, band), address);
+                    const standin = coarse ? standinOf(coarse, rect) : null;
+                    if (standin) { p.standins++; put(p, band, null, 'normal', standin); advanceTile(p); return; }
+                    p.blocked = true; return;
+                }
+                found?.release();
                 p.cache = { cache, ticket };
             }
         }
         p.job ??= createStreamingDenseTileJob({ open: (apron, signal) => p.source.openTile!(apron, signal),
-            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, token: p.source.token, revision: p.source.sceneRevision,
+            rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
         p.job.prepare(view, budget);
@@ -167,7 +273,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const job = p.job, pending = p.cache;
         p.job = null; p.cache = null;
         const parts = job.takeParts();
-        const only = parts.length === 1 && parts[0].end === null && parts[0].blend === 'normal' && !parts[0].hasImage ? parts[0] : null;
+        const only = !job.touchedLive && parts.length === 1 && parts[0].end === null && parts[0].blend === 'normal' && !parts[0].hasImage ? parts[0] : null;
         if (pending && only) {
             let accepted = false;
             try {
@@ -206,19 +312,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (!Number.isSafeInteger(p.directEstimate)) throw new RangeError('Dense live path estimate overflows');
         p.estimateItem++; p.estimateClip = p.estimateChunk = 0; return false;
     };
-    /** The frame's live items of one band, in canonical order, with each barrier's own tile parts
-     * placed before it. Every barrier named by a part must be a live item of this frame. */
+    /** The band's frame in canonical order, with each barrier's tile parts placed before its live items.
+     * One walk over the frame's own items: buckets follow the parts, never a per-live-node structure. */
     const bandItems = (p: Plan, band: PaintBand): PaintItem[] => {
-        const sequence: string[] = [], direct = new Map<string, PaintItem[]>();
-        for (const item of p.source[band]) {
-            if (!p.live?.has(item.nodeId)) continue;
-            let group = direct.get(item.nodeId);
-            if (!group) { group = []; direct.set(item.nodeId, group); sequence.push(item.nodeId); }
-            group.push(item);
-        }
         const buckets = new Map<string | null, Entry[]>();
         for (const entry of p.entries[band]) {
-            if (entry.end !== null && !direct.has(entry.end)) throw new Error('Dense tile barrier is missing from the live frame');
             const list = buckets.get(entry.end);
             if (list) list.push(entry); else buckets.set(entry.end, [entry]);
         }
@@ -231,10 +329,17 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return item;
         };
         const out: PaintItem[] = [];
-        for (const id of sequence) {
-            for (const entry of buckets.get(id) ?? []) out.push(image(entry));
-            out.push(...direct.get(id)!);
+        let group: string | null = null;
+        for (const item of p.source[band]) {
+            if (!p.live?.has(item.nodeId)) continue;
+            if (item.nodeId !== group) {
+                group = item.nodeId;
+                const before = buckets.get(group);
+                if (before) { for (const entry of before) out.push(image(entry)); buckets.delete(group); }
+            }
+            out.push(item);
         }
+        for (const end of buckets.keys()) if (end !== null) throw new Error('Dense tile barrier is missing from the live frame');
         for (const entry of buckets.get(null) ?? []) out.push(image(entry));
         return out;
     };
@@ -244,7 +349,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const underlay = bandItems(p, 'underlay'), content = bandItems(p, 'content');
         const frame: PaintFrame = { ...p.source, underlay: Object.freeze(underlay), content: Object.freeze(content),
             inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
-        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp, resources: {
+        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp && p.standins === 0, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
         } };
@@ -273,6 +378,11 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 p.blocked = false;
                 while (!budget.shouldYield() && !p.retired) {
                     if (!resources.frames.isCurrent(frame)) { drop(p); staged = null; return; }
+                    if (p.phase === 'summary') {
+                        summarize(p, view, budget);
+                        if (p.retired || p.job) return;
+                        continue;
+                    }
                     if (p.phase === 'tiles') {
                         raster(p, view, budget);
                         if (p.retired) return;
@@ -319,12 +429,13 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 const x1 = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(right - .5));
                 const y1 = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(bottom - .5));
                 if (x1 <= x || y1 <= y) continue;
-                const gutter = 2 * scale / sourceScale;
+                const gutter = 2 * scale / sourceScale, crop = bitmap.crop;
                 ctx.save();
                 try {
                     ctx.resetTransform(); ctx.beginPath(); ctx.rect(x, y, x1 - x, y1 - y); ctx.clip();
                     ctx.globalAlpha = 1; ctx.globalCompositeOperation = item.blend === 'multiply' ? 'multiply' : 'source-over'; ctx.filter = 'none';
-                    ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
+                    if (crop) ctx.drawImage(bitmap.bitmap, crop.x, crop.y, crop.width, crop.height, left, top, right - left, bottom - top);
+                    else ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
                 } finally { ctx.restore(); }
             }
         },
@@ -343,7 +454,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {
             if (disposed || denied || staged?.blocked) return false;
-            if (!staged) return !!ready && !ready.sharp;
+            // A plan drawn with standins because memory was denied waits for the next invalidation instead of spinning.
+            if (!staged) return !!ready && !ready.sharp && ready.standins === 0;
             if (staged.job) return staged.job.needsFrame();
             if (staged.directAdapter) return staged.directAdapter.needsFrame();
             return true;
